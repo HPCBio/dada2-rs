@@ -1,0 +1,10 @@
+[package]
+name = "dada2-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+noodles = { version = "0.91", features = ["fastq"] }
+flate2 = "1"
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
