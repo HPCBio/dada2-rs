@@ -26,6 +26,7 @@ const BAND_SENTINEL: i32 = -9999;
 // ---------------------------------------------------------------------------
 
 /// Parameters controlling alignment method selection in `raw_align`.
+#[derive(Clone, Copy)]
 pub struct AlignParams {
     pub match_score: i32,
     pub mismatch: i32,

@@ -6,6 +6,7 @@ use flate2::read::MultiGzDecoder;
 mod cli;
 mod cluster;
 mod containers;
+mod dada;
 mod derep;
 mod filter;
 mod kmers;
