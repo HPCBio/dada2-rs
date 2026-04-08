@@ -4,7 +4,11 @@ use clap::Parser;
 use flate2::read::MultiGzDecoder;
 
 mod cli;
+mod containers;
 mod derep;
+mod kmers;
+mod misc;
+mod pval;
 mod summary;
 
 use cli::{Cli, Commands};
