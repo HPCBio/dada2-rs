@@ -194,7 +194,7 @@ pub fn dereplicate<R: io::Read>(
     let derep = overall.into_derep();
     if verbose {
         eprintln!(
-            "[derep] {} sequences -> {} unique",
+            "[derep] {} raw sequences -> {} unique sequences",
             derep.map.len(),
             derep.uniques.len()
         );
