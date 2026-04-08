@@ -8,6 +8,7 @@ mod containers;
 mod derep;
 mod kmers;
 mod misc;
+mod nwalign;
 mod pval;
 mod summary;
 
