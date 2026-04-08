@@ -60,6 +60,8 @@ pub enum BirthType {
     Initial,
     /// Born from an abundance p-value test ("A").
     Abundance,
+    /// Born from a prior-sequence p-value test ("P").
+    Prior,
     /// Born from a singleton p-value test ("S").
     Singleton,
 }

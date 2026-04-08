@@ -4,8 +4,10 @@ use clap::Parser;
 use flate2::read::MultiGzDecoder;
 
 mod cli;
+mod cluster;
 mod containers;
 mod derep;
+mod filter;
 mod kmers;
 mod misc;
 mod nwalign;
