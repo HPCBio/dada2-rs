@@ -40,16 +40,16 @@ fn main() -> io::Result<()> {
             }
         }
 
-        Commands::Derep { input, phred_offset, threads, show_map, compact } => {
+        Commands::Derep { input, phred_offset, threads, show_map, compact, verbose } => {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
             let derep = if input.extension().and_then(|e| e.to_str()) == Some("gz") {
-                dereplicate(MultiGzDecoder::new(File::open(&input)?), phred_offset, &pool)?
+                dereplicate(MultiGzDecoder::new(File::open(&input)?), phred_offset, &pool, verbose)?
             } else {
-                dereplicate(File::open(&input)?, phred_offset, &pool)?
+                dereplicate(File::open(&input)?, phred_offset, &pool, verbose)?
             };
 
             #[derive(Serialize)]

@@ -140,6 +140,7 @@ pub fn dereplicate<R: io::Read>(
     reader: R,
     phred_offset: u8,
     pool: &rayon::ThreadPool,
+    verbose: bool,
 ) -> io::Result<Derep> {
     let chunk_size = RECORDS_PER_THREAD * pool.current_num_threads();
     let buf = BufReader::new(reader);
@@ -190,5 +191,13 @@ pub fn dereplicate<R: io::Read>(
         }
     }
 
-    Ok(overall.into_derep())
+    let derep = overall.into_derep();
+    if verbose {
+        eprintln!(
+            "[derep] {} sequences -> {} unique",
+            derep.map.len(),
+            derep.uniques.len()
+        );
+    }
+    Ok(derep)
 }

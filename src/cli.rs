@@ -49,5 +49,9 @@ pub enum Commands {
         /// Output compact (minified) JSON instead of pretty-printed
         #[arg(long)]
         compact: bool,
+
+        /// Print progress information to stderr
+        #[arg(long)]
+        verbose: bool,
     },
 }
