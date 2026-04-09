@@ -3,11 +3,14 @@ use std::{fs::File, io};
 use clap::Parser;
 use flate2::read::MultiGzDecoder;
 
+mod chimera;
 mod cli;
 mod cluster;
 mod containers;
 mod dada;
 mod derep;
+mod error;
+mod evaluate;
 mod filter;
 mod kmers;
 mod misc;
