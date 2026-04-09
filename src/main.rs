@@ -14,6 +14,7 @@ mod misc;
 mod nwalign;
 mod pval;
 mod summary;
+mod taxonomy;
 
 use cli::{Cli, Commands};
 use derep::dereplicate;
