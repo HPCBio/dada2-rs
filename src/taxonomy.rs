@@ -15,12 +15,16 @@
 //! Sequences shorter than 50 bp receive no assignment (`None`).
 //!
 //! ## Differences from the C++ original
-//! - Random numbers are generated on-the-fly via `rand::thread_rng()` instead of
-//!   being pre-allocated by `Rcpp::runif`.
+//! - Random numbers are generated on-the-fly per sequence via a local `SmallRng`
+//!   instead of being pre-allocated by `Rcpp::runif`.
+//! - An optional seed can be set for reproducible results (see [`assign_taxonomy`]).
 //! - `RcppParallel::parallelFor` is replaced by Rayon `par_iter`.
 //! - All indexing is 0-based; callers should add 1 if they need R-style output.
 //! - `Rcpp::checkUserInterrupt()` is removed (no R event loop).
 
+use rand::distributions::{Distribution, Standard};
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
 use rayon::prelude::*;
 
 /// Number of bootstrap replicates.  Matches C++ `NBOOT`.
@@ -110,6 +114,7 @@ fn get_best_genus(
     n_kmers: usize,
     ngenus: usize,
     lgk: &[f32],
+    rng: &mut SmallRng,
 ) -> (usize, f32) {
     let mut max_g = 0usize;
     let mut max_logp = f32::NEG_INFINITY;
@@ -140,7 +145,8 @@ fn get_best_genus(
         } else if logp == max_logp {
             // Tied: keep with probability 1/nmax (reservoir sampling).
             nmax += 1;
-            if rand::random::<f64>() < 1.0 / nmax as f64 {
+            let u: f64 = Standard.sample(rng);
+            if u < 1.0 / nmax as f64 {
                 max_g = g;
             }
         }
@@ -160,18 +166,19 @@ fn classify_seq(
     n_kmers: usize,
     ngenus: usize,
     lgk: &[f32],
+    rng: &mut SmallRng,
 ) -> Option<(usize, Vec<usize>)> {
     if seq.len() < MIN_SEQ_LEN {
         return None;
     }
 
     let karray = tax_karray(seq, k);
-    let (mut best_g, mut best_logp) = get_best_genus(&karray, n_kmers, ngenus, lgk);
+    let (mut best_g, mut best_logp) = get_best_genus(&karray, n_kmers, ngenus, lgk, rng);
     let mut best_karray = karray;
 
     if let Some(rc_seq) = rc {
         let karray_rc = tax_karray(rc_seq, k);
-        let (g_rc, logp_rc) = get_best_genus(&karray_rc, n_kmers, ngenus, lgk);
+        let (g_rc, logp_rc) = get_best_genus(&karray_rc, n_kmers, ngenus, lgk, rng);
         if logp_rc > best_logp {
             best_g = g_rc;
             best_logp = logp_rc;
@@ -181,6 +188,23 @@ fn classify_seq(
     }
 
     Some((best_g, best_karray))
+}
+
+// ---------------------------------------------------------------------------
+// RNG construction
+// ---------------------------------------------------------------------------
+
+/// Build a per-sequence `SmallRng`.
+///
+/// When `seed` is `Some(s)`, derives a deterministic seed as `s ^ (index as u64)`
+/// so that each sequence gets a unique but reproducible stream regardless of
+/// Rayon thread scheduling.  When `seed` is `None`, seeds from system entropy.
+#[inline]
+fn make_rng(seed: Option<u64>, index: usize) -> SmallRng {
+    match seed {
+        Some(s) => SmallRng::seed_from_u64(s ^ index as u64),
+        None    => SmallRng::from_entropy(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +225,10 @@ fn classify_seq(
 /// - `nlevel`: number of taxonomic levels (columns of `genus_tax`).
 /// - `try_rc`: if true, also classify each sequence's reverse complement and
 ///   keep whichever orientation scores higher.
+/// - `seed`: optional RNG seed for reproducible results. When `Some(s)`, each
+///   sequence `j` uses `SmallRng::seed_from_u64(s ^ j as u64)`, giving identical
+///   output regardless of Rayon thread scheduling. When `None`, each sequence
+///   uses `SmallRng::from_entropy()`.
 /// - `verbose`: print progress to stderr.
 ///
 /// Equivalent to C++ `C_assign_taxonomy2`.
@@ -212,6 +240,7 @@ pub fn assign_taxonomy(
     genus_tax: &[usize],
     nlevel: usize,
     try_rc: bool,
+    seed: Option<u64>,
     verbose: bool,
 ) -> Result<TaxonomyResult, String> {
     // ---- Validate ----
@@ -298,18 +327,23 @@ pub fn assign_taxonomy(
 
     // ---- Classify each query sequence in parallel ----
     // Each element: Option<(best_genus, karray)>.
+    // Each sequence gets its own RNG: seeded deterministically when a seed is
+    // provided (seed ^ j), or from system entropy otherwise.
     let classified: Vec<Option<(usize, Vec<usize>)>> = (0..nseq)
         .into_par_iter()
         .map(|j| {
+            let mut rng = make_rng(seed, j);
             let rc = if try_rc { Some(rcs[j]) } else { None };
-            classify_seq(seqs[j], rc, k, n_kmers, ngenus, &lgk)
+            classify_seq(seqs[j], rc, k, n_kmers, ngenus, &lgk, &mut rng)
         })
         .collect();
 
     // ---- Bootstrap in parallel ----
+    // Use a different RNG stream from classification by XOR-ing with a constant.
     let boot_results: Vec<(Vec<u32>, Vec<Option<usize>>)> = (0..nseq)
         .into_par_iter()
         .map(|j| {
+            let mut rng = make_rng(seed.map(|s| s ^ 0xdead_beef_cafe_0000), j);
             let mut boot_counts = vec![0u32; nlevel];
             let mut boot_taxa: Vec<Option<usize>> = vec![None; NBOOT];
 
@@ -321,12 +355,13 @@ pub fn assign_taxonomy(
                     // Sample sample_size k-mers uniformly at random from karray.
                     let bootarray: Vec<usize> = (0..sample_size)
                         .map(|_| {
-                            let idx = (arraylen as f64 * rand::random::<f64>()) as usize;
+                            let u: f64 = Standard.sample(&mut rng);
+                            let idx = (arraylen as f64 * u) as usize;
                             karray[idx.min(arraylen - 1)]
                         })
                         .collect();
 
-                    let (boot_g, _) = get_best_genus(&bootarray, n_kmers, ngenus, &lgk);
+                    let (boot_g, _) = get_best_genus(&bootarray, n_kmers, ngenus, &lgk, &mut rng);
                     boot_taxa[b] = Some(boot_g);
 
                     // Count levels where boot_g and best_g agree, stopping at first mismatch.
