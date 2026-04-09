@@ -6,12 +6,12 @@ This work will be following [rewrites.bio](https://rewrites.bio), including full
 
 ## Plans
 
-Thw short term plan: 
+The short term plan: 
 
 1) Port key code over to Rust: dereplication, error modeling, denoising, merging, chimera removal
-2) Decouple the underlying C++ code from R and reimplement key steps as subcommands, and key R classes as Rust structs/classes
-3) Allow intermediate outputs (in JSON) that can be evaluated for debugging purposes
-4) Add basic regression tests that follow those within the original dada2 repository
+2) Decouple any underlying C++ code from R and reimplement key steps as subcommands, R classes as Rust structs/classes, etc.
+3) Allow intermediate outputs (in JSON) that can be evaluated for debugging purposes or for plotting in R, Python, etc.
+4) Add basic regression tests that follow those within the original dada2 repository and expect results similar to those expected
 
 We do anticipate porting read trimming or taxonomic classification at a later point
 
