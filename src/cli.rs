@@ -96,4 +96,81 @@ pub enum Commands {
         #[arg(long)]
         verbose: bool,
     },
+
+    /// Learn an error model from subsampled derep JSON files
+    ///
+    /// Reads one or more JSON files produced by the `subsample` subcommand,
+    /// iteratively runs the DADA2 algorithm and re-fits the chosen error
+    /// model until self-consistency.
+    ///
+    /// Output is a JSON object with three flat 16 × nq matrices:
+    ///   `trans`   — accumulated transition counts,
+    ///   `err_in`  — error rates used in the final DADA run,
+    ///   `err_out` — error rates estimated from `trans`.
+    LearnErrors {
+        /// One or more JSON derep files produced by the `subsample` subcommand
+        #[arg(required = true)]
+        input: Vec<PathBuf>,
+
+        /// Error model fitting function to use
+        ///
+        /// Allowed values: loess (default), noqual, binned-qual, pacbio
+        #[arg(long, default_value = "loess")]
+        errfun: String,
+
+        /// Pseudocount added to each transition total (only used with --errfun noqual)
+        #[arg(long, default_value_t = 1.0)]
+        pseudocount: f64,
+
+        /// Anchor quality-score bins for piecewise-linear interpolation
+        ///
+        /// Comma-separated list of quality score values, e.g. "0,10,20,30,40".
+        /// Only used with --errfun binned-qual.
+        #[arg(long, value_delimiter = ',')]
+        binned_quals: Option<Vec<f64>>,
+
+        /// Maximum self-consistency iterations (mirrors R's MAX_CONSIST)
+        #[arg(long, default_value_t = 10)]
+        max_consist: usize,
+
+        /// Significance threshold for abundance-based cluster splitting (omega_a)
+        #[arg(long, default_value_t = 1e-40)]
+        omega_a: f64,
+
+        /// Significance threshold for omega_c (reads not corrected to any center)
+        #[arg(long, default_value_t = 0.0)]
+        omega_c: f64,
+
+        /// Significance threshold for prior-sequence splitting (omega_p)
+        #[arg(long, default_value_t = 1e-4)]
+        omega_p: f64,
+
+        /// Minimum fold-enrichment above expected for cluster splitting
+        #[arg(long, default_value_t = 1.0)]
+        min_fold: f64,
+
+        /// Minimum Hamming distance required for cluster splitting
+        #[arg(long, default_value_t = 1)]
+        min_hamming: u32,
+
+        /// Minimum read abundance required for cluster splitting
+        #[arg(long, default_value_t = 1)]
+        min_abund: u32,
+
+        /// Use singleton detection (detect singletons as genuine)
+        #[arg(long)]
+        detect_singletons: bool,
+
+        /// Write JSON output to this file instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+
+        /// Output compact (minified) JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
+
+        /// Print per-iteration progress to stderr
+        #[arg(long)]
+        verbose: bool,
+    },
 }

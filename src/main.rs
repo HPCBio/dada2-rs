@@ -15,6 +15,7 @@ mod error_models;
 mod evaluate;
 mod filter;
 mod kmers;
+mod learn_errors;
 mod misc;
 mod nwalign;
 mod pval;
@@ -23,6 +24,8 @@ mod taxonomy;
 
 use cli::{Cli, Commands};
 use derep::dereplicate;
+use learn_errors::{ErrFun, learn_errors};
+use nwalign::AlignParams;
 use serde::Serialize;
 use summary::process;
 
@@ -223,6 +226,122 @@ fn main() -> io::Result<()> {
                 total_reads,
                 files_written,
             );
+        }
+
+        Commands::LearnErrors {
+            input,
+            errfun,
+            pseudocount,
+            binned_quals,
+            max_consist,
+            omega_a,
+            omega_c,
+            omega_p,
+            min_fold,
+            min_hamming,
+            min_abund,
+            detect_singletons,
+            output,
+            compact,
+            verbose,
+        } => {
+            let err_fun = match errfun.as_str() {
+                "loess" => ErrFun::Loess,
+                "noqual" => ErrFun::Noqual { pseudocount },
+                "binned-qual" => {
+                    let bins = binned_quals.ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "--binned-quals is required when --errfun binned-qual is used",
+                        )
+                    })?;
+                    ErrFun::BinnedQual { bins }
+                }
+                "pacbio" => ErrFun::PacBio,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "Unknown errfun '{other}'; expected one of: loess, noqual, binned-qual, pacbio"
+                        ),
+                    ));
+                }
+            };
+
+            let align_params = AlignParams {
+                match_score: 5,
+                mismatch: -4,
+                gap_p: -8,
+                homo_gap_p: -8,
+                use_kmers: true,
+                kdist_cutoff: 0.42,
+                band: -1,
+                vectorized: false,
+                gapless: false,
+            };
+
+            let dada_params = dada::DadaParams {
+                align: align_params,
+                err_mat: Vec::new(), // overwritten each iteration
+                err_ncol: 0,         // overwritten each iteration
+                omega_a,
+                omega_c,
+                omega_p,
+                detect_singletons,
+                max_clust: 0,
+                min_fold,
+                min_hamming,
+                min_abund,
+                use_quals: true,
+                final_consensus: false,
+                multithread: false,
+                verbose,
+                greedy: true,
+            };
+
+            let result = learn_errors(&input, &err_fun, dada_params, &align_params, max_consist, verbose)?;
+
+            // Serialize: represent the three matrices as Vec<Vec<T>> (16 rows × nq cols).
+            #[derive(Serialize)]
+            struct LearnErrorsOutput {
+                nq: usize,
+                converged: bool,
+                iterations: usize,
+                /// Transition counts: 16 rows (ref_nt*4+query_nt), nq columns.
+                trans: Vec<Vec<u32>>,
+                /// Error rates fed into the final DADA run: 16 × nq.
+                err_in: Vec<Vec<f64>>,
+                /// Error rates estimated from `trans`: 16 × nq.
+                err_out: Vec<Vec<f64>>,
+            }
+
+            fn flat_to_rows_u32(flat: &[u32], nq: usize) -> Vec<Vec<u32>> {
+                (0..16).map(|r| flat[r * nq..(r + 1) * nq].to_vec()).collect()
+            }
+            fn flat_to_rows_f64(flat: &[f64], nq: usize) -> Vec<Vec<f64>> {
+                (0..16).map(|r| flat[r * nq..(r + 1) * nq].to_vec()).collect()
+            }
+
+            let out = LearnErrorsOutput {
+                nq: result.nq,
+                converged: result.converged,
+                iterations: result.iterations,
+                trans: flat_to_rows_u32(&result.trans, result.nq),
+                err_in: flat_to_rows_f64(&result.err_in, result.nq),
+                err_out: flat_to_rows_f64(&result.err_out, result.nq),
+            };
+
+            let json = if compact {
+                serde_json::to_string(&out)
+            } else {
+                serde_json::to_string_pretty(&out)
+            }
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            match output {
+                Some(path) => std::fs::write(&path, &json)?,
+                None => println!("{json}"),
+            }
         }
     }
 
