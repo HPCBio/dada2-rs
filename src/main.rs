@@ -23,6 +23,7 @@ mod summary;
 mod taxonomy;
 
 use cli::{Cli, Commands};
+use containers::BirthType;
 use derep::dereplicate;
 use learn_errors::{ErrFun, learn_errors};
 use nwalign::AlignParams;
@@ -226,6 +227,214 @@ fn main() -> io::Result<()> {
                 total_reads,
                 files_written,
             );
+        }
+
+        Commands::Dada {
+            input,
+            error_model,
+            use_err_in,
+            phred_offset,
+            threads,
+            omega_a,
+            omega_c,
+            omega_p,
+            min_fold,
+            min_hamming,
+            min_abund,
+            detect_singletons,
+            multithread,
+            show_map,
+            output,
+            compact,
+            verbose,
+        } => {
+            // ---- Dereplicate FASTQ in memory ----
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            let derep = if input.extension().and_then(|e| e.to_str()) == Some("gz") {
+                dereplicate(MultiGzDecoder::new(File::open(&input)?), phred_offset, &pool, verbose)?
+            } else {
+                dereplicate(File::open(&input)?, phred_offset, &pool, verbose)?
+            };
+
+            let raw_inputs: Vec<dada::RawInput> = derep
+                .uniques
+                .into_iter()
+                .zip(derep.quals.into_iter())
+                .map(|((seq, count), quals)| {
+                    let sequence = String::from_utf8(seq)
+                        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+                    dada::RawInput {
+                        seq: sequence,
+                        abundance: count as u32,
+                        prior: false,
+                        quals: Some(quals),
+                    }
+                })
+                .collect();
+
+            if raw_inputs.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "FASTQ contains no reads",
+                ));
+            }
+
+            // ---- Load error model JSON ----
+            // The learn-errors output stores err_in and err_out as Vec<Vec<f64>>
+            // with 16 rows and nq columns.
+            #[derive(serde::Deserialize)]
+            struct ErrorModelJson {
+                nq: usize,
+                err_in: Vec<Vec<f64>>,
+                err_out: Vec<Vec<f64>>,
+            }
+
+            let em_text = std::fs::read_to_string(&error_model)?;
+            let em: ErrorModelJson = serde_json::from_str(&em_text)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+            let nq = em.nq;
+            let rows = if use_err_in { &em.err_in } else { &em.err_out };
+            if rows.len() != 16 || rows.iter().any(|r| r.len() != nq) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Error model matrix must be 16 × {nq}, got {} rows",
+                        rows.len()
+                    ),
+                ));
+            }
+            // Flatten row-major: row r, column q → index r*nq + q
+            let err_mat: Vec<f64> = rows.iter().flat_map(|r| r.iter().copied()).collect();
+
+            // ---- Build algorithm parameters ----
+            let align_params = AlignParams {
+                match_score: 5,
+                mismatch: -4,
+                gap_p: -8,
+                homo_gap_p: -8,
+                use_kmers: true,
+                kdist_cutoff: 0.42,
+                band: -1,
+                vectorized: false,
+                gapless: false,
+            };
+
+            let dada_params = dada::DadaParams {
+                align: align_params,
+                err_mat,
+                err_ncol: nq,
+                omega_a,
+                omega_c,
+                omega_p,
+                detect_singletons,
+                max_clust: 0,
+                min_fold,
+                min_hamming,
+                min_abund,
+                use_quals: true,
+                final_consensus: false,
+                multithread,
+                verbose,
+                greedy: true,
+            };
+
+            // ---- Run DADA2 ----
+            let result = dada::dada_uniques(&raw_inputs, &dada_params)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            if verbose {
+                eprintln!(
+                    "[dada] {} ASV(s) from {} unique input(s); {} aligns, {} shrouded",
+                    result.clusters.len(),
+                    raw_inputs.len(),
+                    result.nalign,
+                    result.nshroud,
+                );
+            }
+
+            // ---- Serialize output ----
+            #[derive(Serialize)]
+            struct AsvEntry {
+                sequence: String,
+                abundance: u32,
+                birth_type: String,
+                birth_pval: f64,
+                birth_fold: f64,
+                birth_e: f64,
+            }
+
+            #[derive(Serialize)]
+            struct DadaStats {
+                nalign: u32,
+                nshroud: u32,
+            }
+
+            #[derive(Serialize)]
+            struct DadaOutput {
+                num_asvs: usize,
+                total_reads: u32,
+                asvs: Vec<AsvEntry>,
+                stats: DadaStats,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                map: Option<Vec<Option<usize>>>,
+            }
+
+            let total_reads: u32 = result.clusters.iter().map(|c| c.reads).sum();
+
+            let asvs: Vec<AsvEntry> = result
+                .clusters
+                .iter()
+                .map(|c| {
+                    let sequence: String = c
+                        .sequence
+                        .iter()
+                        .map(|&b| misc::nt_decode(b) as char)
+                        .collect();
+                    let birth_type = match &c.birth_type {
+                        BirthType::Initial => "Initial",
+                        BirthType::Abundance => "Abundance",
+                        BirthType::Prior => "Prior",
+                        BirthType::Singleton => "Singleton",
+                    }
+                    .to_string();
+                    AsvEntry {
+                        sequence,
+                        abundance: c.reads,
+                        birth_type,
+                        birth_pval: c.birth_pval,
+                        birth_fold: c.birth_fold,
+                        birth_e: c.birth_e,
+                    }
+                })
+                .collect();
+
+            let out = DadaOutput {
+                num_asvs: asvs.len(),
+                total_reads,
+                asvs,
+                stats: DadaStats {
+                    nalign: result.nalign,
+                    nshroud: result.nshroud,
+                },
+                map: if show_map { Some(result.map) } else { None },
+            };
+
+            let json = if compact {
+                serde_json::to_string(&out)
+            } else {
+                serde_json::to_string_pretty(&out)
+            }
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            match output {
+                Some(path) => std::fs::write(&path, &json)?,
+                None => println!("{json}"),
+            }
         }
 
         Commands::LearnErrors {
