@@ -944,6 +944,7 @@ fn main() -> io::Result<()> {
             min_hamming,
             min_abund,
             detect_singletons,
+            threads,
             output,
             compact,
             verbose,
@@ -997,12 +998,18 @@ fn main() -> io::Result<()> {
                 min_abund,
                 use_quals: true,
                 final_consensus: false,
-                multithread: false,
+                multithread: threads > 1,
                 verbose,
                 greedy: true,
             };
 
-            let result = learn_errors(&input, &err_fun, dada_params, &align_params, max_consist, verbose)?;
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            let result = pool.install(|| {
+                learn_errors(&input, &err_fun, dada_params, &align_params, max_consist, verbose)
+            })?;
 
             // Serialize: represent the three matrices as Vec<Vec<T>> (16 rows × nq cols).
             #[derive(Serialize)]

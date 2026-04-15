@@ -554,6 +554,10 @@ pub enum Commands {
         #[arg(long)]
         detect_singletons: bool,
 
+        /// Number of threads for parallel sample processing
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+
         /// Write JSON output to this file instead of stdout
         #[arg(long, short = 'o')]
         output: Option<PathBuf>,
