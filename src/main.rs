@@ -817,6 +817,35 @@ fn main() -> io::Result<()> {
             }
         }
 
+        Commands::SeqTableToFasta { input, output } => {
+            #[derive(serde::Deserialize)]
+            struct SeqTable {
+                sequences: Vec<String>,
+                sequence_ids: Vec<String>,
+            }
+
+            let bytes = std::fs::read(&input)?;
+            let table: SeqTable = serde_json::from_slice(&bytes)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+            if table.sequences.len() != table.sequence_ids.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "sequence_ids and sequences lengths differ",
+                ));
+            }
+
+            let mut out: Box<dyn io::Write> = match output {
+                Some(ref path) => Box::new(io::BufWriter::new(std::fs::File::create(path)?)),
+                None => Box::new(io::BufWriter::new(std::io::stdout())),
+            };
+
+            for (id, seq) in table.sequence_ids.iter().zip(table.sequences.iter()) {
+                writeln!(out, ">{id}\n{seq}")?;
+            }
+            out.flush()?;
+        }
+
         Commands::LearnErrors {
             input,
             errfun,

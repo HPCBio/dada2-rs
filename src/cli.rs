@@ -406,6 +406,18 @@ pub enum Commands {
         compact: bool,
     },
 
+    /// Convert a make-sequence-table JSON file to FASTA
+    ///
+    /// Writes one record per sequence using the sequence ID as the header.
+    SeqTableToFasta {
+        /// JSON file produced by the `make-sequence-table` subcommand
+        input: PathBuf,
+
+        /// Write FASTA output to this file instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+    },
+
     /// Learn an error model from subsampled derep JSON files
     ///
     /// Reads one or more JSON files produced by the `subsample` subcommand,
