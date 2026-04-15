@@ -338,9 +338,10 @@ pub enum Commands {
         #[arg(long, num_args = 1..=2)]
         max_ee: Vec<f64>,
 
-        /// Remove reads matching the phiX genome
-        #[arg(long, default_value_t = true)]
-        rm_phix: bool,
+        /// Path to a FASTA file containing the phiX genome; reads matching it are removed.
+        /// Omit to skip phiX filtering.
+        #[arg(long)]
+        phix_genome: Option<PathBuf>,
 
         /// Discard reads with 2-mer Shannon richness below this value (0 = disabled).
         /// One value or two (fwd rev).

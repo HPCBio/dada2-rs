@@ -27,7 +27,7 @@ mod taxonomy;
 use cli::{Cli, Commands};
 use containers::BirthType;
 use derep::dereplicate;
-use filter_trim::{FilterParams, filter_single, filter_paired};
+use filter_trim::{FilterParams, filter_single, filter_paired, read_fasta_first_seq};
 use learn_errors::{ErrFun, learn_errors};
 use nwalign::AlignParams;
 use serde::Serialize;
@@ -606,7 +606,7 @@ fn main() -> io::Result<()> {
             max_n,
             min_q,
             max_ee,
-            rm_phix,
+            phix_genome,
             rm_lowcomplex,
             phred_offset,
             threads,
@@ -677,6 +677,11 @@ fn main() -> io::Result<()> {
             };
             let (rm_lowcomplex_f, rm_lowcomplex_r) = pair!(rm_lowcomplex, 0.0f64);
 
+            let phix_seq: Option<Vec<u8>> = phix_genome
+                .as_deref()
+                .map(read_fasta_first_seq)
+                .transpose()?;
+
             let make_params = |tq, tl, trl, trr, ml, mnl, ee, rlc| FilterParams {
                 trunc_q: tq,
                 trunc_len: tl,
@@ -687,7 +692,7 @@ fn main() -> io::Result<()> {
                 max_n,
                 min_q,
                 max_ee: ee,
-                rm_phix,
+                phix_genome: phix_seq.clone(),
                 rm_lowcomplex: rlc,
                 phred_offset,
             };

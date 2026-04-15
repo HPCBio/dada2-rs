@@ -17,6 +17,8 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
+use noodles::fasta;
+
 use flate2::read::MultiGzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -24,8 +26,6 @@ use noodles::fastq;
 
 use crate::filter::match_ref;
 
-// Embed the phiX genome at compile time (FASTA format).
-const PHIX_FASTA: &[u8] = include_bytes!("../data/dada2/phix_genome.fa");
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -53,8 +53,9 @@ pub struct FilterParams {
     pub min_q: u8,
     /// Discard reads with expected errors above this value (Inf = disabled).
     pub max_ee: f64,
-    /// Discard reads matching the phiX genome (word_size=16, min_matches=2).
-    pub rm_phix: bool,
+    /// Pre-loaded phiX genome sequence (forward strand only); set to `Some` to
+    /// enable phiX filtering.  The reverse complement is derived at runtime.
+    pub phix_genome: Option<Vec<u8>>,
     /// Discard reads with 2-mer Shannon richness below this value (0.0 = disabled).
     pub rm_lowcomplex: f64,
     /// Phred quality offset (33 for Sanger/Illumina 1.8+).
@@ -72,21 +73,15 @@ pub struct SampleStats {
 // PhiX helpers
 // ---------------------------------------------------------------------------
 
-fn parse_fasta_seq(fasta: &[u8]) -> Vec<u8> {
-    let mut seq = Vec::new();
-    for line in fasta.split(|&b| b == b'\n') {
-        if line.is_empty() || line[0] == b'>' {
-            continue;
-        }
-        // Strip trailing '\r' (Windows line endings).
-        let line = if line.last() == Some(&b'\r') {
-            &line[..line.len() - 1]
-        } else {
-            line
-        };
-        seq.extend_from_slice(line);
-    }
-    seq
+/// Read the first sequence from a FASTA file using noodles.
+pub fn read_fasta_first_seq(path: &Path) -> io::Result<Vec<u8>> {
+    let file = File::open(path)?;
+    let mut reader = fasta::io::Reader::new(BufReader::new(file));
+    let record = reader
+        .records()
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "FASTA file is empty"))??;
+    Ok(record.sequence().as_ref().to_vec())
 }
 
 fn reverse_complement(seq: &[u8]) -> Vec<u8> {
@@ -102,10 +97,7 @@ fn reverse_complement(seq: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-/// Return the phiX genome and its reverse complement, parsed from the
-/// embedded FASTA at compile time.
-fn phix_genomes() -> (Vec<u8>, Vec<u8>) {
-    let fwd = parse_fasta_seq(PHIX_FASTA);
+fn phix_genomes(fwd: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
     let rc = reverse_complement(&fwd);
     (fwd, rc)
 }
@@ -320,11 +312,7 @@ pub fn filter_single(
     compress: bool,
     verbose: bool,
 ) -> io::Result<SampleStats> {
-    let phix = if params.rm_phix {
-        Some(phix_genomes())
-    } else {
-        None
-    };
+    let phix = params.phix_genome.clone().map(phix_genomes);
 
     let mut reader = open_reader(input)?;
     let mut writer = open_writer(output, compress)?;
@@ -409,11 +397,7 @@ pub fn filter_paired(
     compress: bool,
     verbose: bool,
 ) -> io::Result<SampleStats> {
-    let phix = if params_fwd.rm_phix || params_rev.rm_phix {
-        Some(phix_genomes())
-    } else {
-        None
-    };
+    let phix = params_fwd.phix_genome.clone().or_else(|| params_rev.phix_genome.clone()).map(phix_genomes);
 
     let mut reader_fwd = open_reader(fwd_in)?;
     let mut reader_rev = open_reader(rev_in)?;
@@ -457,9 +441,7 @@ pub fn filter_paired(
 
         // rm_phix: discard pair if either read hits phiX.
         if let Some((ref phix_fwd, ref phix_rc)) = phix {
-            if (params_fwd.rm_phix && is_phix(&seq_f, phix_fwd, phix_rc))
-                || (params_rev.rm_phix && is_phix(&seq_r, phix_fwd, phix_rc))
-            {
+            if is_phix(&seq_f, phix_fwd, phix_rc) || is_phix(&seq_r, phix_fwd, phix_rc) {
                 continue;
             }
         }
