@@ -369,6 +369,38 @@ pub enum Commands {
         verbose: bool,
     },
 
+    /// Build a sample-by-sequence feature table
+    ///
+    /// Reads one or more JSON files produced by the `dada` or `merge-pairs`
+    /// subcommands and assembles a flat count matrix (samples × sequences).
+    MakeSequenceTable {
+        /// One or more JSON files from `dada` (one file per sample) or
+        /// `merge-pairs` (one file containing multiple samples).
+        #[arg(required = true)]
+        input: Vec<PathBuf>,
+
+        /// Sample name for each input file.
+        ///
+        /// Only applies to single-sample `dada` files; merge-pairs files carry
+        /// sample names internally.  If provided, length must match --input.
+        #[arg(long, num_args = 1..)]
+        sample_names: Vec<String>,
+
+        /// Order sequences (columns) by decreasing total abundance, number of
+        /// samples present in, or leave in first-seen order.
+        #[arg(long, default_value = "abundance",
+              value_parser = ["abundance", "nsamples", "none"])]
+        order_by: String,
+
+        /// Write JSON output to this file instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+
+        /// Output compact (minified) JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
+    },
+
     /// Learn an error model from subsampled derep JSON files
     ///
     /// Reads one or more JSON files produced by the `subsample` subcommand,

@@ -1,0 +1,224 @@
+//! Build a sample-by-sequence feature table from `dada` or `merge-pairs` JSON output.
+//!
+//! Mirrors R's `makeSequenceTable`.  Each input file is either:
+//!   - A single-sample `dada` JSON object (`{ "asvs": [...] }`), or
+//!   - A multi-sample `merge-pairs` JSON array (`[{ "sample": "...", "merges": [...] }, ...]`).
+//!
+//! Output is a flat matrix:
+//! ```json
+//! { "samples": [...], "sequences": [...], "counts": [[...], ...] }
+//! ```
+//! Rows = samples, columns = sequences (ordered by decreasing total abundance by default).
+
+use std::collections::HashMap;
+use std::fs;
+use std::io;
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+// ---------------------------------------------------------------------------
+// Deserialisation helpers for the two supported input formats
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct DadaAsv {
+    sequence: String,
+    abundance: u64,
+}
+
+#[derive(Deserialize)]
+struct DadaOutput {
+    asvs: Vec<DadaAsv>,
+}
+
+#[derive(Deserialize)]
+struct MergeEntry {
+    sequence: String,
+    abundance: u64,
+    accept: bool,
+}
+
+#[derive(Deserialize)]
+struct SampleMergeResult {
+    sample: String,
+    merges: Vec<MergeEntry>,
+}
+
+// ---------------------------------------------------------------------------
+// Internal representation: one sample's sequence → count map
+// ---------------------------------------------------------------------------
+
+struct SampleCounts {
+    name: String,
+    counts: HashMap<String, u64>,
+}
+
+// ---------------------------------------------------------------------------
+// Input parsing
+// ---------------------------------------------------------------------------
+
+/// Parse one JSON file.  Returns one `SampleCounts` per sample found.
+///
+/// * If the file is a JSON object with an `"asvs"` key → single-sample dada format.
+/// * If the file is a JSON array whose first element has a `"merges"` key → merge-pairs format.
+fn parse_file(path: &Path, sample_name: Option<&str>) -> io::Result<Vec<SampleCounts>> {
+    let bytes = fs::read(path)?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    match &value {
+        Value::Object(map) if map.contains_key("asvs") => {
+            // Single-sample dada output.
+            let out: DadaOutput = serde_json::from_value(value)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let name = sample_name
+                .map(str::to_owned)
+                .unwrap_or_else(|| file_stem(path));
+            let counts = out
+                .asvs
+                .into_iter()
+                .map(|a| (a.sequence, a.abundance))
+                .collect();
+            Ok(vec![SampleCounts { name, counts }])
+        }
+        Value::Array(_) => {
+            // Multi-sample merge-pairs output.
+            let results: Vec<SampleMergeResult> = serde_json::from_value(value)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            Ok(results
+                .into_iter()
+                .map(|r| SampleCounts {
+                    name: r.sample,
+                    counts: r
+                        .merges
+                        .into_iter()
+                        .filter(|m| m.accept && !m.sequence.is_empty())
+                        .map(|m| (m.sequence, m.abundance))
+                        .collect(),
+                })
+                .collect())
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{}: unrecognised JSON format (expected dada object or merge-pairs array)",
+                path.display()
+            ),
+        )),
+    }
+}
+
+fn file_stem(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| {
+            // Strip a second extension if the stem itself ends in e.g. ".json"
+            // so "sample1.dada.json" → "sample1.dada", which is fine.
+            s.to_str()
+        })
+        .unwrap_or("unknown")
+        .to_owned()
+}
+
+// ---------------------------------------------------------------------------
+// Column ordering
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug)]
+pub enum OrderBy {
+    Abundance,
+    NSamples,
+    None,
+}
+
+// ---------------------------------------------------------------------------
+// Output type
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct SequenceTable {
+    pub samples: Vec<String>,
+    pub sequences: Vec<String>,
+    /// counts[i][j] = count for samples[i], sequences[j]
+    pub counts: Vec<Vec<u64>>,
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+/// Build a `SequenceTable` from one or more input JSON files.
+///
+/// `sample_names` is an optional per-file name override; it only applies to
+/// single-sample dada files (merge-pairs files carry names internally).
+/// If provided its length must equal `inputs.len()`.
+pub fn make_sequence_table(
+    inputs: &[&Path],
+    sample_names: Option<&[String]>,
+    order_by: OrderBy,
+) -> io::Result<SequenceTable> {
+    let mut all_samples: Vec<SampleCounts> = Vec::new();
+
+    for (i, path) in inputs.iter().enumerate() {
+        let name_override = sample_names.and_then(|ns| ns.get(i)).map(String::as_str);
+        let mut parsed = parse_file(path, name_override)?;
+        all_samples.append(&mut parsed);
+    }
+
+    // Collect all unique sequences in first-seen order.
+    let mut seq_index: HashMap<String, usize> = HashMap::new();
+    let mut sequences: Vec<String> = Vec::new();
+    for s in &all_samples {
+        for seq in s.counts.keys() {
+            if !seq_index.contains_key(seq) {
+                seq_index.insert(seq.clone(), sequences.len());
+                sequences.push(seq.clone());
+            }
+        }
+    }
+
+    let nseq = sequences.len();
+    let nsamp = all_samples.len();
+
+    // Build the count matrix (samples × sequences).
+    let mut counts: Vec<Vec<u64>> = vec![vec![0u64; nseq]; nsamp];
+    for (i, s) in all_samples.iter().enumerate() {
+        for (seq, &cnt) in &s.counts {
+            let j = seq_index[seq];
+            counts[i][j] += cnt;
+        }
+    }
+
+    // Determine column order.
+    let col_order: Vec<usize> = match order_by {
+        OrderBy::None => (0..nseq).collect(),
+        OrderBy::Abundance => {
+            let totals: Vec<u64> = (0..nseq)
+                .map(|j| counts.iter().map(|row| row[j]).sum())
+                .collect();
+            let mut order: Vec<usize> = (0..nseq).collect();
+            order.sort_by(|&a, &b| totals[b].cmp(&totals[a]));
+            order
+        }
+        OrderBy::NSamples => {
+            let present: Vec<usize> = (0..nseq)
+                .map(|j| counts.iter().filter(|row| row[j] > 0).count())
+                .collect();
+            let mut order: Vec<usize> = (0..nseq).collect();
+            order.sort_by(|&a, &b| present[b].cmp(&present[a]));
+            order
+        }
+    };
+
+    // Reorder columns.
+    let sequences: Vec<String> = col_order.iter().map(|&j| sequences[j].clone()).collect();
+    let counts: Vec<Vec<u64>> = counts
+        .into_iter()
+        .map(|row| col_order.iter().map(|&j| row[j]).collect())
+        .collect();
+
+    let samples: Vec<String> = all_samples.into_iter().map(|s| s.name).collect();
+
+    Ok(SequenceTable { samples, sequences, counts })
+}

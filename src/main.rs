@@ -5,6 +5,7 @@ use flate2::read::MultiGzDecoder;
 use rand::seq::SliceRandom as _;
 
 mod chimera;
+mod sequence_table;
 mod cli;
 mod merge_pairs;
 mod cluster;
@@ -28,6 +29,7 @@ use cli::{Cli, Commands};
 use containers::BirthType;
 use derep::dereplicate;
 use filter_trim::{FilterParams, filter_single, filter_paired, read_fasta_first_seq};
+use sequence_table::{OrderBy, make_sequence_table};
 use learn_errors::{ErrFun, learn_errors};
 use nwalign::AlignParams;
 use serde::Serialize;
@@ -770,6 +772,43 @@ fn main() -> io::Result<()> {
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
+            match output {
+                Some(path) => std::fs::write(&path, &json)?,
+                None => println!("{json}"),
+            }
+        }
+
+        Commands::MakeSequenceTable {
+            input,
+            sample_names,
+            order_by,
+            output,
+            compact,
+        } => {
+            if !sample_names.is_empty() && sample_names.len() != input.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "--sample-names has {} entries but {} input file(s) were given",
+                        sample_names.len(),
+                        input.len()
+                    ),
+                ));
+            }
+            let order = match order_by.as_str() {
+                "abundance" => OrderBy::Abundance,
+                "nsamples"  => OrderBy::NSamples,
+                _           => OrderBy::None,
+            };
+            let names_opt = if sample_names.is_empty() { None } else { Some(sample_names.as_slice()) };
+            let paths: Vec<&Path> = input.iter().map(|p| p.as_path()).collect();
+            let table = make_sequence_table(&paths, names_opt, order)?;
+            let json = if compact {
+                serde_json::to_string(&table)
+            } else {
+                serde_json::to_string_pretty(&table)
+            }
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             match output {
                 Some(path) => std::fs::write(&path, &json)?,
                 None => println!("{json}"),
