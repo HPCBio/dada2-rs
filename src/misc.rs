@@ -1,3 +1,23 @@
+use std::fs::File;
+use std::io::{self, BufReader};
+use std::path::Path;
+
+use flate2::read::MultiGzDecoder;
+use serde::de::DeserializeOwned;
+
+/// Open a JSON file and deserialize it, transparently decompressing gzip when
+/// the path ends with `.gz` (e.g. `foo.json.gz`).
+pub fn read_json_file<T: DeserializeOwned>(path: &Path) -> io::Result<T> {
+    let file = File::open(path)?;
+    let is_gz = path.extension().and_then(|e| e.to_str()) == Some("gz");
+    if is_gz {
+        serde_json::from_reader(BufReader::new(MultiGzDecoder::new(file)))
+    } else {
+        serde_json::from_reader(BufReader::new(file))
+    }
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
 /// Nucleotide integer encoding used throughout dada2: A=1, C=2, G=3, T=4, N=5.
 /// Gap characters (b'-') pass through unchanged in both directions.
 pub const NT_A: u8 = 1;

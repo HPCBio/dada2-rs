@@ -111,11 +111,9 @@ pub struct LearnErrorsResult {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Load and parse a single JSON derep file into a `Vec<RawInput>`.
+/// Load and parse a single JSON (or gzip-compressed JSON) derep file into a `Vec<RawInput>`.
 fn load_json(path: &PathBuf) -> io::Result<Vec<RawInput>> {
-    let data = std::fs::read_to_string(path)?;
-    let derep: DerepJson = serde_json::from_str(&data)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let derep: DerepJson = crate::misc::read_json_file(path)?;
 
     let inputs = derep
         .uniques

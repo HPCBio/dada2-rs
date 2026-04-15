@@ -278,17 +278,9 @@ pub fn merge_sample(
     params: &MergeParams,
     pool: &rayon::ThreadPool,
 ) -> io::Result<SampleMergeResult> {
-    // ---- Load dada JSONs ----
-    let fwd_dada: DadaJsonInput = {
-        let text = std::fs::read_to_string(fwd_dada_path)?;
-        serde_json::from_str(&text)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
-    };
-    let rev_dada: DadaJsonInput = {
-        let text = std::fs::read_to_string(rev_dada_path)?;
-        serde_json::from_str(&text)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
-    };
+    // ---- Load dada JSONs (plain or gzip-compressed) ----
+    let fwd_dada: DadaJsonInput = crate::misc::read_json_file(fwd_dada_path)?;
+    let rev_dada: DadaJsonInput = crate::misc::read_json_file(rev_dada_path)?;
 
     let fwd_map = fwd_dada.map.as_ref().ok_or_else(|| {
         io::Error::new(

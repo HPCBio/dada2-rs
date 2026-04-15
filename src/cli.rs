@@ -265,6 +265,109 @@ pub enum Commands {
         verbose: bool,
     },
 
+    /// Filter and trim FASTQ reads
+    ///
+    /// Mirrors R's `filterAndTrim` function.  Pass one or more forward (R1)
+    /// input/output file pairs; for paired-end data also supply matching
+    /// `--rev` / `--filt-rev` file lists.
+    ///
+    /// For parameters that accept paired values (`--trunc-len`, `--trim-left`,
+    /// etc.) provide either one value (applied to both directions) or two
+    /// space-separated values (first for forward, second for reverse).
+    FilterAndTrim {
+        /// Forward (R1) input FASTQ files
+        #[arg(long, required = true, num_args = 1..)]
+        fwd: Vec<PathBuf>,
+
+        /// Forward (R1) output FASTQ files (same count as --fwd)
+        #[arg(long, required = true, num_args = 1..)]
+        filt: Vec<PathBuf>,
+
+        /// Reverse (R2) input FASTQ files (enables paired-end mode)
+        #[arg(long, num_args = 1..)]
+        rev: Option<Vec<PathBuf>>,
+
+        /// Reverse (R2) output FASTQ files (required when --rev is given)
+        #[arg(long, num_args = 1..)]
+        filt_rev: Option<Vec<PathBuf>>,
+
+        /// Gzip-compress output files
+        #[arg(long, default_value_t = true)]
+        compress: bool,
+
+        /// Truncate reads at first Phred score ≤ this value.
+        /// One value (both directions) or two (fwd rev).
+        #[arg(long, default_value = "2", num_args = 1..=2)]
+        trunc_q: Vec<u8>,
+
+        /// Truncate reads to this many bases; discard if shorter (0 = disabled).
+        /// One value or two (fwd rev).
+        #[arg(long, default_value = "0", num_args = 1..=2)]
+        trunc_len: Vec<usize>,
+
+        /// Remove this many bases from the 5′ end.
+        /// One value or two (fwd rev).
+        #[arg(long, default_value = "0", num_args = 1..=2)]
+        trim_left: Vec<usize>,
+
+        /// Remove this many bases from the 3′ end.
+        /// One value or two (fwd rev).
+        #[arg(long, default_value = "0", num_args = 1..=2)]
+        trim_right: Vec<usize>,
+
+        /// Discard reads longer than this before trimming (0 = no limit).
+        /// One value or two (fwd rev).
+        #[arg(long, default_value = "0", num_args = 1..=2)]
+        max_len: Vec<usize>,
+
+        /// Discard reads shorter than this after all trimming.
+        /// One value or two (fwd rev).
+        #[arg(long, default_value = "20", num_args = 1..=2)]
+        min_len: Vec<usize>,
+
+        /// Discard reads with more than this many N bases (0 = discard any N).
+        #[arg(long, default_value_t = 0)]
+        max_n: usize,
+
+        /// Discard reads with any Phred score below this value (0 = disabled).
+        #[arg(long, default_value_t = 0)]
+        min_q: u8,
+
+        /// Discard reads with expected errors above this threshold.
+        /// One value or two (fwd rev). Omit for no EE filtering.
+        #[arg(long, num_args = 1..=2)]
+        max_ee: Vec<f64>,
+
+        /// Remove reads matching the phiX genome
+        #[arg(long, default_value_t = true)]
+        rm_phix: bool,
+
+        /// Discard reads with 2-mer Shannon richness below this value (0 = disabled).
+        /// One value or two (fwd rev).
+        #[arg(long, default_value = "0", num_args = 1..=2)]
+        rm_lowcomplex: Vec<f64>,
+
+        /// Phred quality score offset (33 for Sanger/Illumina 1.8+)
+        #[arg(long, default_value_t = 33)]
+        phred_offset: u8,
+
+        /// Process samples in parallel using this many threads
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+
+        /// Write JSON summary to this file instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+
+        /// Output compact (minified) JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
+
+        /// Print per-file progress to stderr
+        #[arg(long)]
+        verbose: bool,
+    },
+
     /// Learn an error model from subsampled derep JSON files
     ///
     /// Reads one or more JSON files produced by the `subsample` subcommand,

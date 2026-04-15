@@ -15,6 +15,7 @@ mod error;
 mod error_models;
 mod evaluate;
 mod filter;
+mod filter_trim;
 mod kmers;
 mod learn_errors;
 mod misc;
@@ -26,6 +27,7 @@ mod taxonomy;
 use cli::{Cli, Commands};
 use containers::BirthType;
 use derep::dereplicate;
+use filter_trim::{FilterParams, filter_single, filter_paired};
 use learn_errors::{ErrFun, learn_errors};
 use nwalign::AlignParams;
 use serde::Serialize;
@@ -309,9 +311,7 @@ fn main() -> io::Result<()> {
                 err_out: Vec<Vec<f64>>,
             }
 
-            let em_text = std::fs::read_to_string(&error_model)?;
-            let em: ErrorModelJson = serde_json::from_str(&em_text)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let em: ErrorModelJson = misc::read_json_file(&error_model)?;
 
             let nq = em.nq;
             let rows = if use_err_in { &em.err_in } else { &em.err_out };
@@ -507,13 +507,16 @@ fn main() -> io::Result<()> {
                 None => fwd_dada
                     .iter()
                     .map(|p| {
-                        // Strip .json (and any preceding fastq-style extensions) from the stem.
+                        // Strip .json/.json.gz (and any preceding fastq-style extensions) from the stem.
                         let name = p
                             .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or("unknown");
-                        // Strip trailing .json then apply the FASTQ-stem logic.
-                        let without_json = name.strip_suffix(".json").unwrap_or(name);
+                        // Strip trailing .json.gz or .json then apply the FASTQ-stem logic.
+                        let without_json = name
+                            .strip_suffix(".json.gz")
+                            .or_else(|| name.strip_suffix(".json"))
+                            .unwrap_or(name);
                         for suffix in &[".fastq.gz", ".fq.gz", ".fastq", ".fq"] {
                             if let Some(s) = without_json.strip_suffix(suffix) {
                                 return s.to_string();
@@ -574,6 +577,186 @@ fn main() -> io::Result<()> {
 
                 results.push(result);
             }
+
+            let json = if compact {
+                serde_json::to_string(&results)
+            } else {
+                serde_json::to_string_pretty(&results)
+            }
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            match output {
+                Some(path) => std::fs::write(&path, &json)?,
+                None => println!("{json}"),
+            }
+        }
+
+        Commands::FilterAndTrim {
+            fwd,
+            filt,
+            rev,
+            filt_rev,
+            compress,
+            trunc_q,
+            trunc_len,
+            trim_left,
+            trim_right,
+            max_len,
+            min_len,
+            max_n,
+            min_q,
+            max_ee,
+            rm_phix,
+            rm_lowcomplex,
+            phred_offset,
+            threads,
+            output,
+            compact,
+            verbose,
+        } => {
+            // ---- Validate file-list lengths ----
+            let n = fwd.len();
+            if filt.len() != n {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("--filt has {} entries but --fwd has {n}", filt.len()),
+                ));
+            }
+            let paired = rev.is_some();
+            let (rev_files, filt_rev_files) = if paired {
+                let rv = rev.unwrap();
+                let fr = filt_rev.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--filt-rev is required when --rev is provided",
+                    )
+                })?;
+                if rv.len() != n {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("--rev has {} entries but --fwd has {n}", rv.len()),
+                    ));
+                }
+                if fr.len() != n {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("--filt-rev has {} entries but --fwd has {n}", fr.len()),
+                    ));
+                }
+                (rv, fr)
+            } else {
+                (vec![], vec![])
+            };
+
+            // ---- Helper: expand a 1-or-2-element Vec into (fwd_val, rev_val) ----
+            macro_rules! pair {
+                ($v:expr, $default:expr) => {{
+                    let v = &$v;
+                    if v.is_empty() {
+                        ($default, $default)
+                    } else if v.len() == 1 {
+                        (v[0], v[0])
+                    } else {
+                        (v[0], v[1])
+                    }
+                }};
+            }
+
+            let (trunc_q_f, trunc_q_r)       = pair!(trunc_q, 2u8);
+            let (trunc_len_f, trunc_len_r)   = pair!(trunc_len, 0usize);
+            let (trim_left_f, trim_left_r)   = pair!(trim_left, 0usize);
+            let (trim_right_f, trim_right_r) = pair!(trim_right, 0usize);
+            let (max_len_f, max_len_r)       = pair!(max_len, 0usize);
+            let (min_len_f, min_len_r)       = pair!(min_len, 20usize);
+            let (max_ee_f, max_ee_r) = if max_ee.is_empty() {
+                (f64::INFINITY, f64::INFINITY)
+            } else if max_ee.len() == 1 {
+                (max_ee[0], max_ee[0])
+            } else {
+                (max_ee[0], max_ee[1])
+            };
+            let (rm_lowcomplex_f, rm_lowcomplex_r) = pair!(rm_lowcomplex, 0.0f64);
+
+            let make_params = |tq, tl, trl, trr, ml, mnl, ee, rlc| FilterParams {
+                trunc_q: tq,
+                trunc_len: tl,
+                trim_left: trl,
+                trim_right: trr,
+                max_len: ml,
+                min_len: mnl,
+                max_n,
+                min_q,
+                max_ee: ee,
+                rm_phix,
+                rm_lowcomplex: rlc,
+                phred_offset,
+            };
+
+            let params_fwd = make_params(
+                trunc_q_f, trunc_len_f, trim_left_f, trim_right_f,
+                max_len_f, min_len_f, max_ee_f, rm_lowcomplex_f,
+            );
+            let params_rev = make_params(
+                trunc_q_r, trunc_len_r, trim_left_r, trim_right_r,
+                max_len_r, min_len_r, max_ee_r, rm_lowcomplex_r,
+            );
+
+            // ---- Run (optionally parallel across samples) ----
+            #[derive(Serialize)]
+            struct SampleResult {
+                sample: String,
+                reads_in: u64,
+                reads_out: u64,
+            }
+
+            let results: io::Result<Vec<SampleResult>> = if threads > 1 {
+                use rayon::prelude::*;
+
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+                // Build index list, process in parallel.
+                let indices: Vec<usize> = (0..n).collect();
+                let par_results: Vec<io::Result<SampleResult>> = pool.install(|| {
+                    indices.par_iter().map(|&i| {
+                        let sample = fastq_stem(&fwd[i]);
+                        let stats = if paired {
+                            filter_paired(
+                                &fwd[i], &rev_files[i],
+                                &filt[i], &filt_rev_files[i],
+                                &params_fwd, &params_rev,
+                                compress, verbose,
+                            )?
+                        } else {
+                            filter_single(&fwd[i], &filt[i], &params_fwd, compress, verbose)?
+                        };
+                        Ok(SampleResult { sample, reads_in: stats.reads_in, reads_out: stats.reads_out })
+                    }).collect()
+                });
+
+                par_results.into_iter().collect()
+            } else {
+                let mut out = Vec::with_capacity(n);
+                for i in 0..n {
+                    let sample = fastq_stem(&fwd[i]);
+                    let stats = if paired {
+                        filter_paired(
+                            &fwd[i], &rev_files[i],
+                            &filt[i], &filt_rev_files[i],
+                            &params_fwd, &params_rev,
+                            compress, verbose,
+                        )?
+                    } else {
+                        filter_single(&fwd[i], &filt[i], &params_fwd, compress, verbose)?
+                    };
+                    out.push(SampleResult { sample, reads_in: stats.reads_in, reads_out: stats.reads_out });
+                }
+                Ok(out)
+            };
+
+            let results = results?;
 
             let json = if compact {
                 serde_json::to_string(&results)
