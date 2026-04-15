@@ -121,7 +121,7 @@ pub enum Commands {
         #[arg(long, default_value_t = 33)]
         phred_offset: u8,
 
-        /// Number of threads for dereplication
+        /// Number of threads (used for both dereplication and DADA2 comparisons)
         #[arg(long, default_value_t = 1)]
         threads: usize,
 
@@ -152,10 +152,6 @@ pub enum Commands {
         /// Use singleton detection
         #[arg(long)]
         detect_singletons: bool,
-
-        /// Use multi-threaded comparisons within the DADA algorithm
-        #[arg(long)]
-        multithread: bool,
 
         /// Include a per-unique-to-ASV index map in the output
         #[arg(long)]

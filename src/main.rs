@@ -242,7 +242,6 @@ fn main() -> io::Result<()> {
             min_hamming,
             min_abund,
             detect_singletons,
-            multithread,
             show_map,
             output,
             compact,
@@ -338,7 +337,7 @@ fn main() -> io::Result<()> {
                 min_abund,
                 use_quals: true,
                 final_consensus: false,
-                multithread,
+                multithread: threads > 1,
                 verbose,
                 greedy: true,
             };
