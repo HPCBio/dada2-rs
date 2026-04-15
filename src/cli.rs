@@ -92,6 +92,10 @@ pub enum Commands {
         #[arg(long)]
         randomize: bool,
 
+        /// RNG seed for reproducible randomization (only used with --randomize)
+        #[arg(long)]
+        seed: Option<u64>,
+
         /// Phred quality score offset (33 for Sanger/Illumina 1.8+, 64 for Illumina 1.3–1.7)
         #[arg(long, default_value_t = 33)]
         phred_offset: u8,
@@ -490,20 +494,36 @@ pub enum Commands {
         output: Option<PathBuf>,
     },
 
-    /// Learn an error model from subsampled derep JSON files
+    /// Learn an error model from FASTQ files
     ///
-    /// Reads one or more JSON files produced by the `subsample` subcommand,
-    /// iteratively runs the DADA2 algorithm and re-fits the chosen error
-    /// model until self-consistency.
+    /// Reads one or more FASTQ files, dereplicates and subsamples them on the
+    /// fly up to `--nbases` total bases, then iteratively runs the DADA2
+    /// algorithm and re-fits the chosen error model until self-consistency.
     ///
     /// Output is a JSON object with three flat 16 × nq matrices:
     ///   `trans`   — accumulated transition counts,
     ///   `err_in`  — error rates used in the final DADA run,
     ///   `err_out` — error rates estimated from `trans`.
     LearnErrors {
-        /// One or more JSON derep files produced by the `subsample` subcommand
+        /// One or more FASTQ files (.fastq, .fastq.gz, .fq, .fq.gz) to learn from
         #[arg(required = true)]
         input: Vec<PathBuf>,
+
+        /// Stop after accumulating at least this many total bases across input files
+        #[arg(long, default_value_t = 100_000_000)]
+        nbases: u64,
+
+        /// Process input files in random order instead of the supplied order
+        #[arg(long)]
+        randomize: bool,
+
+        /// RNG seed for reproducible randomization (only used with --randomize)
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Phred quality score offset (33 for Sanger/Illumina 1.8+)
+        #[arg(long, default_value_t = 33)]
+        phred_offset: u8,
 
         /// Error model fitting function to use
         ///

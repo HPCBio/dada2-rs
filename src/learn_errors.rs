@@ -11,13 +11,15 @@
 //! - `err_in`  — error *rates* fed into the last DADA run.
 //! - `err_out` — error *rates* estimated from `trans` via the chosen error function.
 
+use std::fs::File;
 use std::io;
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use flate2::read::MultiGzDecoder;
 
 use crate::containers::Raw;
 use crate::dada::{DadaParams, RawInput, dada_uniques};
+use crate::derep::dereplicate;
 use crate::error_models::{
     accumulate_trans, binned_qual_errfun, loess_errfun, noqual_errfun, pacbio_errfun,
 };
@@ -71,21 +73,6 @@ impl ErrFun {
     }
 }
 
-// ---------------------------------------------------------------------------
-// JSON input types (mirror the subsample / derep output)
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct UniqueEntry {
-    sequence: String,
-    count: u64,
-    mean_quality: Vec<f64>,
-}
-
-#[derive(Deserialize)]
-struct DerepJson {
-    uniques: Vec<UniqueEntry>,
-}
 
 // ---------------------------------------------------------------------------
 // Result type
@@ -108,25 +95,91 @@ pub struct LearnErrorsResult {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// FASTQ loading with subsampling
 // ---------------------------------------------------------------------------
 
-/// Load and parse a single JSON (or gzip-compressed JSON) derep file into a `Vec<RawInput>`.
-fn load_json(path: &PathBuf) -> io::Result<Vec<RawInput>> {
-    let derep: DerepJson = crate::misc::read_json_file(path)?;
+fn is_gz(path: &PathBuf) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("gz")
+}
 
-    let inputs = derep
-        .uniques
-        .into_iter()
-        .map(|u| RawInput {
-            seq: u.sequence,
-            abundance: u.count as u32,
-            prior: false,
-            quals: Some(u.mean_quality),
-        })
-        .collect();
+/// Dereplicate FASTQ files and return one `Vec<RawInput>` per sample.
+///
+/// Files are processed in order (or shuffled when `randomize` is true) and
+/// processing stops once the cumulative base count reaches `nbases`.
+pub fn load_fastq_samples(
+    paths: &[PathBuf],
+    nbases: u64,
+    randomize: bool,
+    seed: Option<u64>,
+    phred_offset: u8,
+    pool: &rayon::ThreadPool,
+    verbose: bool,
+) -> io::Result<Vec<Vec<RawInput>>> {
+    let mut ordered: Vec<&PathBuf> = paths.iter().collect();
+    if randomize {
+        use rand::seq::SliceRandom as _;
+        use rand::SeedableRng as _;
+        if let Some(s) = seed {
+            ordered.shuffle(&mut rand::rngs::SmallRng::seed_from_u64(s));
+        } else {
+            ordered.shuffle(&mut rand::thread_rng());
+        }
+    }
 
-    Ok(inputs)
+    let mut all_inputs = Vec::new();
+    let mut total_bases: u64 = 0;
+
+    for path in ordered {
+        let derep = if is_gz(path) {
+            dereplicate(MultiGzDecoder::new(File::open(path)?), phred_offset, pool, verbose)?
+        } else {
+            dereplicate(File::open(path)?, phred_offset, pool, verbose)?
+        };
+
+        let file_bases: u64 = derep
+            .uniques
+            .iter()
+            .map(|(seq, count)| seq.len() as u64 * count)
+            .sum();
+
+        let inputs: Vec<RawInput> = derep
+            .uniques
+            .into_iter()
+            .enumerate()
+            .map(|(i, (seq, count))| RawInput {
+                seq: String::from_utf8(seq)
+                    .unwrap_or_default(),
+                abundance: count as u32,
+                prior: false,
+                quals: Some(derep.quals[i].clone()),
+            })
+            .collect();
+
+        if verbose {
+            eprintln!(
+                "[learn-errors] loaded {} unique(s) from {} ({} bases)",
+                inputs.len(),
+                path.display(),
+                file_bases,
+            );
+        }
+
+        all_inputs.push(inputs);
+        total_bases += file_bases;
+
+        if total_bases >= nbases {
+            if verbose {
+                eprintln!(
+                    "[learn-errors] reached {} bases after {} file(s); stopping subsampling",
+                    total_bases,
+                    all_inputs.len(),
+                );
+            }
+            break;
+        }
+    }
+
+    Ok(all_inputs)
 }
 
 /// Determine `nq` (number of quality columns) from the maximum rounded quality
@@ -240,10 +293,10 @@ fn build_trans_mat(
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Learn an error model from pre-subsampled derep JSON files.
+/// Learn an error model from pre-loaded dereplicated samples.
 ///
 /// # Arguments
-/// - `json_files`    — paths to JSON files produced by the `subsample` subcommand
+/// - `all_inputs`    — one `Vec<RawInput>` per sample (from `load_fastq_samples`)
 /// - `errfun`        — which error model fitting function to use
 /// - `dada_params`   — DADA2 algorithm parameters (error matrix is overwritten each iteration)
 /// - `align_params`  — NW alignment parameters
@@ -253,22 +306,16 @@ fn build_trans_mat(
 /// # Returns
 /// [`LearnErrorsResult`] with transition counts and error-rate matrices, or an I/O error.
 pub fn learn_errors(
-    json_files: &[PathBuf],
+    all_inputs: Vec<Vec<RawInput>>,
     errfun: &ErrFun,
     mut dada_params: DadaParams,
     align_params: &AlignParams,
     max_consist: usize,
     verbose: bool,
 ) -> io::Result<LearnErrorsResult> {
-    // ---- Load all samples ----
-    if json_files.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "No JSON input files provided"));
+    if all_inputs.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "No input samples provided"));
     }
-
-    let all_inputs: Vec<Vec<RawInput>> = json_files
-        .iter()
-        .map(load_json)
-        .collect::<io::Result<_>>()?;
 
     let nq = detect_nq(&all_inputs);
 

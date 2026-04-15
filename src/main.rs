@@ -32,7 +32,7 @@ use derep::dereplicate;
 use filter_trim::{FilterParams, filter_single, filter_paired, read_fasta_first_seq};
 use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
 use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
-use learn_errors::{ErrFun, learn_errors};
+use learn_errors::{ErrFun, learn_errors, load_fastq_samples};
 use nwalign::AlignParams;
 use serde::Serialize;
 use summary::process;
@@ -135,7 +135,7 @@ fn main() -> io::Result<()> {
             }
         }
 
-        Commands::Subsample { input_dir, output_dir, nbases, randomize, phred_offset, threads, verbose } => {
+        Commands::Subsample { input_dir, output_dir, nbases, randomize, seed, phred_offset, threads, verbose } => {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
@@ -149,7 +149,12 @@ fn main() -> io::Result<()> {
             }
 
             if randomize {
-                fastq_files.shuffle(&mut rand::thread_rng());
+                use rand::SeedableRng as _;
+                if let Some(s) = seed {
+                    fastq_files.shuffle(&mut rand::rngs::SmallRng::seed_from_u64(s));
+                } else {
+                    fastq_files.shuffle(&mut rand::thread_rng());
+                }
             } else {
                 fastq_files.sort();
             }
@@ -933,6 +938,10 @@ fn main() -> io::Result<()> {
 
         Commands::LearnErrors {
             input,
+            nbases,
+            randomize,
+            seed,
+            phred_offset,
             errfun,
             pseudocount,
             binned_quals,
@@ -1007,8 +1016,9 @@ fn main() -> io::Result<()> {
                 .num_threads(threads)
                 .build()
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            let all_inputs = load_fastq_samples(&input, nbases, randomize, seed, phred_offset, &pool, verbose)?;
             let result = pool.install(|| {
-                learn_errors(&input, &err_fun, dada_params, &align_params, max_consist, verbose)
+                learn_errors(all_inputs, &err_fun, dada_params, &align_params, max_consist, verbose)
             })?;
 
             // Serialize: represent the three matrices as Vec<Vec<T>> (16 rows × nq cols).
