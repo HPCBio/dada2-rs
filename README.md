@@ -13,7 +13,7 @@ The short term plan:
 3) Allow intermediate outputs (in JSON) that can be evaluated for debugging purposes or for plotting in R, Python, etc.
 4) Add basic regression tests that follow those within the original dada2 repository and expect results similar to those expected
 
-We do anticipate porting read trimming or taxonomic classification at a later point
+We do anticipate porting taxonomic classification at a later point
 
 ## AI Assistance Disclosure
 This tool was written with the assistance of AI coding agents, specificall Claude Code, using Sonnet 4.6. All commits using AI are noted.
