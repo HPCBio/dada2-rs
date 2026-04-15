@@ -96,15 +96,15 @@ pub enum Commands {
         threads: usize,
 
         /// Significance threshold for abundance-based cluster splitting (omega_a)
-        #[arg(long, default_value_t = 1e-40)]
+        #[arg(long, default_value = "1e-40")]
         omega_a: f64,
 
         /// Significance threshold for reads not corrected to any center (omega_c)
-        #[arg(long, default_value_t = 0.0)]
+        #[arg(long, default_value = "0")]
         omega_c: f64,
 
         /// Significance threshold for prior-sequence splitting (omega_p)
-        #[arg(long, default_value_t = 1e-4)]
+        #[arg(long, default_value = "1e-4")]
         omega_p: f64,
 
         /// Minimum fold-enrichment above expected for cluster splitting
@@ -505,15 +505,15 @@ pub enum Commands {
         max_consist: usize,
 
         /// Significance threshold for abundance-based cluster splitting (omega_a)
-        #[arg(long, default_value_t = 1e-40)]
+        #[arg(long, default_value = "1e-40")]
         omega_a: f64,
 
         /// Significance threshold for omega_c (reads not corrected to any center)
-        #[arg(long, default_value_t = 0.0)]
+        #[arg(long, default_value = "0")]
         omega_c: f64,
 
         /// Significance threshold for prior-sequence splitting (omega_p)
-        #[arg(long, default_value_t = 1e-4)]
+        #[arg(long, default_value = "1e-4")]
         omega_p: f64,
 
         /// Minimum fold-enrichment above expected for cluster splitting
