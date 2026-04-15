@@ -15,8 +15,10 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use md5::{Digest as _, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha1::Sha1;
 
 // ---------------------------------------------------------------------------
 // Deserialisation helpers for the two supported input formats
@@ -126,6 +128,21 @@ fn file_stem(path: &Path) -> String {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug)]
+pub enum HashAlgo {
+    Md5,
+    Sha1,
+}
+
+impl HashAlgo {
+    pub fn digest(self, seq: &str) -> String {
+        match self {
+            HashAlgo::Md5  => format!("{:x}", Md5::digest(seq.as_bytes())),
+            HashAlgo::Sha1 => format!("{:x}", Sha1::digest(seq.as_bytes())),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub enum OrderBy {
     Abundance,
     NSamples,
@@ -140,6 +157,8 @@ pub enum OrderBy {
 pub struct SequenceTable {
     pub samples: Vec<String>,
     pub sequences: Vec<String>,
+    /// Hash-based unique identifier for each sequence (parallel to `sequences`).
+    pub sequence_ids: Vec<String>,
     /// counts[i][j] = count for samples[i], sequences[j]
     pub counts: Vec<Vec<u64>>,
 }
@@ -157,6 +176,7 @@ pub fn make_sequence_table(
     inputs: &[&Path],
     sample_names: Option<&[String]>,
     order_by: OrderBy,
+    hash_algo: HashAlgo,
 ) -> io::Result<SequenceTable> {
     let mut all_samples: Vec<SampleCounts> = Vec::new();
 
@@ -219,6 +239,7 @@ pub fn make_sequence_table(
         .collect();
 
     let samples: Vec<String> = all_samples.into_iter().map(|s| s.name).collect();
+    let sequence_ids: Vec<String> = sequences.iter().map(|s| hash_algo.digest(s)).collect();
 
-    Ok(SequenceTable { samples, sequences, counts })
+    Ok(SequenceTable { samples, sequences, sequence_ids, counts })
 }

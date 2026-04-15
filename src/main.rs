@@ -29,7 +29,7 @@ use cli::{Cli, Commands};
 use containers::BirthType;
 use derep::dereplicate;
 use filter_trim::{FilterParams, filter_single, filter_paired, read_fasta_first_seq};
-use sequence_table::{OrderBy, make_sequence_table};
+use sequence_table::{HashAlgo, OrderBy, make_sequence_table};
 use learn_errors::{ErrFun, learn_errors};
 use nwalign::AlignParams;
 use serde::Serialize;
@@ -782,6 +782,7 @@ fn main() -> io::Result<()> {
             input,
             sample_names,
             order_by,
+            hash,
             output,
             compact,
         } => {
@@ -801,8 +802,9 @@ fn main() -> io::Result<()> {
                 _           => OrderBy::None,
             };
             let names_opt = if sample_names.is_empty() { None } else { Some(sample_names.as_slice()) };
+            let hash_algo = if hash == "sha1" { HashAlgo::Sha1 } else { HashAlgo::Md5 };
             let paths: Vec<&Path> = input.iter().map(|p| p.as_path()).collect();
-            let table = make_sequence_table(&paths, names_opt, order)?;
+            let table = make_sequence_table(&paths, names_opt, order, hash_algo)?;
             let json = if compact {
                 serde_json::to_string(&table)
             } else {

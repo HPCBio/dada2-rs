@@ -396,6 +396,11 @@ pub enum Commands {
         #[arg(long, short = 'o')]
         output: Option<PathBuf>,
 
+        /// Hash algorithm used to generate sequence identifiers.
+        #[arg(long, default_value = "md5",
+              value_parser = ["md5", "sha1"])]
+        hash: String,
+
         /// Output compact (minified) JSON instead of pretty-printed
         #[arg(long)]
         compact: bool,
