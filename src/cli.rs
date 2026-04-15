@@ -23,6 +23,14 @@ pub enum Commands {
         /// Number of threads for parallel processing
         #[arg(long, default_value_t = 1)]
         threads: usize,
+
+        /// Write JSON output to this file instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+
+        /// Output compact (minified) JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
     },
 
     /// Dereplicate sequences from a FASTQ file
@@ -166,6 +174,93 @@ pub enum Commands {
         compact: bool,
 
         /// Print progress to stderr
+        #[arg(long)]
+        verbose: bool,
+    },
+
+    /// Merge denoised forward and reverse reads into full-length amplicons
+    ///
+    /// For each sample, the forward and reverse FASTQ files are re-dereplicated
+    /// to reconstruct the read → unique mapping, which is composed with the
+    /// unique → ASV mapping from the dada JSON files to count every
+    /// (forward ASV, reverse ASV) pair.  Each distinct pair is then aligned
+    /// (ends-free Needleman-Wunsch of the forward ASV against the
+    /// reverse-complement of the reverse ASV) and accepted or rejected based on
+    /// overlap length, mismatches, and indels.
+    ///
+    /// **The dada JSON files must have been produced with `--show-map`.**
+    ///
+    /// Files are matched by position: the first `--fwd-dada` corresponds to the
+    /// first `--rev-dada`, `--fwd-fastq`, and `--rev-fastq`.  For hundreds of
+    /// samples use shell globbing, e.g.:
+    ///
+    ///   dada2-rs merge-pairs \
+    ///     --fwd-dada fwd_dada/*.json \
+    ///     --rev-dada rev_dada/*.json \
+    ///     --fwd-fastq fwd_fastq/*.fastq.gz \
+    ///     --rev-fastq rev_fastq/*.fastq.gz
+    MergePairs {
+        /// Forward dada JSON files (produced with `dada --show-map`)
+        #[arg(long, required = true, num_args = 1..)]
+        fwd_dada: Vec<PathBuf>,
+
+        /// Reverse dada JSON files (produced with `dada --show-map`)
+        #[arg(long, required = true, num_args = 1..)]
+        rev_dada: Vec<PathBuf>,
+
+        /// Forward FASTQ files — re-dereplicated to recover read→unique mapping
+        #[arg(long, required = true, num_args = 1..)]
+        fwd_fastq: Vec<PathBuf>,
+
+        /// Reverse FASTQ files — re-dereplicated to recover read→unique mapping
+        #[arg(long, required = true, num_args = 1..)]
+        rev_fastq: Vec<PathBuf>,
+
+        /// Minimum overlap length between forward and RC(reverse) ASVs
+        #[arg(long, default_value_t = 12)]
+        min_overlap: u32,
+
+        /// Maximum mismatches allowed in the overlap region
+        #[arg(long, default_value_t = 0)]
+        max_mismatch: u32,
+
+        /// Include rejected merges (with `accept: false`) in the output
+        #[arg(long)]
+        return_rejects: bool,
+
+        /// Concatenate forward and RC(reverse) with an N spacer instead of merging
+        #[arg(long)]
+        just_concatenate: bool,
+
+        /// Number of N characters in the concatenation spacer
+        #[arg(long, default_value_t = 10)]
+        concat_nnn_len: usize,
+
+        /// Trim overhanging portions of forward/reverse reads past the overlap
+        #[arg(long)]
+        trim_overhang: bool,
+
+        /// Override sample names (defaults to stems of --fwd-dada files)
+        #[arg(long, num_args = 1..)]
+        sample_names: Option<Vec<String>>,
+
+        /// Phred quality-score offset for FASTQ re-dereplication
+        #[arg(long, default_value_t = 33)]
+        phred_offset: u8,
+
+        /// Number of threads (used within each sample for dereplication)
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+
+        /// Write JSON output to this file instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+
+        /// Output compact (minified) JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
+
+        /// Print per-sample progress to stderr
         #[arg(long)]
         verbose: bool,
     },

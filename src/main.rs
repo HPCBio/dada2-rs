@@ -6,6 +6,7 @@ use rand::seq::SliceRandom as _;
 
 mod chimera;
 mod cli;
+mod merge_pairs;
 mod cluster;
 mod containers;
 mod dada;
@@ -34,7 +35,7 @@ fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Summary { input, phred_offset, threads } => {
+        Commands::Summary { input, phred_offset, threads, output, compact } => {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
@@ -46,11 +47,27 @@ fn main() -> io::Result<()> {
                 process(File::open(&input)?, phred_offset, &pool)?
             };
 
-            println!("Total reads: {}", summary.total_reads);
-            println!("Mean quality per position (Phred):");
-            println!("{:<8} {:>10}", "Position", "MeanQ");
-            for (pos, mean) in summary.mean_quality_per_position().iter().enumerate() {
-                println!("{:<8} {:>10.2}", pos + 1, mean);
+            #[derive(Serialize)]
+            struct SummaryOutput {
+                total_reads: u64,
+                mean_quality_per_position: Vec<f64>,
+            }
+
+            let out = SummaryOutput {
+                total_reads: summary.total_reads,
+                mean_quality_per_position: summary.mean_quality_per_position(),
+            };
+
+            let json = if compact {
+                serde_json::to_string(&out)
+            } else {
+                serde_json::to_string_pretty(&out)
+            }
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            match output {
+                Some(path) => std::fs::write(&path, &json)?,
+                None => println!("{json}"),
             }
         }
 
@@ -427,6 +444,141 @@ fn main() -> io::Result<()> {
                 serde_json::to_string(&out)
             } else {
                 serde_json::to_string_pretty(&out)
+            }
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            match output {
+                Some(path) => std::fs::write(&path, &json)?,
+                None => println!("{json}"),
+            }
+        }
+
+        Commands::MergePairs {
+            fwd_dada,
+            rev_dada,
+            fwd_fastq,
+            rev_fastq,
+            min_overlap,
+            max_mismatch,
+            return_rejects,
+            just_concatenate,
+            concat_nnn_len,
+            trim_overhang,
+            sample_names,
+            phred_offset,
+            threads,
+            output,
+            compact,
+            verbose,
+        } => {
+            // ---- Validate that all four lists have the same length ----
+            let n = fwd_dada.len();
+            for (flag, len) in [
+                ("--rev-dada",   rev_dada.len()),
+                ("--fwd-fastq",  fwd_fastq.len()),
+                ("--rev-fastq",  rev_fastq.len()),
+            ] {
+                if len != n {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "{flag} has {len} entries but --fwd-dada has {n}; \
+                             all four file lists must have the same length"
+                        ),
+                    ));
+                }
+            }
+
+            // ---- Resolve sample names ----
+            let names: Vec<String> = match sample_names {
+                Some(names) => {
+                    if names.len() != n {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!(
+                                "--sample-names has {} entries but {} sample(s) were given",
+                                names.len(),
+                                n
+                            ),
+                        ));
+                    }
+                    names
+                }
+                None => fwd_dada
+                    .iter()
+                    .map(|p| {
+                        // Strip .json (and any preceding fastq-style extensions) from the stem.
+                        let name = p
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown");
+                        // Strip trailing .json then apply the FASTQ-stem logic.
+                        let without_json = name.strip_suffix(".json").unwrap_or(name);
+                        for suffix in &[".fastq.gz", ".fq.gz", ".fastq", ".fq"] {
+                            if let Some(s) = without_json.strip_suffix(suffix) {
+                                return s.to_string();
+                            }
+                        }
+                        without_json.to_string()
+                    })
+                    .collect(),
+            };
+
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            let params = merge_pairs::MergeParams {
+                min_overlap,
+                max_mismatch,
+                return_rejects,
+                just_concatenate,
+                concat_nnn_len,
+                trim_overhang,
+                phred_offset,
+                verbose,
+            };
+
+            let mut results: Vec<merge_pairs::SampleMergeResult> = Vec::with_capacity(n);
+
+            for i in 0..n {
+                if verbose {
+                    eprintln!(
+                        "[merge-pairs] sample '{}' ({}/{})",
+                        names[i],
+                        i + 1,
+                        n
+                    );
+                }
+
+                let result = merge_pairs::merge_sample(
+                    &names[i],
+                    &fwd_dada[i],
+                    &rev_dada[i],
+                    &fwd_fastq[i],
+                    &rev_fastq[i],
+                    &params,
+                    &pool,
+                )?;
+
+                if verbose {
+                    eprintln!(
+                        "[merge-pairs] '{}': {}/{} read-pairs accepted → {} merged sequence(s)",
+                        names[i],
+                        result.accepted_pairs,
+                        result.total_pairs,
+                        result.num_merged,
+                    );
+                }
+
+                results.push(result);
+            }
+
+            let json = if compact {
+                serde_json::to_string(&results)
+            } else {
+                serde_json::to_string_pretty(&results)
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
