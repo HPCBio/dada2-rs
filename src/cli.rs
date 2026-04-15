@@ -465,6 +465,19 @@ pub enum Commands {
         compact: bool,
     },
 
+    /// Convert a sequence table JSON to a tab-delimited count table
+    ///
+    /// Reads JSON produced by `make-sequence-table` or `remove-bimera-denovo`
+    /// and writes a TSV with sequence IDs as rows and sample names as columns.
+    SeqTableToTsv {
+        /// Sequence table JSON produced by `make-sequence-table` or `remove-bimera-denovo`
+        input: PathBuf,
+
+        /// Write TSV output to this file instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+    },
+
     /// Convert a make-sequence-table JSON file to FASTA
     ///
     /// Writes one record per sequence using the sequence ID as the header.

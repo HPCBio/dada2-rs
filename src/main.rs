@@ -874,6 +874,34 @@ fn main() -> io::Result<()> {
             }
         }
 
+        Commands::SeqTableToTsv { input, output } => {
+            let bytes = std::fs::read(&input)?;
+            let table: SequenceTable = serde_json::from_slice(&bytes)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+            let mut out: Box<dyn io::Write> = match output {
+                Some(ref path) => Box::new(io::BufWriter::new(std::fs::File::create(path)?)),
+                None => Box::new(io::BufWriter::new(std::io::stdout())),
+            };
+
+            // Header: sequence_id <TAB> sample1 <TAB> sample2 ...
+            write!(out, "sequence_id")?;
+            for sample in &table.samples {
+                write!(out, "\t{sample}")?;
+            }
+            writeln!(out)?;
+
+            // One row per sequence: id <TAB> count_per_sample...
+            for (j, id) in table.sequence_ids.iter().enumerate() {
+                write!(out, "{id}")?;
+                for sample_counts in &table.counts {
+                    write!(out, "\t{}", sample_counts[j])?;
+                }
+                writeln!(out)?;
+            }
+            out.flush()?;
+        }
+
         Commands::SeqTableToFasta { input, output } => {
             #[derive(serde::Deserialize)]
             struct SeqTable {
