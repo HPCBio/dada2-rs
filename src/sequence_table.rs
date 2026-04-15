@@ -17,7 +17,7 @@ use std::path::Path;
 
 use md5::{Digest as _, Md5};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+pub use serde_json::Value;
 use sha1::Sha1;
 
 // ---------------------------------------------------------------------------
@@ -153,7 +153,7 @@ pub enum OrderBy {
 // Output type
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct SequenceTable {
     pub samples: Vec<String>,
     pub sequences: Vec<String>,

@@ -406,6 +406,65 @@ pub enum Commands {
         compact: bool,
     },
 
+    /// Remove bimeric sequences from a sequence table
+    ///
+    /// Reads a JSON file produced by `make-sequence-table` and removes sequences
+    /// identified as bimeras (chimeras of two more-abundant parents).
+    /// Mirrors R's `removeBimeraDenovo`.
+    RemoveBimeraDenovo {
+        /// Sequence table JSON produced by `make-sequence-table`
+        input: PathBuf,
+
+        /// Bimera detection method
+        #[arg(long, default_value = "consensus",
+              value_parser = ["consensus", "pooled", "per-sample"])]
+        method: String,
+
+        /// Minimum fold-difference in abundance for a sequence to be a parent
+        #[arg(long, default_value_t = 1.5)]
+        min_fold_parent_over_abundance: f64,
+
+        /// Minimum abundance for a sequence to be a parent
+        #[arg(long, default_value_t = 2)]
+        min_parent_abundance: u32,
+
+        /// Also flag sequences one mismatch/indel away from an exact bimera
+        #[arg(long, default_value_t = false)]
+        allow_one_off: bool,
+
+        /// Minimum mismatches to parent required for one-off bimera detection
+        #[arg(long, default_value_t = 4)]
+        min_one_off_parent_distance: usize,
+
+        /// Maximum shift in ends-free alignment to potential parents
+        #[arg(long, default_value_t = 16)]
+        max_shift: i32,
+
+        /// (consensus) Fraction of samples a sequence must be flagged in
+        #[arg(long, default_value_t = 0.9)]
+        min_sample_fraction: f64,
+
+        /// (consensus) Number of unflagged samples to ignore in fraction vote
+        #[arg(long, default_value_t = 1)]
+        ignore_n_negatives: u32,
+
+        /// Number of threads for parallel bimera detection
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+
+        /// Print progress to stderr
+        #[arg(long)]
+        verbose: bool,
+
+        /// Write JSON output to this file instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+
+        /// Output compact (minified) JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
+    },
+
     /// Convert a make-sequence-table JSON file to FASTA
     ///
     /// Writes one record per sequence using the sequence ID as the header.

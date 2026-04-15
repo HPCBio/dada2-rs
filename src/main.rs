@@ -5,6 +5,7 @@ use flate2::read::MultiGzDecoder;
 use rand::seq::SliceRandom as _;
 
 mod chimera;
+mod remove_bimera;
 mod sequence_table;
 mod cli;
 mod merge_pairs;
@@ -29,7 +30,8 @@ use cli::{Cli, Commands};
 use containers::BirthType;
 use derep::dereplicate;
 use filter_trim::{FilterParams, filter_single, filter_paired, read_fasta_first_seq};
-use sequence_table::{HashAlgo, OrderBy, make_sequence_table};
+use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
+use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
 use learn_errors::{ErrFun, learn_errors};
 use nwalign::AlignParams;
 use serde::Serialize;
@@ -809,6 +811,61 @@ fn main() -> io::Result<()> {
                 serde_json::to_string(&table)
             } else {
                 serde_json::to_string_pretty(&table)
+            }
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            match output {
+                Some(path) => std::fs::write(&path, &json)?,
+                None => println!("{json}"),
+            }
+        }
+
+        Commands::RemoveBimeraDenovo {
+            input,
+            method,
+            min_fold_parent_over_abundance,
+            min_parent_abundance,
+            allow_one_off,
+            min_one_off_parent_distance,
+            max_shift,
+            min_sample_fraction,
+            ignore_n_negatives,
+            threads,
+            verbose,
+            output,
+            compact,
+        } => {
+            let bytes = std::fs::read(&input)?;
+            let table: SequenceTable = serde_json::from_slice(&bytes)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+            let method = match method.as_str() {
+                "pooled"     => Method::Pooled,
+                "per-sample" => Method::PerSample,
+                _            => Method::Consensus,
+            };
+            let params = BimeraParams {
+                min_fold_parent_over_abundance,
+                min_parent_abundance,
+                allow_one_off,
+                min_one_off_parent_distance,
+                max_shift,
+                min_sample_fraction,
+                ignore_n_negatives,
+                match_score: 5,
+                mismatch: -4,
+                gap_p: -8,
+            };
+
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            let filtered = pool.install(|| remove_bimera_denovo(table, &method, &params, verbose));
+
+            let json = if compact {
+                serde_json::to_string(&filtered)
+            } else {
+                serde_json::to_string_pretty(&filtered)
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             match output {
