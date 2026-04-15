@@ -75,24 +75,33 @@ for (nti in seq_along(nts)) {
                                    drop = FALSE])
     obs_rate  <- ifelse(row_total > 0, counts / row_total, NA_real_)
 
+    # Theoretical Phred rate: errors = (1/3)*10^(-Q/10), self = 1-10^(-Q/10)
+    theoretical <- if (is_self) {
+      1 - 10 ^ (-quality / 10)
+    } else {
+      (1 / 3) * 10 ^ (-quality / 10)
+    }
+
     rows[[length(rows) + 1]] <- data.frame(
-      Quality    = quality,
-      Transition = label,
-      is_self    = is_self,
-      count      = counts,
-      Observed   = obs_rate,
-      Estimated  = err_out[r, ],
-      Nominal    = err_in[r, ],
-      Theoretical = (1 / 3) * 10 ^ (-quality / 10),
+      Quality     = quality,
+      Transition  = label,
+      is_self     = is_self,
+      count       = counts,
+      Observed    = obs_rate,
+      Estimated   = err_out[r, ],
+      Nominal     = err_in[r, ],
+      Theoretical = theoretical,
       stringsAsFactors = FALSE
     )
   }
 }
 df <- do.call(rbind, rows)
 
-# Self-transitions (A→A etc.) are not errors; blank their observed column so
-# they show estimated rates only — matching DADA2's plotErrors behaviour.
-df$Observed[df$is_self] <- NA_real_
+# Self-transitions (A→A etc.) are not errors; blank observed, estimated, and
+# nominal so only the theoretical line shows — matching DADA2's plotErrors.
+df$Observed[df$is_self]  <- NA_real_
+df$Estimated[df$is_self] <- NA_real_
+df$Nominal[df$is_self]   <- NA_real_
 
 # Fix factor order: A→A, A→C, … T→T (row-major, ref varies slowest)
 trans_levels <- paste0(
