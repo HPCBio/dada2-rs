@@ -350,7 +350,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             }
         }
         if params.verbose && nshuffle >= MAX_SHUFFLE {
-            eprintln!("\nWarning: Reached maximum ({MAX_SHUFFLE}) shuffles.");
+            eprintln!(" Warning: Reached maximum ({MAX_SHUFFLE}) shuffles.");
         }
 
         b_p_update(&mut bb, params.greedy, params.detect_singletons);
