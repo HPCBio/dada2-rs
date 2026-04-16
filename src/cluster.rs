@@ -298,7 +298,7 @@ pub fn b_bud(
 
             if verbose {
                 eprintln!(
-                    "[cluster] Division (naive): Raw {raw_idx} from Bi {ci}, pA={p_a:.2e}"
+                    "\t[cluster] Division (naive): Raw {raw_idx} from Bi {ci}, pA={p_a:.2e}"
                 );
             }
             return Some(new_ci);
@@ -328,7 +328,7 @@ pub fn b_bud(
 
             if verbose {
                 eprintln!(
-                    "[cluster] Division (prior): Raw {raw_idx} from Bi {ci}, pP={p_p:.2e}"
+                    "\t[cluster] Division (prior): Raw {raw_idx} from Bi {ci}, pP={p_p:.2e}"
                 );
             }
             return Some(new_ci);
@@ -344,7 +344,7 @@ pub fn b_bud(
             None => (init_center.to_string(), String::from("0")),
         };
         eprintln!(
-            "[cluster] No Division. Minimum pA={p_a:.2e} (Raw {raw_idx_str} in Bi {ci_str})."
+            "\t[cluster] No Division. Minimum pA={p_a:.2e} (Raw {raw_idx_str} in Bi {ci_str})."
         );
     }
     None
