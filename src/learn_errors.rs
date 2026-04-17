@@ -16,6 +16,7 @@ use std::io;
 use std::path::PathBuf;
 
 use flate2::read::MultiGzDecoder;
+use serde::Deserialize;
 
 use crate::containers::Raw;
 use crate::dada::{DadaParams, RawInput, dada_uniques};
@@ -180,6 +181,57 @@ pub fn load_fastq_samples(
     }
 
     Ok(all_inputs)
+}
+
+// ---------------------------------------------------------------------------
+// JSON-backed sample loading (for errors-from-sample)
+// ---------------------------------------------------------------------------
+
+/// Wire format for one unique sequence in a derep/sample JSON file.
+#[derive(Deserialize)]
+struct UniqueEntryJson {
+    sequence: String,
+    count: u64,
+    mean_quality: Vec<f64>,
+}
+
+/// Top-level structure of a derep/sample JSON file.
+#[derive(Deserialize)]
+struct SampleJson {
+    uniques: Vec<UniqueEntryJson>,
+}
+
+/// Load pre-computed derep JSON files (from `sample` or `derep`) as samples
+/// for error learning.
+///
+/// Each file is expected to have the same structure written by the `derep` and
+/// `sample` subcommands: a top-level object with an `"uniques"` array of
+/// `{sequence, count, mean_quality}` entries.
+pub fn load_derep_samples(paths: &[PathBuf]) -> io::Result<Vec<Vec<RawInput>>> {
+    paths
+        .iter()
+        .map(|path| {
+            let file = File::open(path)?;
+            let sample: SampleJson = serde_json::from_reader(file).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("failed to parse {}: {e}", path.display()),
+                )
+            })?;
+
+            let inputs = sample
+                .uniques
+                .into_iter()
+                .map(|u| RawInput {
+                    seq: u.sequence,
+                    abundance: u.count as u32,
+                    prior: false,
+                    quals: Some(u.mean_quality),
+                })
+                .collect();
+            Ok(inputs)
+        })
+        .collect()
 }
 
 /// Determine `nq` (number of quality columns) from the maximum rounded quality

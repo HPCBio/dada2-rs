@@ -452,6 +452,134 @@ pub enum Commands {
         output: Option<PathBuf>,
     },
 
+    /// Dereplicate and subsample FASTQ files, writing one JSON file per sample
+    ///
+    /// Processes input FASTQ files in order (or shuffled when `--randomize` is
+    /// set), dereplicating each one and writing a JSON file to `--output-dir`.
+    /// Processing stops once the cumulative base count reaches `--nbases`.
+    ///
+    /// Each output file uses the same format as the `derep` subcommand and can
+    /// be passed directly to `errors-from-sample`.
+    Sample {
+        /// One or more FASTQ files (.fastq, .fastq.gz, .fq, .fq.gz) to process
+        #[arg(required = true)]
+        input: Vec<PathBuf>,
+
+        /// Directory to write per-sample JSON files into (created if absent)
+        #[arg(long, short = 'o')]
+        output_dir: PathBuf,
+
+        /// Stop after accumulating at least this many total bases across input files
+        #[arg(long, default_value_t = 100_000_000)]
+        nbases: u64,
+
+        /// Process input files in random order instead of the supplied order
+        #[arg(long)]
+        randomize: bool,
+
+        /// RNG seed for reproducible randomization (only used with --randomize)
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Phred quality score offset (33 for Sanger/Illumina 1.8+)
+        #[arg(long, default_value_t = 33)]
+        phred_offset: u8,
+
+        /// Number of threads for dereplication
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+
+        /// Output compact (minified) JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
+
+        /// Print progress to stderr
+        #[arg(long)]
+        verbose: bool,
+    },
+
+    /// Learn an error model from pre-computed sample JSON files
+    ///
+    /// Reads one or more JSON files produced by the `sample` subcommand (or
+    /// `derep`) and iteratively runs the DADA2 algorithm, re-fitting the
+    /// chosen error model until self-consistency — a clean reimplementation of
+    /// R's `learnErrors()`.
+    ///
+    /// Output is a JSON object with three flat 16 × nq matrices:
+    ///   `trans`   — accumulated transition counts,
+    ///   `err_in`  — error rates used in the final DADA run,
+    ///   `err_out` — error rates estimated from `trans`.
+    ErrorsFromSample {
+        /// One or more derep JSON files produced by `sample` or `derep`
+        #[arg(required = true)]
+        input: Vec<PathBuf>,
+
+        /// Error model fitting function to use
+        ///
+        /// Allowed values: loess (default), noqual, binned-qual, pacbio
+        #[arg(long, default_value = "loess")]
+        errfun: String,
+
+        /// Pseudocount added to each transition total (only used with --errfun noqual)
+        #[arg(long, default_value_t = 1.0)]
+        pseudocount: f64,
+
+        /// Anchor quality-score bins for piecewise-linear interpolation
+        ///
+        /// Comma-separated list of quality score values, e.g. "0,10,20,30,40".
+        /// Only used with --errfun binned-qual.
+        #[arg(long, value_delimiter = ',')]
+        binned_quals: Option<Vec<f64>>,
+
+        /// Maximum self-consistency iterations (mirrors R's MAX_CONSIST)
+        #[arg(long, default_value_t = 10)]
+        max_consist: usize,
+
+        /// Significance threshold for abundance-based cluster splitting (omega_a)
+        #[arg(long, default_value = "1e-40")]
+        omega_a: f64,
+
+        /// Significance threshold for omega_c (reads not corrected to any center)
+        #[arg(long, default_value = "0")]
+        omega_c: f64,
+
+        /// Significance threshold for prior-sequence splitting (omega_p)
+        #[arg(long, default_value = "1e-4")]
+        omega_p: f64,
+
+        /// Minimum fold-enrichment above expected for cluster splitting
+        #[arg(long, default_value_t = 1.0)]
+        min_fold: f64,
+
+        /// Minimum Hamming distance required for cluster splitting
+        #[arg(long, default_value_t = 1)]
+        min_hamming: u32,
+
+        /// Minimum read abundance required for cluster splitting
+        #[arg(long, default_value_t = 1)]
+        min_abund: u32,
+
+        /// Use singleton detection (detect singletons as genuine)
+        #[arg(long)]
+        detect_singletons: bool,
+
+        /// Number of threads for parallel sample processing
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+
+        /// Write JSON output to this file instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+
+        /// Output compact (minified) JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
+
+        /// Print per-iteration progress to stderr
+        #[arg(long)]
+        verbose: bool,
+    },
+
     /// Learn an error model from FASTQ files
     ///
     /// Reads one or more FASTQ files, dereplicates and subsamples them on the

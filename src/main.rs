@@ -32,7 +32,7 @@ use derep::dereplicate;
 use filter_trim::{FilterParams, filter_single, filter_paired, read_fasta_first_seq};
 use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
 use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
-use learn_errors::{ErrFun, learn_errors, load_fastq_samples};
+use learn_errors::{ErrFun, learn_errors, load_derep_samples, load_fastq_samples};
 use nwalign::AlignParams;
 use serde::Serialize;
 use summary::process;
@@ -812,6 +812,280 @@ fn main() -> io::Result<()> {
                 writeln!(out, ">{id}\n{seq}")?;
             }
             out.flush()?;
+        }
+
+        Commands::Sample {
+            input,
+            output_dir,
+            nbases,
+            randomize,
+            seed,
+            phred_offset,
+            threads,
+            compact,
+            verbose,
+        } => {
+            std::fs::create_dir_all(&output_dir)?;
+
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            // Optionally shuffle file order.
+            let mut ordered: Vec<&std::path::PathBuf> = input.iter().collect();
+            if randomize {
+                use rand::SeedableRng as _;
+                if let Some(s) = seed {
+                    ordered.shuffle(&mut rand::rngs::SmallRng::seed_from_u64(s));
+                } else {
+                    ordered.shuffle(&mut rand::thread_rng());
+                }
+            }
+
+            #[derive(Serialize)]
+            struct UniqueEntry<'a> {
+                sequence: &'a str,
+                count: u64,
+                mean_quality: &'a [f64],
+            }
+            #[derive(Serialize)]
+            struct DerepOutput<'a> {
+                total_reads: usize,
+                unique_sequences: usize,
+                uniques: Vec<UniqueEntry<'a>>,
+            }
+            #[derive(Serialize)]
+            struct SampleSummary {
+                samples_processed: usize,
+                total_bases: u64,
+                total_reads: u64,
+                output_files: Vec<String>,
+            }
+
+            let mut total_bases: u64 = 0;
+            let mut total_reads: u64 = 0;
+            let mut output_files: Vec<String> = Vec::new();
+
+            for path in &ordered {
+                let is_gz = path.extension().and_then(|e| e.to_str()) == Some("gz");
+                let derep = if is_gz {
+                    dereplicate(MultiGzDecoder::new(File::open(path)?), phred_offset, &pool, verbose)?
+                } else {
+                    dereplicate(File::open(path)?, phred_offset, &pool, verbose)?
+                };
+
+                let file_bases: u64 = derep
+                    .uniques
+                    .iter()
+                    .map(|(seq, count)| seq.len() as u64 * count)
+                    .sum();
+                let file_reads: u64 = derep.map.len() as u64;
+
+                // Build a stem for the output filename, stripping up to two extensions.
+                let stem = {
+                    let p = path.as_path();
+                    let s1 = p.file_stem().unwrap_or_default();
+                    let s1_path = std::path::Path::new(s1);
+                    if s1_path.extension().is_some() {
+                        s1_path.file_stem().unwrap_or(s1).to_string_lossy().into_owned()
+                    } else {
+                        s1.to_string_lossy().into_owned()
+                    }
+                };
+                let out_path = output_dir.join(format!("{stem}.json"));
+
+                let mut uniq_entries = Vec::with_capacity(derep.uniques.len());
+                for (i, (seq, count)) in derep.uniques.iter().enumerate() {
+                    let sequence = std::str::from_utf8(seq)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                    uniq_entries.push(UniqueEntry {
+                        sequence,
+                        count: *count,
+                        mean_quality: &derep.quals[i],
+                    });
+                }
+                let sample_out = DerepOutput {
+                    total_reads: derep.map.len(),
+                    unique_sequences: uniq_entries.len(),
+                    uniques: uniq_entries,
+                };
+
+                let json = if compact {
+                    serde_json::to_string(&sample_out)
+                } else {
+                    serde_json::to_string_pretty(&sample_out)
+                }
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+                std::fs::write(&out_path, &json)?;
+                output_files.push(out_path.display().to_string());
+                total_bases += file_bases;
+                total_reads += file_reads;
+
+                if verbose {
+                    eprintln!(
+                        "[sample] wrote {} ({} unique(s), {} bases)",
+                        out_path.display(),
+                        sample_out.unique_sequences,
+                        file_bases,
+                    );
+                }
+
+                if total_bases >= nbases {
+                    if verbose {
+                        eprintln!(
+                            "[sample] reached {} bases after {} file(s); stopping",
+                            total_bases,
+                            output_files.len(),
+                        );
+                    }
+                    break;
+                }
+            }
+
+            let summary = SampleSummary {
+                samples_processed: output_files.len(),
+                total_bases,
+                total_reads,
+                output_files,
+            };
+            let summary_json = if compact {
+                serde_json::to_string(&summary)
+            } else {
+                serde_json::to_string_pretty(&summary)
+            }
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            println!("{summary_json}");
+        }
+
+        Commands::ErrorsFromSample {
+            input,
+            errfun,
+            pseudocount,
+            binned_quals,
+            max_consist,
+            omega_a,
+            omega_c,
+            omega_p,
+            min_fold,
+            min_hamming,
+            min_abund,
+            detect_singletons,
+            threads,
+            output,
+            compact,
+            verbose,
+        } => {
+            let err_fun = match errfun.as_str() {
+                "loess" => ErrFun::Loess,
+                "noqual" => ErrFun::Noqual { pseudocount },
+                "binned-qual" => {
+                    let bins = binned_quals.ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "--binned-quals is required when --errfun binned-qual is used",
+                        )
+                    })?;
+                    ErrFun::BinnedQual { bins }
+                }
+                "pacbio" => ErrFun::PacBio,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "Unknown errfun '{other}'; expected one of: loess, noqual, binned-qual, pacbio"
+                        ),
+                    ));
+                }
+            };
+
+            let align_params = AlignParams {
+                match_score: 5,
+                mismatch: -4,
+                gap_p: -8,
+                homo_gap_p: -8,
+                use_kmers: true,
+                kdist_cutoff: 0.42,
+                band: -1,
+                vectorized: false,
+                gapless: false,
+            };
+
+            let dada_params = dada::DadaParams {
+                align: align_params,
+                err_mat: Vec::new(),
+                err_ncol: 0,
+                omega_a,
+                omega_c,
+                omega_p,
+                detect_singletons,
+                max_clust: 0,
+                min_fold,
+                min_hamming,
+                min_abund,
+                use_quals: true,
+                final_consensus: false,
+                multithread: threads > 1,
+                verbose,
+                greedy: true,
+            };
+
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            let all_inputs = load_derep_samples(&input)?;
+
+            if verbose {
+                eprintln!(
+                    "[errors-from-sample] loaded {} sample(s) from JSON",
+                    all_inputs.len()
+                );
+            }
+
+            let result = pool.install(|| {
+                learn_errors(all_inputs, &err_fun, dada_params, &align_params, max_consist, verbose)
+            })?;
+
+            #[derive(Serialize)]
+            struct LearnErrorsOutput {
+                nq: usize,
+                converged: bool,
+                iterations: usize,
+                trans: Vec<Vec<u32>>,
+                err_in: Vec<Vec<f64>>,
+                err_out: Vec<Vec<f64>>,
+            }
+
+            fn flat_to_rows_u32(flat: &[u32], nq: usize) -> Vec<Vec<u32>> {
+                (0..16).map(|r| flat[r * nq..(r + 1) * nq].to_vec()).collect()
+            }
+            fn flat_to_rows_f64(flat: &[f64], nq: usize) -> Vec<Vec<f64>> {
+                (0..16).map(|r| flat[r * nq..(r + 1) * nq].to_vec()).collect()
+            }
+
+            let out = LearnErrorsOutput {
+                nq: result.nq,
+                converged: result.converged,
+                iterations: result.iterations,
+                trans: flat_to_rows_u32(&result.trans, result.nq),
+                err_in: flat_to_rows_f64(&result.err_in, result.nq),
+                err_out: flat_to_rows_f64(&result.err_out, result.nq),
+            };
+
+            let json = if compact {
+                serde_json::to_string(&out)
+            } else {
+                serde_json::to_string_pretty(&out)
+            }
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            match output {
+                Some(path) => std::fs::write(&path, &json)?,
+                None => println!("{json}"),
+            }
         }
 
         Commands::LearnErrors {
