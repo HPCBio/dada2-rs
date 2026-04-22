@@ -18,6 +18,7 @@ Long-term plans:
 1) Assess and optimize critical steps such as `learn-errors` and `dada`, in particular alignment steps within `dada` which are currently slower than the DADA2 implementation
 2) Porting and optimizing taxonomic classification
 3) Optimizing chimera detection
+4) Add some functionality to R or Python to allow custom error model generation
 
 ## Building
 
