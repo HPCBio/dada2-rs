@@ -223,7 +223,7 @@ fn main() -> io::Result<()> {
                 use_kmers: true,
                 kdist_cutoff: 0.42,
                 band: 16,
-                vectorized: false, // align_vectorized has DP correctness issues beyond the panic; see issue #2
+                vectorized: true,
                 gapless: false,
             };
 
@@ -1009,7 +1009,7 @@ fn main() -> io::Result<()> {
                 use_kmers: true,
                 kdist_cutoff: 0.42,
                 band: 16,
-                vectorized: false, // align_vectorized has DP correctness issues beyond the panic; see issue #2
+                vectorized: true,
                 gapless: false,
             };
 
@@ -1147,7 +1147,7 @@ fn main() -> io::Result<()> {
                 use_kmers: true,
                 kdist_cutoff: 0.42,
                 band: 16,
-                vectorized: false, // align_vectorized has DP correctness issues beyond the panic; see issue #2
+                vectorized: true,
                 gapless: false,
             };
 

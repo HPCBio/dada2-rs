@@ -478,10 +478,14 @@ pub fn align_vectorized(
         );
 
         // --- Band transition: widen active columns at wedge boundaries ---
+        // C++ decrements j_min unconditionally (unsigned underflow 0 → SIZE_MAX).
+        // The next main-update iteration increments it back to 0.  Using
+        // wrapping_sub matches this; the intervening diag_buf fill safely
+        // handles the out-of-range index via the bounds guard above.
         if row == band_usize.min(len1) {
             col_min = col_min.saturating_sub(1);
             i_max += 1;
-            if j_min > 0 { j_min -= 1; }
+            j_min = j_min.wrapping_sub(1);
         }
         if row == (band_usize + len2 - len1).min(len2) {
             col_max += 1;
@@ -525,6 +529,9 @@ pub fn align_vectorized(
         }
 
         // --- Update col_min, col_max, i_max, j_min for next anti-diagonal ---
+        // j_min uses wrapping arithmetic because the band transition above may
+        // set it to usize::MAX (matching C++ unsigned underflow); the increment
+        // here wraps it back to 0.
         let band_mod2 = band % 2;
         if (row as i32) < band && (row as i32) < len1 as i32 {
             // Upper triangle for s1
@@ -533,16 +540,16 @@ pub fn align_vectorized(
         } else if i_max < (len1 as i64) - 1 {
             // Banded area
             if band_mod2 == 0 {
-                if even  { j_min += 1; }
+                if even  { j_min = j_min.wrapping_add(1); }
                 else     { i_max += 1; }
             } else {
                 if even  { col_min = col_min.saturating_sub(1); i_max += 1; }
-                else     { col_min += 1; j_min += 1; }
+                else     { col_min += 1; j_min = j_min.wrapping_add(1); }
             }
         } else {
             // Lower triangle for s1
             if !even { col_min += 1; }
-            j_min += 1;
+            j_min = j_min.wrapping_add(1);
         }
 
         let top_limit = (band_usize + len2 - len1).min(len2);
@@ -807,9 +814,19 @@ mod tests {
         assert_eq!(got, expected, "{label}: endsfree score mismatch");
     }
 
-    /// Smoke-test: align_vectorized must not panic (DP correctness tracked in issue #2).
-    fn smoke_vectorized(s1: &[u8], s2: &[u8]) {
-        let _ = align_vectorized(s1, s2, MATCH as i16, MM as i16, GAP as i16, 0, BAND);
+    /// Assert that align_vectorized produces the same optimal score as align_endsfree.
+    fn compare_alignments(s1: &[u8], s2: &[u8], label: &str) {
+        let ef = align_endsfree(s1, s2, MATCH, MM, GAP, BAND);
+        let ve = align_vectorized(s1, s2, MATCH as i16, MM as i16, GAP as i16, 0, BAND);
+
+        let score_ef = score_alignment(&ef, MATCH, MM, GAP);
+        let score_ve = score_alignment(&ve, MATCH, MM, GAP);
+
+        if score_ef != score_ve {
+            let (ef0, ef1) = decode_al(&ef);
+            let (ve0, ve1) = decode_al(&ve);
+            panic!("{label}: score mismatch: endsfree={score_ef} vectorized={score_ve}\n  EF: {ef0}\n      {ef1}\n  VE: {ve0}\n      {ve1}");
+        }
     }
 
     #[test]
@@ -832,9 +849,28 @@ mod tests {
         check_endsfree_score(&s1, &s2, 11 * 5 + (-8), "one-gap");
     }
 
-    /// Smoke-test for the previously panicking out-of-bounds at nwalign.rs:436.
     #[test]
-    fn test_vectorized_no_panic_equal_length() {
+    fn test_vectorized_vs_endsfree_identical() {
+        let s = encode("ACGTACGTACGT");
+        compare_alignments(&s, &s, "identical-short");
+    }
+
+    #[test]
+    fn test_vectorized_vs_endsfree_one_sub() {
+        let s1 = encode("ACGTACGTACGT");
+        let s2 = encode("ACGTTCGTACGT");
+        compare_alignments(&s1, &s2, "one-sub");
+    }
+
+    #[test]
+    fn test_vectorized_vs_endsfree_one_gap() {
+        let s1 = encode("ACGTACGTACGT");
+        let s2 = encode("ACGACGTACGT");
+        compare_alignments(&s1, &s2, "one-gap");
+    }
+
+    #[test]
+    fn test_vectorized_vs_endsfree_equal_length_240() {
         let nts: [u8; 4] = [1, 2, 3, 4];
         let mut state: u64 = 99991;
         let next_nt = |st: &mut u64| -> u8 {
@@ -842,15 +878,15 @@ mod tests {
             nts[((*st >> 33) as usize) % 4]
         };
         let s1: Vec<u8> = (0..240).map(|_| next_nt(&mut state)).collect();
-        let s2 = s1.clone();
-        smoke_vectorized(&s1, &s2);        // identical — was the crash case
-        let mut s2b = s1.clone();
-        s2b[239] ^= 3;
-        smoke_vectorized(&s1, &s2b);       // single last-position mismatch
+        compare_alignments(&s1, &s1.clone(), "identical-240");
+
+        let mut s2 = s1.clone();
+        s2[239] ^= 3;
+        compare_alignments(&s1, &s2, "last-mismatch-240");
     }
 
     #[test]
-    fn test_vectorized_no_panic_miseq_length() {
+    fn test_vectorized_vs_endsfree_divergent_240() {
         let nts: [u8; 4] = [1, 2, 3, 4];
         let mut state: u64 = 12345;
         let next_nt = |st: &mut u64| -> u8 {
@@ -860,11 +896,23 @@ mod tests {
         let s1: Vec<u8> = (0..240).map(|_| next_nt(&mut state)).collect();
         let mut s2 = s1.clone();
         for i in (0..240).step_by(50) { s2[i] = nts[(s2[i] as usize) % 4 ^ 1]; }
-        smoke_vectorized(&s1, &s2);
+        compare_alignments(&s1, &s2, "divergent-240");
+    }
 
-        let s3 = encode("ACGTACGTACGT");
-        smoke_vectorized(&s3, &s3);
-        let s4 = encode("ACGACGTACGT");
-        smoke_vectorized(&s3, &s4);
+    #[test]
+    fn test_vectorized_vs_endsfree_different_lengths() {
+        let s1 = encode("ACGTACGTACGT");
+        let s2 = encode("ACGTACGTACGTAC"); // s2 longer
+        compare_alignments(&s1, &s2, "diff-len-short");
+
+        let nts: [u8; 4] = [1, 2, 3, 4];
+        let mut state: u64 = 77777;
+        let next_nt = |st: &mut u64| -> u8 {
+            *st = st.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            nts[((*st >> 33) as usize) % 4]
+        };
+        let s1: Vec<u8> = (0..230).map(|_| next_nt(&mut state)).collect();
+        let s2: Vec<u8> = (0..240).map(|_| next_nt(&mut state)).collect();
+        compare_alignments(&s1, &s2, "diff-len-230-vs-240");
     }
 }
