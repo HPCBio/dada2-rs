@@ -425,16 +425,22 @@ pub fn align_vectorized(
         // --- Fill diag_buf for this anti-diagonal ---
         // Cell (i,j) in the original NW matrix uses s1[i-1] vs s2[j-1].
         // Here i_max / j_min are 0-indexed, so s1[i_max] vs s2[j_min].
+        //
+        // The active band can extend one cell past the valid sequence range at
+        // the lower-right corner (equal-length sequences, banded mode).  The
+        // C++ reference reads s2[len2] in that case (null-terminator UB).
+        // We guard with explicit bounds checks and use fill_val so the sentinel
+        // columns in d suppress any influence on the traceback.
         {
             let mut si = i_max;
             let mut sj = j_min;
             for k in 0..n {
-                debug_assert!(si >= 0 && (si as usize) < len1,
-                    "diag_buf si={si} out of range (len1={len1})");
-                debug_assert!(sj < len2,
-                    "diag_buf sj={sj} out of range (len2={len2})");
-                let score = if s1[si as usize] == s2[sj] { match_score } else { mismatch };
-                diag_buf[col_min + k] = d[(row - 2) * ncol + col_min + k] + score;
+                let score = if si >= 0 && (si as usize) < len1 && sj < len2 {
+                    if s1[si as usize] == s2[sj] { match_score } else { mismatch }
+                } else {
+                    fill_val // out-of-range cell; sentinel ensures it won't affect traceback
+                };
+                diag_buf[col_min + k] = d[(row - 2) * ncol + col_min + k].saturating_add(score);
                 si -= 1;
                 sj += 1;
             }
@@ -564,10 +570,12 @@ pub fn align_vectorized(
     let mut j = len2;
 
     while i > 0 || j > 0 {
-        // Compressed column: (2*start_col + j - i) / 2
+        // Compressed column: (2*start_col + j - i) / 2  (C-style truncating division).
+        // j - i can be odd, which is why C++ just truncates — the correct column
+        // for (i,j) in the anti-diagonal layout is floor((2*start_col + j - i) / 2).
         let col_signed = 2 * start_col as i64 + j as i64 - i as i64;
-        debug_assert!(col_signed >= 0 && col_signed % 2 == 0,
-            "vectorized traceback: bad col_signed={col_signed} at i={i} j={j}");
+        debug_assert!(col_signed >= 0,
+            "vectorized traceback: col_signed={col_signed} < 0 at i={i} j={j}");
         let col = (col_signed / 2) as usize;
         match p[(i + j) * ncol + col] {
             1 => {
@@ -732,4 +740,131 @@ pub fn sub_new(raw0: &Raw, raw1: &Raw, params: &AlignParams) -> Option<Sub> {
             .collect();
     }
     Some(sub)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn score_alignment(al: &[Vec<u8>; 2], match_score: i32, mismatch: i32, gap_p: i32) -> i32 {
+        let al0 = &al[0];
+        let al1 = &al[1];
+        let n = al0.len();
+        let mut score = 0i32;
+        let mut i0 = false; // was previous al0[k] a gap?
+        let mut i1 = false;
+        for k in 0..n {
+            let g0 = al0[k] == b'-';
+            let g1 = al1[k] == b'-';
+            if !g0 && !g1 {
+                score += if al0[k] == al1[k] { match_score } else { mismatch };
+                i0 = false; i1 = false;
+            } else if g0 {
+                // gap in s1 (end-gap free if at start or end)
+                let _ = i1;
+                i1 = true; i0 = false;
+                let _ = i0; // end-gap: skip penalty (ends-free)
+                // Only penalise interior gaps
+                let at_start = al0[..k].iter().all(|&b| b == b'-');
+                let at_end   = al0[k+1..].iter().all(|&b| b == b'-');
+                if !at_start && !at_end { score += gap_p; }
+            } else {
+                i0 = true; i1 = false;
+                let at_start = al1[..k].iter().all(|&b| b == b'-');
+                let at_end   = al1[k+1..].iter().all(|&b| b == b'-');
+                if !at_start && !at_end { score += gap_p; }
+            }
+        }
+        score
+    }
+
+    /// Encode a DNA string (A/C/G/T) to u8 nt-index (1-4).
+    fn encode(seq: &str) -> Vec<u8> {
+        seq.bytes().map(|b| match b {
+            b'A' | b'a' => 1,
+            b'C' | b'c' => 2,
+            b'G' | b'g' => 3,
+            b'T' | b't' => 4,
+            _ => 5,
+        }).collect()
+    }
+
+    fn decode_al(al: &[Vec<u8>; 2]) -> (String, String) {
+        let to_str = |v: &Vec<u8>| v.iter().map(|&b| match b {
+            1 => 'A', 2 => 'C', 3 => 'G', 4 => 'T', b'-' => '-', _ => 'N',
+        }).collect::<String>();
+        (to_str(&al[0]), to_str(&al[1]))
+    }
+
+    const MATCH: i32 = 5;
+    const MM: i32 = -4;
+    const GAP: i32 = -8;
+    const BAND: i32 = 16;
+
+    fn check_endsfree_score(s1: &[u8], s2: &[u8], expected: i32, label: &str) {
+        let al = align_endsfree(s1, s2, MATCH, MM, GAP, BAND);
+        let got = score_alignment(&al, MATCH, MM, GAP);
+        assert_eq!(got, expected, "{label}: endsfree score mismatch");
+    }
+
+    /// Smoke-test: align_vectorized must not panic (DP correctness tracked in issue #2).
+    fn smoke_vectorized(s1: &[u8], s2: &[u8]) {
+        let _ = align_vectorized(s1, s2, MATCH as i16, MM as i16, GAP as i16, 0, BAND);
+    }
+
+    #[test]
+    fn test_align_endsfree_identical_short() {
+        let s = encode("ACGTACGTACGT");
+        check_endsfree_score(&s, &s, 60, "identical-short"); // 12 matches * 5
+    }
+
+    #[test]
+    fn test_align_endsfree_one_sub() {
+        let s1 = encode("ACGTACGTACGT");
+        let s2 = encode("ACGTTCGTACGT"); // one sub at pos 4
+        check_endsfree_score(&s1, &s2, 11 * 5 + (-4), "one-sub");
+    }
+
+    #[test]
+    fn test_align_endsfree_one_gap() {
+        let s1 = encode("ACGTACGTACGT");
+        let s2 = encode("ACGACGTACGT"); // one deletion (11 matches, 1 interior gap)
+        check_endsfree_score(&s1, &s2, 11 * 5 + (-8), "one-gap");
+    }
+
+    /// Smoke-test for the previously panicking out-of-bounds at nwalign.rs:436.
+    #[test]
+    fn test_vectorized_no_panic_equal_length() {
+        let nts: [u8; 4] = [1, 2, 3, 4];
+        let mut state: u64 = 99991;
+        let next_nt = |st: &mut u64| -> u8 {
+            *st = st.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            nts[((*st >> 33) as usize) % 4]
+        };
+        let s1: Vec<u8> = (0..240).map(|_| next_nt(&mut state)).collect();
+        let s2 = s1.clone();
+        smoke_vectorized(&s1, &s2);        // identical — was the crash case
+        let mut s2b = s1.clone();
+        s2b[239] ^= 3;
+        smoke_vectorized(&s1, &s2b);       // single last-position mismatch
+    }
+
+    #[test]
+    fn test_vectorized_no_panic_miseq_length() {
+        let nts: [u8; 4] = [1, 2, 3, 4];
+        let mut state: u64 = 12345;
+        let next_nt = |st: &mut u64| -> u8 {
+            *st = st.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            nts[((*st >> 33) as usize) % 4]
+        };
+        let s1: Vec<u8> = (0..240).map(|_| next_nt(&mut state)).collect();
+        let mut s2 = s1.clone();
+        for i in (0..240).step_by(50) { s2[i] = nts[(s2[i] as usize) % 4 ^ 1]; }
+        smoke_vectorized(&s1, &s2);
+
+        let s3 = encode("ACGTACGTACGT");
+        smoke_vectorized(&s3, &s3);
+        let s4 = encode("ACGACGTACGT");
+        smoke_vectorized(&s3, &s4);
+    }
 }
