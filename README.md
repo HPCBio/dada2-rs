@@ -13,7 +13,11 @@ The short term plan:
 3) Allow intermediate outputs (in JSON) that can be evaluated for debugging purposes or for plotting in R, Python, etc.
 4) Add basic regression tests that follow those within the original dada2 repository and expect results similar to those expected
 
-We do anticipate porting taxonomic classification at a later point
+Long-term plans:
+
+1) Assess and optimize critical steps such as `learn-errors` and `dada`, in particular alignment steps within `dada` which are currently slower than the DADA2 implementation
+2) Porting and optimizing taxonomic classification
+3) Optimizing chimera detection
 
 ## Building
 
