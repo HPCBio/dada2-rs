@@ -575,6 +575,13 @@ pub enum Commands {
         #[arg(long)]
         compact: bool,
 
+        /// Directory to write per-iteration cluster diagnostics (iter_001.json, …)
+        ///
+        /// Each file contains cluster counts and birth-type breakdown per sample
+        /// for that iteration. The directory is created if it does not exist.
+        #[arg(long)]
+        diag_dir: Option<PathBuf>,
+
         /// Print per-iteration progress to stderr
         #[arg(long)]
         verbose: bool,
@@ -671,6 +678,13 @@ pub enum Commands {
         /// Output compact (minified) JSON instead of pretty-printed
         #[arg(long)]
         compact: bool,
+
+        /// Directory to write per-iteration cluster diagnostics (iter_001.json, …)
+        ///
+        /// Each file contains cluster counts and birth-type breakdown per sample
+        /// for that iteration. The directory is created if it does not exist.
+        #[arg(long)]
+        diag_dir: Option<PathBuf>,
 
         /// Print per-iteration progress to stderr
         #[arg(long)]

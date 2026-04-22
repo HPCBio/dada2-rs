@@ -975,6 +975,7 @@ fn main() -> io::Result<()> {
             threads,
             output,
             compact,
+            diag_dir,
             verbose,
         } => {
             let err_fun = match errfun.as_str() {
@@ -1045,8 +1046,12 @@ fn main() -> io::Result<()> {
                 );
             }
 
+            if let Some(ref dir) = diag_dir {
+                std::fs::create_dir_all(dir)?;
+            }
+
             let result = pool.install(|| {
-                learn_errors(all_inputs, &err_fun, dada_params, &align_params, max_consist, verbose)
+                learn_errors(all_inputs, &err_fun, dada_params, &align_params, max_consist, verbose, diag_dir.as_deref())
             })?;
 
             #[derive(Serialize)]
@@ -1108,6 +1113,7 @@ fn main() -> io::Result<()> {
             threads,
             output,
             compact,
+            diag_dir,
             verbose,
         } => {
             let err_fun = match errfun.as_str() {
@@ -1169,8 +1175,13 @@ fn main() -> io::Result<()> {
                 .build()
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             let all_inputs = load_fastq_samples(&input, nbases, randomize, seed, phred_offset, &pool, verbose)?;
+
+            if let Some(ref dir) = diag_dir {
+                std::fs::create_dir_all(dir)?;
+            }
+
             let result = pool.install(|| {
-                learn_errors(all_inputs, &err_fun, dada_params, &align_params, max_consist, verbose)
+                learn_errors(all_inputs, &err_fun, dada_params, &align_params, max_consist, verbose, diag_dir.as_deref())
             })?;
 
             // Serialize: represent the three matrices as Vec<Vec<T>> (16 rows × nq cols).

@@ -13,10 +13,10 @@
 
 use std::fs::File;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use flate2::read::MultiGzDecoder;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::containers::Raw;
 use crate::dada::{DadaParams, RawInput, dada_uniques};
@@ -345,6 +345,37 @@ fn build_trans_mat(
 // Public entry point
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Per-iteration diagnostics
+// ---------------------------------------------------------------------------
+
+/// Cluster-count summary for one sample in one iteration.
+#[derive(Serialize)]
+struct SampleIterDiag {
+    sample: usize,
+    n_clusters: usize,
+    total_reads: u32,
+    n_initial: usize,
+    n_abundance: usize,
+    n_prior: usize,
+    n_singleton: usize,
+    nalign: u32,
+    nshroud: u32,
+}
+
+/// Written to `<diag_dir>/iter_NNN.json` after each full iteration.
+#[derive(Serialize)]
+struct IterDiag {
+    iter: usize,
+    converged: bool,
+    max_delta: f64,
+    samples: Vec<SampleIterDiag>,
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
 /// Learn an error model from pre-loaded dereplicated samples.
 ///
 /// # Arguments
@@ -354,6 +385,8 @@ fn build_trans_mat(
 /// - `align_params`  — NW alignment parameters
 /// - `max_consist`   — maximum self-consistency iterations (R default: 10)
 /// - `verbose`       — print progress to stderr
+/// - `diag_dir`      — if `Some`, write per-iteration cluster diagnostics as
+///                     `iter_001.json`, `iter_002.json`, … into this directory
 ///
 /// # Returns
 /// [`LearnErrorsResult`] with transition counts and error-rate matrices, or an I/O error.
@@ -364,6 +397,7 @@ pub fn learn_errors(
     align_params: &AlignParams,
     max_consist: usize,
     verbose: bool,
+    diag_dir: Option<&Path>,
 ) -> io::Result<LearnErrorsResult> {
     if all_inputs.is_empty() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "No input samples provided"));
@@ -395,6 +429,7 @@ pub fn learn_errors(
 
         // ---- Run DADA on each sample ----
         let mut sample_trans_pairs: Vec<(Vec<u32>, usize)> = Vec::new();
+        let mut sample_diags: Vec<SampleIterDiag> = Vec::new();
 
         for (si, inputs) in all_inputs.iter().enumerate() {
             dada_params.err_mat = err.clone();
@@ -405,13 +440,37 @@ pub fn learn_errors(
                     sample_trans_pairs.push((t, nq));
 
                     if verbose {
-                        let nclusters = result.clusters.len();
                         eprintln!(
                             "[learn_errors] iter={} sample={}: {} cluster(s)",
                             iter + 1,
                             si + 1,
-                            nclusters,
+                            result.clusters.len(),
                         );
+                    }
+
+                    if diag_dir.is_some() {
+                        use crate::containers::BirthType;
+                        let total_reads = result.clusters.iter().map(|c| c.reads).sum();
+                        let mut diag = SampleIterDiag {
+                            sample: si + 1,
+                            n_clusters: result.clusters.len(),
+                            total_reads,
+                            n_initial:   0,
+                            n_abundance: 0,
+                            n_prior:     0,
+                            n_singleton: 0,
+                            nalign:  result.nalign,
+                            nshroud: result.nshroud,
+                        };
+                        for c in &result.clusters {
+                            match c.birth_type {
+                                BirthType::Initial   => diag.n_initial   += 1,
+                                BirthType::Abundance => diag.n_abundance += 1,
+                                BirthType::Prior     => diag.n_prior     += 1,
+                                BirthType::Singleton => diag.n_singleton += 1,
+                            }
+                        }
+                        sample_diags.push(diag);
                     }
                 }
                 Err(e) => {
@@ -453,6 +512,8 @@ pub fn learn_errors(
             .map(|(&a, &b)| (a - b).abs())
             .fold(0.0f64, f64::max);
 
+        let iter_converged = max_delta < CONVERGENCE_TOL;
+
         if verbose {
             eprintln!(
                 "[learn_errors] iter={}: max |err_in - err_out| = {:.2e}",
@@ -461,11 +522,28 @@ pub fn learn_errors(
             );
         }
 
+        // ---- Write per-iteration diagnostics ----
+        if let Some(dir) = diag_dir {
+            let diag = IterDiag {
+                iter: iter + 1,
+                converged: iter_converged,
+                max_delta,
+                samples: sample_diags,
+            };
+            let path = dir.join(format!("iter_{:03}.json", iter + 1));
+            let json = serde_json::to_string_pretty(&diag)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            std::fs::write(&path, json)?;
+            if verbose {
+                eprintln!("[learn_errors] diagnostics written to {}", path.display());
+            }
+        }
+
         err_in_final = err.clone();
         trans_final = acc_trans;
         err_out_final = new_err.clone();
 
-        if max_delta < CONVERGENCE_TOL {
+        if iter_converged {
             converged = true;
             if verbose {
                 eprintln!("[learn_errors] converged after {} iteration(s)", iter + 1);
