@@ -94,29 +94,37 @@ pub fn b_compare_parallel(
     let use_quals = b.use_quals;
 
     // Read-only parallel pass over raws.
-    // `u32::MAX` is used as a "null sub" sentinel for hamming.
+    //
+    // Each result carries:
+    //   lambda  — error-model probability
+    //   hamming — substitution count (u32::MAX = kmer-shrouded / no alignment)
+    //   skipped — true when greedy mode skipped this raw entirely
     let raws = b.raws.as_slice();
-    let comps: Vec<(f64, u32)> = (0..nraw)
+    let comps: Vec<(f64, u32, bool)> = (0..nraw)
         .into_par_iter()
         .map(|index| {
             let raw = &raws[index];
-            let sub = if greedy && (raw.reads > center_reads || raw.lock) {
-                None
+            if greedy && (raw.reads > center_reads || raw.lock) {
+                let lambda = compute_lambda(raw, None, err_mat, ncol, use_quals);
+                (lambda, u32::MAX, true)
             } else {
-                sub_new(&raws[center_idx], raw, params)
-            };
-            let lambda = compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
-            let hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
-            (lambda, hamming)
+                let sub = sub_new(&raws[center_idx], raw, params);
+                let lambda = compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
+                let hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
+                (lambda, hamming, false)
+            }
         })
         .collect();
 
     // Serial post-processing: selectively store comparisons.
     let total_reads = b.reads as f64;
-    for (index, (lambda, hamming)) in comps.into_iter().enumerate() {
-        b.nalign += 1;
-        if hamming == u32::MAX {
-            b.nshroud += 1;
+    for (index, (lambda, hamming, skipped)) in comps.into_iter().enumerate() {
+        // Match serial b_compare counting: only count non-skipped raws.
+        if !skipped {
+            b.nalign += 1;
+            if hamming == u32::MAX {
+                b.nshroud += 1;
+            }
         }
 
         if index == center_idx {

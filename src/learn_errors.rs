@@ -16,6 +16,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use flate2::read::MultiGzDecoder;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::containers::Raw;
@@ -428,15 +429,33 @@ pub fn learn_errors(
         iterations = iter + 1;
 
         // ---- Run DADA on each sample ----
+        // Set the error matrix once per iteration (shared across all samples).
+        dada_params.err_mat = err.clone();
+
+        // Parallel pass: each sample runs dada_uniques independently.
+        // Rayon's work-stealing distributes threads across samples; if only
+        // one sample exists all threads serve its inner b_compare_parallel.
+        let collect_diags = diag_dir.is_some();
+        let sample_results: Vec<(usize, Result<(Vec<u32>, crate::dada::DadaResult), String>)> =
+            all_inputs
+                .par_iter()
+                .enumerate()
+                .map(|(si, inputs)| {
+                    let outcome = dada_uniques(inputs, &dada_params).map(|result| {
+                        let t = build_trans_mat(inputs, &result, align_params, nq);
+                        (t, result)
+                    });
+                    (si, outcome)
+                })
+                .collect();
+
+        // Serial post-processing: logging and diagnostics.
         let mut sample_trans_pairs: Vec<(Vec<u32>, usize)> = Vec::new();
         let mut sample_diags: Vec<SampleIterDiag> = Vec::new();
 
-        for (si, inputs) in all_inputs.iter().enumerate() {
-            dada_params.err_mat = err.clone();
-
-            match dada_uniques(inputs, &dada_params) {
-                Ok(result) => {
-                    let t = build_trans_mat(inputs, &result, align_params, nq);
+        for (si, outcome) in sample_results {
+            match outcome {
+                Ok((t, result)) => {
                     sample_trans_pairs.push((t, nq));
 
                     if verbose {
@@ -448,7 +467,7 @@ pub fn learn_errors(
                         );
                     }
 
-                    if diag_dir.is_some() {
+                    if collect_diags {
                         use crate::containers::BirthType;
                         let total_reads = result.clusters.iter().map(|c| c.reads).sum();
                         let mut diag = SampleIterDiag {

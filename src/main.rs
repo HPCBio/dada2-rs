@@ -224,7 +224,7 @@ fn main() -> io::Result<()> {
                 kdist_cutoff: 0.42,
                 band: 16,
                 vectorized: true,
-                gapless: false,
+                gapless: true,
             };
 
             let dada_params = dada::DadaParams {
@@ -247,7 +247,7 @@ fn main() -> io::Result<()> {
             };
 
             // ---- Run DADA2 ----
-            let result = dada::dada_uniques(&raw_inputs, &dada_params)
+            let result = pool.install(|| dada::dada_uniques(&raw_inputs, &dada_params))
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
             if verbose {
@@ -1010,7 +1010,7 @@ fn main() -> io::Result<()> {
                 kdist_cutoff: 0.42,
                 band: 16,
                 vectorized: true,
-                gapless: false,
+                gapless: true,
             };
 
             let dada_params = dada::DadaParams {
@@ -1148,7 +1148,7 @@ fn main() -> io::Result<()> {
                 kdist_cutoff: 0.42,
                 band: 16,
                 vectorized: true,
-                gapless: false,
+                gapless: true,
             };
 
             let dada_params = dada::DadaParams {
