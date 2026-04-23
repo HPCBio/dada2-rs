@@ -7,7 +7,8 @@
 
 use rayon::prelude::*;
 
-use crate::chimera::{is_bimera, table_bimera2};
+use crate::chimera::{is_bimera_with_buf, table_bimera2};
+use crate::nwalign::AlignBuffers;
 use crate::sequence_table::SequenceTable;
 
 // ---------------------------------------------------------------------------
@@ -157,7 +158,7 @@ fn pooled_flags(
 
     (0..ncol)
         .into_par_iter()
-        .map(|j| {
+        .map_init(AlignBuffers::new, |buf, j| {
             let abund = pooled[j];
             if abund == 0 {
                 return false;
@@ -176,7 +177,7 @@ fn pooled_flags(
                 return false;
             }
 
-            is_bimera(
+            is_bimera_with_buf(
                 seqs[j],
                 &parents,
                 p.allow_one_off,
@@ -185,6 +186,7 @@ fn pooled_flags(
                 p.mismatch,
                 p.gap_p,
                 p.max_shift,
+                buf,
             )
         })
         .collect()
@@ -198,6 +200,7 @@ fn per_sample_cell_flags(
     seqs: &[&[u8]],
     p: &BimeraParams,
 ) -> Vec<Vec<bool>> {
+    let mut buf = AlignBuffers::new();
     (0..nrow)
         .map(|i| {
             (0..ncol)
@@ -221,7 +224,7 @@ fn per_sample_cell_flags(
                         return false;
                     }
 
-                    is_bimera(
+                    is_bimera_with_buf(
                         seqs[j],
                         &parents,
                         p.allow_one_off,
@@ -230,6 +233,7 @@ fn per_sample_cell_flags(
                         p.mismatch,
                         p.gap_p,
                         p.max_shift,
+                        &mut buf,
                     )
                 })
                 .collect()

@@ -9,7 +9,7 @@
 
 use rayon::prelude::*;
 
-use crate::nwalign::align_vectorized;
+use crate::nwalign::{align_vectorized_with_buf, AlignBuffers};
 
 // ---------------------------------------------------------------------------
 // Private alignment helpers
@@ -176,6 +176,25 @@ pub fn is_bimera(
     gap_p: i16,
     max_shift: i32,
 ) -> bool {
+    let mut buf = AlignBuffers::new();
+    is_bimera_with_buf(
+        sq, parents, allow_one_off, min_one_off_par_dist,
+        match_score, mismatch, gap_p, max_shift, &mut buf,
+    )
+}
+
+/// Buffer-reusing variant of [`is_bimera`]. See [`AlignBuffers`].
+pub fn is_bimera_with_buf(
+    sq: &[u8],
+    parents: &[&[u8]],
+    allow_one_off: bool,
+    min_one_off_par_dist: usize,
+    match_score: i16,
+    mismatch: i16,
+    gap_p: i16,
+    max_shift: i32,
+    buf: &mut AlignBuffers,
+) -> bool {
     let sqlen = sq.len();
     let mut max_left = 0usize;
     let mut max_right = 0usize;
@@ -185,7 +204,7 @@ pub fn is_bimera(
     let mut oo_max_right_oo = 0usize;
 
     for &par in parents {
-        let al = align_vectorized(sq, par, match_score, mismatch, gap_p, 0, max_shift);
+        let al = align_vectorized_with_buf(sq, par, match_score, mismatch, gap_p, 0, max_shift, buf);
         let (left, right, left_oo, right_oo) = get_lr(&al, allow_one_off, max_shift as usize);
 
         // Skip identity / pure-shift / internal-indel parents.
@@ -270,7 +289,7 @@ pub fn table_bimera2(
 
     (0..ncol)
         .into_par_iter()
-        .map(|j| {
+        .map_init(AlignBuffers::new, |buf, j| {
             let sqlen = seqs[j].len();
             let mut nsam = 0u32;
             let mut nflag = 0u32;
@@ -301,9 +320,10 @@ pub fn table_bimera2(
 
                     // Compute alignment if not cached for this (j, k) pair.
                     if cache[k].is_none() {
-                        let al = align_vectorized(
+                        let al = align_vectorized_with_buf(
                             seqs[j], seqs[k],
                             match_score, mismatch, gap_p, 0, max_shift,
+                            buf,
                         );
                         let (left, right, left_oo, right_oo) =
                             get_lr(&al, allow_one_off, max_shift as usize);

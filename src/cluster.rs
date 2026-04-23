@@ -6,7 +6,7 @@
 use rayon::prelude::*;
 
 use crate::containers::{B, Bi, BirthType, Comparison};
-use crate::nwalign::{sub_new, AlignParams};
+use crate::nwalign::{sub_new_with_buf, AlignBuffers, AlignParams};
 use crate::pval::compute_lambda;
 
 // ---------------------------------------------------------------------------
@@ -33,13 +33,14 @@ pub fn b_compare(
         eprint!("C{i}LU:");
     }
 
+    let mut buf = AlignBuffers::new();
     for index in 0..b.raws.len() {
         let skip = greedy && (b.raws[index].reads > center_reads || b.raws[index].lock);
 
         let sub = if skip {
             None
         } else {
-            let s = sub_new(&b.raws[center_idx], &b.raws[index], params);
+            let s = sub_new_with_buf(&b.raws[center_idx], &b.raws[index], params, &mut buf);
             b.nalign += 1;
             if s.is_none() {
                 b.nshroud += 1;
@@ -102,13 +103,13 @@ pub fn b_compare_parallel(
     let raws = b.raws.as_slice();
     let comps: Vec<(f64, u32, bool)> = (0..nraw)
         .into_par_iter()
-        .map(|index| {
+        .map_init(AlignBuffers::new, |buf, index| {
             let raw = &raws[index];
             if greedy && (raw.reads > center_reads || raw.lock) {
                 let lambda = compute_lambda(raw, None, err_mat, ncol, use_quals);
                 (lambda, u32::MAX, true)
             } else {
-                let sub = sub_new(&raws[center_idx], raw, params);
+                let sub = sub_new_with_buf(&raws[center_idx], raw, params, buf);
                 let lambda = compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
                 let hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
                 (lambda, hamming, false)

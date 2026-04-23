@@ -26,7 +26,7 @@ use crate::error_models::{
     accumulate_trans, binned_qual_errfun, loess_errfun, noqual_errfun, pacbio_errfun,
 };
 use crate::misc::nt_encode;
-use crate::nwalign::{raw_align, AlignParams};
+use crate::nwalign::{raw_align_with_buf, AlignBuffers, AlignParams};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -292,6 +292,7 @@ fn build_trans_mat(
         .map(|c| Raw::new(c.sequence.clone(), None, 0, false))
         .collect();
 
+    let mut buf = AlignBuffers::new();
     for (i, inp) in inputs.iter().enumerate() {
         let ci = match result.map[i] {
             Some(ci) => ci,
@@ -308,7 +309,7 @@ fn build_trans_mat(
         let raw_center = &center_raws[ci];
 
         // Align center (ref = al[0]) against the raw (query = al[1]).
-        let al = match raw_align(raw_center, &raw_query, align_params) {
+        let al = match raw_align_with_buf(raw_center, &raw_query, align_params, &mut buf) {
             Some(a) => a,
             None => continue,
         };

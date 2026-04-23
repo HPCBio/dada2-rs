@@ -123,6 +123,18 @@ pub enum Commands {
         #[arg(long)]
         detect_singletons: bool,
 
+        /// Alignment band radius, matching R's `BAND_SIZE` parameter.
+        /// 16 = Illumina default. 32 = recommended for PacBio HiFi 16S amplicons
+        /// (per the DADA2 LRAS manuscript). -1 = unbanded (O(n²), rarely needed).
+        #[arg(long, default_value_t = 16, allow_hyphen_values = true)]
+        band: i32,
+
+        /// Homopolymer-run gap penalty. Matches R's `HOMOPOLYMER_GAP_PENALTY`;
+        /// PacBio pipelines typically set this closer to 0 (e.g. `-1`) because
+        /// homopolymer indels are the dominant error mode.
+        #[arg(long, default_value_t = -8, allow_hyphen_values = true)]
+        homo_gap_p: i32,
+
         /// Include a per-unique-to-ASV index map in the output
         #[arg(long)]
         show_map: bool,
@@ -563,6 +575,19 @@ pub enum Commands {
         #[arg(long)]
         detect_singletons: bool,
 
+        /// Alignment band radius, matching R's `BAND_SIZE` parameter.
+        /// 16 = Illumina default. 32 = recommended for PacBio HiFi 16S amplicons
+        /// (per the DADA2 LRAS manuscript). -1 = unbanded (O(n²), rarely needed).
+        #[arg(long, default_value_t = 16, allow_hyphen_values = true)]
+        band: i32,
+
+        /// Homopolymer-run gap penalty, matching R's `HOMOPOLYMER_GAP_PENALTY`.
+        /// -8 = default for both Illumina and PacBio HiFi. Lower values (closer
+        /// to 0) can help with older CLR or Nanopore data where homopolymer
+        /// indels dominate.
+        #[arg(long, default_value_t = -8, allow_hyphen_values = true)]
+        homo_gap_p: i32,
+
         /// Number of threads for parallel sample processing
         #[arg(long, default_value_t = 1)]
         threads: usize,
@@ -666,6 +691,19 @@ pub enum Commands {
         /// Use singleton detection (detect singletons as genuine)
         #[arg(long)]
         detect_singletons: bool,
+
+        /// Alignment band radius, matching R's `BAND_SIZE` parameter.
+        /// 16 = Illumina default. 32 = recommended for PacBio HiFi 16S amplicons
+        /// (per the DADA2 LRAS manuscript). -1 = unbanded (O(n²), rarely needed).
+        #[arg(long, default_value_t = 16, allow_hyphen_values = true)]
+        band: i32,
+
+        /// Homopolymer-run gap penalty, matching R's `HOMOPOLYMER_GAP_PENALTY`.
+        /// -8 = default for both Illumina and PacBio HiFi. Lower values (closer
+        /// to 0) can help with older CLR or Nanopore data where homopolymer
+        /// indels dominate.
+        #[arg(long, default_value_t = -8, allow_hyphen_values = true)]
+        homo_gap_p: i32,
 
         /// Number of threads for parallel sample processing
         #[arg(long, default_value_t = 1)]

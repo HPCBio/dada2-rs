@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::derep::dereplicate;
 use crate::misc::{intstr, nt_decode};
-use crate::nwalign::align_endsfree;
+use crate::nwalign::{align_endsfree_with_buf, AlignBuffers};
 
 // ---------------------------------------------------------------------------
 // Alignment constants (same as core DADA2 algorithm)
@@ -409,6 +409,7 @@ pub fn merge_sample(
     // ---- Attempt merge for each distinct pair ----
     let mut merged: Vec<MergedPair> = Vec::with_capacity(pair_counts.len());
     let mut accepted_pairs: u64 = 0;
+    let mut align_buf = AlignBuffers::new();
 
     for ((fi, ri), count) in &pair_counts {
         let fwd_seq = &fwd_dada.asvs[*fi].sequence;
@@ -437,7 +438,7 @@ pub fn merge_sample(
         let rev_enc = intstr(rc_rev.as_bytes());
 
         // Ends-free NW alignment (band = -1 → unbanded).
-        let al = align_endsfree(&fwd_enc, &rev_enc, MATCH_SCORE, MISMATCH, GAP_P, -1);
+        let al = align_endsfree_with_buf(&fwd_enc, &rev_enc, MATCH_SCORE, MISMATCH, GAP_P, -1, &mut align_buf);
 
         let ov = analyze_overlap(&al[0], &al[1]);
 
