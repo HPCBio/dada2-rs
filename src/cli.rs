@@ -100,7 +100,7 @@ pub enum Commands {
         omega_a: f64,
 
         /// Significance threshold for reads not corrected to any center (omega_c)
-        #[arg(long, default_value = "0")]
+        #[arg(long, default_value = "1e-40")]
         omega_c: f64,
 
         /// Significance threshold for prior-sequence splitting (omega_p)
@@ -540,7 +540,7 @@ pub enum Commands {
         omega_a: f64,
 
         /// Significance threshold for omega_c (reads not corrected to any center)
-        #[arg(long, default_value = "0")]
+        #[arg(long, default_value = "1e-40")]
         omega_c: f64,
 
         /// Significance threshold for prior-sequence splitting (omega_p)
@@ -644,7 +644,7 @@ pub enum Commands {
         omega_a: f64,
 
         /// Significance threshold for omega_c (reads not corrected to any center)
-        #[arg(long, default_value = "0")]
+        #[arg(long, default_value = "1e-40")]
         omega_c: f64,
 
         /// Significance threshold for prior-sequence splitting (omega_p)
