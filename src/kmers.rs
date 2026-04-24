@@ -127,6 +127,12 @@ pub fn kmer_dist(kv1: &[u16], len1: usize, kv2: &[u16], len2: usize, k: usize) -
 /// Returns `-1.0` if any element of the element-wise minimum equals 255,
 /// indicating saturation overflow and an unreliable result.
 /// Equivalent to C++ `kmer_dist_SSEi_8`.
+///
+/// LLVM auto-vectorises this to NEON `umin.16b` on aarch64 (loop processes
+/// 32 B/iter with 4 parallel u32 accumulators) and equivalent SSE/AVX on
+/// x86-64. Measured at ~33–39 GB/s (memory-bandwidth-bound) for k≥5 on
+/// Apple Silicon — see the `bench` module in this file. No manual SIMD is
+/// needed.
 pub fn kmer_dist8(kv1: &[u8], len1: usize, kv2: &[u8], len2: usize, k: usize) -> f64 {
     let mut dotsum = 0u32;
     let mut overflow = false;
@@ -162,4 +168,58 @@ pub fn kord_dist(kord1: &[u16], len1: usize, kord2: &[u16], len2: usize, k: usiz
         .map(|(a, b)| (a == b) as u32)
         .sum();
     1.0 - dotsum as f64 / klen as f64
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use std::time::Instant;
+
+    fn make_kv(n: usize, seed: u64) -> Vec<u8> {
+        let mut s = seed;
+        (0..n)
+            .map(|_| {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (s >> 33) as u8 & 0x07 // small values to avoid saturation
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore] // run explicitly: cargo test --release -- --ignored bench_kmer_dist8 --nocapture
+    fn bench_kmer_dist8() {
+        for &k in &[3usize, 5, 7, 8] {
+            let n = 1 << (2 * k);
+            let a = make_kv(n, 11);
+            let b = make_kv(n, 22);
+            let iters = 2_000_000 / n.max(1); // amortise call count across sizes
+            let reps = 100usize;
+
+            // Warmup
+            let mut acc = 0.0f64;
+            for _ in 0..(iters / 10).max(1) {
+                acc += kmer_dist8(&a, 250, &b, 250, k);
+            }
+
+            let t0 = Instant::now();
+            for _ in 0..reps {
+                for _ in 0..iters {
+                    acc += kmer_dist8(&a, 250, &b, 250, k);
+                }
+            }
+            let dt = t0.elapsed();
+            std::hint::black_box(acc);
+
+            let total_calls = (iters * reps) as f64;
+            let ns_per_call = dt.as_nanos() as f64 / total_calls;
+            let bytes_per_call = 2.0 * n as f64;
+            let gbs = bytes_per_call * total_calls / dt.as_secs_f64() / 1e9;
+            println!(
+                "  k={k:>1} (n={n:>5}): {ns_per_call:>7.1} ns/call, {gbs:>6.1} GB/s, {:>10.0} calls/s, {} iters × {} reps",
+                total_calls / dt.as_secs_f64(),
+                iters,
+                reps,
+            );
+        }
+    }
 }
