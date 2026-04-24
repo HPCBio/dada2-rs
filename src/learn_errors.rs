@@ -308,14 +308,12 @@ fn build_trans_mat(
         let raw_query = Raw::new(seq, Some(quals), inp.abundance, false);
         let raw_center = &center_raws[ci];
 
-        // Align center (ref = al[0]) against the raw (query = al[1]).
-        let al = match raw_align_with_buf(raw_center, &raw_query, align_params, &mut buf) {
-            Some(a) => a,
-            None => continue,
-        };
-
-        let al_ref = &al[0];
-        let al_qry = &al[1];
+        // Align center (ref = al0) against the raw (query = al1).
+        if raw_align_with_buf(raw_center, &raw_query, align_params, &mut buf).is_none() {
+            continue;
+        }
+        let al_ref: &[u8] = &buf.al0;
+        let al_qry: &[u8] = &buf.al1;
         let reads = inp.abundance;
         let mut qpos = 0usize; // position in original query sequence
 

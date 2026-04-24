@@ -49,6 +49,10 @@ pub struct AlignParams {
 ///
 /// One instance is not safe to share across threads; give each worker its own
 /// (see `rayon::iter::ParallelIterator::map_init`).
+///
+/// `al0`/`al1` hold the traceback output of the most recent alignment; the
+/// `_with_buf` functions write into them and callers read them in place to
+/// avoid per-alignment `Vec<u8>` allocations (~2× per `raw_align`).
 #[derive(Default)]
 pub struct AlignBuffers {
     // Scalar DP (align_endsfree, align_endsfree_homo, align_standard).
@@ -61,11 +65,20 @@ pub struct AlignBuffers {
     // Homopolymer masks (align_endsfree_homo).
     homo1: Vec<bool>,
     homo2: Vec<bool>,
+    // Traceback output. See struct doc.
+    pub al0: Vec<u8>,
+    pub al1: Vec<u8>,
 }
 
 impl AlignBuffers {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Borrow the most recent alignment output as a pair of slices.
+    #[inline]
+    pub fn alignment(&self) -> (&[u8], &[u8]) {
+        (&self.al0, &self.al1)
     }
 }
 
@@ -112,11 +125,20 @@ fn homopolymer_mask_into(seq: &[u8], mask: &mut Vec<bool>) {
     }
 }
 
-/// Trace back through the pointer matrix `p` and build the alignment pair.
+/// Trace back through the pointer matrix `p` and fill `al0`/`al1` with the
+/// alignment pair. Clears the buffers first so any prior alignment is
+/// overwritten; reuses the existing allocation.
 /// Shared by `align_endsfree`, `align_endsfree_homo`, and `align_standard`.
-fn traceback(p: &[u8], ncol: usize, s1: &[u8], s2: &[u8], len1: usize, len2: usize) -> [Vec<u8>; 2] {
-    let mut al0 = Vec::with_capacity(len1 + len2);
-    let mut al1 = Vec::with_capacity(len1 + len2);
+fn traceback_into(
+    p: &[u8], ncol: usize,
+    s1: &[u8], s2: &[u8],
+    len1: usize, len2: usize,
+    al0: &mut Vec<u8>, al1: &mut Vec<u8>,
+) {
+    al0.clear();
+    al1.clear();
+    al0.reserve(len1 + len2);
+    al1.reserve(len1 + len2);
     let mut i = len1;
     let mut j = len2;
     while i > 0 || j > 0 {
@@ -142,7 +164,6 @@ fn traceback(p: &[u8], ncol: usize, s1: &[u8], s2: &[u8], len1: usize, len2: usi
     }
     al0.reverse();
     al1.reverse();
-    [al0, al1]
 }
 
 /// Compute (lband, rband) adjusted for length difference.
@@ -184,15 +205,17 @@ fn fill_band_sentinels(d: &mut [i32], ncol: usize, len1: usize, len2: usize, lba
 /// Equivalent to C++ `nwalign_endsfree`.
 pub fn align_endsfree(s1: &[u8], s2: &[u8], match_score: i32, mismatch: i32, gap_p: i32, band: i32) -> [Vec<u8>; 2] {
     let mut buf = AlignBuffers::new();
-    align_endsfree_with_buf(s1, s2, match_score, mismatch, gap_p, band, &mut buf)
+    align_endsfree_with_buf(s1, s2, match_score, mismatch, gap_p, band, &mut buf);
+    [std::mem::take(&mut buf.al0), std::mem::take(&mut buf.al1)]
 }
 
-/// Buffer-reusing variant of [`align_endsfree`]. See [`AlignBuffers`].
+/// Buffer-reusing variant of [`align_endsfree`]. Fills `buf.al0`/`buf.al1`
+/// with the alignment pair; read them via `buf.alignment()` or the fields.
 pub fn align_endsfree_with_buf(
     s1: &[u8], s2: &[u8],
     match_score: i32, mismatch: i32, gap_p: i32, band: i32,
     buf: &mut AlignBuffers,
-) -> [Vec<u8>; 2] {
+) {
     let len1 = s1.len();
     let len2 = s2.len();
     let ncol = len2 + 1;
@@ -200,35 +223,37 @@ pub fn align_endsfree_with_buf(
 
     reset_buf(&mut buf.d32, nrow * ncol, 0i32);
     reset_buf(&mut buf.p32, nrow * ncol, 0u8);
-    let d = &mut buf.d32[..nrow * ncol];
-    let p = &mut buf.p32[..nrow * ncol];
+    {
+        let d = &mut buf.d32[..nrow * ncol];
+        let p = &mut buf.p32[..nrow * ncol];
 
-    // Initialise edges (ends-free: score 0).
-    for i in 0..=len1 { p[i * ncol] = 3; }
-    for j in 0..=len2 { p[j] = 2; }
+        // Initialise edges (ends-free: score 0).
+        for i in 0..=len1 { p[i * ncol] = 3; }
+        for j in 0..=len2 { p[j] = 2; }
 
-    let (lband, rband) = band_adjust(len1, len2, band);
-    fill_band_sentinels(d, ncol, len1, len2, lband, rband, band);
+        let (lband, rband) = band_adjust(len1, len2, band);
+        fill_band_sentinels(d, ncol, len1, len2, lband, rband, band);
 
-    for i in 1..=len1 {
-        let l = if band >= 0 { (i as i32 - lband).max(1) as usize } else { 1 };
-        let r = if band >= 0 { (i as i32 + rband).min(len2 as i32) as usize } else { len2 };
-        for j in l..=r {
-            let left = if i == len1 { d[i * ncol + j - 1] } else { d[i * ncol + j - 1] + gap_p };
-            let up   = if j == len2 { d[(i - 1) * ncol + j] } else { d[(i - 1) * ncol + j] + gap_p };
-            let diag = d[(i - 1) * ncol + j - 1]
-                + if s1[i - 1] == s2[j - 1] { match_score } else { mismatch };
+        for i in 1..=len1 {
+            let l = if band >= 0 { (i as i32 - lband).max(1) as usize } else { 1 };
+            let r = if band >= 0 { (i as i32 + rband).min(len2 as i32) as usize } else { len2 };
+            for j in l..=r {
+                let left = if i == len1 { d[i * ncol + j - 1] } else { d[i * ncol + j - 1] + gap_p };
+                let up   = if j == len2 { d[(i - 1) * ncol + j] } else { d[(i - 1) * ncol + j] + gap_p };
+                let diag = d[(i - 1) * ncol + j - 1]
+                    + if s1[i - 1] == s2[j - 1] { match_score } else { mismatch };
 
-            if up >= diag && up >= left {
-                d[i * ncol + j] = up;   p[i * ncol + j] = 3;
-            } else if left >= diag {
-                d[i * ncol + j] = left; p[i * ncol + j] = 2;
-            } else {
-                d[i * ncol + j] = diag; p[i * ncol + j] = 1;
+                if up >= diag && up >= left {
+                    d[i * ncol + j] = up;   p[i * ncol + j] = 3;
+                } else if left >= diag {
+                    d[i * ncol + j] = left; p[i * ncol + j] = 2;
+                } else {
+                    d[i * ncol + j] = diag; p[i * ncol + j] = 1;
+                }
             }
         }
     }
-    traceback(p, ncol, s1, s2, len1, len2)
+    traceback_into(&buf.p32[..nrow * ncol], ncol, s1, s2, len1, len2, &mut buf.al0, &mut buf.al1);
 }
 
 // ---------------------------------------------------------------------------
@@ -246,17 +271,18 @@ pub fn align_endsfree_homo(
     band: i32,
 ) -> [Vec<u8>; 2] {
     let mut buf = AlignBuffers::new();
-    align_endsfree_homo_with_buf(s1, s2, match_score, mismatch, gap_p, homo_gap_p, band, &mut buf)
+    align_endsfree_homo_with_buf(s1, s2, match_score, mismatch, gap_p, homo_gap_p, band, &mut buf);
+    [std::mem::take(&mut buf.al0), std::mem::take(&mut buf.al1)]
 }
 
-/// Buffer-reusing variant of [`align_endsfree_homo`]. See [`AlignBuffers`].
+/// Buffer-reusing variant of [`align_endsfree_homo`]. Fills `buf.al0`/`buf.al1`.
 pub fn align_endsfree_homo_with_buf(
     s1: &[u8], s2: &[u8],
     match_score: i32, mismatch: i32,
     gap_p: i32, homo_gap_p: i32,
     band: i32,
     buf: &mut AlignBuffers,
-) -> [Vec<u8>; 2] {
+) {
     let len1 = s1.len();
     let len2 = s2.len();
     let ncol = len2 + 1;
@@ -264,51 +290,52 @@ pub fn align_endsfree_homo_with_buf(
 
     homopolymer_mask_into(s1, &mut buf.homo1);
     homopolymer_mask_into(s2, &mut buf.homo2);
-    let homo1 = &buf.homo1[..len1];
-    let homo2 = &buf.homo2[..len2];
-
     reset_buf(&mut buf.d32, nrow * ncol, 0i32);
     reset_buf(&mut buf.p32, nrow * ncol, 0u8);
-    let d = &mut buf.d32[..nrow * ncol];
-    let p = &mut buf.p32[..nrow * ncol];
+    {
+        let homo1 = &buf.homo1[..len1];
+        let homo2 = &buf.homo2[..len2];
+        let d = &mut buf.d32[..nrow * ncol];
+        let p = &mut buf.p32[..nrow * ncol];
 
-    for i in 0..=len1 { p[i * ncol] = 3; }
-    for j in 0..=len2 { p[j] = 2; }
+        for i in 0..=len1 { p[i * ncol] = 3; }
+        for j in 0..=len2 { p[j] = 2; }
 
-    let (lband, rband) = band_adjust(len1, len2, band);
-    fill_band_sentinels(d, ncol, len1, len2, lband, rband, band);
+        let (lband, rband) = band_adjust(len1, len2, band);
+        fill_band_sentinels(d, ncol, len1, len2, lband, rband, band);
 
-    for i in 1..=len1 {
-        let l = if band >= 0 { (i as i32 - lband).max(1) as usize } else { 1 };
-        let r = if band >= 0 { (i as i32 + rband).min(len2 as i32) as usize } else { len2 };
-        for j in l..=r {
-            let left = if i == len1 {
-                d[i * ncol + j - 1]
-            } else if homo2[j - 1] {
-                d[i * ncol + j - 1] + homo_gap_p
-            } else {
-                d[i * ncol + j - 1] + gap_p
-            };
-            let up = if j == len2 {
-                d[(i - 1) * ncol + j]
-            } else if homo1[i - 1] {
-                d[(i - 1) * ncol + j] + homo_gap_p
-            } else {
-                d[(i - 1) * ncol + j] + gap_p
-            };
-            let diag = d[(i - 1) * ncol + j - 1]
-                + if s1[i - 1] == s2[j - 1] { match_score } else { mismatch };
+        for i in 1..=len1 {
+            let l = if band >= 0 { (i as i32 - lband).max(1) as usize } else { 1 };
+            let r = if band >= 0 { (i as i32 + rband).min(len2 as i32) as usize } else { len2 };
+            for j in l..=r {
+                let left = if i == len1 {
+                    d[i * ncol + j - 1]
+                } else if homo2[j - 1] {
+                    d[i * ncol + j - 1] + homo_gap_p
+                } else {
+                    d[i * ncol + j - 1] + gap_p
+                };
+                let up = if j == len2 {
+                    d[(i - 1) * ncol + j]
+                } else if homo1[i - 1] {
+                    d[(i - 1) * ncol + j] + homo_gap_p
+                } else {
+                    d[(i - 1) * ncol + j] + gap_p
+                };
+                let diag = d[(i - 1) * ncol + j - 1]
+                    + if s1[i - 1] == s2[j - 1] { match_score } else { mismatch };
 
-            if up >= diag && up >= left {
-                d[i * ncol + j] = up;   p[i * ncol + j] = 3;
-            } else if left >= diag {
-                d[i * ncol + j] = left; p[i * ncol + j] = 2;
-            } else {
-                d[i * ncol + j] = diag; p[i * ncol + j] = 1;
+                if up >= diag && up >= left {
+                    d[i * ncol + j] = up;   p[i * ncol + j] = 3;
+                } else if left >= diag {
+                    d[i * ncol + j] = left; p[i * ncol + j] = 2;
+                } else {
+                    d[i * ncol + j] = diag; p[i * ncol + j] = 1;
+                }
             }
         }
     }
-    traceback(p, ncol, s1, s2, len1, len2)
+    traceback_into(&buf.p32[..nrow * ncol], ncol, s1, s2, len1, len2, &mut buf.al0, &mut buf.al1);
 }
 
 // ---------------------------------------------------------------------------
@@ -320,16 +347,17 @@ pub fn align_endsfree_homo_with_buf(
 #[allow(dead_code)]
 pub fn align_standard(s1: &[u8], s2: &[u8], match_score: i32, mismatch: i32, gap_p: i32, band: i32) -> [Vec<u8>; 2] {
     let mut buf = AlignBuffers::new();
-    align_standard_with_buf(s1, s2, match_score, mismatch, gap_p, band, &mut buf)
+    align_standard_with_buf(s1, s2, match_score, mismatch, gap_p, band, &mut buf);
+    [std::mem::take(&mut buf.al0), std::mem::take(&mut buf.al1)]
 }
 
-/// Buffer-reusing variant of [`align_standard`]. See [`AlignBuffers`].
+/// Buffer-reusing variant of [`align_standard`]. Fills `buf.al0`/`buf.al1`.
 #[allow(dead_code)]
 pub fn align_standard_with_buf(
     s1: &[u8], s2: &[u8],
     match_score: i32, mismatch: i32, gap_p: i32, band: i32,
     buf: &mut AlignBuffers,
-) -> [Vec<u8>; 2] {
+) {
     let len1 = s1.len();
     let len2 = s2.len();
     let ncol = len2 + 1;
@@ -337,34 +365,36 @@ pub fn align_standard_with_buf(
 
     reset_buf(&mut buf.d32, nrow * ncol, 0i32);
     reset_buf(&mut buf.p32, nrow * ncol, 0u8);
-    let d = &mut buf.d32[..nrow * ncol];
-    let p = &mut buf.p32[..nrow * ncol];
+    {
+        let d = &mut buf.d32[..nrow * ncol];
+        let p = &mut buf.p32[..nrow * ncol];
 
-    for i in 1..=len1 { d[i * ncol] = d[(i - 1) * ncol] + gap_p; p[i * ncol] = 3; }
-    for j in 1..=len2 { d[j] = d[j - 1] + gap_p; p[j] = 2; }
+        for i in 1..=len1 { d[i * ncol] = d[(i - 1) * ncol] + gap_p; p[i * ncol] = 3; }
+        for j in 1..=len2 { d[j] = d[j - 1] + gap_p; p[j] = 2; }
 
-    let (lband, rband) = band_adjust(len1, len2, band);
-    fill_band_sentinels(d, ncol, len1, len2, lband, rband, band);
+        let (lband, rband) = band_adjust(len1, len2, band);
+        fill_band_sentinels(d, ncol, len1, len2, lband, rband, band);
 
-    for i in 1..=len1 {
-        let l = if band >= 0 { (i as i32 - lband).max(1) as usize } else { 1 };
-        let r = if band >= 0 { (i as i32 + rband).min(len2 as i32) as usize } else { len2 };
-        for j in l..=r {
-            let left = d[i * ncol + j - 1] + gap_p;
-            let up   = d[(i - 1) * ncol + j] + gap_p;
-            let diag = d[(i - 1) * ncol + j - 1]
-                + if s1[i - 1] == s2[j - 1] { match_score } else { mismatch };
+        for i in 1..=len1 {
+            let l = if band >= 0 { (i as i32 - lband).max(1) as usize } else { 1 };
+            let r = if band >= 0 { (i as i32 + rband).min(len2 as i32) as usize } else { len2 };
+            for j in l..=r {
+                let left = d[i * ncol + j - 1] + gap_p;
+                let up   = d[(i - 1) * ncol + j] + gap_p;
+                let diag = d[(i - 1) * ncol + j - 1]
+                    + if s1[i - 1] == s2[j - 1] { match_score } else { mismatch };
 
-            if up >= diag && up >= left {
-                d[i * ncol + j] = up;   p[i * ncol + j] = 3;
-            } else if left >= diag {
-                d[i * ncol + j] = left; p[i * ncol + j] = 2;
-            } else {
-                d[i * ncol + j] = diag; p[i * ncol + j] = 1;
+                if up >= diag && up >= left {
+                    d[i * ncol + j] = up;   p[i * ncol + j] = 3;
+                } else if left >= diag {
+                    d[i * ncol + j] = left; p[i * ncol + j] = 2;
+                } else {
+                    d[i * ncol + j] = diag; p[i * ncol + j] = 1;
+                }
             }
         }
     }
-    traceback(p, ncol, s1, s2, len1, len2)
+    traceback_into(&buf.p32[..nrow * ncol], ncol, s1, s2, len1, len2, &mut buf.al0, &mut buf.al1);
 }
 
 // ---------------------------------------------------------------------------
@@ -375,10 +405,22 @@ pub fn align_standard_with_buf(
 /// Shorter sequence is padded with gaps on the right.
 /// Equivalent to C++ `nwalign_gapless`.
 pub fn align_gapless(s1: &[u8], s2: &[u8]) -> [Vec<u8>; 2] {
+    let mut buf = AlignBuffers::new();
+    align_gapless_with_buf(s1, s2, &mut buf);
+    [std::mem::take(&mut buf.al0), std::mem::take(&mut buf.al1)]
+}
+
+/// Buffer-reusing variant of [`align_gapless`]. Fills `buf.al0`/`buf.al1`.
+pub fn align_gapless_with_buf(s1: &[u8], s2: &[u8], buf: &mut AlignBuffers) {
     let len = s1.len().max(s2.len());
-    let al0 = (0..len).map(|i| if i < s1.len() { s1[i] } else { b'-' }).collect();
-    let al1 = (0..len).map(|i| if i < s2.len() { s2[i] } else { b'-' }).collect();
-    [al0, al1]
+    buf.al0.clear();
+    buf.al1.clear();
+    buf.al0.reserve(len);
+    buf.al1.reserve(len);
+    for i in 0..len {
+        buf.al0.push(if i < s1.len() { s1[i] } else { b'-' });
+        buf.al1.push(if i < s2.len() { s2[i] } else { b'-' });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -434,17 +476,20 @@ pub fn align_vectorized(
     band: i32,
 ) -> [Vec<u8>; 2] {
     let mut buf = AlignBuffers::new();
-    align_vectorized_with_buf(s1_in, s2_in, match_score, mismatch, gap_p, end_gap_p, band, &mut buf)
+    align_vectorized_with_buf(s1_in, s2_in, match_score, mismatch, gap_p, end_gap_p, band, &mut buf);
+    [std::mem::take(&mut buf.al0), std::mem::take(&mut buf.al1)]
 }
 
-/// Buffer-reusing variant of [`align_vectorized`]. See [`AlignBuffers`].
+/// Buffer-reusing variant of [`align_vectorized`]. Fills `buf.al0`/`buf.al1`
+/// in the order of the original `s1_in`/`s2_in` inputs (internal swap is
+/// undone before returning).
 pub fn align_vectorized_with_buf(
     s1_in: &[u8], s2_in: &[u8],
     match_score: i16, mismatch: i16,
     gap_p: i16, end_gap_p: i16,
     band: i32,
     buf: &mut AlignBuffers,
-) -> [Vec<u8>; 2] {
+) {
     // Ensure s1 is the shorter sequence; record whether we swapped.
     let swap = s1_in.len() > s2_in.len();
     let (s1, s2) = if swap { (s2_in, s1_in) } else { (s1_in, s2_in) };
@@ -674,11 +719,18 @@ pub fn align_vectorized_with_buf(
     }
 
     // --- Traceback through compressed p matrix ---
-    let mut al0 = Vec::with_capacity(len1 + len2);
-    let mut al1 = Vec::with_capacity(len1 + len2);
+    // Reborrow via disjoint fields: p16 (shared) + al0/al1 (mutable each) are
+    // three distinct fields of `buf`, so NLL permits holding them simultaneously.
+    let p_ro = &buf.p16[..ncol * nrow];
+    let al0 = &mut buf.al0;
+    let al1 = &mut buf.al1;
+    al0.clear();
+    al1.clear();
+    al0.reserve(len1 + len2);
+    al1.reserve(len1 + len2);
+
     let mut i = len1;
     let mut j = len2;
-
     while i > 0 || j > 0 {
         // Compressed column: (2*start_col + j - i) / 2  (C-style truncating division).
         // j - i can be odd, which is why C++ just truncates — the correct column
@@ -687,7 +739,7 @@ pub fn align_vectorized_with_buf(
         debug_assert!(col_signed >= 0,
             "vectorized traceback: col_signed={col_signed} < 0 at i={i} j={j}");
         let col = (col_signed / 2) as usize;
-        match p[(i + j) * ncol + col] {
+        match p_ro[(i + j) * ncol + col] {
             1 => {
                 al0.push(s1[i - 1]);
                 al1.push(s2[j - 1]);
@@ -710,8 +762,8 @@ pub fn align_vectorized_with_buf(
     al0.reverse();
     al1.reverse();
 
-    // Restore original sequence ordering if we swapped.
-    if swap { [al1, al0] } else { [al0, al1] }
+    // Restore original input ordering if we swapped the DP inputs.
+    if swap { std::mem::swap(&mut buf.al0, &mut buf.al1); }
 }
 
 // ---------------------------------------------------------------------------
@@ -720,14 +772,13 @@ pub fn align_vectorized_with_buf(
 
 /// Convert an alignment pair into a `Sub` (compressed substitution record).
 ///
-/// Records substitutions of `al[1]` relative to `al[0]`, ignoring positions
+/// Records substitutions of `al1` relative to `al0`, ignoring positions
 /// where either strand has an N (encoded 5).  `Sub::q0`/`Sub::q1` are left
 /// empty; fill them via `sub_new` if quality scores are needed.
 /// Equivalent to C++ `al2subs`.
-pub fn al2subs(al: &[Vec<u8>; 2]) -> Sub {
-    let al0 = &al[0];
-    let al1 = &al[1];
+pub fn al2subs(al0: &[u8], al1: &[u8]) -> Sub {
     let alen = al0.len();
+    debug_assert_eq!(al0.len(), al1.len());
 
     // First pass: count reference length and substitution count.
     let mut len0 = 0u32;
@@ -779,14 +830,16 @@ pub fn al2subs(al: &[Vec<u8>; 2]) -> Sub {
 /// Equivalent to C++ `raw_align`.
 pub fn raw_align(raw1: &Raw, raw2: &Raw, p: &AlignParams) -> Option<[Vec<u8>; 2]> {
     let mut buf = AlignBuffers::new();
-    raw_align_with_buf(raw1, raw2, p, &mut buf)
+    raw_align_with_buf(raw1, raw2, p, &mut buf)?;
+    Some([std::mem::take(&mut buf.al0), std::mem::take(&mut buf.al1)])
 }
 
-/// Buffer-reusing variant of [`raw_align`]. See [`AlignBuffers`].
+/// Buffer-reusing variant of [`raw_align`]. On `Some(())`, the alignment is
+/// in `buf.al0`/`buf.al1` (read via `buf.alignment()`).
 pub fn raw_align_with_buf(
     raw1: &Raw, raw2: &Raw, p: &AlignParams,
     buf: &mut AlignBuffers,
-) -> Option<[Vec<u8>; 2]> {
+) -> Option<()> {
     // --- K-mer screening ---
     let mut kdist = 0.0f64;
     let mut kodist = -1.0f64; // sentinel: different from kdist when use_kmers=false
@@ -823,7 +876,8 @@ pub fn raw_align_with_buf(
 
     // --- Method selection ---
     if p.band == 0 || (p.gapless && (kodist - kdist).abs() < f64::EPSILON) {
-        return Some(align_gapless(&raw1.seq, &raw2.seq));
+        align_gapless_with_buf(&raw1.seq, &raw2.seq, buf);
+        return Some(());
     }
     // Long-read guard: align_vectorized uses i16 DP tables. With the default
     // DADA2 scoring (match=5, mismatch=-4, gap_p=-8) cumulative scores can
@@ -832,22 +886,25 @@ pub fn raw_align_with_buf(
     const VECTORIZED_MAX_LEN: usize = 3500;
     let too_long = raw1.len() > VECTORIZED_MAX_LEN || raw2.len() > VECTORIZED_MAX_LEN;
     if p.vectorized && !too_long {
-        return Some(align_vectorized_with_buf(
+        align_vectorized_with_buf(
             &raw1.seq, &raw2.seq,
             p.match_score as i16, p.mismatch as i16, p.gap_p as i16,
             0, // end_gap_p = 0 for ends-free
             p.band,
             buf,
-        ));
+        );
+        return Some(());
     }
     if p.homo_gap_p != p.gap_p && p.homo_gap_p <= 0 {
-        return Some(align_endsfree_homo_with_buf(
+        align_endsfree_homo_with_buf(
             &raw1.seq, &raw2.seq,
             p.match_score, p.mismatch, p.gap_p, p.homo_gap_p, p.band,
             buf,
-        ));
+        );
+        return Some(());
     }
-    Some(align_endsfree_with_buf(&raw1.seq, &raw2.seq, p.match_score, p.mismatch, p.gap_p, p.band, buf))
+    align_endsfree_with_buf(&raw1.seq, &raw2.seq, p.match_score, p.mismatch, p.gap_p, p.band, buf);
+    Some(())
 }
 
 /// Align two `Raw` objects and return the compressed substitution record,
@@ -866,8 +923,8 @@ pub fn sub_new_with_buf(
     raw0: &Raw, raw1: &Raw, params: &AlignParams,
     buf: &mut AlignBuffers,
 ) -> Option<Sub> {
-    let al = raw_align_with_buf(raw0, raw1, params, buf)?;
-    let mut sub = al2subs(&al);
+    raw_align_with_buf(raw0, raw1, params, buf)?;
+    let mut sub = al2subs(&buf.al0, &buf.al1);
 
     if let (Some(q0), Some(q1)) = (&raw0.qual, &raw1.qual) {
         sub.q0 = sub.pos.iter().map(|&pos| q0[pos as usize]).collect();

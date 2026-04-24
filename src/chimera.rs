@@ -21,9 +21,7 @@ use crate::nwalign::{align_vectorized_with_buf, AlignBuffers};
 /// End-gaps are positions where either strand is entirely gap-only up to the
 /// first non-gap position (left) or after the last non-gap position (right).
 /// Equivalent to C++ `get_ham_endsfree`.
-fn get_ham_endsfree(al: &[Vec<u8>; 2]) -> usize {
-    let s0 = &al[0];
-    let s1 = &al[1];
+fn get_ham_endsfree(s0: &[u8], s1: &[u8]) -> usize {
     let len = s0.len();
 
     // Find start of internal region.
@@ -71,12 +69,11 @@ fn get_ham_endsfree(al: &[Vec<u8>; 2]) -> usize {
 /// `left_oo` / `right_oo` are `0` when `allow_one_off` is false.
 /// Equivalent to C++ `get_lr`.
 fn get_lr(
-    al: &[Vec<u8>; 2],
+    s0: &[u8],
+    s1: &[u8],
     allow_one_off: bool,
     max_shift: usize,
 ) -> (usize, usize, usize, usize) {
-    let s0 = &al[0]; // query
-    let s1 = &al[1]; // parent
     let len = s0.len();
 
     // ---- Left overlap ----
@@ -204,8 +201,9 @@ pub fn is_bimera_with_buf(
     let mut oo_max_right_oo = 0usize;
 
     for &par in parents {
-        let al = align_vectorized_with_buf(sq, par, match_score, mismatch, gap_p, 0, max_shift, buf);
-        let (left, right, left_oo, right_oo) = get_lr(&al, allow_one_off, max_shift as usize);
+        align_vectorized_with_buf(sq, par, match_score, mismatch, gap_p, 0, max_shift, buf);
+        let (al0, al1) = buf.alignment();
+        let (left, right, left_oo, right_oo) = get_lr(al0, al1, allow_one_off, max_shift as usize);
 
         // Skip identity / pure-shift / internal-indel parents.
         if left + right >= sqlen {
@@ -219,7 +217,7 @@ pub fn is_bimera_with_buf(
             max_right = right;
         }
 
-        if allow_one_off && get_ham_endsfree(&al) >= min_one_off_par_dist {
+        if allow_one_off && get_ham_endsfree(al0, al1) >= min_one_off_par_dist {
             if left > oo_max_left {
                 oo_max_left = left;
             }
@@ -320,15 +318,16 @@ pub fn table_bimera2(
 
                     // Compute alignment if not cached for this (j, k) pair.
                     if cache[k].is_none() {
-                        let al = align_vectorized_with_buf(
+                        align_vectorized_with_buf(
                             seqs[j], seqs[k],
                             match_score, mismatch, gap_p, 0, max_shift,
                             buf,
                         );
+                        let (al0, al1) = buf.alignment();
                         let (left, right, left_oo, right_oo) =
-                            get_lr(&al, allow_one_off, max_shift as usize);
+                            get_lr(al0, al1, allow_one_off, max_shift as usize);
                         let allowed = allow_one_off
-                            && get_ham_endsfree(&al) >= min_one_off_par_dist;
+                            && get_ham_endsfree(al0, al1) >= min_one_off_par_dist;
 
                         // Invalidate identity/pure-shift/internal-indel parents.
                         let (l, r, loo, roo) = if left + right < sqlen {

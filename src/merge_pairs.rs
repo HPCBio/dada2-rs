@@ -438,9 +438,9 @@ pub fn merge_sample(
         let rev_enc = intstr(rc_rev.as_bytes());
 
         // Ends-free NW alignment (band = -1 → unbanded).
-        let al = align_endsfree_with_buf(&fwd_enc, &rev_enc, MATCH_SCORE, MISMATCH, GAP_P, -1, &mut align_buf);
+        align_endsfree_with_buf(&fwd_enc, &rev_enc, MATCH_SCORE, MISMATCH, GAP_P, -1, &mut align_buf);
 
-        let ov = analyze_overlap(&al[0], &al[1]);
+        let ov = analyze_overlap(&align_buf.al0, &align_buf.al1);
 
         let (nmatch, nmismatch, nindel, ov_left, ov_right) = match ov {
             Some(v) => v,
@@ -473,7 +473,7 @@ pub fn merge_sample(
 
         let sequence = if accept {
             accepted_pairs += count;
-            build_merged(&al[0], &al[1], ov_left, ov_right, params.trim_overhang, true)
+            build_merged(&align_buf.al0, &align_buf.al1, ov_left, ov_right, params.trim_overhang, true)
         } else {
             String::new()
         };
