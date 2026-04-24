@@ -135,6 +135,19 @@ pub enum Commands {
         #[arg(long, default_value_t = -8, allow_hyphen_values = true)]
         homo_gap_p: i32,
 
+        /// K-mer distance cutoff for the pre-alignment screen. Pairs with
+        /// k-mer distance above this threshold are not aligned (matches R's
+        /// `KDIST_CUTOFF`). Lower values screen more aggressively (faster,
+        /// more false negatives); raise for divergent sequences.
+        #[arg(long, default_value_t = 0.42)]
+        kdist_cutoff: f64,
+
+        /// Disable the k-mer pre-alignment screen (every pair is aligned).
+        /// Much slower; use only when the screen is wrongly filtering valid
+        /// comparisons.
+        #[arg(long)]
+        no_kmer_screen: bool,
+
         /// Include a per-unique-to-ASV index map in the output
         #[arg(long)]
         show_map: bool,
@@ -588,6 +601,19 @@ pub enum Commands {
         #[arg(long, default_value_t = -8, allow_hyphen_values = true)]
         homo_gap_p: i32,
 
+        /// K-mer distance cutoff for the pre-alignment screen. Pairs with
+        /// k-mer distance above this threshold are not aligned (matches R's
+        /// `KDIST_CUTOFF`). Lower values screen more aggressively (faster,
+        /// more false negatives); raise for divergent sequences.
+        #[arg(long, default_value_t = 0.42)]
+        kdist_cutoff: f64,
+
+        /// Disable the k-mer pre-alignment screen (every pair is aligned).
+        /// Much slower; use only when the screen is wrongly filtering valid
+        /// comparisons.
+        #[arg(long)]
+        no_kmer_screen: bool,
+
         /// Number of threads for parallel sample processing
         #[arg(long, default_value_t = 1)]
         threads: usize,
@@ -704,6 +730,19 @@ pub enum Commands {
         /// indels dominate.
         #[arg(long, default_value_t = -8, allow_hyphen_values = true)]
         homo_gap_p: i32,
+
+        /// K-mer distance cutoff for the pre-alignment screen. Pairs with
+        /// k-mer distance above this threshold are not aligned (matches R's
+        /// `KDIST_CUTOFF`). Lower values screen more aggressively (faster,
+        /// more false negatives); raise for divergent sequences.
+        #[arg(long, default_value_t = 0.42)]
+        kdist_cutoff: f64,
+
+        /// Disable the k-mer pre-alignment screen (every pair is aligned).
+        /// Much slower; use only when the screen is wrongly filtering valid
+        /// comparisons.
+        #[arg(long)]
+        no_kmer_screen: bool,
 
         /// Number of threads for parallel sample processing
         #[arg(long, default_value_t = 1)]
