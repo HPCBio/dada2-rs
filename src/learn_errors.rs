@@ -212,7 +212,10 @@ pub fn load_derep_samples(paths: &[PathBuf]) -> io::Result<Vec<Vec<RawInput>>> {
     paths
         .iter()
         .map(|path| {
-            let file = File::open(path)?;
+            // BufReader is critical here: serde_json::from_reader on an
+            // unbuffered File does byte-sized reads and parses ~2 MB/s on a
+            // 7 MB derep JSON, while BufReader hits ~100+ MB/s.
+            let file = io::BufReader::new(File::open(path)?);
             let sample: SampleJson = serde_json::from_reader(file).map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
