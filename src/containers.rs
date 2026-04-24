@@ -132,6 +132,19 @@ impl Raw {
     pub fn is_empty(&self) -> bool {
         self.seq.is_empty()
     }
+
+    /// Reset per-iteration mutable state so this Raw can be fed back into a
+    /// fresh DADA run without re-encoding the sequence or recomputing k-mer
+    /// vectors. Leaves `seq`, `qual`, `kmer*`, `kord`, `reads`, `prior`
+    /// intact — those are fixed for the life of the input. `index` is
+    /// reassigned by `B::new`.
+    pub fn reset_for_iteration(&mut self) {
+        self.p = 0.0;
+        self.e_minmax = -999.0;
+        self.comp = Comparison::default();
+        self.lock = false;
+        self.correct = true;
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::containers::Raw;
-use crate::dada::{DadaParams, RawInput, dada_uniques};
+use crate::dada::{DadaParams, RawInput, dada_uniques_cached};
 use crate::derep::dereplicate;
 use crate::error_models::{
     accumulate_trans, binned_qual_errfun, loess_errfun, noqual_errfun, pacbio_errfun,
@@ -427,6 +427,12 @@ pub fn learn_errors(
     let mut err_in_final = err.clone();
     let mut err_out_final = err.clone();
 
+    // Per-sample cache of `Vec<Raw>` (encoded sequences + k-mer vectors),
+    // reused across outer iterations so we don't re-encode inputs or
+    // recompute k-mers on every self-consistency pass.  `None` on the first
+    // iteration; populated by `dada_uniques_cached` thereafter.
+    let mut raw_cache: Vec<Option<Vec<Raw>>> = (0..all_inputs.len()).map(|_| None).collect();
+
     for iter in 0..max_consist {
         iterations = iter + 1;
 
@@ -437,16 +443,23 @@ pub fn learn_errors(
         // Parallel pass: each sample runs dada_uniques independently.
         // Rayon's work-stealing distributes threads across samples; if only
         // one sample exists all threads serve its inner b_compare_parallel.
+        //
+        // `raw_cache` is zipped in so each sample's Raw Vec flows back out of
+        // DADA and into the next iteration's call without reallocation.
         let collect_diags = diag_dir.is_some();
         let sample_results: Vec<(usize, Result<(Vec<u32>, crate::dada::DadaResult), String>)> =
             all_inputs
                 .par_iter()
+                .zip(raw_cache.par_iter_mut())
                 .enumerate()
-                .map(|(si, inputs)| {
-                    let outcome = dada_uniques(inputs, &dada_params).map(|result| {
-                        let t = build_trans_mat(inputs, &result, align_params, nq);
-                        (t, result)
-                    });
+                .map(|(si, (inputs, cache_slot))| {
+                    let cached = cache_slot.take();
+                    let outcome = dada_uniques_cached(inputs, cached, &dada_params)
+                        .map(|(result, reused_raws)| {
+                            *cache_slot = Some(reused_raws);
+                            let t = build_trans_mat(inputs, &result, align_params, nq);
+                            (t, result)
+                        });
                     (si, outcome)
                 })
                 .collect();

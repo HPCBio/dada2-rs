@@ -133,6 +133,28 @@ pub struct DadaResult {
 /// Equivalent to the logic in C++ `dada_uniques`, minus the Rcpp layer and
 /// the R-specific output formatters.
 pub fn dada_uniques(inputs: &[RawInput], params: &DadaParams) -> Result<DadaResult, String> {
+    let (result, _raws) = dada_uniques_cached(inputs, None, params)?;
+    Ok(result)
+}
+
+/// Variant of [`dada_uniques`] that accepts a pre-built `Vec<Raw>` (with
+/// k-mer vectors already populated) via `cached` to skip per-iteration
+/// setup. Returns the `Vec<Raw>` alongside the result so it can be fed back
+/// into the next call.
+///
+/// Pass `None` on the first call; pass `Some(raws)` returned from a prior
+/// call on subsequent iterations. The caller is responsible for ensuring
+/// `inputs` hasn't changed between calls (we do not re-validate the seq
+/// bytes when a cache is reused — only the mutable iteration state is
+/// reset).
+///
+/// Used by `learn_errors` to avoid re-encoding sequences and rebuilding
+/// k-mer vectors on every self-consistency iteration.
+pub fn dada_uniques_cached(
+    inputs: &[RawInput],
+    cached: Option<Vec<Raw>>,
+    params: &DadaParams,
+) -> Result<(DadaResult, Vec<Raw>), String> {
     // ---- Input validation ----
     let nraw = inputs.len();
     if nraw == 0 {
@@ -181,25 +203,38 @@ pub fn dada_uniques(inputs: &[RawInput], params: &DadaParams) -> Result<DadaResu
         }
     }
 
-    // ---- Construct Raw objects ----
-    let mut raws: Vec<Raw> = inputs
-        .iter()
-        .enumerate()
-        .map(|(i, inp)| {
-            let seq: Vec<u8> = inp.seq.bytes().map(nt_encode).collect();
-            let qual = if has_quals { inp.quals.as_deref() } else { None };
-            let mut raw = Raw::new(seq, qual, inp.abundance, inp.prior);
-            raw.index = i as u32;
-            raw
-        })
-        .collect();
-
-    // ---- Assign k-mers ----
-    if params.align.use_kmers {
-        for raw in &mut raws {
-            raw_assign_kmers(raw, k);
+    // ---- Build or reset Raw objects ----
+    let raws: Vec<Raw> = match cached {
+        Some(mut raws) if raws.len() == nraw => {
+            // Reuse path: reset per-iteration mutable state only. seq/qual/
+            // kmer vectors persist across iterations.
+            for raw in &mut raws {
+                raw.reset_for_iteration();
+            }
+            raws
         }
-    }
+        _ => {
+            // Fresh build: encode sequences and populate k-mer vectors.
+            let mut raws: Vec<Raw> = inputs
+                .iter()
+                .enumerate()
+                .map(|(i, inp)| {
+                    let seq: Vec<u8> = inp.seq.bytes().map(nt_encode).collect();
+                    let qual = if has_quals { inp.quals.as_deref() } else { None };
+                    let mut raw = Raw::new(seq, qual, inp.abundance, inp.prior);
+                    raw.index = i as u32;
+                    raw
+                })
+                .collect();
+
+            if params.align.use_kmers {
+                for raw in &mut raws {
+                    raw_assign_kmers(raw, k);
+                }
+            }
+            raws
+        }
+    };
 
     // ---- Run core algorithm ----
     let mut b = run_dada(raws, params);
@@ -253,13 +288,16 @@ pub fn dada_uniques(inputs: &[RawInput], params: &DadaParams) -> Result<DadaResu
         })
         .collect();
 
-    Ok(DadaResult {
+    let result = DadaResult {
         clusters,
         map,
         pvals,
         nalign: b.nalign,
         nshroud: b.nshroud,
-    })
+    };
+
+    // Reclaim Raws for the caller to pass back on the next iteration.
+    Ok((result, std::mem::take(&mut b.raws)))
 }
 
 // ---------------------------------------------------------------------------
