@@ -18,7 +18,7 @@
 
 use crate::cluster::{b_bud, b_compare, b_compare_parallel, b_shuffle2};
 use crate::containers::{B, BirthType, Raw};
-use crate::kmers::{raw_assign_kmers, KMER_SIZE};
+use crate::kmers::{raw_assign_kmers, KMER_SIZE_MAX, KMER_SIZE_MIN};
 use crate::misc::nt_encode;
 use crate::nwalign::AlignParams;
 use crate::pval::{b_p_update, calc_pA};
@@ -146,9 +146,15 @@ pub fn dada_uniques(inputs: &[RawInput], params: &DadaParams) -> Result<DadaResu
             "Input sequences exceed the maximum allowed length ({SEQLEN})."
         ));
     }
-    if minlen <= KMER_SIZE {
+    let k = params.align.kmer_size;
+    if !(KMER_SIZE_MIN..=KMER_SIZE_MAX).contains(&k) {
         return Err(format!(
-            "All input sequences must be longer than the k-mer size ({KMER_SIZE})."
+            "kmer_size {k} out of supported range ({KMER_SIZE_MIN}..={KMER_SIZE_MAX})."
+        ));
+    }
+    if minlen <= k {
+        return Err(format!(
+            "All input sequences must be longer than the k-mer size ({k})."
         ));
     }
     if params.err_mat.len() != 16 * params.err_ncol {
@@ -191,7 +197,7 @@ pub fn dada_uniques(inputs: &[RawInput], params: &DadaParams) -> Result<DadaResu
     // ---- Assign k-mers ----
     if params.align.use_kmers {
         for raw in &mut raws {
-            raw_assign_kmers(raw, KMER_SIZE);
+            raw_assign_kmers(raw, k);
         }
     }
 

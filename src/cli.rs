@@ -142,6 +142,13 @@ pub enum Commands {
         #[arg(long, default_value_t = 0.42)]
         kdist_cutoff: f64,
 
+        /// K-mer size used for the pre-alignment screen and for the Raw
+        /// k-mer vectors (matches R's `KMER_SIZE`). 5 is the DADA2 default,
+        /// tuned for 16S/ITS-length amplicons. Valid range: 3..=8.
+        /// Memory scales as 4^k per Raw (k=5 → 1KB, k=7 → 16KB).
+        #[arg(long, default_value_t = 5)]
+        kmer_size: usize,
+
         /// Disable the k-mer pre-alignment screen (every pair is aligned).
         /// Much slower; use only when the screen is wrongly filtering valid
         /// comparisons.
@@ -608,6 +615,13 @@ pub enum Commands {
         #[arg(long, default_value_t = 0.42)]
         kdist_cutoff: f64,
 
+        /// K-mer size used for the pre-alignment screen and for the Raw
+        /// k-mer vectors (matches R's `KMER_SIZE`). 5 is the DADA2 default,
+        /// tuned for 16S/ITS-length amplicons. Valid range: 3..=8.
+        /// Memory scales as 4^k per Raw (k=5 → 1KB, k=7 → 16KB).
+        #[arg(long, default_value_t = 5)]
+        kmer_size: usize,
+
         /// Disable the k-mer pre-alignment screen (every pair is aligned).
         /// Much slower; use only when the screen is wrongly filtering valid
         /// comparisons.
@@ -737,6 +751,13 @@ pub enum Commands {
         /// more false negatives); raise for divergent sequences.
         #[arg(long, default_value_t = 0.42)]
         kdist_cutoff: f64,
+
+        /// K-mer size used for the pre-alignment screen and for the Raw
+        /// k-mer vectors (matches R's `KMER_SIZE`). 5 is the DADA2 default,
+        /// tuned for 16S/ITS-length amplicons. Valid range: 3..=8.
+        /// Memory scales as 4^k per Raw (k=5 → 1KB, k=7 → 16KB).
+        #[arg(long, default_value_t = 5)]
+        kmer_size: usize,
 
         /// Disable the k-mer pre-alignment screen (every pair is aligned).
         /// Much slower; use only when the screen is wrongly filtering valid

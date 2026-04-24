@@ -13,7 +13,16 @@
 use crate::containers::Raw;
 
 /// Default k-mer size, matching the C++ `KMER_SIZE` constant in `dada.h`.
+/// At runtime this is overridable via `AlignParams::kmer_size`; the const is
+/// kept only so callers without an `AlignParams` (e.g. tests, defaults) can
+/// reference it.
 pub const KMER_SIZE: usize = 5;
+
+/// Valid k-mer size range. `assign_kmer` requires k ≥ 3 (smaller k produces
+/// uselessly coarse vectors) and k ≤ 8 (4^k ≤ 65536 fits in our u16 vectors
+/// and matches the C++ assumption).
+pub const KMER_SIZE_MIN: usize = 3;
+pub const KMER_SIZE_MAX: usize = 8;
 
 /// Number of possible k-mers for a given k: 4^k = 1 << (2*k).
 #[inline]

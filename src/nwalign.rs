@@ -12,7 +12,7 @@
 //! Traceback pointer values: `1` = diagonal, `2` = left (gap in s1), `3` = up (gap in s2).
 
 use crate::containers::{Raw, Sub};
-use crate::kmers::{kmer_dist, kmer_dist8, kord_dist, KMER_SIZE};
+use crate::kmers::{kmer_dist, kmer_dist8, kord_dist};
 
 /// Sentinel used in `Sub::map` to indicate that a reference position aligns
 /// to a gap in the query.  Matches C++ `GAP_GLYPH = 9999`.
@@ -34,6 +34,11 @@ pub struct AlignParams {
     pub homo_gap_p: i32,
     pub use_kmers: bool,
     pub kdist_cutoff: f64,
+    /// K-mer size used for the pre-alignment screen and for building the
+    /// k-mer / k-order vectors on each `Raw`. Must match the `k` used when
+    /// `raw_assign_kmers` populated those vectors (otherwise the distance
+    /// indices are garbage).  Valid range: 3..=8.
+    pub kmer_size: usize,
     /// Band radius. Negative means unbanded.
     pub band: i32,
     pub vectorized: bool,
@@ -845,27 +850,28 @@ pub fn raw_align_with_buf(
     let mut kodist = -1.0f64; // sentinel: different from kdist when use_kmers=false
 
     if p.use_kmers {
+        let k = p.kmer_size;
         // Prefer 8-bit kmer distance; fall back to 16-bit on overflow.
         kdist = match (&raw1.kmer8, &raw2.kmer8) {
             (Some(k1), Some(k2)) => {
-                let d8 = kmer_dist8(k1, raw1.len(), k2, raw2.len(), KMER_SIZE);
+                let d8 = kmer_dist8(k1, raw1.len(), k2, raw2.len(), k);
                 if d8 < 0.0 {
                     // Overflow: use 16-bit vectors.
                     match (&raw1.kmer, &raw2.kmer) {
-                        (Some(k1), Some(k2)) => kmer_dist(k1, raw1.len(), k2, raw2.len(), KMER_SIZE),
+                        (Some(k1), Some(k2)) => kmer_dist(k1, raw1.len(), k2, raw2.len(), k),
                         _ => 0.0,
                     }
                 } else { d8 }
             }
             _ => match (&raw1.kmer, &raw2.kmer) {
-                (Some(k1), Some(k2)) => kmer_dist(k1, raw1.len(), k2, raw2.len(), KMER_SIZE),
+                (Some(k1), Some(k2)) => kmer_dist(k1, raw1.len(), k2, raw2.len(), k),
                 _ => 0.0,
             },
         };
 
         if p.gapless {
             if let (Some(o1), Some(o2)) = (&raw1.kord, &raw2.kord) {
-                kodist = kord_dist(o1, raw1.len(), o2, raw2.len(), KMER_SIZE);
+                kodist = kord_dist(o1, raw1.len(), o2, raw2.len(), k);
             }
         }
     }
