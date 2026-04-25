@@ -10,8 +10,14 @@ The implementation is roughly 4.5x faster than the R DADA2 implementation (not i
 
 The short term plan: 
 
-- [ ] Port key code over to Rust: dereplication, error modeling, denoising, merging, chimera removal
-- [ ] Decouple any underlying C++ code from R and reimplement key steps as subcommands, R classes as Rust structs/classes, etc.
+- Port key code over to Rust: 
+  - [ ] filter/trimming FASTQ (`filterAndTrim`), 
+  - [ ] dereplication (`derepFastq`), 
+  - [ ] error model (`learnErrors`), 
+  - [ ] denoising (`dada`), 
+  - [ ] merging (`mergePairs`)
+  - [ ] chimera removal (`removeBimeraDenovo`)
+- [ ] Tie in to R and/or Python
 - [ ] Intermediate outputs (in JSON) that can be evaluated for debugging purposes or for plotting in R, Python, etc.
 - [ ] Add basic regression tests for each stage that follow those within the original DADA2 repository
 
