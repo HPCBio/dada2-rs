@@ -83,12 +83,22 @@ pub fn b_p_update(b: &mut B, greedy: bool, detect_singletons: bool) {
 pub fn calc_pA(reads: u32, e_reads: f64, prior: bool) -> f64 {
     debug_assert!(reads > 0, "calc_pA: reads must be > 0");
 
-    // P(X > reads-1) = P(X ≥ reads)  [upper-tail Poisson CDF]
+    // R uses ppois(reads-1, e_reads, lower.tail=FALSE), which under the hood
+    // calls the regularised lower incomplete gamma function. statrs's `sf`
+    // does the same nominally — sf(x) = gamma_lr(x+1, λ) — but its
+    // gamma_lr implementation underflows to 0 for very small λ, while R's
+    // pgamma stays accurate down to ~1e-300. For tiny λ we fall back to the
+    // direct upper-tail Poisson series in log space:
+    //   P(X >= k | λ) = e^{-λ} λ^k/k! * Σ_{j>=0} λ^j / ∏_{i=1..j}(k+i)
+    // which is dominated by the leading e^{-λ} λ^k/k! for small λ.
     let pois = match Poisson::new(e_reads) {
         Ok(p) => p,
         Err(_) => return 1.0, // degenerate: e_reads <= 0
     };
-    let pval = 1.0 - pois.cdf((reads - 1) as u64);
+    let mut pval = pois.sf((reads - 1) as u64);
+    if pval == 0.0 && e_reads > 0.0 {
+        pval = poisson_upper_tail_direct(reads, e_reads);
+    }
 
     if prior {
         return pval;
@@ -161,6 +171,39 @@ pub fn compute_lambda(raw: &Raw, sub: Option<&Sub>, err_mat: &[f64], ncol: usize
 
     debug_assert!((0.0..=1.0).contains(&lambda), "lambda {lambda} outside [0,1]");
     lambda
+}
+
+/// Direct upper-tail Poisson computation in log space, robust to extreme
+/// underflow.
+///
+/// Used as a fallback when `statrs::Poisson::sf` returns exactly 0 due to
+/// `gamma_lr` losing precision for very small λ. The leading term
+/// `e^{-λ} λ^reads / reads!` dominates for small λ; the series correction
+/// `1 + λ/(k+1) + λ²/((k+1)(k+2)) + ...` converges quickly.
+fn poisson_upper_tail_direct(reads: u32, lambda: f64) -> f64 {
+    debug_assert!(reads > 0);
+    debug_assert!(lambda > 0.0);
+
+    let k = reads as f64;
+    let log_lambda = lambda.ln();
+    let log_kfact: f64 = (1..=reads).map(|i| (i as f64).ln()).sum();
+    let log_leading = -lambda + k * log_lambda - log_kfact;
+
+    let mut series_sum: f64 = 1.0;
+    let mut term: f64 = 1.0;
+    for j in 1..10000u32 {
+        term *= lambda / (k + j as f64);
+        if !term.is_finite() || term <= 0.0 {
+            break;
+        }
+        let new_sum = series_sum + term;
+        if new_sum == series_sum {
+            break;
+        }
+        series_sum = new_sum;
+    }
+
+    (log_leading + series_sum.ln()).exp()
 }
 
 /// Self-production probability: the probability that a sequence is produced
