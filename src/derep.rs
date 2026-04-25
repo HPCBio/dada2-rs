@@ -6,7 +6,8 @@ use rayon::prelude::*;
 
 /// Mirrors the R dada2 `derep` class.
 ///
-/// - `uniques`: unique sequences in first-seen order, each paired with its read count.
+/// - `uniques`: unique sequences sorted by read count descending (stable;
+///   ties preserve first-seen order). Matches R `derepFastq` ordering.
 /// - `quals`:   mean Phred quality score per position for each unique sequence;
 ///              `quals[i][j]` is the mean score at position `j` for unique `i`.
 /// - `map`:     for each input read (in order), the index into `uniques` of the
@@ -111,7 +112,7 @@ impl PartialDerep {
     }
 
     fn into_derep(self) -> Derep {
-        let quals = self
+        let quals: Vec<Vec<f64>> = self
             .qual_sums
             .iter()
             .zip(self.qual_cnts.iter())
@@ -123,13 +124,38 @@ impl PartialDerep {
             })
             .collect();
 
-        let uniques = self
-            .seq_order
-            .into_iter()
-            .zip(self.counts)
-            .collect();
+        let n = self.seq_order.len();
 
-        Derep { uniques, quals, map: self.map }
+        // Sort uniques by abundance descending (stable: first-seen order
+        // within count ties).  Matches R `derepFastq` ordering, which the
+        // downstream DADA2 algorithm assumes when traversing raws — the
+        // most-abundant raw lands at index 0 so the cluster-0 center is
+        // both the most abundant and the lowest-indexed eligible raw.
+        // Issue #4 traced part of the over-budding to our previous
+        // first-seen ordering disagreeing with R.
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| self.counts[b].cmp(&self.counts[a]));
+
+        // Apply the permutation to uniques and quals; remap each `map`
+        // entry from old → new index.
+        let mut new_seq_order: Vec<Vec<u8>> = Vec::with_capacity(n);
+        let mut new_counts: Vec<u64> = Vec::with_capacity(n);
+        let mut new_quals: Vec<Vec<f64>> = Vec::with_capacity(n);
+        let mut old_to_new: Vec<usize> = vec![0; n];
+        let seq_order_owned = self.seq_order;
+        let mut seq_iter: Vec<Option<Vec<u8>>> = seq_order_owned.into_iter().map(Some).collect();
+        let mut quals_iter: Vec<Option<Vec<f64>>> = quals.into_iter().map(Some).collect();
+        for (new_idx, &old_idx) in order.iter().enumerate() {
+            old_to_new[old_idx] = new_idx;
+            new_seq_order.push(seq_iter[old_idx].take().unwrap());
+            new_counts.push(self.counts[old_idx]);
+            new_quals.push(quals_iter[old_idx].take().unwrap());
+        }
+        let map: Vec<usize> = self.map.into_iter().map(|i| old_to_new[i]).collect();
+
+        let uniques = new_seq_order.into_iter().zip(new_counts).collect();
+
+        Derep { uniques, quals: new_quals, map }
     }
 }
 

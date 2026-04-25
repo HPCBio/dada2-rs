@@ -19,15 +19,19 @@
 //!
 //! ## Unique-index ordering guarantee
 //!
-//! DADA2's dereplication assigns unique indices in "first-seen" order across
-//! the read stream.  This project's `dereplicate()` function uses a
-//! chunk-parallel fold/reduce pattern that preserves the same first-seen
-//! ordering regardless of thread count (rayon's reduce respects element order
-//! for contiguous partitions).  Re-dereplicating the same FASTQ file therefore
-//! yields identical unique indices — no need to save a separate derep JSON.
+//! `dereplicate()` returns uniques sorted by abundance descending (stable;
+//! ties keep first-seen order) — matching R `derepFastq` ordering. The
+//! chunk-parallel fold/reduce that builds the unique set runs in
+//! deterministic order, so re-dereplicating the same FASTQ file yields
+//! identical unique indices, regardless of thread count.  No need to save
+//! a separate derep JSON: the dada JSON's `map` field references unique
+//! indices that re-derepping the source FASTQ will reproduce exactly.
 //!
 //! **Caveat**: the dada JSON **must** have been produced with `--show-map`;
 //! without that flag the `map` field is absent and merging is impossible.
+//! Also, dada JSON files saved with the pre-sort first-seen ordering
+//! cannot be merged with a post-sort dereplicate — re-derep the FASTQ
+//! through the current pipeline first.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -302,9 +306,9 @@ pub fn merge_sample(
     })?;
 
     // ---- Re-dereplicate FASTQs ----
-    // The ordering of unique sequences is deterministic (first-seen globally)
-    // regardless of thread count, so the indices here match those in the dada
-    // JSON map.
+    // The ordering of unique sequences is deterministic (sorted by abundance
+    // descending; ties preserve first-seen order) regardless of thread
+    // count, so the indices here match those in the dada JSON map.
     let is_gz = |p: &Path| {
         p.file_name()
             .and_then(|n| n.to_str())

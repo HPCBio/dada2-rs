@@ -246,7 +246,7 @@ pub fn load_derep_samples(paths: &[PathBuf]) -> io::Result<Vec<Vec<RawInput>>> {
                 )
             })?;
 
-            let inputs = sample
+            let mut inputs: Vec<RawInput> = sample
                 .uniques
                 .into_iter()
                 .map(|u| RawInput {
@@ -256,6 +256,11 @@ pub fn load_derep_samples(paths: &[PathBuf]) -> io::Result<Vec<Vec<RawInput>>> {
                     quals: Some(u.mean_quality),
                 })
                 .collect();
+            // Defensive sort: derep JSONs produced by older versions (or by
+            // other tools) may not be abundance-sorted. The DADA2 algorithm
+            // assumes the most-abundant raw is at index 0 (issue #4).
+            // `sort_by` is stable so ties preserve the file's original order.
+            inputs.sort_by(|a, b| b.abundance.cmp(&a.abundance));
             Ok(inputs)
         })
         .collect()
@@ -276,17 +281,26 @@ fn detect_nq(all_inputs: &[Vec<RawInput>]) -> usize {
     max_q + 1
 }
 
-/// Build a Phred-score-based initial error model (16 × `nq`).
+/// Build the "maximum possible estimate" initial error model used by R DADA2.
 ///
-/// Off-diagonal rates: 10^(-q/10) / 3 (split evenly across three substitution types).
-/// Diagonal rates: 1 - 10^(-q/10).
-/// All rates are clamped to `[MIN_ERR, MAX_ERR]`.
+/// R's `learnErrors` runs an init pass with `MAX_CLUST=1` (no buds), fits
+/// loess, then forces the diagonal to 1.0 before the first real iteration.
+/// The shape of the resulting err_mat is: match probability = 1.0,
+/// mismatch probability ≈ MAX_ERR/3 (the cap clamp on each off-diagonal).
+///
+/// Using the same shape directly here lets us skip R's init pass while
+/// landing on the same iter-1 trajectory.  Issue #4 traced the previous
+/// Q-score-based init to a 1e-180× lambda mismatch and ~1.5× over-budding
+/// vs R; this matches R's "maximum possible estimate" semantics instead.
 fn init_err_model(nq: usize) -> Vec<f64> {
     let mut err = vec![0.0f64; 16 * nq];
     for q in 0..nq {
-        let prob_error = 10.0f64.powf(-(q as f64) / 10.0);
-        let prob_mismatch = (prob_error / 3.0).clamp(MIN_ERR, MAX_ERR);
-        let prob_match = (1.0 - prob_error).clamp(MIN_ERR, MAX_ERR);
+        // R "maximum possible estimate": diagonal = 1.0 (clamped), each off-
+        // diagonal = MAX_ERR/3 = 1/12. Same value at every Q because there
+        // is no quality calibration yet — the loess fit on iter 1 produces
+        // the first Q-resolved err_mat.
+        let prob_match = (1.0f64).clamp(MIN_ERR, MAX_ERR);
+        let prob_mismatch = (MAX_ERR / 3.0).clamp(MIN_ERR, MAX_ERR);
 
         for nti in 0..4usize {
             for ntj in 0..4usize {
