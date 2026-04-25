@@ -181,6 +181,7 @@ fn main() -> io::Result<()> {
             input,
             error_model,
             use_err_in,
+            inherit_err_params,
             phred_offset,
             threads,
             omega_a,
@@ -236,13 +237,19 @@ fn main() -> io::Result<()> {
             }
 
             // ---- Load error model JSON ----
-            // The learn-errors output stores err_in and err_out as Vec<Vec<f64>>
-            // with 16 rows and nq columns.
+            // `params` is optional so older err-model JSONs (pre-#4 follow-up)
+            // still load.  When present and `--inherit-err-params` is set, any
+            // CLI flag the user did not explicitly pass falls through to the
+            // err model's value instead of the built-in default.  Without the
+            // inherit flag, mismatches between the CLI's effective values and
+            // the err model trigger a warning so the user notices drift.
             #[derive(serde::Deserialize)]
             struct ErrorModelJson {
                 nq: usize,
                 err_in: Vec<Vec<f64>>,
                 err_out: Vec<Vec<f64>>,
+                #[serde(default)]
+                params: Option<LearnedErrParams>,
             }
 
             let em: ErrorModelJson = misc::read_json_file(&error_model)?;
@@ -261,13 +268,54 @@ fn main() -> io::Result<()> {
             // Flatten row-major: row r, column q → index r*nq + q
             let err_mat: Vec<f64> = rows.iter().flat_map(|r| r.iter().copied()).collect();
 
+            if inherit_err_params && em.params.is_none() {
+                eprintln!(
+                    "[dada] warning: --inherit-err-params requested but error model {} has no `params` block (likely produced by a pre-provenance version); falling back to built-in defaults",
+                    error_model.display(),
+                );
+            }
+
+            // ---- Resolve each parameter via three-tier precedence:
+            //      1. CLI explicit  (`Some(v)`)
+            //      2. Inherited from err-model `params` (if `--inherit-err-params`)
+            //      3. Built-in default
+            // For the warn path (inherit OFF), we still pick CLI-or-default,
+            // then compare against err-model and emit a per-mismatch warning.
+            let p = em.params.as_ref();
+            macro_rules! resolve {
+                ($cli:expr, $em_field:ident, $default:expr) => {{
+                    match ($cli, inherit_err_params, p) {
+                        (Some(v), _, _) => v,
+                        (None, true, Some(em_params)) => em_params.$em_field,
+                        _ => $default,
+                    }
+                }};
+            }
+            let omega_a            = resolve!(omega_a,           omega_a,            1e-40);
+            let omega_c            = resolve!(omega_c,           omega_c,            1e-40);
+            let omega_p            = resolve!(omega_p,           omega_p,            1e-4);
+            let min_fold           = resolve!(min_fold,          min_fold,           1.0);
+            let min_hamming        = resolve!(min_hamming,       min_hamming,        1);
+            let min_abund          = resolve!(min_abund,         min_abund,          1);
+            let detect_singletons  = resolve!(detect_singletons, detect_singletons,  false);
+            let band               = resolve!(band,              band,               16);
+            let homo_gap_p         = resolve!(homo_gap_p,        homo_gap_p,         -8);
+            let kdist_cutoff       = resolve!(kdist_cutoff,      kdist_cutoff,       0.42);
+            let kmer_size          = resolve!(kmer_size,         kmer_size,          5);
+            // `no_kmer_screen` (CLI) inverts `use_kmers` (algorithm).
+            let use_kmers = match (no_kmer_screen, inherit_err_params, p) {
+                (Some(no), _, _) => !no,
+                (None, true, Some(em_params)) => em_params.use_kmers,
+                _ => true,
+            };
+
             // ---- Build algorithm parameters ----
             let align_params = AlignParams {
                 match_score: 5,
                 mismatch: -4,
                 gap_p: -8,
                 homo_gap_p,
-                use_kmers: !no_kmer_screen,
+                use_kmers,
                 kdist_cutoff,
                 kmer_size,
                 band,
@@ -293,6 +341,49 @@ fn main() -> io::Result<()> {
                 verbose,
                 greedy: true,
             };
+
+            // ---- Consistency warnings (only when NOT inheriting) ----
+            // When the user opts out of inheritance we still want them to
+            // notice if their dada-call params drifted from the err model,
+            // so emit a one-line warning per mismatched field.  Comparison
+            // tolerates the absence of `params` in older err models.
+            if !inherit_err_params {
+                if let Some(em_params) = p {
+                    let mut mismatches: Vec<String> = Vec::new();
+                    macro_rules! check {
+                        ($name:literal, $cli_val:expr, $em_val:expr) => {
+                            if $cli_val != $em_val {
+                                mismatches.push(format!(
+                                    "  {} = {:?} (err model: {:?})",
+                                    $name, $cli_val, $em_val
+                                ));
+                            }
+                        };
+                    }
+                    check!("omega_a",           omega_a,           em_params.omega_a);
+                    check!("omega_c",           omega_c,           em_params.omega_c);
+                    check!("omega_p",           omega_p,           em_params.omega_p);
+                    check!("min_fold",          min_fold,          em_params.min_fold);
+                    check!("min_hamming",       min_hamming,       em_params.min_hamming);
+                    check!("min_abund",         min_abund,         em_params.min_abund);
+                    check!("detect_singletons", detect_singletons, em_params.detect_singletons);
+                    check!("band",              band,              em_params.band);
+                    check!("homo_gap_p",        homo_gap_p,        em_params.homo_gap_p);
+                    check!("kdist_cutoff",      kdist_cutoff,      em_params.kdist_cutoff);
+                    check!("kmer_size",         kmer_size,         em_params.kmer_size);
+                    check!("use_kmers",         use_kmers,         em_params.use_kmers);
+                    if !mismatches.is_empty() {
+                        eprintln!(
+                            "[dada] warning: {} dada parameter(s) differ from error model {}; pass --inherit-err-params to adopt the err model's values:",
+                            mismatches.len(),
+                            error_model.display(),
+                        );
+                        for line in &mismatches {
+                            eprintln!("{line}");
+                        }
+                    }
+                }
+            }
 
             // ---- Run DADA2 ----
             let result = pool.install(|| dada::dada_uniques(&raw_inputs, &dada_params))

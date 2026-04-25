@@ -87,6 +87,15 @@ pub enum Commands {
         #[arg(long)]
         use_err_in: bool,
 
+        /// Inherit any unspecified algorithm parameters (omega_*, min_*,
+        /// detect_singletons, band, homo_gap_p, kdist_cutoff, kmer_size,
+        /// no_kmer_screen) from the error model JSON's `params` block. Any
+        /// flag passed explicitly on the CLI still wins. Without this flag,
+        /// the built-in CLI defaults apply and a warning is emitted for each
+        /// CLI value that disagrees with the err model's value.
+        #[arg(long)]
+        inherit_err_params: bool,
+
         /// Phred quality score offset (33 for Sanger/Illumina 1.8+, 64 for Illumina 1.3–1.7)
         #[arg(long, default_value_t = 33)]
         phred_offset: u8,
@@ -96,64 +105,65 @@ pub enum Commands {
         threads: usize,
 
         /// Significance threshold for abundance-based cluster splitting (omega_a)
-        #[arg(long, default_value = "1e-40")]
-        omega_a: f64,
+        #[arg(long)]
+        omega_a: Option<f64>,
 
         /// Significance threshold for reads not corrected to any center (omega_c)
-        #[arg(long, default_value = "1e-40")]
-        omega_c: f64,
+        #[arg(long)]
+        omega_c: Option<f64>,
 
         /// Significance threshold for prior-sequence splitting (omega_p)
-        #[arg(long, default_value = "1e-4")]
-        omega_p: f64,
+        #[arg(long)]
+        omega_p: Option<f64>,
 
         /// Minimum fold-enrichment above expected for cluster splitting
-        #[arg(long, default_value_t = 1.0)]
-        min_fold: f64,
+        #[arg(long)]
+        min_fold: Option<f64>,
 
         /// Minimum Hamming distance required for cluster splitting
-        #[arg(long, default_value_t = 1)]
-        min_hamming: u32,
+        #[arg(long)]
+        min_hamming: Option<u32>,
 
         /// Minimum read abundance required for cluster splitting
-        #[arg(long, default_value_t = 1)]
-        min_abund: u32,
-
-        /// Use singleton detection
         #[arg(long)]
-        detect_singletons: bool,
+        min_abund: Option<u32>,
+
+        /// Use singleton detection (tri-state: omit to inherit / use default,
+        /// `true` or `false` to set explicitly).
+        #[arg(long)]
+        detect_singletons: Option<bool>,
 
         /// Alignment band radius, matching R's `BAND_SIZE` parameter.
         /// 16 = Illumina default. 32 = recommended for PacBio HiFi 16S amplicons
         /// (per the DADA2 LRAS manuscript). -1 = unbanded (O(n²), rarely needed).
-        #[arg(long, default_value_t = 16, allow_hyphen_values = true)]
-        band: i32,
+        #[arg(long, allow_hyphen_values = true)]
+        band: Option<i32>,
 
         /// Homopolymer-run gap penalty. Matches R's `HOMOPOLYMER_GAP_PENALTY`;
         /// PacBio pipelines typically set this closer to 0 (e.g. `-1`) because
         /// homopolymer indels are the dominant error mode.
-        #[arg(long, default_value_t = -8, allow_hyphen_values = true)]
-        homo_gap_p: i32,
+        #[arg(long, allow_hyphen_values = true)]
+        homo_gap_p: Option<i32>,
 
         /// K-mer distance cutoff for the pre-alignment screen. Pairs with
         /// k-mer distance above this threshold are not aligned (matches R's
         /// `KDIST_CUTOFF`). Lower values screen more aggressively (faster,
         /// more false negatives); raise for divergent sequences.
-        #[arg(long, default_value_t = 0.42)]
-        kdist_cutoff: f64,
+        #[arg(long)]
+        kdist_cutoff: Option<f64>,
 
         /// K-mer size used for the pre-alignment screen and for the Raw
         /// k-mer vectors (matches R's `KMER_SIZE`). 5 is the DADA2 default,
         /// tuned for 16S/ITS-length amplicons. Valid range: 3..=8.
         /// Memory scales as 4^k per Raw (k=5 → 1KB, k=7 → 16KB).
-        #[arg(long, default_value_t = 5)]
-        kmer_size: usize,
+        #[arg(long)]
+        kmer_size: Option<usize>,
 
         /// Disable the k-mer pre-alignment screen (every pair is aligned).
         /// Much slower; use only when the screen is wrongly filtering valid
-        /// comparisons.
+        /// comparisons. Tri-state: omit to inherit / use default.
         #[arg(long)]
-        no_kmer_screen: bool,
+        no_kmer_screen: Option<bool>,
 
         /// Include a per-unique-to-ASV index map in the output
         #[arg(long)]
