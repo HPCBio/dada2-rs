@@ -106,6 +106,76 @@ pub struct LearnErrorsResult {
     pub stop_reason: StopReason,
 }
 
+/// Parameters captured from a `learn-errors` / `errors-from-sample` run, embedded
+/// in the JSON output for provenance and downstream consistency checks.
+///
+/// All fields here either feed `dada_uniques` directly or determine how the
+/// transition counts that produced this err model were generated. Embedding them
+/// lets a downstream `dada` invocation either (a) warn when its own CLI flags
+/// disagree with what learned the model, or (b) opt-in inherit them so the same
+/// parameter vector is used end-to-end.
+///
+/// `Deserialize` is permissive (`#[serde(default)]` everywhere) so error-model
+/// JSON files written before this field existed still load.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct LearnedErrParams {
+    /// Error-estimation function name as a stable string token: `"loess"`,
+    /// `"noqual"`, `"binned-qual"`, or `"pacbio"`.
+    #[serde(default)]
+    pub errfun: String,
+    /// Pseudocount for `noqual` errfun (None for other variants).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub errfun_pseudocount: Option<f64>,
+    /// Quality-score bin edges for `binned-qual` errfun (None for others).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub errfun_bins: Option<Vec<f64>>,
+    /// Maximum self-consistency iterations the model was allowed to run.
+    #[serde(default)]
+    pub max_consist: usize,
+
+    // ---- DadaParams: significance / fold thresholds ----
+    #[serde(default)]
+    pub omega_a: f64,
+    #[serde(default)]
+    pub omega_c: f64,
+    #[serde(default)]
+    pub omega_p: f64,
+    #[serde(default)]
+    pub min_fold: f64,
+    #[serde(default)]
+    pub min_hamming: u32,
+    #[serde(default)]
+    pub min_abund: u32,
+    #[serde(default)]
+    pub detect_singletons: bool,
+    #[serde(default)]
+    pub use_quals: bool,
+    #[serde(default)]
+    pub greedy: bool,
+
+    // ---- AlignParams ----
+    #[serde(default)]
+    pub match_score: i32,
+    #[serde(default)]
+    pub mismatch: i32,
+    #[serde(default)]
+    pub gap_p: i32,
+    #[serde(default)]
+    pub homo_gap_p: i32,
+    #[serde(default)]
+    pub use_kmers: bool,
+    #[serde(default)]
+    pub kdist_cutoff: f64,
+    #[serde(default)]
+    pub kmer_size: usize,
+    #[serde(default)]
+    pub band: i32,
+    #[serde(default)]
+    pub vectorized: bool,
+    #[serde(default)]
+    pub gapless: bool,
+}
+
 /// Outcome of the self-consistency iteration in `learn_errors`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

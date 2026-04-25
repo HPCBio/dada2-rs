@@ -32,10 +32,52 @@ use derep::dereplicate;
 use filter_trim::{FilterParams, filter_single, filter_paired, read_fasta_first_seq};
 use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
 use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
-use learn_errors::{ErrFun, learn_errors, load_derep_samples, load_fastq_samples};
+use learn_errors::{ErrFun, LearnedErrParams, learn_errors, load_derep_samples, load_fastq_samples};
 use nwalign::AlignParams;
 use serde::Serialize;
 use summary::process;
+
+/// Build a [`LearnedErrParams`] snapshot from the resolved errfun + dada/align
+/// params, for embedding in the err-model JSON. Captures everything dada cares
+/// about so a downstream invocation can validate or inherit.
+fn build_learned_err_params(
+    errfun: &ErrFun,
+    max_consist: usize,
+    dp: &dada::DadaParams,
+    ap: &AlignParams,
+) -> LearnedErrParams {
+    let (errfun_name, errfun_pseudocount, errfun_bins) = match errfun {
+        ErrFun::Loess => ("loess", None, None),
+        ErrFun::Noqual { pseudocount } => ("noqual", Some(*pseudocount), None),
+        ErrFun::BinnedQual { bins } => ("binned-qual", None, Some(bins.clone())),
+        ErrFun::PacBio => ("pacbio", None, None),
+    };
+    LearnedErrParams {
+        errfun: errfun_name.to_string(),
+        errfun_pseudocount,
+        errfun_bins,
+        max_consist,
+        omega_a: dp.omega_a,
+        omega_c: dp.omega_c,
+        omega_p: dp.omega_p,
+        min_fold: dp.min_fold,
+        min_hamming: dp.min_hamming,
+        min_abund: dp.min_abund,
+        detect_singletons: dp.detect_singletons,
+        use_quals: dp.use_quals,
+        greedy: dp.greedy,
+        match_score: ap.match_score,
+        mismatch: ap.mismatch,
+        gap_p: ap.gap_p,
+        homo_gap_p: ap.homo_gap_p,
+        use_kmers: ap.use_kmers,
+        kdist_cutoff: ap.kdist_cutoff,
+        kmer_size: ap.kmer_size,
+        band: ap.band,
+        vectorized: ap.vectorized,
+        gapless: ap.gapless,
+    }
+}
 
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
@@ -1062,6 +1104,8 @@ fn main() -> io::Result<()> {
                 std::fs::create_dir_all(dir)?;
             }
 
+            let params_snapshot = build_learned_err_params(&err_fun, max_consist, &dada_params, &align_params);
+
             let result = pool.install(|| {
                 learn_errors(all_inputs, &err_fun, dada_params, &align_params, max_consist, verbose, diag_dir.as_deref())
             })?;
@@ -1072,6 +1116,7 @@ fn main() -> io::Result<()> {
                 converged: bool,
                 stop_reason: learn_errors::StopReason,
                 iterations: usize,
+                params: LearnedErrParams,
                 trans: Vec<Vec<u32>>,
                 err_in: Vec<Vec<f64>>,
                 err_out: Vec<Vec<f64>>,
@@ -1089,6 +1134,7 @@ fn main() -> io::Result<()> {
                 converged: result.converged,
                 stop_reason: result.stop_reason,
                 iterations: result.iterations,
+                params: params_snapshot,
                 trans: flat_to_rows_u32(&result.trans, result.nq),
                 err_in: flat_to_rows_f64(&result.err_in, result.nq),
                 err_out: flat_to_rows_f64(&result.err_out, result.nq),
@@ -1200,6 +1246,8 @@ fn main() -> io::Result<()> {
                 std::fs::create_dir_all(dir)?;
             }
 
+            let params_snapshot = build_learned_err_params(&err_fun, max_consist, &dada_params, &align_params);
+
             let result = pool.install(|| {
                 learn_errors(all_inputs, &err_fun, dada_params, &align_params, max_consist, verbose, diag_dir.as_deref())
             })?;
@@ -1211,6 +1259,11 @@ fn main() -> io::Result<()> {
                 converged: bool,
                 stop_reason: learn_errors::StopReason,
                 iterations: usize,
+                /// Provenance: parameters used for the dada_uniques runs that
+                /// produced this err model. Embedded so a downstream `dada`
+                /// invocation can validate or inherit them. See
+                /// `LearnedErrParams` for field details.
+                params: LearnedErrParams,
                 /// Transition counts: 16 rows (ref_nt*4+query_nt), nq columns.
                 trans: Vec<Vec<u32>>,
                 /// Error rates fed into the final DADA run: 16 × nq.
@@ -1231,6 +1284,7 @@ fn main() -> io::Result<()> {
                 converged: result.converged,
                 stop_reason: result.stop_reason,
                 iterations: result.iterations,
+                params: params_snapshot,
                 trans: flat_to_rows_u32(&result.trans, result.nq),
                 err_in: flat_to_rows_f64(&result.err_in, result.nq),
                 err_out: flat_to_rows_f64(&result.err_out, result.nq),
