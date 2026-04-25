@@ -179,7 +179,9 @@ mod bench {
         let mut s = seed;
         (0..n)
             .map(|_| {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 (s >> 33) as u8 & 0x07 // small values to avoid saturation
             })
             .collect()

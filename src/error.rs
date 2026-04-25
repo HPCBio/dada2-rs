@@ -191,12 +191,7 @@ pub fn post_hoc_pvals(b: &B) -> Vec<f64> {
 ///
 /// Only `correct=true` members of each cluster are counted.
 /// Equivalent to C++ `b_make_transition_by_quality_matrix`.
-pub fn transition_counts(
-    b: &B,
-    subs: &[Option<Sub>],
-    has_quals: bool,
-    ncol: usize,
-) -> Vec<u32> {
+pub fn transition_counts(b: &B, subs: &[Option<Sub>], has_quals: bool, ncol: usize) -> Vec<u32> {
     let ncol = if has_quals { ncol } else { 1 };
     let mut mat = vec![0u32; 16 * ncol];
 
@@ -301,7 +296,10 @@ pub fn positional_sub_stats(
                 }
                 nts[pos0] += raw.reads;
                 let qind = if use_quals {
-                    raw.qual.as_ref().map_or(0, |q| q[pos1] as usize).min(ncol - 1)
+                    raw.qual
+                        .as_ref()
+                        .map_or(0, |q| q[pos1] as usize)
+                        .min(ncol - 1)
                 } else {
                     0
                 };
@@ -318,7 +316,11 @@ pub fn positional_sub_stats(
             }
         }
     }
-    PositionalSubStats { nts, subs: sub_counts, exp }
+    PositionalSubStats {
+        nts,
+        subs: sub_counts,
+        exp,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +429,11 @@ pub fn birth_sub_records(
                 pos: sub.pos[s],
                 nt0: nt_decode(sub.nt0[s]),
                 nt1: nt_decode(sub.nt1[s]),
-                qual: if has_quals { sub.q1.get(s).copied() } else { None },
+                qual: if has_quals {
+                    sub.q1.get(s).copied()
+                } else {
+                    None
+                },
                 cluster: ci,
             });
         }

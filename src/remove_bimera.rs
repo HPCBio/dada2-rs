@@ -95,7 +95,11 @@ pub fn remove_bimera_denovo(
         Method::PerSample => {
             // cell_bim[i][j] = true if seq j is bimeric in sample i
             let cell_bim = per_sample_cell_flags(&mat, nrow, ncol, &seqs_ref, params);
-            let n_flagged: usize = cell_bim.iter().flat_map(|r| r.iter()).filter(|&&b| b).count();
+            let n_flagged: usize = cell_bim
+                .iter()
+                .flat_map(|r| r.iter())
+                .filter(|&&b| b)
+                .count();
             if verbose {
                 eprintln!(
                     "[remove-bimera-denovo] Zeroed {} cell(s) across {} sample(s).",
@@ -120,7 +124,10 @@ fn consensus_flags(
     p: &BimeraParams,
 ) -> Vec<bool> {
     let flags = table_bimera2(
-        mat, nrow, ncol, seqs,
+        mat,
+        nrow,
+        ncol,
+        seqs,
         p.min_fold_parent_over_abundance,
         p.min_parent_abundance,
         p.allow_one_off,
@@ -166,8 +173,7 @@ fn pooled_flags(
             let parents: Vec<&[u8]> = (0..ncol)
                 .filter(|&k| {
                     k != j
-                        && pooled[k] as f64
-                            > p.min_fold_parent_over_abundance * abund as f64
+                        && pooled[k] as f64 > p.min_fold_parent_over_abundance * abund as f64
                         && pooled[k] >= p.min_parent_abundance
                 })
                 .map(|k| seqs[k])
@@ -213,8 +219,7 @@ fn per_sample_cell_flags(
                         .filter(|&k| {
                             let k_abund = mat[i + k * nrow];
                             k != j
-                                && k_abund as f64
-                                    > p.min_fold_parent_over_abundance * abund as f64
+                                && k_abund as f64 > p.min_fold_parent_over_abundance * abund as f64
                                 && k_abund >= p.min_parent_abundance
                         })
                         .map(|k| seqs[k])
@@ -273,7 +278,12 @@ fn drop_columns(table: SequenceTable, bimeric: &[bool]) -> SequenceTable {
         })
         .collect();
 
-    SequenceTable { samples: table.samples, sequences, sequence_ids, counts }
+    SequenceTable {
+        samples: table.samples,
+        sequences,
+        sequence_ids,
+        counts,
+    }
 }
 
 /// Zero flagged cells then drop columns that are entirely zero (per-sample).
@@ -320,5 +330,10 @@ fn zero_and_drop(
         })
         .collect();
 
-    SequenceTable { samples: table.samples, sequences, sequence_ids, counts }
+    SequenceTable {
+        samples: table.samples,
+        sequences,
+        sequence_ids,
+        counts,
+    }
 }

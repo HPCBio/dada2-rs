@@ -155,7 +155,11 @@ impl PartialDerep {
 
         let uniques = new_seq_order.into_iter().zip(new_counts).collect();
 
-        Derep { uniques, quals: new_quals, map }
+        Derep {
+            uniques,
+            quals: new_quals,
+            map,
+        }
     }
 }
 
@@ -182,11 +186,11 @@ pub fn dereplicate<R: io::Read>(
         for _ in 0..chunk_size {
             match fastq_reader.read_record(&mut record) {
                 Ok(0) => break,
-                Ok(_) => chunk.push((
-                    record.sequence().to_vec(),
-                    record.quality_scores().to_vec(),
-                )),
-                Err(e) => { error = Some(e); break; }
+                Ok(_) => chunk.push((record.sequence().to_vec(), record.quality_scores().to_vec())),
+                Err(e) => {
+                    error = Some(e);
+                    break;
+                }
             }
         }
 

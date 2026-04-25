@@ -9,7 +9,7 @@
 
 use rayon::prelude::*;
 
-use crate::nwalign::{align_vectorized_with_buf, AlignBuffers};
+use crate::nwalign::{AlignBuffers, align_vectorized_with_buf};
 
 // ---------------------------------------------------------------------------
 // Private alignment helpers
@@ -52,9 +52,7 @@ fn get_ham_endsfree(s0: &[u8], s1: &[u8]) -> usize {
         return 0;
     }
 
-    (i..=j as usize)
-        .filter(|&p| s0[p] != s1[p])
-        .count()
+    (i..=j as usize).filter(|&p| s0[p] != s1[p]).count()
 }
 
 /// Compute left and right overlap lengths between query `al[0]` and parent
@@ -175,8 +173,15 @@ pub fn is_bimera(
 ) -> bool {
     let mut buf = AlignBuffers::new();
     is_bimera_with_buf(
-        sq, parents, allow_one_off, min_one_off_par_dist,
-        match_score, mismatch, gap_p, max_shift, &mut buf,
+        sq,
+        parents,
+        allow_one_off,
+        min_one_off_par_dist,
+        match_score,
+        mismatch,
+        gap_p,
+        max_shift,
+        &mut buf,
     )
 }
 
@@ -236,8 +241,7 @@ pub fn is_bimera_with_buf(
             return true;
         }
         if allow_one_off
-            && (oo_max_left + oo_max_right_oo >= sqlen
-                || oo_max_left_oo + oo_max_right >= sqlen)
+            && (oo_max_left + oo_max_right_oo >= sqlen || oo_max_left_oo + oo_max_right >= sqlen)
         {
             return true;
         }
@@ -319,15 +323,20 @@ pub fn table_bimera2(
                     // Compute alignment if not cached for this (j, k) pair.
                     if cache[k].is_none() {
                         align_vectorized_with_buf(
-                            seqs[j], seqs[k],
-                            match_score, mismatch, gap_p, 0, max_shift,
+                            seqs[j],
+                            seqs[k],
+                            match_score,
+                            mismatch,
+                            gap_p,
+                            0,
+                            max_shift,
                             buf,
                         );
                         let (al0, al1) = buf.alignment();
                         let (left, right, left_oo, right_oo) =
                             get_lr(al0, al1, allow_one_off, max_shift as usize);
-                        let allowed = allow_one_off
-                            && get_ham_endsfree(al0, al1) >= min_one_off_par_dist;
+                        let allowed =
+                            allow_one_off && get_ham_endsfree(al0, al1) >= min_one_off_par_dist;
 
                         // Invalidate identity/pure-shift/internal-indel parents.
                         let (l, r, loo, roo) = if left + right < sqlen {
@@ -339,13 +348,25 @@ pub fn table_bimera2(
                     }
 
                     let (l, r, loo, roo, allowed) = cache[k].unwrap();
-                    if l > max_left { max_left = l; }
-                    if r > max_right { max_right = r; }
+                    if l > max_left {
+                        max_left = l;
+                    }
+                    if r > max_right {
+                        max_right = r;
+                    }
                     if allow_one_off && allowed {
-                        if l   > oo_max_left    { oo_max_left    = l;   }
-                        if r   > oo_max_right   { oo_max_right   = r;   }
-                        if loo > oo_max_left_oo { oo_max_left_oo = loo; }
-                        if roo > oo_max_right_oo{ oo_max_right_oo= roo; }
+                        if l > oo_max_left {
+                            oo_max_left = l;
+                        }
+                        if r > oo_max_right {
+                            oo_max_right = r;
+                        }
+                        if loo > oo_max_left_oo {
+                            oo_max_left_oo = loo;
+                        }
+                        if roo > oo_max_right_oo {
+                            oo_max_right_oo = roo;
+                        }
                     }
                 } // for k
 

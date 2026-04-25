@@ -74,7 +74,10 @@ pub fn process<R: io::Read>(
             match fastq_reader.read_record(&mut record) {
                 Ok(0) => break,
                 Ok(_) => chunk.push(record.quality_scores().to_vec()),
-                Err(e) => { error = Some(e); break; }
+                Err(e) => {
+                    error = Some(e);
+                    break;
+                }
             }
         }
 

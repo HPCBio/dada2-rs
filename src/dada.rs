@@ -18,7 +18,7 @@
 
 use crate::cluster::{b_bud, b_compare, b_compare_parallel, b_shuffle2};
 use crate::containers::{B, BirthType, Raw};
-use crate::kmers::{raw_assign_kmers, KMER_SIZE_MAX, KMER_SIZE_MIN};
+use crate::kmers::{KMER_SIZE_MAX, KMER_SIZE_MIN, raw_assign_kmers};
 use crate::misc::nt_encode;
 use crate::nwalign::AlignParams;
 use crate::pval::{b_p_update, calc_pA};
@@ -220,7 +220,11 @@ pub fn dada_uniques_cached(
                 .enumerate()
                 .map(|(i, inp)| {
                     let seq: Vec<u8> = inp.seq.bytes().map(nt_encode).collect();
-                    let qual = if has_quals { inp.quals.as_deref() } else { None };
+                    let qual = if has_quals {
+                        inp.quals.as_deref()
+                    } else {
+                        None
+                    };
                     let mut raw = Raw::new(seq, qual, inp.abundance, inp.prior);
                     raw.index = i as u32;
                     raw
@@ -322,19 +326,26 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
 
     // Initial compare: no k-mer distance screen so that cluster 0 accumulates
     // comparisons for every Raw (required by b_shuffle2).
-    let init_params = AlignParams { kdist_cutoff: 1.0, ..params.align };
+    let init_params = AlignParams {
+        kdist_cutoff: 1.0,
+        ..params.align
+    };
 
     if params.multithread {
         b_compare_parallel(
-            &mut bb, 0,
-            &params.err_mat, params.err_ncol,
+            &mut bb,
+            0,
+            &params.err_mat,
+            params.err_ncol,
             &init_params,
             params.greedy,
         );
     } else {
         b_compare(
-            &mut bb, 0,
-            &params.err_mat, params.err_ncol,
+            &mut bb,
+            0,
+            &params.err_mat,
+            params.err_ncol,
             &init_params,
             params.greedy,
             params.verbose,
@@ -366,15 +377,19 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
 
         if params.multithread {
             b_compare_parallel(
-                &mut bb, newi,
-                &params.err_mat, params.err_ncol,
+                &mut bb,
+                newi,
+                &params.err_mat,
+                params.err_ncol,
                 &params.align,
                 params.greedy,
             );
         } else {
             b_compare(
-                &mut bb, newi,
-                &params.err_mat, params.err_ncol,
+                &mut bb,
+                newi,
+                &params.err_mat,
+                params.err_ncol,
                 &params.align,
                 params.greedy,
                 params.verbose,

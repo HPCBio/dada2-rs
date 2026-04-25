@@ -37,10 +37,12 @@ const MIN_ERROR_RATE: f64 = 1e-7;
 fn solve_linear(a: &mut [f64], b: &mut [f64], n: usize) -> Option<Vec<f64>> {
     for col in 0..n {
         // Find the row with the largest absolute value in this column (pivot).
-        let pivot_row = (col..n)
-            .max_by(|&r1, &r2| {
-                a[r1 * n + col].abs().partial_cmp(&a[r2 * n + col].abs()).unwrap()
-            })?;
+        let pivot_row = (col..n).max_by(|&r1, &r2| {
+            a[r1 * n + col]
+                .abs()
+                .partial_cmp(&a[r2 * n + col].abs())
+                .unwrap()
+        })?;
 
         if pivot_row != col {
             for k in 0..n {
@@ -91,7 +93,13 @@ fn solve_linear(a: &mut [f64], b: &mut [f64], n: usize) -> Option<Vec<f64>> {
 ///
 /// Returns a `Vec<Option<f64>>` aligned to `xs`; `None` at a position means
 /// the local fit could not be computed there.
-fn loess_predict(xs: &[f64], ys: &[f64], weights: &[f64], span: f64, degree: usize) -> Vec<Option<f64>> {
+fn loess_predict(
+    xs: &[f64],
+    ys: &[f64],
+    weights: &[f64],
+    span: f64,
+    degree: usize,
+) -> Vec<Option<f64>> {
     debug_assert_eq!(xs.len(), ys.len());
     debug_assert_eq!(xs.len(), weights.len());
 
@@ -118,10 +126,11 @@ fn loess_predict(xs: &[f64], ys: &[f64], weights: &[f64], span: f64, degree: usi
     // `loessErrfun` then flat-fills via `pred[minrli]` / `pred[maxrli]`. We
     // match that: out-of-range x → None here so `extrapolate_flat` handles
     // the boundary fill, instead of a polynomial extrapolation that drifts.
-    let (x_min, x_max) = valid.iter().fold(
-        (f64::INFINITY, f64::NEG_INFINITY),
-        |(lo, hi), &i| (lo.min(xs[i]), hi.max(xs[i])),
-    );
+    let (x_min, x_max) = valid
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &i| {
+            (lo.min(xs[i]), hi.max(xs[i]))
+        });
 
     (0..n)
         .map(|pred_idx| {
@@ -132,10 +141,8 @@ fn loess_predict(xs: &[f64], ys: &[f64], weights: &[f64], span: f64, degree: usi
             }
 
             // Sort valid observations by distance to x0.
-            let mut dists: Vec<(usize, f64)> = valid
-                .iter()
-                .map(|&i| (i, (xs[i] - x0).abs()))
-                .collect();
+            let mut dists: Vec<(usize, f64)> =
+                valid.iter().map(|&i| (i, (xs[i] - x0).abs())).collect();
             dists.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
             let max_dist = dists[n_local - 1].1;
@@ -145,7 +152,11 @@ fn loess_predict(xs: &[f64], ys: &[f64], weights: &[f64], span: f64, degree: usi
                 .iter()
                 .map(|&(i, d)| {
                     let u = if max_dist > 0.0 { d / max_dist } else { 0.0 };
-                    let tri = if u < 1.0 { (1.0 - u.powi(3)).powi(3) } else { 0.0 };
+                    let tri = if u < 1.0 {
+                        (1.0 - u.powi(3)).powi(3)
+                    } else {
+                        0.0
+                    };
                     (i, tri * weights[i])
                 })
                 .filter(|&(_, w)| w > 0.0)
@@ -253,10 +264,10 @@ fn expand_err_matrix(off_diag: &[f64], nq: usize) -> Vec<f64> {
     // (off_row_start, [dest_full_rows], diag_full_row)
     //   full_row = nti * 4 + ntj
     let groups: [(usize, [usize; 3], usize); 4] = [
-        (0, [1, 2, 3], 0),      // A: A→C, A→G, A→T; diag=A→A (row 0)
-        (3, [4, 6, 7], 5),      // C: C→A, C→G, C→T; diag=C→C (row 5)
-        (6, [8, 9, 11], 10),    // G: G→A, G→C, G→T; diag=G→G (row 10)
-        (9, [12, 13, 14], 15),  // T: T→A, T→C, T→G; diag=T→T (row 15)
+        (0, [1, 2, 3], 0),     // A: A→C, A→G, A→T; diag=A→A (row 0)
+        (3, [4, 6, 7], 5),     // C: C→A, C→G, C→T; diag=C→C (row 5)
+        (6, [8, 9, 11], 10),   // G: G→A, G→C, G→T; diag=G→G (row 10)
+        (9, [12, 13, 14], 15), // T: T→A, T→C, T→G; diag=T→T (row 15)
     ];
 
     for (off_start, full_rows, diag_row) in groups {
@@ -305,7 +316,11 @@ pub fn loess_errfun(trans: &[u32], qual_scores: &[f64]) -> Vec<f64> {
     for nti in 0..4usize {
         // Total counts across all destinations for this source nucleotide.
         let tot: Vec<f64> = (0..nq)
-            .map(|q| (0..4usize).map(|ntj| trans[(nti * 4 + ntj) * nq + q] as f64).sum())
+            .map(|q| {
+                (0..4usize)
+                    .map(|ntj| trans[(nti * 4 + ntj) * nq + q] as f64)
+                    .sum()
+            })
             .collect();
 
         for ntj in 0..4usize {
@@ -444,9 +459,15 @@ pub fn binned_qual_errfun(
         return Err("No observed transitions".to_string());
     }
 
-    let qmax = observed_qs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let qmax = observed_qs
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
     let qmin = observed_qs.iter().cloned().fold(f64::INFINITY, f64::min);
-    let bmax = binned_quals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let bmax = binned_quals
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
     let bmin = binned_quals.iter().cloned().fold(f64::INFINITY, f64::min);
 
     if qmax > bmax {
@@ -465,7 +486,11 @@ pub fn binned_qual_errfun(
 
     for nti in 0..4usize {
         let tot: Vec<f64> = (0..nq)
-            .map(|q| (0..4usize).map(|ntj| trans[(nti * 4 + ntj) * nq + q] as f64).sum())
+            .map(|q| {
+                (0..4usize)
+                    .map(|ntj| trans[(nti * 4 + ntj) * nq + q] as f64)
+                    .sum()
+            })
             .collect();
 
         for ntj in 0..4usize {
@@ -504,14 +529,21 @@ pub fn binned_qual_errfun(
                 if lo_p.is_finite() && hi_p.is_finite() {
                     let steps = hi_q - lo_q + 1;
                     for k in 0..steps {
-                        let t = if steps > 1 { k as f64 / (steps - 1) as f64 } else { 0.0 };
+                        let t = if steps > 1 {
+                            k as f64 / (steps - 1) as f64
+                        } else {
+                            0.0
+                        };
                         pred[lo_q + k] = lo_p * (1.0 - t) + hi_p * t;
                     }
                 }
             }
 
             // Flat extrapolation outside the anchor range.
-            let raw_opt: Vec<Option<f64>> = pred.iter().map(|&v| if v.is_finite() { Some(v) } else { None }).collect();
+            let raw_opt: Vec<Option<f64>> = pred
+                .iter()
+                .map(|&v| if v.is_finite() { Some(v) } else { None })
+                .collect();
             let filled = extrapolate_flat(raw_opt, nq);
 
             for q in 0..nq {
@@ -555,8 +587,9 @@ pub fn pacbio_errfun(trans: &[u32], qual_scores: &[f64]) -> Vec<f64> {
         let q93 = nq - 1;
         let mut err93 = vec![0.0f64; 16];
         for nti in 0..4usize {
-            let tot93: f64 =
-                (0..4usize).map(|ntj| trans[(nti * 4 + ntj) * nq + q93] as f64).sum();
+            let tot93: f64 = (0..4usize)
+                .map(|ntj| trans[(nti * 4 + ntj) * nq + q93] as f64)
+                .sum();
             for ntj in 0..4usize {
                 let c = trans[(nti * 4 + ntj) * nq + q93] as f64;
                 err93[nti * 4 + ntj] = (c + 1.0) / (tot93 + 4.0);
@@ -767,7 +800,10 @@ mod tests {
 
         for nti in 0..4 {
             let row_sum: f64 = (0..4).map(|ntj| err[(nti * 4 + ntj) * nq]).sum();
-            assert!((row_sum - 1.0).abs() < 1e-6, "nti={nti} row sum = {row_sum}");
+            assert!(
+                (row_sum - 1.0).abs() < 1e-6,
+                "nti={nti} row sum = {row_sum}"
+            );
         }
     }
 
@@ -797,8 +833,7 @@ mod tests {
                 if nti != ntj {
                     for q in 0..nq {
                         assert!(
-                            inflated[(nti * 4 + ntj) * nq + q]
-                                >= err[(nti * 4 + ntj) * nq + q],
+                            inflated[(nti * 4 + ntj) * nq + q] >= err[(nti * 4 + ntj) * nq + q],
                             "inflated rate should be >= original"
                         );
                     }

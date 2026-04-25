@@ -69,7 +69,11 @@ pub fn ntstr(seq: &[u8]) -> Vec<u8> {
 /// Print an alignment of two integer-encoded sequences to stderr.
 /// Equivalent to C++ `align_print`.
 pub fn align_print(al0: &[u8], al1: &[u8]) {
-    assert_eq!(al0.len(), al1.len(), "alignment strands must have equal length");
+    assert_eq!(
+        al0.len(),
+        al1.len(),
+        "alignment strands must have equal length"
+    );
     eprintln!("{}", String::from_utf8_lossy(&ntstr(al0)));
     let mid: String = al0
         .iter()
@@ -84,12 +88,22 @@ pub fn align_print(al0: &[u8], al1: &[u8]) {
 /// Equivalent to C++ `err_print`.
 pub fn err_print(err: &[[f64; 4]; 4]) {
     for (i, row) in err.iter().enumerate() {
-        if i == 0 { eprint!("{{"); } else { eprint!(" "); }
+        if i == 0 {
+            eprint!("{{");
+        } else {
+            eprint!(" ");
+        }
         eprint!("{{");
         for (j, val) in row.iter().enumerate() {
             eprint!("{val:.6}");
-            if j < 3 { eprint!(", "); }
+            if j < 3 {
+                eprint!(", ");
+            }
         }
-        if i < 3 { eprintln!("}},"); } else { eprintln!("}}}}"); }
+        if i < 3 {
+            eprintln!("}},");
+        } else {
+            eprintln!("}}}}");
+        }
     }
 }

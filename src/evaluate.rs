@@ -152,11 +152,7 @@ pub fn is_acgt(seq: &[u8]) -> bool {
 ///
 /// Inputs are ASCII sequences; integer-encoding is handled internally.
 /// Equivalent to the R-exported `kmer_dist` in `evaluate.cpp`.
-pub fn kmer_dist_pairs(
-    s1: &[&[u8]],
-    s2: &[&[u8]],
-    k: usize,
-) -> Result<Vec<f64>, String> {
+pub fn kmer_dist_pairs(s1: &[&[u8]], s2: &[&[u8]], k: usize) -> Result<Vec<f64>, String> {
     if s1.len() != s2.len() {
         return Err(format!(
             "Mismatched pair counts ({} vs {}).",
@@ -184,11 +180,7 @@ pub fn kmer_dist_pairs(
 ///
 /// Equivalent to the R-exported `kord_dist` in `evaluate.cpp` (scalar path,
 /// no SSE).
-pub fn kord_dist_pairs(
-    s1: &[&[u8]],
-    s2: &[&[u8]],
-    k: usize,
-) -> Result<Vec<f64>, String> {
+pub fn kord_dist_pairs(s1: &[&[u8]], s2: &[&[u8]], k: usize) -> Result<Vec<f64>, String> {
     if s1.len() != s2.len() {
         return Err(format!(
             "Mismatched pair counts ({} vs {}).",
@@ -213,11 +205,7 @@ pub fn kord_dist_pairs(
 /// A positional match is a position `j` (within the shorter k-mer order
 /// array) where `kord1[j] == kord2[j]`.
 /// Equivalent to the R-exported `kmer_matches` in `evaluate.cpp`.
-pub fn kmer_matches_pairs(
-    s1: &[&[u8]],
-    s2: &[&[u8]],
-    k: usize,
-) -> Result<Vec<u32>, String> {
+pub fn kmer_matches_pairs(s1: &[&[u8]], s2: &[&[u8]], k: usize) -> Result<Vec<u32>, String> {
     if s1.len() != s2.len() {
         return Err(format!(
             "Mismatched pair counts ({} vs {}).",
@@ -250,11 +238,7 @@ pub fn kmer_matches_pairs(
 ///
 /// This is the numerator used in `kmer_dist`.
 /// Equivalent to the R-exported `kdist_matches` in `evaluate.cpp`.
-pub fn kdist_matches_pairs(
-    s1: &[&[u8]],
-    s2: &[&[u8]],
-    k: usize,
-) -> Result<Vec<u32>, String> {
+pub fn kdist_matches_pairs(s1: &[&[u8]], s2: &[&[u8]], k: usize) -> Result<Vec<u32>, String> {
     if s1.len() != s2.len() {
         return Err(format!(
             "Mismatched pair counts ({} vs {}).",

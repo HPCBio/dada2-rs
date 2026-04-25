@@ -10,7 +10,7 @@
 
 use statrs::distribution::{DiscreteCDF, Poisson};
 
-use crate::containers::{Raw, Sub, B};
+use crate::containers::{B, Raw, Sub};
 
 /// Minimum value of the conditioning normaliser below which the second-order
 /// Taylor approximation `E - E²/2` is used instead of `1 - exp(-E)`.
@@ -125,7 +125,13 @@ pub fn calc_pA(reads: u32, e_reads: f64, prior: bool) -> f64 {
 /// Returns `0.0` when `sub` is `None` (sequence was outside the k-mer
 /// distance threshold and was not aligned).
 /// Equivalent to C++ `compute_lambda_ts`.
-pub fn compute_lambda(raw: &Raw, sub: Option<&Sub>, err_mat: &[f64], ncol: usize, use_quals: bool) -> f64 {
+pub fn compute_lambda(
+    raw: &Raw,
+    sub: Option<&Sub>,
+    err_mat: &[f64],
+    ncol: usize,
+    use_quals: bool,
+) -> f64 {
     let sub = match sub {
         Some(s) => s,
         None => return 0.0,
@@ -156,7 +162,11 @@ pub fn compute_lambda(raw: &Raw, sub: Option<&Sub>, err_mat: &[f64], ncol: usize
         let pos0 = sub.pos[s] as usize;
         let pos1 = sub.map[pos0] as usize;
 
-        debug_assert!(pos0 < sub.len0 as usize, "sub pos0 {pos0} >= len0 {}", sub.len0);
+        debug_assert!(
+            pos0 < sub.len0 as usize,
+            "sub pos0 {pos0} >= len0 {}",
+            sub.len0
+        );
         debug_assert!(pos1 < len, "sub pos1 {pos1} >= raw len {len}");
 
         let nti0 = sub.nt0[s].saturating_sub(1) as usize;
@@ -169,7 +179,10 @@ pub fn compute_lambda(raw: &Raw, sub: Option<&Sub>, err_mat: &[f64], ncol: usize
         .map(|pos| err_mat[tvec[pos] * ncol + qind[pos]])
         .product();
 
-    debug_assert!((0.0..=1.0).contains(&lambda), "lambda {lambda} outside [0,1]");
+    debug_assert!(
+        (0.0..=1.0).contains(&lambda),
+        "lambda {lambda} outside [0,1]"
+    );
     lambda
 }
 

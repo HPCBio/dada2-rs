@@ -136,7 +136,7 @@ pub enum HashAlgo {
 impl HashAlgo {
     pub fn digest(self, seq: &str) -> String {
         match self {
-            HashAlgo::Md5  => format!("{:x}", Md5::digest(seq.as_bytes())),
+            HashAlgo::Md5 => format!("{:x}", Md5::digest(seq.as_bytes())),
             HashAlgo::Sha1 => format!("{:x}", Sha1::digest(seq.as_bytes())),
         }
     }
@@ -241,5 +241,10 @@ pub fn make_sequence_table(
     let samples: Vec<String> = all_samples.into_iter().map(|s| s.name).collect();
     let sequence_ids: Vec<String> = sequences.iter().map(|s| hash_algo.digest(s)).collect();
 
-    Ok(SequenceTable { samples, sequences, sequence_ids, counts })
+    Ok(SequenceTable {
+        samples,
+        sequences,
+        sequence_ids,
+        counts,
+    })
 }

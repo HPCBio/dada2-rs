@@ -5,10 +5,7 @@ use flate2::read::MultiGzDecoder;
 use rand::seq::SliceRandom as _;
 
 mod chimera;
-mod remove_bimera;
-mod sequence_table;
 mod cli;
-mod merge_pairs;
 mod cluster;
 mod containers;
 mod dada;
@@ -20,20 +17,25 @@ mod filter;
 mod filter_trim;
 mod kmers;
 mod learn_errors;
+mod merge_pairs;
 mod misc;
 mod nwalign;
 mod pval;
+mod remove_bimera;
+mod sequence_table;
 mod summary;
 mod taxonomy;
 
 use cli::{Cli, Commands};
 use containers::BirthType;
 use derep::dereplicate;
-use filter_trim::{FilterParams, filter_single, filter_paired, read_fasta_first_seq};
+use filter_trim::{FilterParams, filter_paired, filter_single, read_fasta_first_seq};
+use learn_errors::{
+    ErrFun, LearnedErrParams, learn_errors, load_derep_samples, load_fastq_samples,
+};
+use nwalign::AlignParams;
 use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
 use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
-use learn_errors::{ErrFun, LearnedErrParams, learn_errors, load_derep_samples, load_fastq_samples};
-use nwalign::AlignParams;
 use serde::Serialize;
 use summary::process;
 
@@ -83,14 +85,24 @@ fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Summary { input, phred_offset, threads, output, compact } => {
+        Commands::Summary {
+            input,
+            phred_offset,
+            threads,
+            output,
+            compact,
+        } => {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
             let summary = if input.extension().and_then(|e| e.to_str()) == Some("gz") {
-                process(MultiGzDecoder::new(File::open(&input)?), phred_offset, &pool)?
+                process(
+                    MultiGzDecoder::new(File::open(&input)?),
+                    phred_offset,
+                    &pool,
+                )?
             } else {
                 process(File::open(&input)?, phred_offset, &pool)?
             };
@@ -119,14 +131,27 @@ fn main() -> io::Result<()> {
             }
         }
 
-        Commands::Derep { input, phred_offset, threads, output, show_map, compact, verbose } => {
+        Commands::Derep {
+            input,
+            phred_offset,
+            threads,
+            output,
+            show_map,
+            compact,
+            verbose,
+        } => {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
             let derep = if input.extension().and_then(|e| e.to_str()) == Some("gz") {
-                dereplicate(MultiGzDecoder::new(File::open(&input)?), phred_offset, &pool, verbose)?
+                dereplicate(
+                    MultiGzDecoder::new(File::open(&input)?),
+                    phred_offset,
+                    &pool,
+                    verbose,
+                )?
             } else {
                 dereplicate(File::open(&input)?, phred_offset, &pool, verbose)?
             };
@@ -169,7 +194,8 @@ fn main() -> io::Result<()> {
                 serde_json::to_string(&derep_out)
             } else {
                 serde_json::to_string_pretty(&derep_out)
-            }.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            }
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
             match output {
                 Some(path) => std::fs::write(&path, &json)?,
@@ -208,7 +234,12 @@ fn main() -> io::Result<()> {
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
             let derep = if input.extension().and_then(|e| e.to_str()) == Some("gz") {
-                dereplicate(MultiGzDecoder::new(File::open(&input)?), phred_offset, &pool, verbose)?
+                dereplicate(
+                    MultiGzDecoder::new(File::open(&input)?),
+                    phred_offset,
+                    &pool,
+                    verbose,
+                )?
             } else {
                 dereplicate(File::open(&input)?, phred_offset, &pool, verbose)?
             };
@@ -291,17 +322,17 @@ fn main() -> io::Result<()> {
                     }
                 }};
             }
-            let omega_a            = resolve!(omega_a,           omega_a,            1e-40);
-            let omega_c            = resolve!(omega_c,           omega_c,            1e-40);
-            let omega_p            = resolve!(omega_p,           omega_p,            1e-4);
-            let min_fold           = resolve!(min_fold,          min_fold,           1.0);
-            let min_hamming        = resolve!(min_hamming,       min_hamming,        1);
-            let min_abund          = resolve!(min_abund,         min_abund,          1);
-            let detect_singletons  = resolve!(detect_singletons, detect_singletons,  false);
-            let band               = resolve!(band,              band,               16);
-            let homo_gap_p         = resolve!(homo_gap_p,        homo_gap_p,         -8);
-            let kdist_cutoff       = resolve!(kdist_cutoff,      kdist_cutoff,       0.42);
-            let kmer_size          = resolve!(kmer_size,         kmer_size,          5);
+            let omega_a = resolve!(omega_a, omega_a, 1e-40);
+            let omega_c = resolve!(omega_c, omega_c, 1e-40);
+            let omega_p = resolve!(omega_p, omega_p, 1e-4);
+            let min_fold = resolve!(min_fold, min_fold, 1.0);
+            let min_hamming = resolve!(min_hamming, min_hamming, 1);
+            let min_abund = resolve!(min_abund, min_abund, 1);
+            let detect_singletons = resolve!(detect_singletons, detect_singletons, false);
+            let band = resolve!(band, band, 16);
+            let homo_gap_p = resolve!(homo_gap_p, homo_gap_p, -8);
+            let kdist_cutoff = resolve!(kdist_cutoff, kdist_cutoff, 0.42);
+            let kmer_size = resolve!(kmer_size, kmer_size, 5);
             // `no_kmer_screen` (CLI) inverts `use_kmers` (algorithm).
             let use_kmers = match (no_kmer_screen, inherit_err_params, p) {
                 (Some(no), _, _) => !no,
@@ -360,18 +391,22 @@ fn main() -> io::Result<()> {
                             }
                         };
                     }
-                    check!("omega_a",           omega_a,           em_params.omega_a);
-                    check!("omega_c",           omega_c,           em_params.omega_c);
-                    check!("omega_p",           omega_p,           em_params.omega_p);
-                    check!("min_fold",          min_fold,          em_params.min_fold);
-                    check!("min_hamming",       min_hamming,       em_params.min_hamming);
-                    check!("min_abund",         min_abund,         em_params.min_abund);
-                    check!("detect_singletons", detect_singletons, em_params.detect_singletons);
-                    check!("band",              band,              em_params.band);
-                    check!("homo_gap_p",        homo_gap_p,        em_params.homo_gap_p);
-                    check!("kdist_cutoff",      kdist_cutoff,      em_params.kdist_cutoff);
-                    check!("kmer_size",         kmer_size,         em_params.kmer_size);
-                    check!("use_kmers",         use_kmers,         em_params.use_kmers);
+                    check!("omega_a", omega_a, em_params.omega_a);
+                    check!("omega_c", omega_c, em_params.omega_c);
+                    check!("omega_p", omega_p, em_params.omega_p);
+                    check!("min_fold", min_fold, em_params.min_fold);
+                    check!("min_hamming", min_hamming, em_params.min_hamming);
+                    check!("min_abund", min_abund, em_params.min_abund);
+                    check!(
+                        "detect_singletons",
+                        detect_singletons,
+                        em_params.detect_singletons
+                    );
+                    check!("band", band, em_params.band);
+                    check!("homo_gap_p", homo_gap_p, em_params.homo_gap_p);
+                    check!("kdist_cutoff", kdist_cutoff, em_params.kdist_cutoff);
+                    check!("kmer_size", kmer_size, em_params.kmer_size);
+                    check!("use_kmers", use_kmers, em_params.use_kmers);
                     if !mismatches.is_empty() {
                         eprintln!(
                             "[dada] warning: {} dada parameter(s) differ from error model {}; pass --inherit-err-params to adopt the err model's values:",
@@ -386,7 +421,8 @@ fn main() -> io::Result<()> {
             }
 
             // ---- Run DADA2 ----
-            let result = pool.install(|| dada::dada_uniques(&raw_inputs, &dada_params))
+            let result = pool
+                .install(|| dada::dada_uniques(&raw_inputs, &dada_params))
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
             if verbose {
@@ -500,9 +536,9 @@ fn main() -> io::Result<()> {
             // ---- Validate that all four lists have the same length ----
             let n = fwd_dada.len();
             for (flag, len) in [
-                ("--rev-dada",   rev_dada.len()),
-                ("--fwd-fastq",  fwd_fastq.len()),
-                ("--rev-fastq",  rev_fastq.len()),
+                ("--rev-dada", rev_dada.len()),
+                ("--fwd-fastq", fwd_fastq.len()),
+                ("--rev-fastq", rev_fastq.len()),
             ] {
                 if len != n {
                     return Err(io::Error::new(
@@ -534,10 +570,7 @@ fn main() -> io::Result<()> {
                     .iter()
                     .map(|p| {
                         // Strip .json/.json.gz (and any preceding fastq-style extensions) from the stem.
-                        let name = p
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown");
+                        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
                         // Strip trailing .json.gz or .json then apply the FASTQ-stem logic.
                         let without_json = name
                             .strip_suffix(".json.gz")
@@ -573,12 +606,7 @@ fn main() -> io::Result<()> {
 
             for i in 0..n {
                 if verbose {
-                    eprintln!(
-                        "[merge-pairs] sample '{}' ({}/{})",
-                        names[i],
-                        i + 1,
-                        n
-                    );
+                    eprintln!("[merge-pairs] sample '{}' ({}/{})", names[i], i + 1, n);
                 }
 
                 let result = merge_pairs::merge_sample(
@@ -594,10 +622,7 @@ fn main() -> io::Result<()> {
                 if verbose {
                     eprintln!(
                         "[merge-pairs] '{}': {}/{} read-pairs accepted → {} merged sequence(s)",
-                        names[i],
-                        result.accepted_pairs,
-                        result.total_pairs,
-                        result.num_merged,
+                        names[i], result.accepted_pairs, result.total_pairs, result.num_merged,
                     );
                 }
 
@@ -688,12 +713,12 @@ fn main() -> io::Result<()> {
                 }};
             }
 
-            let (trunc_q_f, trunc_q_r)       = pair!(trunc_q, 2u8);
-            let (trunc_len_f, trunc_len_r)   = pair!(trunc_len, 0usize);
-            let (trim_left_f, trim_left_r)   = pair!(trim_left, 0usize);
+            let (trunc_q_f, trunc_q_r) = pair!(trunc_q, 2u8);
+            let (trunc_len_f, trunc_len_r) = pair!(trunc_len, 0usize);
+            let (trim_left_f, trim_left_r) = pair!(trim_left, 0usize);
             let (trim_right_f, trim_right_r) = pair!(trim_right, 0usize);
-            let (max_len_f, max_len_r)       = pair!(max_len, 0usize);
-            let (min_len_f, min_len_r)       = pair!(min_len, 20usize);
+            let (max_len_f, max_len_r) = pair!(max_len, 0usize);
+            let (min_len_f, min_len_r) = pair!(min_len, 20usize);
             let (max_ee_f, max_ee_r) = if max_ee.is_empty() {
                 (f64::INFINITY, f64::INFINITY)
             } else if max_ee.len() == 1 {
@@ -724,12 +749,24 @@ fn main() -> io::Result<()> {
             };
 
             let params_fwd = make_params(
-                trunc_q_f, trunc_len_f, trim_left_f, trim_right_f,
-                max_len_f, min_len_f, max_ee_f, rm_lowcomplex_f,
+                trunc_q_f,
+                trunc_len_f,
+                trim_left_f,
+                trim_right_f,
+                max_len_f,
+                min_len_f,
+                max_ee_f,
+                rm_lowcomplex_f,
             );
             let params_rev = make_params(
-                trunc_q_r, trunc_len_r, trim_left_r, trim_right_r,
-                max_len_r, min_len_r, max_ee_r, rm_lowcomplex_r,
+                trunc_q_r,
+                trunc_len_r,
+                trim_left_r,
+                trim_right_r,
+                max_len_r,
+                min_len_r,
+                max_ee_r,
+                rm_lowcomplex_r,
             );
 
             // ---- Run (optionally parallel across samples) ----
@@ -751,20 +788,31 @@ fn main() -> io::Result<()> {
                 // Build index list, process in parallel.
                 let indices: Vec<usize> = (0..n).collect();
                 let par_results: Vec<io::Result<SampleResult>> = pool.install(|| {
-                    indices.par_iter().map(|&i| {
-                        let sample = fastq_stem(&fwd[i]);
-                        let stats = if paired {
-                            filter_paired(
-                                &fwd[i], &rev_files[i],
-                                &filt[i], &filt_rev_files[i],
-                                &params_fwd, &params_rev,
-                                compress, verbose,
-                            )?
-                        } else {
-                            filter_single(&fwd[i], &filt[i], &params_fwd, compress, verbose)?
-                        };
-                        Ok(SampleResult { sample, reads_in: stats.reads_in, reads_out: stats.reads_out })
-                    }).collect()
+                    indices
+                        .par_iter()
+                        .map(|&i| {
+                            let sample = fastq_stem(&fwd[i]);
+                            let stats = if paired {
+                                filter_paired(
+                                    &fwd[i],
+                                    &rev_files[i],
+                                    &filt[i],
+                                    &filt_rev_files[i],
+                                    &params_fwd,
+                                    &params_rev,
+                                    compress,
+                                    verbose,
+                                )?
+                            } else {
+                                filter_single(&fwd[i], &filt[i], &params_fwd, compress, verbose)?
+                            };
+                            Ok(SampleResult {
+                                sample,
+                                reads_in: stats.reads_in,
+                                reads_out: stats.reads_out,
+                            })
+                        })
+                        .collect()
                 });
 
                 par_results.into_iter().collect()
@@ -774,15 +822,23 @@ fn main() -> io::Result<()> {
                     let sample = fastq_stem(&fwd[i]);
                     let stats = if paired {
                         filter_paired(
-                            &fwd[i], &rev_files[i],
-                            &filt[i], &filt_rev_files[i],
-                            &params_fwd, &params_rev,
-                            compress, verbose,
+                            &fwd[i],
+                            &rev_files[i],
+                            &filt[i],
+                            &filt_rev_files[i],
+                            &params_fwd,
+                            &params_rev,
+                            compress,
+                            verbose,
                         )?
                     } else {
                         filter_single(&fwd[i], &filt[i], &params_fwd, compress, verbose)?
                     };
-                    out.push(SampleResult { sample, reads_in: stats.reads_in, reads_out: stats.reads_out });
+                    out.push(SampleResult {
+                        sample,
+                        reads_in: stats.reads_in,
+                        reads_out: stats.reads_out,
+                    });
                 }
                 Ok(out)
             };
@@ -822,11 +878,19 @@ fn main() -> io::Result<()> {
             }
             let order = match order_by.as_str() {
                 "abundance" => OrderBy::Abundance,
-                "nsamples"  => OrderBy::NSamples,
-                _           => OrderBy::None,
+                "nsamples" => OrderBy::NSamples,
+                _ => OrderBy::None,
             };
-            let names_opt = if sample_names.is_empty() { None } else { Some(sample_names.as_slice()) };
-            let hash_algo = if hash == "sha1" { HashAlgo::Sha1 } else { HashAlgo::Md5 };
+            let names_opt = if sample_names.is_empty() {
+                None
+            } else {
+                Some(sample_names.as_slice())
+            };
+            let hash_algo = if hash == "sha1" {
+                HashAlgo::Sha1
+            } else {
+                HashAlgo::Md5
+            };
             let paths: Vec<&Path> = input.iter().map(|p| p.as_path()).collect();
             let table = make_sequence_table(&paths, names_opt, order, hash_algo)?;
             let json = if compact {
@@ -861,9 +925,9 @@ fn main() -> io::Result<()> {
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
             let method = match method.as_str() {
-                "pooled"     => Method::Pooled,
+                "pooled" => Method::Pooled,
                 "per-sample" => Method::PerSample,
-                _            => Method::Consensus,
+                _ => Method::Consensus,
             };
             let params = BimeraParams {
                 min_fold_parent_over_abundance,
@@ -1009,7 +1073,12 @@ fn main() -> io::Result<()> {
             for path in &ordered {
                 let is_gz = path.extension().and_then(|e| e.to_str()) == Some("gz");
                 let derep = if is_gz {
-                    dereplicate(MultiGzDecoder::new(File::open(path)?), phred_offset, &pool, verbose)?
+                    dereplicate(
+                        MultiGzDecoder::new(File::open(path)?),
+                        phred_offset,
+                        &pool,
+                        verbose,
+                    )?
                 } else {
                     dereplicate(File::open(path)?, phred_offset, &pool, verbose)?
                 };
@@ -1027,7 +1096,11 @@ fn main() -> io::Result<()> {
                     let s1 = p.file_stem().unwrap_or_default();
                     let s1_path = std::path::Path::new(s1);
                     if s1_path.extension().is_some() {
-                        s1_path.file_stem().unwrap_or(s1).to_string_lossy().into_owned()
+                        s1_path
+                            .file_stem()
+                            .unwrap_or(s1)
+                            .to_string_lossy()
+                            .into_owned()
                     } else {
                         s1.to_string_lossy().into_owned()
                     }
@@ -1195,10 +1268,19 @@ fn main() -> io::Result<()> {
                 std::fs::create_dir_all(dir)?;
             }
 
-            let params_snapshot = build_learned_err_params(&err_fun, max_consist, &dada_params, &align_params);
+            let params_snapshot =
+                build_learned_err_params(&err_fun, max_consist, &dada_params, &align_params);
 
             let result = pool.install(|| {
-                learn_errors(all_inputs, &err_fun, dada_params, &align_params, max_consist, verbose, diag_dir.as_deref())
+                learn_errors(
+                    all_inputs,
+                    &err_fun,
+                    dada_params,
+                    &align_params,
+                    max_consist,
+                    verbose,
+                    diag_dir.as_deref(),
+                )
             })?;
 
             #[derive(Serialize)]
@@ -1214,10 +1296,14 @@ fn main() -> io::Result<()> {
             }
 
             fn flat_to_rows_u32(flat: &[u32], nq: usize) -> Vec<Vec<u32>> {
-                (0..16).map(|r| flat[r * nq..(r + 1) * nq].to_vec()).collect()
+                (0..16)
+                    .map(|r| flat[r * nq..(r + 1) * nq].to_vec())
+                    .collect()
             }
             fn flat_to_rows_f64(flat: &[f64], nq: usize) -> Vec<Vec<f64>> {
-                (0..16).map(|r| flat[r * nq..(r + 1) * nq].to_vec()).collect()
+                (0..16)
+                    .map(|r| flat[r * nq..(r + 1) * nq].to_vec())
+                    .collect()
             }
 
             let out = LearnErrorsOutput {
@@ -1331,16 +1417,33 @@ fn main() -> io::Result<()> {
                 .num_threads(threads)
                 .build()
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-            let all_inputs = load_fastq_samples(&input, nbases, randomize, seed, phred_offset, &pool, verbose)?;
+            let all_inputs = load_fastq_samples(
+                &input,
+                nbases,
+                randomize,
+                seed,
+                phred_offset,
+                &pool,
+                verbose,
+            )?;
 
             if let Some(ref dir) = diag_dir {
                 std::fs::create_dir_all(dir)?;
             }
 
-            let params_snapshot = build_learned_err_params(&err_fun, max_consist, &dada_params, &align_params);
+            let params_snapshot =
+                build_learned_err_params(&err_fun, max_consist, &dada_params, &align_params);
 
             let result = pool.install(|| {
-                learn_errors(all_inputs, &err_fun, dada_params, &align_params, max_consist, verbose, diag_dir.as_deref())
+                learn_errors(
+                    all_inputs,
+                    &err_fun,
+                    dada_params,
+                    &align_params,
+                    max_consist,
+                    verbose,
+                    diag_dir.as_deref(),
+                )
             })?;
 
             // Serialize: represent the three matrices as Vec<Vec<T>> (16 rows × nq cols).
@@ -1364,10 +1467,14 @@ fn main() -> io::Result<()> {
             }
 
             fn flat_to_rows_u32(flat: &[u32], nq: usize) -> Vec<Vec<u32>> {
-                (0..16).map(|r| flat[r * nq..(r + 1) * nq].to_vec()).collect()
+                (0..16)
+                    .map(|r| flat[r * nq..(r + 1) * nq].to_vec())
+                    .collect()
             }
             fn flat_to_rows_f64(flat: &[f64], nq: usize) -> Vec<Vec<f64>> {
-                (0..16).map(|r| flat[r * nq..(r + 1) * nq].to_vec()).collect()
+                (0..16)
+                    .map(|r| flat[r * nq..(r + 1) * nq].to_vec())
+                    .collect()
             }
 
             let out = LearnErrorsOutput {

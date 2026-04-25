@@ -19,13 +19,12 @@ use std::path::Path;
 
 use noodles::fasta;
 
+use flate2::Compression;
 use flate2::read::MultiGzDecoder;
 use flate2::write::GzEncoder;
-use flate2::Compression;
 use noodles::fastq;
 
 use crate::filter::match_ref;
-
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -381,7 +380,10 @@ pub fn filter_single(
         );
     }
 
-    Ok(SampleStats { reads_in, reads_out })
+    Ok(SampleStats {
+        reads_in,
+        reads_out,
+    })
 }
 
 /// Filter and trim a paired-end FASTQ file pair.
@@ -397,7 +399,11 @@ pub fn filter_paired(
     compress: bool,
     verbose: bool,
 ) -> io::Result<SampleStats> {
-    let phix = params_fwd.phix_genome.clone().or_else(|| params_rev.phix_genome.clone()).map(phix_genomes);
+    let phix = params_fwd
+        .phix_genome
+        .clone()
+        .or_else(|| params_rev.phix_genome.clone())
+        .map(phix_genomes);
 
     let mut reader_fwd = open_reader(fwd_in)?;
     let mut reader_rev = open_reader(rev_in)?;
@@ -447,13 +453,11 @@ pub fn filter_paired(
         }
 
         // rm_lowcomplex: discard pair if either read is too simple.
-        if params_fwd.rm_lowcomplex > 0.0
-            && seq_complexity_2mer(&seq_f) < params_fwd.rm_lowcomplex
+        if params_fwd.rm_lowcomplex > 0.0 && seq_complexity_2mer(&seq_f) < params_fwd.rm_lowcomplex
         {
             continue;
         }
-        if params_rev.rm_lowcomplex > 0.0
-            && seq_complexity_2mer(&seq_r) < params_rev.rm_lowcomplex
+        if params_rev.rm_lowcomplex > 0.0 && seq_complexity_2mer(&seq_r) < params_rev.rm_lowcomplex
         {
             continue;
         }
@@ -502,5 +506,8 @@ pub fn filter_paired(
         );
     }
 
-    Ok(SampleStats { reads_in, reads_out })
+    Ok(SampleStats {
+        reads_in,
+        reads_out,
+    })
 }

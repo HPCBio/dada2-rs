@@ -6,7 +6,7 @@
 use rayon::prelude::*;
 
 use crate::containers::{B, Bi, BirthType, Comparison};
-use crate::nwalign::{sub_new_with_buf, AlignBuffers, AlignParams};
+use crate::nwalign::{AlignBuffers, AlignParams, sub_new_with_buf};
 use crate::pval::compute_lambda;
 
 // ---------------------------------------------------------------------------
@@ -26,7 +26,9 @@ pub fn b_compare(
     greedy: bool,
     verbose: bool,
 ) {
-    let center_idx = b.clusters[i].center.expect("b_compare: cluster has no center");
+    let center_idx = b.clusters[i]
+        .center
+        .expect("b_compare: cluster has no center");
     let center_reads = b.raws[center_idx].reads;
 
     if verbose {
@@ -89,7 +91,9 @@ pub fn b_compare_parallel(
     params: &AlignParams,
     greedy: bool,
 ) {
-    let center_idx = b.clusters[i].center.expect("b_compare_parallel: cluster has no center");
+    let center_idx = b.clusters[i]
+        .center
+        .expect("b_compare_parallel: cluster has no center");
     let center_reads = b.raws[center_idx].reads;
     let nraw = b.raws.len();
     let use_quals = b.use_quals;
@@ -242,14 +246,16 @@ pub fn b_bud(
     verbose: bool,
 ) -> Option<usize> {
     let nraw = b.raws.len() as f64;
-    let init_center = b.clusters[0].center.expect("b_bud: cluster 0 has no center");
+    let init_center = b.clusters[0]
+        .center
+        .expect("b_bud: cluster 0 has no center");
 
     // (cluster_idx, position_r, raw_index) for non-prior and prior minimums.
-    let mut mini:       Option<(usize, usize, usize)> = None;
+    let mut mini: Option<(usize, usize, usize)> = None;
     let mut mini_prior: Option<(usize, usize, usize)> = None;
-    let mut min_p       = b.raws[init_center].p;
+    let mut min_p = b.raws[init_center].p;
     let mut min_p_prior = b.raws[init_center].p;
-    let mut min_reads       = b.raws[init_center].reads;
+    let mut min_reads = b.raws[init_center].reads;
     let mut min_reads_prior = b.raws[init_center].reads;
 
     for ci in 0..b.clusters.len() {
@@ -262,7 +268,7 @@ pub fn b_bud(
                 continue;
             }
             let hamming = raw.comp.hamming;
-            let lambda  = raw.comp.lambda;
+            let lambda = raw.comp.lambda;
 
             if hamming < min_hamming {
                 continue;
@@ -281,8 +287,7 @@ pub fn b_bud(
             }
             // Prior-sequence minimum p-value.
             if raw.prior
-                && (raw.p < min_p_prior
-                    || (raw.p == min_p_prior && raw.reads > min_reads_prior))
+                && (raw.p < min_p_prior || (raw.p == min_p_prior && raw.reads > min_reads_prior))
             {
                 mini_prior = Some((ci, r, raw_idx));
                 min_p_prior = raw.p;
@@ -298,7 +303,7 @@ pub fn b_bud(
     if p_a < b.omega_a {
         if let Some((ci, r, raw_idx)) = mini {
             // Capture pre-pop state.
-            let expected   = b.raws[raw_idx].comp.lambda * b.clusters[ci].reads as f64;
+            let expected = b.raws[raw_idx].comp.lambda * b.clusters[ci].reads as f64;
             let birth_comp = b.raws[raw_idx].comp.clone();
             let birth_fold = b.raws[raw_idx].reads as f64 / expected.max(f64::MIN_POSITIVE);
             let nraw_total = b.raws.len() as u32;
@@ -310,7 +315,7 @@ pub fn b_bud(
             new_bi.birth_from = ci as u32;
             new_bi.birth_pval = p_a;
             new_bi.birth_fold = birth_fold;
-            new_bi.birth_e    = expected;
+            new_bi.birth_e = expected;
             new_bi.birth_comp = birth_comp;
 
             let new_ci = b.add_cluster(new_bi);
@@ -329,7 +334,7 @@ pub fn b_bud(
     // Prior-based bud.
     if p_p < b.omega_p {
         if let Some((ci, r, raw_idx)) = mini_prior {
-            let expected   = b.raws[raw_idx].comp.lambda * b.clusters[ci].reads as f64;
+            let expected = b.raws[raw_idx].comp.lambda * b.clusters[ci].reads as f64;
             let birth_comp = b.raws[raw_idx].comp.clone();
             let birth_fold = b.raws[raw_idx].reads as f64 / expected.max(f64::MIN_POSITIVE);
             let nraw_total = b.raws.len() as u32;
@@ -340,7 +345,7 @@ pub fn b_bud(
             new_bi.birth_type = BirthType::Prior;
             new_bi.birth_pval = p_p;
             new_bi.birth_fold = birth_fold;
-            new_bi.birth_e    = expected;
+            new_bi.birth_e = expected;
             new_bi.birth_comp = birth_comp;
 
             let new_ci = b.add_cluster(new_bi);

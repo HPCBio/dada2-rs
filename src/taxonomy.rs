@@ -22,9 +22,9 @@
 //! - All indexing is 0-based; callers should add 1 if they need R-style output.
 //! - `Rcpp::checkUserInterrupt()` is removed (no R event loop).
 
+use rand::SeedableRng;
 use rand::distributions::{Distribution, Standard};
 use rand::rngs::SmallRng;
-use rand::SeedableRng;
 use rayon::prelude::*;
 
 /// Number of bootstrap replicates.  Matches C++ `NBOOT`.
@@ -94,9 +94,7 @@ fn tax_kvec(seq: &[u8], k: usize, kvec: &mut [u8]) {
 /// Equivalent to C++ `tax_karray`.
 fn tax_karray(seq: &[u8], k: usize) -> Vec<usize> {
     let klen = seq.len().saturating_sub(k - 1);
-    let mut arr: Vec<usize> = (0..klen)
-        .filter_map(|i| tax_kmer(&seq[i..], k))
-        .collect();
+    let mut arr: Vec<usize> = (0..klen).filter_map(|i| tax_kmer(&seq[i..], k)).collect();
     arr.sort_unstable();
     arr
 }
@@ -203,7 +201,7 @@ fn classify_seq(
 fn make_rng(seed: Option<u64>, index: usize) -> SmallRng {
     match seed {
         Some(s) => SmallRng::seed_from_u64(s ^ index as u64),
-        None    => SmallRng::from_entropy(),
+        None => SmallRng::from_entropy(),
     }
 }
 
@@ -256,7 +254,11 @@ pub fn assign_taxonomy(
             ref_to_genus.len()
         ));
     }
-    let ngenus = if nlevel > 0 { genus_tax.len() / nlevel } else { 0 };
+    let ngenus = if nlevel > 0 {
+        genus_tax.len() / nlevel
+    } else {
+        0
+    };
     if nlevel > 0 && genus_tax.len() != ngenus * nlevel {
         return Err(format!(
             "genus_tax length {} is not divisible by nlevel {}.",
@@ -383,9 +385,14 @@ pub fn assign_taxonomy(
         .collect();
 
     // ---- Assemble result ----
-    let assignments: Vec<Option<usize>> = classified.iter().map(|c| c.as_ref().map(|x| x.0)).collect();
+    let assignments: Vec<Option<usize>> =
+        classified.iter().map(|c| c.as_ref().map(|x| x.0)).collect();
     let boot_counts: Vec<Vec<u32>> = boot_results.iter().map(|(bc, _)| bc.clone()).collect();
     let boot_taxa: Vec<Vec<Option<usize>>> = boot_results.into_iter().map(|(_, bt)| bt).collect();
 
-    Ok(TaxonomyResult { assignments, boot_counts, boot_taxa })
+    Ok(TaxonomyResult {
+        assignments,
+        boot_counts,
+        boot_taxa,
+    })
 }

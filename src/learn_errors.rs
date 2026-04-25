@@ -26,7 +26,7 @@ use crate::error_models::{
     accumulate_trans, binned_qual_errfun, loess_errfun, noqual_errfun, pacbio_errfun,
 };
 use crate::misc::nt_encode;
-use crate::nwalign::{raw_align_with_buf, AlignBuffers, AlignParams};
+use crate::nwalign::{AlignBuffers, AlignParams, raw_align_with_buf};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -55,13 +55,9 @@ pub enum ErrFun {
     /// Locally-weighted polynomial regression (default for Illumina).
     Loess,
     /// Quality-score-free: one rate per transition type, broadcast across all Q.
-    Noqual {
-        pseudocount: f64,
-    },
+    Noqual { pseudocount: f64 },
     /// Piecewise linear interpolation between anchor quality bins.
-    BinnedQual {
-        bins: Vec<f64>,
-    },
+    BinnedQual { bins: Vec<f64> },
     /// PacBio-specific model.
     PacBio,
 }
@@ -72,17 +68,12 @@ impl ErrFun {
         let qual_scores: Vec<f64> = (0..nq).map(|q| q as f64).collect();
         match self {
             ErrFun::Loess => Ok(loess_errfun(trans, &qual_scores)),
-            ErrFun::Noqual { pseudocount } => {
-                Ok(noqual_errfun(trans, nq, *pseudocount))
-            }
-            ErrFun::BinnedQual { bins } => {
-                binned_qual_errfun(trans, &qual_scores, bins)
-            }
+            ErrFun::Noqual { pseudocount } => Ok(noqual_errfun(trans, nq, *pseudocount)),
+            ErrFun::BinnedQual { bins } => binned_qual_errfun(trans, &qual_scores, bins),
             ErrFun::PacBio => Ok(pacbio_errfun(trans, &qual_scores)),
         }
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Result type
@@ -212,8 +203,8 @@ pub fn load_fastq_samples(
 ) -> io::Result<Vec<Vec<RawInput>>> {
     let mut ordered: Vec<&PathBuf> = paths.iter().collect();
     if randomize {
-        use rand::seq::SliceRandom as _;
         use rand::SeedableRng as _;
+        use rand::seq::SliceRandom as _;
         if let Some(s) = seed {
             ordered.shuffle(&mut rand::rngs::SmallRng::seed_from_u64(s));
         } else {
@@ -226,7 +217,12 @@ pub fn load_fastq_samples(
 
     for path in ordered {
         let derep = if is_gz(path) {
-            dereplicate(MultiGzDecoder::new(File::open(path)?), phred_offset, pool, verbose)?
+            dereplicate(
+                MultiGzDecoder::new(File::open(path)?),
+                phred_offset,
+                pool,
+                verbose,
+            )?
         } else {
             dereplicate(File::open(path)?, phred_offset, pool, verbose)?
         };
@@ -242,8 +238,7 @@ pub fn load_fastq_samples(
             .into_iter()
             .enumerate()
             .map(|(i, (seq, count))| RawInput {
-                seq: String::from_utf8(seq)
-                    .unwrap_or_default(),
+                seq: String::from_utf8(seq).unwrap_or_default(),
                 abundance: count as u32,
                 prior: false,
                 quals: Some(derep.quals[i].clone()),
@@ -389,8 +384,8 @@ fn run_init_pass(
         .enumerate()
         .map(|(si, (inputs, cache_slot))| {
             let cached = cache_slot.take();
-            let outcome = dada_uniques_cached(inputs, cached, dada_params)
-                .map(|(result, reused_raws)| {
+            let outcome =
+                dada_uniques_cached(inputs, cached, dada_params).map(|(result, reused_raws)| {
                     *cache_slot = Some(reused_raws);
                     build_trans_mat(inputs, &result, align_params, nq)
                 });
@@ -405,7 +400,11 @@ fn run_init_pass(
         match outcome {
             Ok(t) => sample_trans.push(t),
             Err(e) if verbose => {
-                eprintln!("[learn_errors] init pass sample={}: dada_uniques failed: {}", si + 1, e);
+                eprintln!(
+                    "[learn_errors] init pass sample={}: dada_uniques failed: {}",
+                    si + 1,
+                    e
+                );
             }
             Err(_) => {}
         }
@@ -421,9 +420,12 @@ fn run_init_pass(
     let refs: Vec<(&[u32], usize)> = sample_trans.iter().map(|t| (t.as_slice(), nq)).collect();
     let (acc_trans, _) = accumulate_trans(&refs);
 
-    let mut new_err = errfun
-        .apply(&acc_trans, nq)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("init-pass errfun failed: {e}")))?;
+    let mut new_err = errfun.apply(&acc_trans, nq).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("init-pass errfun failed: {e}"),
+        )
+    })?;
 
     // R: err[c(1,6,11,16),] <- 1.0 — force self-transitions to 1 at every q.
     // Row indices are 1-based in R; here they are 0,5,10,15 (A2A, C2C, G2G, T2T).
@@ -577,7 +579,10 @@ pub fn learn_errors(
     diag_dir: Option<&Path>,
 ) -> io::Result<LearnErrorsResult> {
     if all_inputs.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "No input samples provided"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "No input samples provided",
+        ));
     }
 
     let nq = detect_nq(&all_inputs);
@@ -644,12 +649,13 @@ pub fn learn_errors(
                 .enumerate()
                 .map(|(si, (inputs, cache_slot))| {
                     let cached = cache_slot.take();
-                    let outcome = dada_uniques_cached(inputs, cached, &dada_params)
-                        .map(|(result, reused_raws)| {
+                    let outcome = dada_uniques_cached(inputs, cached, &dada_params).map(
+                        |(result, reused_raws)| {
                             *cache_slot = Some(reused_raws);
                             let t = build_trans_mat(inputs, &result, align_params, nq);
                             (t, result)
-                        });
+                        },
+                    );
                     (si, outcome)
                 })
                 .collect();
@@ -679,18 +685,18 @@ pub fn learn_errors(
                             sample: si + 1,
                             n_clusters: result.clusters.len(),
                             total_reads,
-                            n_initial:   0,
+                            n_initial: 0,
                             n_abundance: 0,
-                            n_prior:     0,
+                            n_prior: 0,
                             n_singleton: 0,
-                            nalign:  result.nalign,
+                            nalign: result.nalign,
                             nshroud: result.nshroud,
                         };
                         for c in &result.clusters {
                             match c.birth_type {
-                                BirthType::Initial   => diag.n_initial   += 1,
+                                BirthType::Initial => diag.n_initial += 1,
                                 BirthType::Abundance => diag.n_abundance += 1,
-                                BirthType::Prior     => diag.n_prior     += 1,
+                                BirthType::Prior => diag.n_prior += 1,
                                 BirthType::Singleton => diag.n_singleton += 1,
                             }
                         }
@@ -725,9 +731,9 @@ pub fn learn_errors(
         let (acc_trans, _) = accumulate_trans(&refs);
 
         // ---- Estimate new error rates ----
-        let new_err = errfun.apply(&acc_trans, nq).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("errfun failed: {e}"))
-        })?;
+        let new_err = errfun
+            .apply(&acc_trans, nq)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("errfun failed: {e}")))?;
 
         // ---- Check convergence ----
         let max_delta = err
