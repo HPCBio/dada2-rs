@@ -36,6 +36,14 @@ const MIN_ERR: f64 = 1e-7;
 const MAX_ERR: f64 = 0.25;
 /// Maximum difference between consecutive error-model iterations considered converged.
 const CONVERGENCE_TOL: f64 = 1e-7;
+/// Bail with a "stalled" stop reason if `max_delta` fails to set a new
+/// best-so-far for this many consecutive iterations. Catches the oscillation
+/// pattern where err_out cycles between a few values without settling — most
+/// commonly seen with too-loose k-mer screening (e.g. k=4 on Illumina).
+const STALL_PATIENCE: usize = 3;
+/// Relative improvement required to count as a new best-so-far. Without
+/// this floor, tiny floating-point drifts would forever look like progress.
+const STALL_REL_IMPROVE: f64 = 0.99;
 
 // ---------------------------------------------------------------------------
 // Error function selection
@@ -94,6 +102,21 @@ pub struct LearnErrorsResult {
     pub converged: bool,
     /// Number of iterations completed.
     pub iterations: usize,
+    /// Why the iteration loop stopped.
+    pub stop_reason: StopReason,
+}
+
+/// Outcome of the self-consistency iteration in `learn_errors`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    /// `max_delta < CONVERGENCE_TOL`: the model is stable.
+    Converged,
+    /// `max_delta` stopped improving for `STALL_PATIENCE` iterations.
+    /// Typically signals oscillation (e.g. too-loose k-mer screening).
+    Stalled,
+    /// Reached `max_consist` without converging or stalling.
+    MaxConsistReached,
 }
 
 // ---------------------------------------------------------------------------
@@ -435,6 +458,9 @@ pub fn learn_errors(
     let mut trans_final = vec![0u32; 16 * nq];
     let mut err_in_final = err.clone();
     let mut err_out_final = err.clone();
+    let mut stop_reason = StopReason::MaxConsistReached;
+    let mut best_max_delta = f64::INFINITY;
+    let mut iters_since_best = 0usize;
 
     // Per-sample cache of `Vec<Raw>` (encoded sequences + k-mer vectors),
     // reused across outer iterations so we don't re-encode inputs or
@@ -588,16 +614,43 @@ pub fn learn_errors(
 
         if iter_converged {
             converged = true;
+            stop_reason = StopReason::Converged;
             if verbose {
                 eprintln!("[learn_errors] converged after {} iteration(s)", iter + 1);
             }
             break;
         }
 
+        // ---- Stall detection: bail if max_delta hasn't set a new
+        // best-so-far for STALL_PATIENCE consecutive iterations.  This
+        // catches oscillation (e.g. k-mer screen too loose → err_out
+        // cycles between a small set of values). Without this we'd run
+        // through max_consist iterations producing identical-cluster
+        // but slightly-different err_out tables. ----
+        if max_delta < best_max_delta * STALL_REL_IMPROVE {
+            best_max_delta = max_delta;
+            iters_since_best = 0;
+        } else {
+            iters_since_best += 1;
+            if iters_since_best >= STALL_PATIENCE {
+                stop_reason = StopReason::Stalled;
+                if verbose {
+                    eprintln!(
+                        "[learn_errors] stalled at iter {}: max_delta has not improved \
+                         on best-so-far ({:.2e}) for {} iteration(s); stopping early",
+                        iter + 1,
+                        best_max_delta,
+                        STALL_PATIENCE,
+                    );
+                }
+                break;
+            }
+        }
+
         err = new_err;
     }
 
-    if !converged && verbose {
+    if !converged && verbose && stop_reason == StopReason::MaxConsistReached {
         eprintln!(
             "[learn_errors] did not converge within {} iteration(s)",
             max_consist
@@ -611,5 +664,6 @@ pub fn learn_errors(
         nq,
         converged,
         iterations,
+        stop_reason,
     })
 }

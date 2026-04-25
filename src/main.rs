@@ -1070,6 +1070,7 @@ fn main() -> io::Result<()> {
             struct LearnErrorsOutput {
                 nq: usize,
                 converged: bool,
+                stop_reason: learn_errors::StopReason,
                 iterations: usize,
                 trans: Vec<Vec<u32>>,
                 err_in: Vec<Vec<f64>>,
@@ -1086,6 +1087,7 @@ fn main() -> io::Result<()> {
             let out = LearnErrorsOutput {
                 nq: result.nq,
                 converged: result.converged,
+                stop_reason: result.stop_reason,
                 iterations: result.iterations,
                 trans: flat_to_rows_u32(&result.trans, result.nq),
                 err_in: flat_to_rows_f64(&result.err_in, result.nq),
@@ -1207,6 +1209,7 @@ fn main() -> io::Result<()> {
             struct LearnErrorsOutput {
                 nq: usize,
                 converged: bool,
+                stop_reason: learn_errors::StopReason,
                 iterations: usize,
                 /// Transition counts: 16 rows (ref_nt*4+query_nt), nq columns.
                 trans: Vec<Vec<u32>>,
@@ -1226,6 +1229,7 @@ fn main() -> io::Result<()> {
             let out = LearnErrorsOutput {
                 nq: result.nq,
                 converged: result.converged,
+                stop_reason: result.stop_reason,
                 iterations: result.iterations,
                 trans: flat_to_rows_u32(&result.trans, result.nq),
                 err_in: flat_to_rows_f64(&result.err_in, result.nq),
