@@ -286,8 +286,6 @@ fn build_trans_mat(
     align_params: &AlignParams,
     nq: usize,
 ) -> Vec<u32> {
-    let mut trans = vec![0u32; 16 * nq];
-
     // Build Raw stubs for cluster centers (no quality scores needed).
     let center_raws: Vec<Raw> = result
         .clusters
@@ -295,53 +293,64 @@ fn build_trans_mat(
         .map(|c| Raw::new(c.sequence.clone(), None, 0, false))
         .collect();
 
-    let mut buf = AlignBuffers::new();
-    for (i, inp) in inputs.iter().enumerate() {
-        let ci = match result.map[i] {
-            Some(ci) => ci,
-            None => continue,
-        };
+    // Parallel reduction: each rayon task builds a private 16*nq trans
+    // matrix for a subset of inputs, then we sum them. Each task gets its
+    // own AlignBuffers via map_init so buffer reuse holds across the
+    // task's items without locking.
+    inputs
+        .par_iter()
+        .enumerate()
+        .fold(
+            || (vec![0u32; 16 * nq], AlignBuffers::new()),
+            |(mut trans, mut buf), (i, inp)| {
+                let ci = match result.map[i] {
+                    Some(ci) => ci,
+                    None => return (trans, buf),
+                };
+                let quals = match &inp.quals {
+                    Some(q) => q.as_slice(),
+                    None => return (trans, buf),
+                };
 
-        let quals = match &inp.quals {
-            Some(q) => q.as_slice(),
-            None => continue, // no quality data — cannot build trans
-        };
+                let seq: Vec<u8> = inp.seq.bytes().map(nt_encode).collect();
+                let raw_query = Raw::new(seq, Some(quals), inp.abundance, false);
+                let raw_center = &center_raws[ci];
 
-        let seq: Vec<u8> = inp.seq.bytes().map(nt_encode).collect();
-        let raw_query = Raw::new(seq, Some(quals), inp.abundance, false);
-        let raw_center = &center_raws[ci];
+                // Align center (ref = al0) against the raw (query = al1).
+                if raw_align_with_buf(raw_center, &raw_query, align_params, &mut buf).is_none() {
+                    return (trans, buf);
+                }
+                let al_ref: &[u8] = &buf.al0;
+                let al_qry: &[u8] = &buf.al1;
+                let reads = inp.abundance;
+                let mut qpos = 0usize;
 
-        // Align center (ref = al0) against the raw (query = al1).
-        if raw_align_with_buf(raw_center, &raw_query, align_params, &mut buf).is_none() {
-            continue;
-        }
-        let al_ref: &[u8] = &buf.al0;
-        let al_qry: &[u8] = &buf.al1;
-        let reads = inp.abundance;
-        let mut qpos = 0usize; // position in original query sequence
-
-        for alpos in 0..al_ref.len() {
-            let nt0 = al_ref[alpos]; // reference nucleotide (encoded)
-            let nt1 = al_qry[alpos]; // query nucleotide (encoded)
-
-            // Advance query position for any non-gap query character.
-            let qry_is_nt = matches!(nt1, 1..=4);
-
-            if matches!(nt0, 1..=4) && qry_is_nt {
-                // Both reference and query are ACGT — accumulate.
-                let q = (quals[qpos].round() as usize).min(nq - 1);
-                let row = (nt0 as usize - 1) * 4 + (nt1 as usize - 1);
-                trans[row * nq + q] = trans[row * nq + q].saturating_add(reads);
-            }
-
-            // Advance query position for any non-gap query character (incl. N).
-            if nt1 != b'-' {
-                qpos += 1;
-            }
-        }
-    }
-
-    trans
+                for alpos in 0..al_ref.len() {
+                    let nt0 = al_ref[alpos];
+                    let nt1 = al_qry[alpos];
+                    let qry_is_nt = matches!(nt1, 1..=4);
+                    if matches!(nt0, 1..=4) && qry_is_nt {
+                        let q = (quals[qpos].round() as usize).min(nq - 1);
+                        let row = (nt0 as usize - 1) * 4 + (nt1 as usize - 1);
+                        trans[row * nq + q] = trans[row * nq + q].saturating_add(reads);
+                    }
+                    if nt1 != b'-' {
+                        qpos += 1;
+                    }
+                }
+                (trans, buf)
+            },
+        )
+        .map(|(t, _buf)| t)
+        .reduce(
+            || vec![0u32; 16 * nq],
+            |mut a, b| {
+                for (x, y) in a.iter_mut().zip(b.iter()) {
+                    *x = x.saturating_add(*y);
+                }
+                a
+            },
+        )
 }
 
 // ---------------------------------------------------------------------------
