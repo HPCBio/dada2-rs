@@ -14,3 +14,20 @@ statrs = "0.18"
 rand = { version = "0.8", features = ["small_rng"] }
 md-5 = "0.10"
 sha1 = "0.10"
+
+# Opt-in profile for cluster/in-house builds where you control the CPU.
+# Adds LTO + codegen-units=1 on top of release, and is intended to be paired
+# with `RUSTFLAGS="-C target-cpu=native"` so LLVM uses every ISA extension
+# the build host supports (e.g. AVX2/AVX-512 on x86-64, additional features
+# beyond aarch64 baseline on Apple Silicon).
+#
+# Build with:
+#   RUSTFLAGS="-C target-cpu=native" cargo build --profile release-native
+#
+# Output goes to target/release-native/ so it does not clobber `cargo build
+# --release`. The portability tradeoff: the resulting binary will only run
+# on CPUs at-or-above the build host's microarchitecture.
+[profile.release-native]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
