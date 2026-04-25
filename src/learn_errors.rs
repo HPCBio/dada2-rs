@@ -281,35 +281,93 @@ fn detect_nq(all_inputs: &[Vec<RawInput>]) -> usize {
     max_q + 1
 }
 
-/// Build the "maximum possible estimate" initial error model used by R DADA2.
+/// Run R's init pass and return the err_mat to feed into iter-1.
 ///
-/// R's `learnErrors` runs an init pass with `MAX_CLUST=1` (no buds), fits
-/// loess, then forces the diagonal to 1.0 before the first real iteration.
-/// The shape of the resulting err_mat is: match probability = 1.0,
-/// mismatch probability ≈ MAX_ERR/3 (the cap clamp on each off-diagonal).
+/// Matches R `dada.R` `nconsist=0` step:
+///   1. `erri <- matrix(1, nrow=16, ncol=...)` — every entry 1.0.
+///   2. Run `dada_uniques` with `MAX_CLUST=1` on every sample (no buds; just
+///      aligns each raw against cluster 0 to populate transitions).
+///   3. Accumulate trans across samples and fit `errorEstimationFunction`.
+///   4. Force diagonal rows (A2A, C2C, G2G, T2T) to 1.0 at every q.
 ///
-/// Using the same shape directly here lets us skip R's init pass while
-/// landing on the same iter-1 trajectory.  Issue #4 traced the previous
-/// Q-score-based init to a 1e-180× lambda mismatch and ~1.5× over-budding
-/// vs R; this matches R's "maximum possible estimate" semantics instead.
-fn init_err_model(nq: usize) -> Vec<f64> {
-    let mut err = vec![0.0f64; 16 * nq];
-    for q in 0..nq {
-        // R "maximum possible estimate": diagonal = 1.0 (clamped), each off-
-        // diagonal = MAX_ERR/3 = 1/12. Same value at every Q because there
-        // is no quality calibration yet — the loess fit on iter 1 produces
-        // the first Q-resolved err_mat.
-        let prob_match = (1.0f64).clamp(MIN_ERR, MAX_ERR);
-        let prob_mismatch = (MAX_ERR / 3.0).clamp(MIN_ERR, MAX_ERR);
+/// Issue #4 traced the iter-1 over-budding to a different starting err_mat
+/// shape than R's; the c3f4e88 shortcut (match=1.0, mismatch=MAX_ERR/3 at
+/// every q) closed most of the trans-count gap but left R's per-Q
+/// calibration on the table. Running the actual init pass produces a
+/// Q-resolved off-diagonal shape derived from real data instead.
+///
+/// Side effect: populates `raw_cache` so iter 1's encoding + k-mer build is
+/// reused.
+fn run_init_pass(
+    all_inputs: &[Vec<RawInput>],
+    raw_cache: &mut [Option<Vec<Raw>>],
+    errfun: &ErrFun,
+    dada_params: &mut DadaParams,
+    align_params: &AlignParams,
+    nq: usize,
+    verbose: bool,
+) -> io::Result<Vec<f64>> {
+    // R: erri = matrix(1, nrow=16, ncol=...). Every entry, not just diagonal.
+    let saved_max_clust = dada_params.max_clust;
+    dada_params.err_mat = vec![1.0f64; 16 * nq];
+    dada_params.err_ncol = nq;
+    dada_params.max_clust = 1;
 
-        for nti in 0..4usize {
-            for ntj in 0..4usize {
-                let row = nti * 4 + ntj;
-                err[row * nq + q] = if nti == ntj { prob_match } else { prob_mismatch };
+    let sample_results: Vec<(usize, Result<Vec<u32>, String>)> = all_inputs
+        .par_iter()
+        .zip(raw_cache.par_iter_mut())
+        .enumerate()
+        .map(|(si, (inputs, cache_slot))| {
+            let cached = cache_slot.take();
+            let outcome = dada_uniques_cached(inputs, cached, dada_params)
+                .map(|(result, reused_raws)| {
+                    *cache_slot = Some(reused_raws);
+                    build_trans_mat(inputs, &result, align_params, nq)
+                });
+            (si, outcome)
+        })
+        .collect();
+
+    dada_params.max_clust = saved_max_clust;
+
+    let mut sample_trans: Vec<Vec<u32>> = Vec::new();
+    for (si, outcome) in sample_results {
+        match outcome {
+            Ok(t) => sample_trans.push(t),
+            Err(e) if verbose => {
+                eprintln!("[learn_errors] init pass sample={}: dada_uniques failed: {}", si + 1, e);
             }
+            Err(_) => {}
         }
     }
-    err
+
+    if sample_trans.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "All DADA runs failed during init pass; cannot estimate error model",
+        ));
+    }
+
+    let refs: Vec<(&[u32], usize)> = sample_trans.iter().map(|t| (t.as_slice(), nq)).collect();
+    let (acc_trans, _) = accumulate_trans(&refs);
+
+    let mut new_err = errfun
+        .apply(&acc_trans, nq)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("init-pass errfun failed: {e}")))?;
+
+    // R: err[c(1,6,11,16),] <- 1.0 — force self-transitions to 1 at every q.
+    // Row indices are 1-based in R; here they are 0,5,10,15 (A2A, C2C, G2G, T2T).
+    for &row in &[0usize, 5, 10, 15] {
+        for q in 0..nq {
+            new_err[row * nq + q] = 1.0;
+        }
+    }
+
+    if verbose {
+        eprintln!("[learn_errors] init pass complete (R nconsist=0)");
+    }
+
+    Ok(new_err)
 }
 
 /// Build the 16 × `nq` transition count matrix from a single DADA result.
@@ -463,9 +521,28 @@ pub fn learn_errors(
         );
     }
 
-    // ---- Initialise error model ----
-    let mut err = init_err_model(nq);
     dada_params.err_ncol = nq;
+
+    // Per-sample cache of `Vec<Raw>` (encoded sequences + k-mer vectors),
+    // reused across outer iterations so we don't re-encode inputs or
+    // recompute k-mers on every self-consistency pass. Populated by the
+    // init pass below; reused across the main loop.
+    let mut raw_cache: Vec<Option<Vec<Raw>>> = (0..all_inputs.len()).map(|_| None).collect();
+
+    // ---- Init pass (R nconsist=0) ----
+    // Run dada with all-1.0 err_mat and MAX_CLUST=1 on every sample, fit
+    // errfun on the resulting trans, and force diagonal self-transitions
+    // to 1.0. This produces iter-1's err_in with the same shape and
+    // per-Q calibration that R uses.
+    let mut err = run_init_pass(
+        &all_inputs,
+        &mut raw_cache,
+        errfun,
+        &mut dada_params,
+        align_params,
+        nq,
+        verbose,
+    )?;
 
     let mut converged = false;
     let mut iterations = 0usize;
@@ -475,12 +552,6 @@ pub fn learn_errors(
     let mut stop_reason = StopReason::MaxConsistReached;
     let mut best_max_delta = f64::INFINITY;
     let mut iters_since_best = 0usize;
-
-    // Per-sample cache of `Vec<Raw>` (encoded sequences + k-mer vectors),
-    // reused across outer iterations so we don't re-encode inputs or
-    // recompute k-mers on every self-consistency pass.  `None` on the first
-    // iteration; populated by `dada_uniques_cached` thereafter.
-    let mut raw_cache: Vec<Option<Vec<Raw>>> = (0..all_inputs.len()).map(|_| None).collect();
 
     for iter in 0..max_consist {
         iterations = iter + 1;
