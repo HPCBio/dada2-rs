@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: >-
+  If you use dada2-rs in your research, please cite the original DADA2 paper
+  below, which describes the algorithm this software implements.
+title: dada2-rs
+version: 0.1.0
+repository-code: https://github.com/HPCBio/dada2-rs
+license: MIT
+references:
+  - type: article
+    title: "DADA2: High-resolution sample inference from Illumina amplicon data"
+    authors:
+      - family-names: Callahan
+        given-names: Benjamin J.
+      - family-names: McMurdie
+        given-names: Paul J.
+      - family-names: Rosen
+        given-names: Michael J.
+      - family-names: Han
+        given-names: Andrew W.
+      - family-names: Johnson
+        given-names: Amy Jo A.
+      - family-names: Holmes
+        given-names: Susan P.
+    journal: Nature Methods
+    year: 2016
+    volume: 13
+    pages: 581-583
+    doi: 10.1038/nmeth.3869
+    pmid: 27214047
