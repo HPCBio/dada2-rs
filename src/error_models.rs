@@ -114,9 +114,22 @@ fn loess_predict(xs: &[f64], ys: &[f64], weights: &[f64], span: f64, degree: usi
         .min(nv);
     let p = eff_degree + 1; // number of polynomial coefficients
 
+    // R's `predict.loess` returns NA for x outside the fitted-data range;
+    // `loessErrfun` then flat-fills via `pred[minrli]` / `pred[maxrli]`. We
+    // match that: out-of-range x → None here so `extrapolate_flat` handles
+    // the boundary fill, instead of a polynomial extrapolation that drifts.
+    let (x_min, x_max) = valid.iter().fold(
+        (f64::INFINITY, f64::NEG_INFINITY),
+        |(lo, hi), &i| (lo.min(xs[i]), hi.max(xs[i])),
+    );
+
     (0..n)
         .map(|pred_idx| {
             let x0 = xs[pred_idx];
+
+            if x0 < x_min || x0 > x_max {
+                return None;
+            }
 
             // Sort valid observations by distance to x0.
             let mut dists: Vec<(usize, f64)> = valid
