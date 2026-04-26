@@ -42,4 +42,4 @@ Please open a GitHub issue with:
 
 ## License
 
-By contributing you agree that your contributions will be licensed under the same terms as this project.
+By contributing you agree that your contributions will be licensed under the GNU Lesser General Public License v3 (LGPL-3.0-only), the same license as the original DADA2 project.

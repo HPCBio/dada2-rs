@@ -5,7 +5,7 @@ message: >-
 title: dada2-rs
 version: 0.1.0
 repository-code: https://github.com/HPCBio/dada2-rs
-license: MIT
+license: LGPL-3.0-only
 references:
   - type: article
     title: "DADA2: High-resolution sample inference from Illumina amplicon data"
