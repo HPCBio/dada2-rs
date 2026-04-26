@@ -6,27 +6,36 @@ An experimental implementation of DADA2 in Rust, using Claude Code (specically S
 
 The implementation is roughly 4.5x faster than the R DADA2 implementation (not including R loading overhead), and uses about 1/8 the memory. See also the Project Background for how this started and how we intend to move forward on this implementation.
 
+## Latest Benchmarks
+
+### Illumina MiSeq (MiSeq SOP data)
+
+Per Issue #4:
+
+| Threads | Rust real | Rust user | Rust RSS | R real | R user | R RSS | Speedup (real) | RSS ratio |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | **173.71s** | 168.69s | **262 MB** | 785.02s | 765.68s | 1222 MB | **4.5×** | 4.7× less |
+| 4 | **47.66s** | 183.10s | **283 MB** | 220.07s | 783.07s | 1413 MB | **4.6×** | 5.0× less |
+| 8 | **33.52s** | 208.45s | **276 MB** | 153.43s | 922.67s | 1404 MB | **4.6×** | 5.1× less |
+
+
 ## Plans
 
 The short term plan: 
 
 - Port key code over to Rust: 
-  - [ ] filter/trimming FASTQ (`filterAndTrim`), 
-  - [ ] dereplication (`derepFastq`), 
-  - [ ] error model (`learnErrors`), 
-  - [ ] denoising (`dada`), 
-  - [ ] merging (`mergePairs`)
-  - [ ] chimera removal (`removeBimeraDenovo`)
-- [ ] Tie in to R and/or Python
-- [ ] Intermediate outputs (in JSON) that can be evaluated for debugging purposes or for plotting in R, Python, etc.
-- [ ] Add basic regression tests for each stage that follow those within the original DADA2 repository
-
-Long-term plans:
-
-- [ ] Assess and optimize critical steps such as `learn-errors` and `dada`, in particular alignment steps within `dada` which are currently slower than the DADA2 implementation
-- [ ] Porting and optimizing taxonomic classification
+  - [x] Filter/trimming FASTQ (`filterAndTrim`)
+  - [x] Dereplication (`derepFastq`)
+  - [x] Error model (`learnErrors`)
+  - [x] Denoising (`dada`)
+  - [x] Merging (`mergePairs`)
+  - [x] Chimera removal (`removeBimeraDenovo`) - implemented but not tested
+  - [x] Error models (`loessErrfun`, `PacBioErrfun`, `noqualErrfun`, `makeBinnedErrfun`) - *only `loessErrfun` and `PacBioErrfun` have been tested*
+- [x] Intermediate outputs (in JSON) - can be evaluated for debugging purposes or for plotting in R, Python, etc.
+- [x] Add basic regression tests for each stage that follow those within the original DADA2 repository
+- [ ] Porting and optimizing DADA2's RDP taxonomic classifier implementation 
 - [ ] Optimizing chimera detection
-- [ ] Add some functionality to R or Python to allow custom error model generation
+- [ ] Wrapping or bridging to R and/or Python for custom error models
 
 ## Building
 
