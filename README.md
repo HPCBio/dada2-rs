@@ -2,15 +2,31 @@
 
 An experimental implementation of DADA2 in Rust, using Claude Code (specically Sonnet 4.6 and Opus 4.6/4.7) for the bulk of the work. 
 
-## Current state
+## Implementations
 
-The implementation is roughly 4.5x faster than the R DADA2 implementation (not including R loading overhead), and uses about 1/8 the memory. See also the Project Background for how this started and how we intend to move forward on this implementation.
+- Rust ports of: 
+  - [x] Filter/trimming FASTQ (`filterAndTrim`)
+  - [x] Dereplication (`derepFastq`)
+  - [x] Error model (`learnErrors`)
+  - [x] Denoising (`dada`)
+  - [x] Merging (`mergePairs`)
+  - [x] Current error models (`loessErrfun`, `PacBioErrfun`, `noqualErrfun`, `makeBinnedErrfun`) - *only `loessErrfun` and `PacBioErrfun` have been tested*
+  - [x] Chimera removal (`removeBimeraDenovo`) - *needs testing and optimization*
+  - [x] RDP taxonomic classifier (`assignTaxonomy`) + (`assignSpecies`) - *needs testing and optimization*
+  - [x] Other intermediate functions (`mergeTables`)
+- Other functionality:
+  - [x] Intermediate outputs (in JSON) - can be evaluated for debugging purposes or for plotting in R, Python, etc.
+  - [x] Add basic regression tests for each stage that follow those within the original DADA2 repository
+  - [x] Custom error models in R and/or Python - *experimental, basic tests in place*
+  - [x] Docker builds available
 
 ## Latest Benchmarks
 
+The implementation is roughly 4.5x faster than the R DADA2 implementation (not including R loading overhead), and uses about 1/8 the memory. See also the Project Background for how this started and how we intend to move forward on this implementation.
+
 ### Illumina MiSeq (MiSeq SOP data)
 
-Per Issue #4:
+Per Issue #4. Tested on MacBook Pro (M1)
 
 | Threads | Rust real | Rust user | Rust RSS | R real | R user | R RSS | Speedup (real) | RSS ratio |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -18,24 +34,17 @@ Per Issue #4:
 | 4 | **47.66s** | 183.10s | **283 MB** | 220.07s | 783.07s | 1413 MB | **4.6×** | 5.0× less |
 | 8 | **33.52s** | 208.45s | **276 MB** | 153.43s | 922.67s | 1404 MB | **4.6×** | 5.1× less |
 
+### Illumina MiSeq (i100 binned quality scores)
 
-## Plans
+TODO, need example set
 
-The short term plan: 
+### PacBio HiFi (standard, full quality scores)
 
-- Port key code over to Rust: 
-  - [x] Filter/trimming FASTQ (`filterAndTrim`)
-  - [x] Dereplication (`derepFastq`)
-  - [x] Error model (`learnErrors`)
-  - [x] Denoising (`dada`)
-  - [x] Merging (`mergePairs`)
-  - [x] Chimera removal (`removeBimeraDenovo`) - implemented but not tested
-  - [x] Error models (`loessErrfun`, `PacBioErrfun`, `noqualErrfun`, `makeBinnedErrfun`) - *only `loessErrfun` and `PacBioErrfun` have been tested*
-- [x] Intermediate outputs (in JSON) - can be evaluated for debugging purposes or for plotting in R, Python, etc.
-- [x] Add basic regression tests for each stage that follow those within the original DADA2 repository
-- [ ] Porting and optimizing DADA2's RDP taxonomic classifier implementation 
-- [ ] Optimizing chimera detection
-- [ ] Wrapping or bridging to R and/or Python for custom error models
+TODO, need example set
+
+### PacBio HiFi (Kinnex, binned quality scores)
+
+TODO, need example set
 
 ## Building
 
