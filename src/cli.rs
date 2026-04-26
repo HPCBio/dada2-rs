@@ -661,7 +661,7 @@ pub enum Commands {
 
         /// Error model fitting function to use
         ///
-        /// Allowed values: loess (default), noqual, binned-qual, pacbio
+        /// Allowed values: loess (default), noqual, binned-qual, pacbio, external
         #[arg(long, default_value = "loess")]
         errfun: String,
 
@@ -675,6 +675,15 @@ pub enum Commands {
         /// Only used with --errfun binned-qual.
         #[arg(long, value_delimiter = ',')]
         binned_quals: Option<Vec<f64>>,
+
+        /// External command to invoke when --errfun external is used.
+        ///
+        /// Whitespace-split into argv; the trans-input and err-output file
+        /// paths are appended as the final two arguments. Both files use
+        /// R's `read.table(..., row.names=1, header=TRUE, check.names=FALSE)`
+        /// layout. See examples/external_errfun/ for reference scripts.
+        #[arg(long)]
+        errfun_cmd: Option<String>,
 
         /// Maximum self-consistency iterations (mirrors R's MAX_CONSIST)
         #[arg(long, default_value_t = 10)]
@@ -798,7 +807,7 @@ pub enum Commands {
 
         /// Error model fitting function to use
         ///
-        /// Allowed values: loess (default), noqual, binned-qual, pacbio
+        /// Allowed values: loess (default), noqual, binned-qual, pacbio, external
         #[arg(long, default_value = "loess")]
         errfun: String,
 
@@ -812,6 +821,15 @@ pub enum Commands {
         /// Only used with --errfun binned-qual.
         #[arg(long, value_delimiter = ',')]
         binned_quals: Option<Vec<f64>>,
+
+        /// External command to invoke when --errfun external is used.
+        ///
+        /// Whitespace-split into argv; the trans-input and err-output file
+        /// paths are appended as the final two arguments. Both files use
+        /// R's `read.table(..., row.names=1, header=TRUE, check.names=FALSE)`
+        /// layout. See examples/external_errfun/ for reference scripts.
+        #[arg(long)]
+        errfun_cmd: Option<String>,
 
         /// Maximum self-consistency iterations (mirrors R's MAX_CONSIST)
         #[arg(long, default_value_t = 10)]

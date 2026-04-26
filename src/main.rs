@@ -50,16 +50,18 @@ fn build_learned_err_params(
     dp: &dada::DadaParams,
     ap: &AlignParams,
 ) -> LearnedErrParams {
-    let (errfun_name, errfun_pseudocount, errfun_bins) = match errfun {
-        ErrFun::Loess => ("loess", None, None),
-        ErrFun::Noqual { pseudocount } => ("noqual", Some(*pseudocount), None),
-        ErrFun::BinnedQual { bins } => ("binned-qual", None, Some(bins.clone())),
-        ErrFun::PacBio => ("pacbio", None, None),
+    let (errfun_name, errfun_pseudocount, errfun_bins, errfun_cmd) = match errfun {
+        ErrFun::Loess => ("loess", None, None, None),
+        ErrFun::Noqual { pseudocount } => ("noqual", Some(*pseudocount), None, None),
+        ErrFun::BinnedQual { bins } => ("binned-qual", None, Some(bins.clone()), None),
+        ErrFun::PacBio => ("pacbio", None, None, None),
+        ErrFun::External { command } => ("external", None, None, Some(command.clone())),
     };
     LearnedErrParams {
         errfun: errfun_name.to_string(),
         errfun_pseudocount,
         errfun_bins,
+        errfun_cmd,
         max_consist,
         omega_a: dp.omega_a,
         omega_c: dp.omega_c,
@@ -1203,6 +1205,7 @@ fn main() -> io::Result<()> {
             errfun,
             pseudocount,
             binned_quals,
+            errfun_cmd,
             max_consist,
             omega_a,
             omega_c,
@@ -1235,11 +1238,26 @@ fn main() -> io::Result<()> {
                     ErrFun::BinnedQual { bins }
                 }
                 "pacbio" => ErrFun::PacBio,
+                "external" => {
+                    let command = errfun_cmd.clone().ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "--errfun-cmd is required when --errfun external is used",
+                        )
+                    })?;
+                    if command.trim().is_empty() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "--errfun-cmd cannot be empty",
+                        ));
+                    }
+                    ErrFun::External { command }
+                }
                 other => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         format!(
-                            "Unknown errfun '{other}'; expected one of: loess, noqual, binned-qual, pacbio"
+                            "Unknown errfun '{other}'; expected one of: loess, noqual, binned-qual, pacbio, external"
                         ),
                     ));
                 }
@@ -1731,6 +1749,7 @@ fn main() -> io::Result<()> {
             errfun,
             pseudocount,
             binned_quals,
+            errfun_cmd,
             max_consist,
             omega_a,
             omega_c,
@@ -1763,11 +1782,26 @@ fn main() -> io::Result<()> {
                     ErrFun::BinnedQual { bins }
                 }
                 "pacbio" => ErrFun::PacBio,
+                "external" => {
+                    let command = errfun_cmd.clone().ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "--errfun-cmd is required when --errfun external is used",
+                        )
+                    })?;
+                    if command.trim().is_empty() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "--errfun-cmd cannot be empty",
+                        ));
+                    }
+                    ErrFun::External { command }
+                }
                 other => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         format!(
-                            "Unknown errfun '{other}'; expected one of: loess, noqual, binned-qual, pacbio"
+                            "Unknown errfun '{other}'; expected one of: loess, noqual, binned-qual, pacbio, external"
                         ),
                     ));
                 }

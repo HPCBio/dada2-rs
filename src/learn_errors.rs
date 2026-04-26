@@ -23,7 +23,8 @@ use crate::containers::Raw;
 use crate::dada::{DadaParams, RawInput, dada_uniques_cached};
 use crate::derep::dereplicate;
 use crate::error_models::{
-    accumulate_trans, binned_qual_errfun, loess_errfun, noqual_errfun, pacbio_errfun,
+    accumulate_trans, binned_qual_errfun, external_errfun, loess_errfun, noqual_errfun,
+    pacbio_errfun,
 };
 use crate::misc::nt_encode;
 use crate::nwalign::{AlignBuffers, AlignParams, raw_align_with_buf};
@@ -60,6 +61,9 @@ pub enum ErrFun {
     BinnedQual { bins: Vec<f64> },
     /// PacBio-specific model.
     PacBio,
+    /// User-supplied command that reads a trans TSV and writes an err TSV.
+    /// See [`external_errfun`] for the wire format.
+    External { command: String },
 }
 
 impl ErrFun {
@@ -71,6 +75,7 @@ impl ErrFun {
             ErrFun::Noqual { pseudocount } => Ok(noqual_errfun(trans, nq, *pseudocount)),
             ErrFun::BinnedQual { bins } => binned_qual_errfun(trans, &qual_scores, bins),
             ErrFun::PacBio => Ok(pacbio_errfun(trans, &qual_scores)),
+            ErrFun::External { command } => external_errfun(trans, nq, command),
         }
     }
 }
@@ -120,6 +125,9 @@ pub struct LearnedErrParams {
     /// Quality-score bin edges for `binned-qual` errfun (None for others).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub errfun_bins: Option<Vec<f64>>,
+    /// User-supplied command for `external` errfun (None for others).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub errfun_cmd: Option<String>,
     /// Maximum self-consistency iterations the model was allowed to run.
     #[serde(default)]
     pub max_consist: usize,

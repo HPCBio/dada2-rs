@@ -18,6 +18,7 @@
 //! - Columns index quality scores, with column 0 corresponding to Q0.
 
 use std::collections::{HashMap, HashSet};
+use std::io;
 
 use statrs::distribution::{DiscreteCDF, Poisson};
 
@@ -771,6 +772,182 @@ pub fn is_bad_base_fp(
 }
 
 // ---------------------------------------------------------------------------
+// External (user-supplied) error function
+// ---------------------------------------------------------------------------
+
+/// Row labels written to the trans/err TSVs exchanged with the external script.
+///
+/// Order matches the standard 16-row layout used elsewhere: outer = ref nt
+/// (A,C,G,T), inner = query nt (A,C,G,T).  Same as R DADA2's
+/// `paste0(rep(c("A","C","G","T"), each=4), "2", c("A","C","G","T"))`.
+const EXTERNAL_ROW_LABELS: [&str; 16] = [
+    "A2A", "A2C", "A2G", "A2T", "C2A", "C2C", "C2G", "C2T", "G2A", "G2C", "G2G", "G2T", "T2A",
+    "T2C", "T2G", "T2T",
+];
+
+/// RAII temp-dir guard used by [`external_errfun`].  Cleaned up on drop.
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(prefix: &str) -> io::Result<Self> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{nanos}",
+            std::process::id(),
+        ));
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self(dir))
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Run a user-supplied command to fit error rates from a transition matrix.
+///
+/// `cmd` is whitespace-split into argv; two file paths — input trans TSV and
+/// output err TSV — are appended as the final two arguments.  Both files use
+/// R's `read.table(..., row.names=1, header=TRUE, check.names=FALSE)` layout:
+/// the header line is a leading tab followed by `nq` integer column labels
+/// (`0`, `1`, …, `nq-1`); each of the 16 data rows starts with a row label
+/// (`A2A`, `A2C`, …, `T2T`) followed by `nq` whitespace-separated values.
+///
+/// The script must write the err matrix in the same shape (R's
+/// `write.table(err, args[2], sep="\t", quote=FALSE, col.names=NA)` produces
+/// it directly).
+///
+/// On success returns a flat row-major `Vec<f64>` of length `16 * nq`.
+/// All values must be finite and in `[0, 1]`; row labels in the err TSV are
+/// not strictly checked but their count must be exactly 16.
+pub fn external_errfun(trans: &[u32], nq: usize, cmd: &str) -> Result<Vec<f64>, String> {
+    if trans.len() != 16 * nq {
+        return Err(format!(
+            "external_errfun: trans length {} != 16 * nq ({})",
+            trans.len(),
+            16 * nq,
+        ));
+    }
+    let argv: Vec<&str> = cmd.split_whitespace().collect();
+    if argv.is_empty() {
+        return Err("external_errfun: --errfun-cmd is empty".into());
+    }
+
+    let tmp = TempDir::new("dada2-rs-errfun")
+        .map_err(|e| format!("external_errfun: failed to create temp dir: {e}"))?;
+    let trans_path = tmp.0.join("trans.tsv");
+    let err_path = tmp.0.join("err.tsv");
+
+    write_trans_tsv(&trans_path, trans, nq)
+        .map_err(|e| format!("external_errfun: write {}: {e}", trans_path.display()))?;
+
+    let output = std::process::Command::new(argv[0])
+        .args(&argv[1..])
+        .arg(&trans_path)
+        .arg(&err_path)
+        .output()
+        .map_err(|e| format!("external_errfun: failed to spawn '{cmd}': {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "external_errfun: command '{cmd}' exited with {}\n--- stderr ---\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim_end(),
+        ));
+    }
+
+    let err_text = std::fs::read_to_string(&err_path)
+        .map_err(|e| format!("external_errfun: read {}: {e}", err_path.display()))?;
+    parse_err_tsv(&err_text, nq)
+}
+
+fn write_trans_tsv(path: &std::path::Path, trans: &[u32], nq: usize) -> io::Result<()> {
+    use std::io::Write;
+    let file = std::fs::File::create(path)?;
+    let mut w = std::io::BufWriter::new(file);
+    // Header: leading tab, then 0, 1, …, nq-1
+    for q in 0..nq {
+        write!(w, "\t{q}")?;
+    }
+    writeln!(w)?;
+    for r in 0..16 {
+        write!(w, "{}", EXTERNAL_ROW_LABELS[r])?;
+        for q in 0..nq {
+            write!(w, "\t{}", trans[r * nq + q])?;
+        }
+        writeln!(w)?;
+    }
+    Ok(())
+}
+
+fn parse_err_tsv(text: &str, nq: usize) -> Result<Vec<f64>, String> {
+    let mut lines = text.lines();
+    let header = lines
+        .next()
+        .ok_or_else(|| "external_errfun: err TSV is empty".to_string())?;
+    let header_cols: Vec<&str> = header.split('\t').collect();
+    if header_cols.len() != nq + 1 {
+        return Err(format!(
+            "external_errfun: err TSV header has {} fields, expected {} (1 row-name + {} quality scores)",
+            header_cols.len(),
+            nq + 1,
+            nq,
+        ));
+    }
+
+    let mut err = vec![0.0f64; 16 * nq];
+    let mut row = 0usize;
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        if row >= 16 {
+            return Err("external_errfun: err TSV has more than 16 data rows".into());
+        }
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() != nq + 1 {
+            return Err(format!(
+                "external_errfun: err TSV row {} has {} fields, expected {}",
+                row + 1,
+                cols.len(),
+                nq + 1,
+            ));
+        }
+        for q in 0..nq {
+            let s = cols[q + 1];
+            let v: f64 = s.parse().map_err(|e| {
+                format!(
+                    "external_errfun: err TSV row {} column {} ({:?}): {e}",
+                    row + 1,
+                    q,
+                    s,
+                )
+            })?;
+            if !v.is_finite() || !(0.0..=1.0).contains(&v) {
+                return Err(format!(
+                    "external_errfun: err[{}][{}] = {v} is not a valid probability in [0, 1]",
+                    EXTERNAL_ROW_LABELS[row],
+                    q,
+                ));
+            }
+            err[row * nq + q] = v;
+        }
+        row += 1;
+    }
+    if row != 16 {
+        return Err(format!(
+            "external_errfun: err TSV has {row} data rows, expected 16",
+        ));
+    }
+    Ok(err)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -878,5 +1055,85 @@ mod tests {
     fn test_get_bad_bases_empty_input() {
         let bad = get_bad_bases(100, &[], 1e-10, 4);
         assert!(bad.is_empty());
+    }
+
+    /// Exercises `external_errfun` via a tiny POSIX-shell script: read trans,
+    /// emit a constant 0.01 error rate everywhere. Verifies the round-trip
+    /// (write trans TSV, spawn process, read back err TSV, validate shape).
+    /// Skipped on non-unix targets where `/bin/sh` semantics may differ.
+    #[cfg(unix)]
+    #[test]
+    fn test_external_errfun_roundtrip() {
+        let nq = 4;
+        let trans: Vec<u32> = (0..16 * nq).map(|i| i as u32).collect();
+
+        let dir = TempDir::new("dada2-rs-extfun-test").unwrap();
+        let script = dir.0.join("constant_err.sh");
+        // Awk script: print header from trans, then 16 rows of constant 0.01
+        let body = "#!/bin/sh\n\
+                    awk -F'\\t' 'BEGIN{OFS=\"\\t\"}\n\
+                    NR==1{print; nq=NF-1; next}\n\
+                    {printf \"%s\", $1; for(i=1;i<=nq;i++) printf \"\\t0.01\"; print \"\"}' \"$1\" > \"$2\"\n";
+        std::fs::write(&script, body).unwrap();
+        // Make executable
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let cmd = script.to_string_lossy().into_owned();
+        let err = external_errfun(&trans, nq, &cmd).expect("external errfun should succeed");
+        assert_eq!(err.len(), 16 * nq);
+        for v in &err {
+            assert!((v - 0.01).abs() < 1e-12, "value {v} != 0.01");
+        }
+        // Hold dir alive until after the spawn so the script isn't cleaned up early.
+        drop(dir);
+    }
+
+    /// A script that exits with non-zero status should surface a useful error.
+    #[cfg(unix)]
+    #[test]
+    fn test_external_errfun_propagates_nonzero_exit() {
+        let dir = TempDir::new("dada2-rs-extfun-test").unwrap();
+        let script = dir.0.join("fail.sh");
+        std::fs::write(&script, "#!/bin/sh\necho 'oops' >&2\nexit 7\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let trans = vec![0u32; 16 * 4];
+        let result = external_errfun(&trans, 4, &script.to_string_lossy());
+        let err_msg = result.expect_err("script exits 7 — should fail");
+        assert!(err_msg.contains("exited with"), "got: {err_msg}");
+        assert!(err_msg.contains("oops"), "stderr should be propagated, got: {err_msg}");
+        drop(dir);
+    }
+
+    /// A script returning a value outside [0,1] should be rejected.
+    #[cfg(unix)]
+    #[test]
+    fn test_external_errfun_rejects_invalid_probability() {
+        let dir = TempDir::new("dada2-rs-extfun-test").unwrap();
+        let script = dir.0.join("bad_prob.sh");
+        // Header line + 16 rows where the first cell is 1.5
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nawk -F'\\t' 'BEGIN{OFS=\"\\t\"}\n\
+             NR==1{print; nq=NF-1; next}\n\
+             {printf \"%s\\t1.5\", $1; for(i=2;i<=nq;i++) printf \"\\t0.01\"; print \"\"}' \"$1\" > \"$2\"\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let trans = vec![0u32; 16 * 4];
+        let result = external_errfun(&trans, 4, &script.to_string_lossy());
+        let err_msg = result.expect_err("1.5 is not a valid probability");
+        assert!(err_msg.contains("not a valid probability"), "got: {err_msg}");
+        drop(dir);
     }
 }
