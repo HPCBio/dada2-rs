@@ -63,16 +63,30 @@ struct SampleCounts {
 
 /// Parse one JSON file.  Returns one `SampleCounts` per sample found.
 ///
-/// * If the file is a JSON object with an `"asvs"` key → single-sample dada format.
-/// * If the file is a JSON array whose first element has a `"merges"` key → merge-pairs format.
+/// Dispatches on the `dada2_rs_command` tag:
+/// * `"dada"` → single-sample dada output
+/// * `"merge-pairs"` → multi-sample merge-pairs output (a `samples` array)
 fn parse_file(path: &Path, sample_name: Option<&str>) -> io::Result<Vec<SampleCounts>> {
     let bytes = fs::read(path)?;
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    match &value {
-        Value::Object(map) if map.contains_key("asvs") => {
-            // Single-sample dada output.
+    let cmd = value
+        .get("dada2_rs_command")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{}: missing dada2_rs_command tag (expected 'dada' or 'merge-pairs')",
+                    path.display()
+                ),
+            )
+        })?
+        .to_owned();
+
+    match cmd.as_str() {
+        "dada" => {
             let out: DadaOutput = serde_json::from_value(value)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             let name = sample_name
@@ -85,11 +99,15 @@ fn parse_file(path: &Path, sample_name: Option<&str>) -> io::Result<Vec<SampleCo
                 .collect();
             Ok(vec![SampleCounts { name, counts }])
         }
-        Value::Array(_) => {
-            // Multi-sample merge-pairs output.
-            let results: Vec<SampleMergeResult> = serde_json::from_value(value)
+        "merge-pairs" => {
+            #[derive(Deserialize)]
+            struct MergePairsFile {
+                samples: Vec<SampleMergeResult>,
+            }
+            let out: MergePairsFile = serde_json::from_value(value)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            Ok(results
+            Ok(out
+                .samples
                 .into_iter()
                 .map(|r| SampleCounts {
                     name: r.sample,
@@ -102,10 +120,10 @@ fn parse_file(path: &Path, sample_name: Option<&str>) -> io::Result<Vec<SampleCo
                 })
                 .collect())
         }
-        _ => Err(io::Error::new(
+        other => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "{}: unrecognised JSON format (expected dada object or merge-pairs array)",
+                "{}: dada2_rs_command={other:?}, expected 'dada' or 'merge-pairs'",
                 path.display()
             ),
         )),

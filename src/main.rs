@@ -35,7 +35,7 @@ use learn_errors::{
 };
 use nwalign::AlignParams;
 use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
-use misc::read_fasta_records;
+use misc::{Tagged, read_fasta_records, read_tagged_json};
 use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
 use serde::Serialize;
 use summary::process;
@@ -120,10 +120,11 @@ fn main() -> io::Result<()> {
                 mean_quality_per_position: summary.mean_quality_per_position(),
             };
 
+            let tagged = Tagged::new("summary", out);
             let json = if compact {
-                serde_json::to_string(&out)
+                serde_json::to_string(&tagged)
             } else {
-                serde_json::to_string_pretty(&out)
+                serde_json::to_string_pretty(&tagged)
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
@@ -192,10 +193,11 @@ fn main() -> io::Result<()> {
                 map: if show_map { Some(&derep.map) } else { None },
             };
 
+            let tagged = Tagged::new("derep", derep_out);
             let json = if compact {
-                serde_json::to_string(&derep_out)
+                serde_json::to_string(&tagged)
             } else {
-                serde_json::to_string_pretty(&derep_out)
+                serde_json::to_string_pretty(&tagged)
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
@@ -285,7 +287,8 @@ fn main() -> io::Result<()> {
                 params: Option<LearnedErrParams>,
             }
 
-            let em: ErrorModelJson = misc::read_json_file(&error_model)?;
+            let em: ErrorModelJson =
+                read_tagged_json(&error_model, &["learn-errors", "errors-from-sample"])?;
 
             let nq = em.nq;
             let rows = if use_err_in { &em.err_in } else { &em.err_out };
@@ -504,10 +507,11 @@ fn main() -> io::Result<()> {
                 map: if show_map { Some(result.map) } else { None },
             };
 
+            let tagged = Tagged::new("dada", out);
             let json = if compact {
-                serde_json::to_string(&out)
+                serde_json::to_string(&tagged)
             } else {
-                serde_json::to_string_pretty(&out)
+                serde_json::to_string_pretty(&tagged)
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
@@ -631,10 +635,15 @@ fn main() -> io::Result<()> {
                 results.push(result);
             }
 
+            #[derive(Serialize)]
+            struct MergePairsOutput {
+                samples: Vec<merge_pairs::SampleMergeResult>,
+            }
+            let tagged = Tagged::new("merge-pairs", MergePairsOutput { samples: results });
             let json = if compact {
-                serde_json::to_string(&results)
+                serde_json::to_string(&tagged)
             } else {
-                serde_json::to_string_pretty(&results)
+                serde_json::to_string_pretty(&tagged)
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
@@ -847,10 +856,18 @@ fn main() -> io::Result<()> {
 
             let results = results?;
 
+            #[derive(Serialize)]
+            struct FilterAndTrimOutput {
+                samples: Vec<SampleResult>,
+            }
+            let tagged = Tagged::new(
+                "filter-and-trim",
+                FilterAndTrimOutput { samples: results },
+            );
             let json = if compact {
-                serde_json::to_string(&results)
+                serde_json::to_string(&tagged)
             } else {
-                serde_json::to_string_pretty(&results)
+                serde_json::to_string_pretty(&tagged)
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
@@ -895,10 +912,11 @@ fn main() -> io::Result<()> {
             };
             let paths: Vec<&Path> = input.iter().map(|p| p.as_path()).collect();
             let table = make_sequence_table(&paths, names_opt, order, hash_algo)?;
+            let tagged = Tagged::new("make-sequence-table", table);
             let json = if compact {
-                serde_json::to_string(&table)
+                serde_json::to_string(&tagged)
             } else {
-                serde_json::to_string_pretty(&table)
+                serde_json::to_string_pretty(&tagged)
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             match output {
@@ -922,9 +940,10 @@ fn main() -> io::Result<()> {
             output,
             compact,
         } => {
-            let bytes = std::fs::read(&input)?;
-            let table: SequenceTable = serde_json::from_slice(&bytes)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let table: SequenceTable = read_tagged_json(
+                &input,
+                &["make-sequence-table", "remove-bimera-denovo"],
+            )?;
 
             let method = match method.as_str() {
                 "pooled" => Method::Pooled,
@@ -950,10 +969,11 @@ fn main() -> io::Result<()> {
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             let filtered = pool.install(|| remove_bimera_denovo(table, &method, &params, verbose));
 
+            let tagged = Tagged::new("remove-bimera-denovo", filtered);
             let json = if compact {
-                serde_json::to_string(&filtered)
+                serde_json::to_string(&tagged)
             } else {
-                serde_json::to_string_pretty(&filtered)
+                serde_json::to_string_pretty(&tagged)
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             match output {
@@ -963,9 +983,10 @@ fn main() -> io::Result<()> {
         }
 
         Commands::SeqTableToTsv { input, output } => {
-            let bytes = std::fs::read(&input)?;
-            let table: SequenceTable = serde_json::from_slice(&bytes)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let table: SequenceTable = read_tagged_json(
+                &input,
+                &["make-sequence-table", "remove-bimera-denovo"],
+            )?;
 
             let mut out: Box<dyn io::Write> = match output {
                 Some(ref path) => Box::new(io::BufWriter::new(std::fs::File::create(path)?)),
@@ -997,9 +1018,10 @@ fn main() -> io::Result<()> {
                 sequence_ids: Vec<String>,
             }
 
-            let bytes = std::fs::read(&input)?;
-            let table: SeqTable = serde_json::from_slice(&bytes)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let table: SeqTable = read_tagged_json(
+                &input,
+                &["make-sequence-table", "remove-bimera-denovo"],
+            )?;
 
             if table.sequences.len() != table.sequence_ids.len() {
                 return Err(io::Error::new(
@@ -1125,10 +1147,12 @@ fn main() -> io::Result<()> {
                     uniques: uniq_entries,
                 };
 
+                let unique_count = sample_out.unique_sequences;
+                let tagged = Tagged::new("sample", sample_out);
                 let json = if compact {
-                    serde_json::to_string(&sample_out)
+                    serde_json::to_string(&tagged)
                 } else {
-                    serde_json::to_string_pretty(&sample_out)
+                    serde_json::to_string_pretty(&tagged)
                 }
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
@@ -1141,7 +1165,7 @@ fn main() -> io::Result<()> {
                     eprintln!(
                         "[sample] wrote {} ({} unique(s), {} bases)",
                         out_path.display(),
-                        sample_out.unique_sequences,
+                        unique_count,
                         file_bases,
                     );
                 }
@@ -1164,10 +1188,11 @@ fn main() -> io::Result<()> {
                 total_reads,
                 output_files,
             };
+            let tagged = Tagged::new("sample", summary);
             let summary_json = if compact {
-                serde_json::to_string(&summary)
+                serde_json::to_string(&tagged)
             } else {
-                serde_json::to_string_pretty(&summary)
+                serde_json::to_string_pretty(&tagged)
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             println!("{summary_json}");
@@ -1319,10 +1344,11 @@ fn main() -> io::Result<()> {
                 err_out: flat_to_rows_f64(&result.err_out, result.nq),
             };
 
+            let tagged = Tagged::new("errors-from-sample", out);
             let json = if compact {
-                serde_json::to_string(&out)
+                serde_json::to_string(&tagged)
             } else {
-                serde_json::to_string_pretty(&out)
+                serde_json::to_string_pretty(&tagged)
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
@@ -1572,10 +1598,11 @@ fn main() -> io::Result<()> {
                 levels: out_levels,
                 assignments,
             };
+            let tagged = Tagged::new("assign-taxonomy", out);
             let json = if compact {
-                serde_json::to_string(&out)
+                serde_json::to_string(&tagged)
             } else {
-                serde_json::to_string_pretty(&out)
+                serde_json::to_string_pretty(&tagged)
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
@@ -1681,10 +1708,11 @@ fn main() -> io::Result<()> {
                 .collect();
 
             let out = AssignSpeciesOutput { assignments };
+            let tagged = Tagged::new("assign-species", out);
             let json = if compact {
-                serde_json::to_string(&out)
+                serde_json::to_string(&tagged)
             } else {
-                serde_json::to_string_pretty(&out)
+                serde_json::to_string_pretty(&tagged)
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
@@ -1852,10 +1880,11 @@ fn main() -> io::Result<()> {
                 err_out: flat_to_rows_f64(&result.err_out, result.nq),
             };
 
+            let tagged = Tagged::new("learn-errors", out);
             let json = if compact {
-                serde_json::to_string(&out)
+                serde_json::to_string(&tagged)
             } else {
-                serde_json::to_string_pretty(&out)
+                serde_json::to_string_pretty(&tagged)
             }
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
@@ -1892,7 +1921,8 @@ fn read_query_sequences(path: &Path) -> io::Result<Vec<(String, Vec<u8>)>> {
             sequences: Vec<String>,
             sequence_ids: Vec<String>,
         }
-        let table: SeqTable = misc::read_json_file(path)?;
+        let table: SeqTable =
+            read_tagged_json(path, &["make-sequence-table", "remove-bimera-denovo"])?;
         if table.sequences.len() != table.sequence_ids.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

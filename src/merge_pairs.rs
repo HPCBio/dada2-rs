@@ -283,8 +283,8 @@ pub fn merge_sample(
     pool: &rayon::ThreadPool,
 ) -> io::Result<SampleMergeResult> {
     // ---- Load dada JSONs (plain or gzip-compressed) ----
-    let fwd_dada: DadaJsonInput = crate::misc::read_json_file(fwd_dada_path)?;
-    let rev_dada: DadaJsonInput = crate::misc::read_json_file(rev_dada_path)?;
+    let fwd_dada: DadaJsonInput = crate::misc::read_tagged_json(fwd_dada_path, &["dada"])?;
+    let rev_dada: DadaJsonInput = crate::misc::read_tagged_json(rev_dada_path, &["dada"])?;
 
     let fwd_map = fwd_dada.map.as_ref().ok_or_else(|| {
         io::Error::new(

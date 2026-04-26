@@ -4,6 +4,84 @@ use std::path::Path;
 
 use flate2::read::MultiGzDecoder;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
+
+/// Crate version, embedded in every JSON output as `dada2_rs_version`.
+pub const DADA2_RS_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Wraps a serializable output with the dada2-rs command name and version.
+/// The two tag fields are emitted at the top of the resulting JSON object,
+/// followed by the inner struct's fields (via `#[serde(flatten)]`).
+#[derive(Serialize)]
+pub struct Tagged<T: Serialize> {
+    pub dada2_rs_command: &'static str,
+    pub dada2_rs_version: &'static str,
+    #[serde(flatten)]
+    pub inner: T,
+}
+
+impl<T: Serialize> Tagged<T> {
+    pub fn new(command: &'static str, inner: T) -> Self {
+        Self {
+            dada2_rs_command: command,
+            dada2_rs_version: DADA2_RS_VERSION,
+            inner,
+        }
+    }
+}
+
+/// Read a tagged JSON file and validate its `dada2_rs_command` is one of
+/// `expected`.  Returns the inner payload on success.
+///
+/// The tag is checked first, against a `serde_json::Value` parse, so the
+/// caller gets a clear "wrong command" error instead of a confusing
+/// "missing field X" error when the file came from the wrong subcommand.
+///
+/// Errors with `InvalidData` if the tag is missing or mismatched.
+/// Transparently decompresses gzip when the path ends in `.gz`.
+pub fn read_tagged_json<T: DeserializeOwned>(
+    path: &Path,
+    expected: &[&str],
+) -> io::Result<T> {
+    let file = File::open(path)?;
+    let is_gz = path.extension().and_then(|e| e.to_str()) == Some("gz");
+    let value: serde_json::Value = if is_gz {
+        serde_json::from_reader(BufReader::new(MultiGzDecoder::new(file)))
+    } else {
+        serde_json::from_reader(BufReader::new(file))
+    }
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    let cmd = value.get("dada2_rs_command").and_then(|v| v.as_str());
+    match cmd {
+        Some(c) if expected.contains(&c) => {}
+        Some(c) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{}: dada2_rs_command={c:?}, expected one of {expected:?}",
+                    path.display()
+                ),
+            ));
+        }
+        None => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{}: missing dada2_rs_command tag (expected one of {expected:?})",
+                    path.display()
+                ),
+            ));
+        }
+    }
+
+    serde_json::from_value(value).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: {e}", path.display()),
+        )
+    })
+}
 
 /// Open a JSON file and deserialize it, transparently decompressing gzip when
 /// the path ends with `.gz` (e.g. `foo.json.gz`).
