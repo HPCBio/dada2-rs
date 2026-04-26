@@ -22,6 +22,8 @@
 //! - All indexing is 0-based; callers should add 1 if they need R-style output.
 //! - `Rcpp::checkUserInterrupt()` is removed (no R event loop).
 
+use std::collections::HashMap;
+
 use rand::SeedableRng;
 use rand::distributions::{Distribution, Standard};
 use rand::rngs::SmallRng;
@@ -395,4 +397,128 @@ pub fn assign_taxonomy(
         boot_counts,
         boot_taxa,
     })
+}
+
+// ---------------------------------------------------------------------------
+// assignSpecies — exact-match species assignment
+// ---------------------------------------------------------------------------
+
+/// Per-query result from [`assign_species`].
+pub struct SpeciesHit {
+    /// Unambiguous genus (after Escherichia/Shigella merging); `None` if
+    /// the query matched references with conflicting genera or had no hit.
+    pub genus: Option<String>,
+    /// Species assignment; `None` if no hit, or if the number of distinct
+    /// matching species exceeds `max_species`.
+    pub species: Option<String>,
+}
+
+fn rc_seq(seq: &[u8]) -> Vec<u8> {
+    seq.iter()
+        .rev()
+        .map(|&b| match b {
+            b'A' | b'a' => b'T',
+            b'T' | b't' | b'U' | b'u' => b'A',
+            b'G' | b'g' => b'C',
+            b'C' | b'c' => b'G',
+            _ => b'N',
+        })
+        .collect()
+}
+
+fn escsh(s: &str) -> &str {
+    if s.contains("Escherichia") || s.contains("Shigella") {
+        "Escherichia/Shigella"
+    } else {
+        s
+    }
+}
+
+/// Assign species to each query by exact sequence matching.
+///
+/// Reference FASTA is expected in the format `>SeqID genus species`; callers
+/// pre-parse genus and species strings and pass them as parallel slices.
+///
+/// `max_species`:
+/// - `1` — unambiguous only (R's default `allowMultiple=FALSE`)
+/// - `0` — unlimited (R's `allowMultiple=TRUE`)
+/// - `N > 1` — up to N distinct species joined with `"/"`
+///
+/// Equivalent to R's `assignSpecies`.
+pub fn assign_species(
+    seqs: &[&[u8]],
+    ref_seqs: &[&[u8]],
+    ref_genus: &[&str],
+    ref_species: &[&str],
+    max_species: usize,
+    try_rc: bool,
+    verbose: bool,
+) -> Vec<SpeciesHit> {
+    assert_eq!(ref_seqs.len(), ref_genus.len());
+    assert_eq!(ref_seqs.len(), ref_species.len());
+
+    let mut map: HashMap<&[u8], Vec<usize>> = HashMap::new();
+    for (i, &seq) in ref_seqs.iter().enumerate() {
+        map.entry(seq).or_default().push(i);
+    }
+
+    let mut results = Vec::with_capacity(seqs.len());
+    let mut n_assigned = 0usize;
+
+    for &query in seqs {
+        let mut hit_indices: Vec<usize> = Vec::new();
+
+        if let Some(hits) = map.get(query) {
+            hit_indices.extend_from_slice(hits);
+        }
+        if try_rc {
+            let rc = rc_seq(query);
+            if let Some(hits) = map.get(rc.as_slice()) {
+                hit_indices.extend_from_slice(hits);
+            }
+        }
+
+        if hit_indices.is_empty() {
+            results.push(SpeciesHit {
+                genus: None,
+                species: None,
+            });
+            continue;
+        }
+
+        // Genus: unique values after E/Shigella merging; unambiguous only.
+        let mut genera: Vec<&str> = hit_indices.iter().map(|&i| escsh(ref_genus[i])).collect();
+        genera.sort_unstable();
+        genera.dedup();
+        let genus = if genera.len() == 1 {
+            Some(genera[0].to_string())
+        } else {
+            None
+        };
+
+        // Species: unique values; accept if count ≤ max_species (0 = unlimited).
+        let mut spp: Vec<&str> = hit_indices.iter().map(|&i| ref_species[i]).collect();
+        spp.sort_unstable();
+        spp.dedup();
+        let species = if max_species == 0 || spp.len() <= max_species {
+            Some(spp.join("/"))
+        } else {
+            None
+        };
+
+        if species.is_some() {
+            n_assigned += 1;
+        }
+        results.push(SpeciesHit { genus, species });
+    }
+
+    if verbose {
+        eprintln!(
+            "{} out of {} were assigned to the species level.",
+            n_assigned,
+            seqs.len()
+        );
+    }
+
+    results
 }

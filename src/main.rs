@@ -35,9 +35,11 @@ use learn_errors::{
 };
 use nwalign::AlignParams;
 use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
+use misc::read_fasta_records;
 use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
 use serde::Serialize;
 use summary::process;
+use taxonomy::{SpeciesHit, assign_species, assign_taxonomy};
 
 /// Build a [`LearnedErrParams`] snapshot from the resolved errfun + dada/align
 /// params, for embedding in the err-model JSON. Captures everything dada cares
@@ -1330,6 +1332,368 @@ fn main() -> io::Result<()> {
             }
         }
 
+        Commands::AssignTaxonomy {
+            input,
+            ref_fasta,
+            min_boot,
+            try_rc,
+            output_bootstraps,
+            tax_levels,
+            seed,
+            threads,
+            output,
+            compact,
+            verbose,
+        } => {
+            const MIN_REF_LEN: usize = 20;
+            const DADA2_UNSPEC: &str = "_DADA2_UNSPECIFIED";
+
+            // ---- Read queries ----
+            let queries = read_query_sequences(&input)?;
+            let query_seqs: Vec<&[u8]> = queries.iter().map(|(_, s)| s.as_slice()).collect();
+            let rcs: Vec<Vec<u8>> = if try_rc {
+                query_seqs.iter().map(|&s| rc_bytes(s)).collect()
+            } else {
+                vec![]
+            };
+            let rc_refs: Vec<&[u8]> = rcs.iter().map(|s| s.as_slice()).collect();
+
+            // ---- Read and parse reference FASTA ----
+            let raw_refs = read_fasta_records(&ref_fasta)?;
+            let raw_refs: Vec<(String, Vec<u8>)> = raw_refs
+                .into_iter()
+                .filter(|(_, seq)| seq.len() >= MIN_REF_LEN)
+                .collect();
+
+            if raw_refs.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "No reference sequences passed the minimum length filter.",
+                ));
+            }
+            if !raw_refs[0].0.contains(';') {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Reference header does not look like a taxonomy string (no ';'). \
+                     Use --ref-fasta with a DADA2-formatted taxonomy reference.",
+                ));
+            }
+
+            // Parse each header into semicolon-delimited fields, finding max depth.
+            let tax_fields: Vec<Vec<String>> = raw_refs
+                .iter()
+                .map(|(hdr, _)| {
+                    hdr.split(';')
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let max_depth = tax_fields.iter().map(|f| f.len()).max().unwrap_or(0);
+
+            // Pad shorter strings with _DADA2_UNSPECIFIED.
+            let tax_padded: Vec<Vec<String>> = tax_fields
+                .into_iter()
+                .map(|mut f| {
+                    while f.len() < max_depth {
+                        f.push(DADA2_UNSPEC.to_string());
+                    }
+                    f
+                })
+                .collect();
+
+            // Build unique taxonomy strings and ref→genus mapping.
+            let full_strings: Vec<String> =
+                tax_padded.iter().map(|f| f.join(";")).collect();
+            let mut genus_uniq: Vec<String> = {
+                let mut seen = std::collections::HashSet::new();
+                let mut v = Vec::new();
+                for s in &full_strings {
+                    if seen.insert(s.clone()) {
+                        v.push(s.clone());
+                    }
+                }
+                v
+            };
+            genus_uniq.sort_unstable(); // stable ordering for reproducibility
+            let genus_to_idx: std::collections::HashMap<&str, usize> = genus_uniq
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (s.as_str(), i))
+                .collect();
+            let ref_to_genus: Vec<usize> =
+                full_strings.iter().map(|s| genus_to_idx[s.as_str()]).collect();
+
+            // Split each unique genus string into level fields.
+            let genus_fields: Vec<Vec<String>> = genus_uniq
+                .iter()
+                .map(|s| {
+                    let mut f: Vec<String> = s
+                        .split(';')
+                        .filter(|x| !x.is_empty())
+                        .map(|x| x.to_string())
+                        .collect();
+                    while f.len() < max_depth {
+                        f.push(DADA2_UNSPEC.to_string());
+                    }
+                    f
+                })
+                .collect();
+
+            // Build integer-factor matrix [ngenus × nlevel] (1-based, sorted alpha).
+            let ngenus = genus_uniq.len();
+            let nlevel = max_depth;
+            let mut genus_tax = vec![0usize; ngenus * nlevel];
+            for l in 0..nlevel {
+                let mut level_vals: Vec<String> =
+                    genus_fields.iter().map(|f| f[l].clone()).collect();
+                level_vals.sort_unstable();
+                level_vals.dedup();
+                let level_map: std::collections::HashMap<&str, usize> = level_vals
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| (s.as_str(), i + 1))
+                    .collect();
+                for g in 0..ngenus {
+                    genus_tax[g * nlevel + l] = level_map[genus_fields[g][l].as_str()];
+                }
+            }
+
+            let ref_seqs: Vec<&[u8]> =
+                raw_refs.iter().map(|(_, s)| s.as_slice()).collect();
+
+            if verbose {
+                eprintln!(
+                    "[assign-taxonomy] {} queries, {} references, {} unique taxa, {} levels",
+                    queries.len(),
+                    ref_seqs.len(),
+                    ngenus,
+                    nlevel,
+                );
+            }
+
+            // ---- Run classifier ----
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            let result = pool
+                .install(|| {
+                    assign_taxonomy(
+                        &query_seqs,
+                        &rc_refs,
+                        &ref_seqs,
+                        &ref_to_genus,
+                        &genus_tax,
+                        nlevel,
+                        try_rc,
+                        seed,
+                        verbose,
+                    )
+                })
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            // ---- Assemble output ----
+            #[derive(Serialize)]
+            struct TaxAssignment {
+                sequence_id: String,
+                sequence: String,
+                taxonomy: Vec<Option<String>>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                bootstrap: Option<Vec<u32>>,
+            }
+            #[derive(Serialize)]
+            struct AssignTaxOutput {
+                levels: Vec<String>,
+                assignments: Vec<TaxAssignment>,
+            }
+
+            let out_levels: Vec<String> = tax_levels
+                .iter()
+                .take(nlevel)
+                .cloned()
+                .chain(
+                    (tax_levels.len()..nlevel)
+                        .map(|i| format!("Level{}", i + 1)),
+                )
+                .collect();
+
+            let assignments: Vec<TaxAssignment> = queries
+                .iter()
+                .enumerate()
+                .map(|(i, (id, seq))| {
+                    let (taxonomy, bootstrap) = if let Some(g) = result.assignments[i] {
+                        let fields: Vec<&str> = genus_fields[g]
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect();
+                        let boot = &result.boot_counts[i];
+                        let mut tax = Vec::with_capacity(nlevel);
+                        let mut passed = true;
+                        for l in 0..nlevel {
+                            let b = boot.get(l).copied().unwrap_or(0);
+                            if passed && b >= min_boot {
+                                let s = fields.get(l).copied().unwrap_or(DADA2_UNSPEC);
+                                tax.push(if s == DADA2_UNSPEC {
+                                    None
+                                } else {
+                                    Some(s.to_string())
+                                });
+                            } else {
+                                passed = false;
+                                tax.push(None);
+                            }
+                        }
+                        let boot_out = if output_bootstraps {
+                            Some(boot.clone())
+                        } else {
+                            None
+                        };
+                        (tax, boot_out)
+                    } else {
+                        let boot_out = if output_bootstraps {
+                            Some(vec![0u32; nlevel])
+                        } else {
+                            None
+                        };
+                        (vec![None; nlevel], boot_out)
+                    };
+                    TaxAssignment {
+                        sequence_id: id.clone(),
+                        sequence: String::from_utf8_lossy(seq).into_owned(),
+                        taxonomy,
+                        bootstrap,
+                    }
+                })
+                .collect();
+
+            let out = AssignTaxOutput {
+                levels: out_levels,
+                assignments,
+            };
+            let json = if compact {
+                serde_json::to_string(&out)
+            } else {
+                serde_json::to_string_pretty(&out)
+            }
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            match output {
+                Some(path) => std::fs::write(&path, &json)?,
+                None => println!("{json}"),
+            }
+        }
+
+        Commands::AssignSpecies {
+            input,
+            ref_fasta,
+            allow_multiple,
+            try_rc,
+            output,
+            compact,
+            verbose,
+        } => {
+            const MIN_REF_LEN: usize = 20;
+
+            // ---- Read queries ----
+            let queries = read_query_sequences(&input)?;
+            let query_seqs: Vec<&[u8]> = queries.iter().map(|(_, s)| s.as_slice()).collect();
+
+            // ---- Read and parse reference FASTA ----
+            // Expected header format: ">SeqID genus species"
+            let raw_refs = read_fasta_records(&ref_fasta)?;
+            let mut ref_seqs_owned: Vec<Vec<u8>> = Vec::new();
+            let mut ref_genus_owned: Vec<String> = Vec::new();
+            let mut ref_species_owned: Vec<String> = Vec::new();
+
+            for (header, seq) in raw_refs {
+                if seq.len() < MIN_REF_LEN {
+                    continue;
+                }
+                // Header: "SeqID genus species [...]"
+                let mut fields = header.split_whitespace();
+                let _id = fields.next(); // accession, ignored
+                let genus = fields.next().unwrap_or("").to_string();
+                let species = fields.next().unwrap_or("").to_string();
+                if genus.is_empty() || species.is_empty() {
+                    continue; // skip malformed records
+                }
+                ref_seqs_owned.push(seq);
+                ref_genus_owned.push(genus);
+                ref_species_owned.push(species);
+            }
+
+            if ref_seqs_owned.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "No valid reference sequences found. Expected '>ID genus species' headers.",
+                ));
+            }
+
+            if verbose {
+                eprintln!(
+                    "[assign-species] {} queries, {} references",
+                    queries.len(),
+                    ref_seqs_owned.len(),
+                );
+            }
+
+            let ref_seqs: Vec<&[u8]> =
+                ref_seqs_owned.iter().map(|s| s.as_slice()).collect();
+            let ref_genus: Vec<&str> =
+                ref_genus_owned.iter().map(|s| s.as_str()).collect();
+            let ref_species: Vec<&str> =
+                ref_species_owned.iter().map(|s| s.as_str()).collect();
+
+            let hits: Vec<SpeciesHit> = assign_species(
+                &query_seqs,
+                &ref_seqs,
+                &ref_genus,
+                &ref_species,
+                allow_multiple,
+                try_rc,
+                verbose,
+            );
+
+            // ---- Serialize ----
+            #[derive(Serialize)]
+            struct SpeciesAssignment {
+                sequence_id: String,
+                sequence: String,
+                genus: Option<String>,
+                species: Option<String>,
+            }
+            #[derive(Serialize)]
+            struct AssignSpeciesOutput {
+                assignments: Vec<SpeciesAssignment>,
+            }
+
+            let assignments: Vec<SpeciesAssignment> = queries
+                .into_iter()
+                .zip(hits)
+                .map(|((id, seq), hit)| SpeciesAssignment {
+                    sequence_id: id,
+                    sequence: String::from_utf8_lossy(&seq).into_owned(),
+                    genus: hit.genus,
+                    species: hit.species,
+                })
+                .collect();
+
+            let out = AssignSpeciesOutput { assignments };
+            let json = if compact {
+                serde_json::to_string(&out)
+            } else {
+                serde_json::to_string_pretty(&out)
+            }
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            match output {
+                Some(path) => std::fs::write(&path, &json)?,
+                None => println!("{json}"),
+            }
+        }
+
         Commands::LearnErrors {
             input,
             nbases,
@@ -1507,6 +1871,57 @@ fn main() -> io::Result<()> {
 
 /// Collect all FASTQ files (`.fastq`, `.fastq.gz`, `.fq`, `.fq.gz`) from a directory.
 /// Returns paths in arbitrary order; the caller is responsible for sorting or shuffling.
+
+/// Read query sequences from a FASTA file or a sequence-table JSON.
+///
+/// Returns `(sequence_id, sequence_bytes)` pairs.  The input format is
+/// detected by file extension: `.json` (or `.json.gz`) triggers JSON parse;
+/// anything else is treated as FASTA.
+fn read_query_sequences(path: &Path) -> io::Result<Vec<(String, Vec<u8>)>> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let is_json = ext == "json"
+        || path
+            .file_stem()
+            .and_then(|s| Path::new(s).extension())
+            .and_then(|e| e.to_str())
+            == Some("json");
+
+    if is_json {
+        #[derive(serde::Deserialize)]
+        struct SeqTable {
+            sequences: Vec<String>,
+            sequence_ids: Vec<String>,
+        }
+        let table: SeqTable = misc::read_json_file(path)?;
+        if table.sequences.len() != table.sequence_ids.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sequence_ids and sequences differ in length",
+            ));
+        }
+        Ok(table
+            .sequence_ids
+            .into_iter()
+            .zip(table.sequences)
+            .map(|(id, seq)| (id, seq.into_bytes()))
+            .collect())
+    } else {
+        read_fasta_records(path)
+    }
+}
+
+fn rc_bytes(seq: &[u8]) -> Vec<u8> {
+    seq.iter()
+        .rev()
+        .map(|&b| match b {
+            b'A' | b'a' => b'T',
+            b'T' | b't' | b'U' | b'u' => b'A',
+            b'G' | b'g' => b'C',
+            b'C' | b'c' => b'G',
+            _ => b'N',
+        })
+        .collect()
+}
 
 /// Derive a base stem from a FASTQ path by stripping recognised extensions.
 ///

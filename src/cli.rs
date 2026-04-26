@@ -482,6 +482,109 @@ pub enum Commands {
         output: Option<PathBuf>,
     },
 
+    /// Assign taxonomy to sequences using a Naive Bayes k-mer classifier
+    ///
+    /// Mirrors R's `assignTaxonomy`.  The query input may be a FASTA file or
+    /// a sequence-table JSON produced by `make-sequence-table`.  The reference
+    /// FASTA must use DADA2-formatted headers where the description is a
+    /// semicolon-separated taxonomy string, e.g.
+    ///
+    ///   >Bacteria;Firmicutes;Bacilli;Lactobacillales;Lactobacillaceae;Lactobacillus;
+    ///
+    /// Output is a JSON object with a `levels` array and an `assignments`
+    /// array — one entry per query — containing the sequence, its assigned
+    /// taxonomy (null where confidence is below `--min-boot`), and optionally
+    /// the raw bootstrap counts.
+    AssignTaxonomy {
+        /// Query sequences: FASTA (.fa/.fa.gz/.fasta) or sequence-table JSON
+        input: PathBuf,
+
+        /// Reference FASTA with semicolon-delimited taxonomy strings as headers
+        #[arg(long)]
+        ref_fasta: PathBuf,
+
+        /// Minimum bootstrap confidence to assign a taxonomic level (0–100)
+        #[arg(long, default_value_t = 50)]
+        min_boot: u32,
+
+        /// Also classify the reverse complement of each query and keep the
+        /// better-scoring orientation
+        #[arg(long)]
+        try_rc: bool,
+
+        /// Include raw bootstrap counts in the output
+        #[arg(long)]
+        output_bootstraps: bool,
+
+        /// Comma-separated names for taxonomic levels (applied in order)
+        #[arg(long, default_value = "Kingdom,Phylum,Class,Order,Family,Genus,Species",
+              value_delimiter = ',')]
+        tax_levels: Vec<String>,
+
+        /// RNG seed for reproducible bootstrap sampling
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Number of threads for parallel query classification
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+
+        /// Write JSON output to this file instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+
+        /// Output compact (minified) JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
+
+        /// Print progress to stderr
+        #[arg(long)]
+        verbose: bool,
+    },
+
+    /// Assign species by exact sequence matching
+    ///
+    /// Mirrors R's `assignSpecies`.  The query input may be a FASTA file or a
+    /// sequence-table JSON from `make-sequence-table`.  The reference FASTA
+    /// must use the DADA2 species-assignment format where the header contains
+    /// three whitespace-delimited fields: accession, genus, species, e.g.
+    ///
+    ///   >AY123456 Staphylococcus aureus
+    ///
+    /// Each query is looked up by exact match; the RC is also tried when
+    /// `--try-rc` is set.  Output is a JSON array with genus and species
+    /// fields for each query (null when unassigned).
+    AssignSpecies {
+        /// Query sequences: FASTA (.fa/.fa.gz/.fasta) or sequence-table JSON
+        input: PathBuf,
+
+        /// Reference FASTA with ">ID genus species" headers
+        #[arg(long)]
+        ref_fasta: PathBuf,
+
+        /// Maximum distinct species to return per query (0 = unlimited).
+        /// With the default of 1 only unambiguous assignments are returned,
+        /// matching R's `allowMultiple=FALSE`.
+        #[arg(long, default_value_t = 1)]
+        allow_multiple: usize,
+
+        /// Also try the reverse complement of each query
+        #[arg(long)]
+        try_rc: bool,
+
+        /// Write JSON output to this file instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+
+        /// Output compact (minified) JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
+
+        /// Print progress to stderr
+        #[arg(long)]
+        verbose: bool,
+    },
+
     /// Convert a make-sequence-table JSON file to FASTA
     ///
     /// Writes one record per sequence using the sequence ID as the header.

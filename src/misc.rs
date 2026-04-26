@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, BufReader};
+use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 
 use flate2::read::MultiGzDecoder;
@@ -16,6 +16,42 @@ pub fn read_json_file<T: DeserializeOwned>(path: &Path) -> io::Result<T> {
         serde_json::from_reader(BufReader::new(file))
     }
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+/// Read all records from a FASTA file, returning `(header, sequence)` pairs.
+///
+/// The header is the full line after `>`, trimmed of leading/trailing
+/// whitespace.  The function transparently decompresses gzip when the path
+/// ends with `.gz`.
+pub fn read_fasta_records(path: &Path) -> io::Result<Vec<(String, Vec<u8>)>> {
+    let file = File::open(path)?;
+    let is_gz = path.extension().and_then(|e| e.to_str()) == Some("gz");
+    let reader: Box<dyn io::Read> = if is_gz {
+        Box::new(MultiGzDecoder::new(file))
+    } else {
+        Box::new(file)
+    };
+
+    let mut records: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut cur_header: Option<String> = None;
+    let mut cur_seq: Vec<u8> = Vec::new();
+
+    for line_result in BufReader::new(reader).lines() {
+        let line = line_result?;
+        let trimmed = line.trim_end();
+        if let Some(rest) = trimmed.strip_prefix('>') {
+            if let Some(header) = cur_header.take() {
+                records.push((header, std::mem::take(&mut cur_seq)));
+            }
+            cur_header = Some(rest.trim().to_string());
+        } else if !trimmed.is_empty() {
+            cur_seq.extend_from_slice(trimmed.as_bytes());
+        }
+    }
+    if let Some(header) = cur_header {
+        records.push((header, cur_seq));
+    }
+    Ok(records)
 }
 
 /// Nucleotide integer encoding used throughout dada2: A=1, C=2, G=3, T=4, N=5.
