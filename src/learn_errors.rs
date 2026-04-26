@@ -582,6 +582,8 @@ pub fn learn_errors(
     max_consist: usize,
     verbose: bool,
     diag_dir: Option<&Path>,
+    cluster_trace_dir: Option<&Path>,
+    trace_params: crate::cluster_trace::TraceParams,
 ) -> io::Result<LearnErrorsResult> {
     if all_inputs.is_empty() {
         return Err(io::Error::new(
@@ -706,6 +708,32 @@ pub fn learn_errors(
                             }
                         }
                         sample_diags.push(diag);
+                    }
+
+                    if let Some(dir) = cluster_trace_dir {
+                        let path = dir.join(format!(
+                            "cluster_iter_{:03}_sample_{:03}.json",
+                            iter + 1,
+                            si + 1,
+                        ));
+                        if let Err(e) = crate::cluster_trace::write_trace(
+                            &path,
+                            &format!("sample_{:03}", si + 1),
+                            Some(iter + 1),
+                            &all_inputs[si],
+                            &result,
+                            Some(&dada_params.err_mat),
+                            nq,
+                            trace_params,
+                            true, // compact: trace files can be large; minify
+                        ) {
+                            eprintln!(
+                                "[learn_errors] WARN: failed to write cluster trace {}: {e}",
+                                path.display(),
+                            );
+                        } else if verbose {
+                            eprintln!("[learn_errors] cluster trace written to {}", path.display());
+                        }
                     }
                 }
                 Err(e) => {

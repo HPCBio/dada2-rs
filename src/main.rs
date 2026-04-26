@@ -7,6 +7,7 @@ use rand::seq::SliceRandom as _;
 mod chimera;
 mod cli;
 mod cluster;
+mod cluster_trace;
 mod containers;
 mod dada;
 mod derep;
@@ -229,6 +230,9 @@ fn main() -> io::Result<()> {
             kmer_size,
             no_kmer_screen,
             show_map,
+            cluster_trace,
+            trace_no_members,
+            trace_min_abund,
             output,
             compact,
             verbose,
@@ -440,6 +444,38 @@ fn main() -> io::Result<()> {
                     result.nalign,
                     result.nshroud,
                 );
+            }
+
+            // ---- Optional cluster trace ----
+            if let Some(ref trace_path) = cluster_trace {
+                if let Some(parent) = trace_path.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                }
+                let sample_name = input
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("dada")
+                    .to_string();
+                let trace_params = cluster_trace::TraceParams {
+                    no_members: trace_no_members,
+                    min_abund: trace_min_abund,
+                };
+                cluster_trace::write_trace(
+                    trace_path,
+                    &sample_name,
+                    None, // no iteration: this is the final dada run
+                    &raw_inputs,
+                    &result,
+                    Some(&dada_params.err_mat),
+                    em.nq,
+                    trace_params,
+                    compact,
+                )?;
+                if verbose {
+                    eprintln!("[dada] cluster trace written to {}", trace_path.display());
+                }
             }
 
             // ---- Serialize output ----
@@ -1223,6 +1259,9 @@ fn main() -> io::Result<()> {
             output,
             compact,
             diag_dir,
+            cluster_trace_dir,
+            trace_no_members,
+            trace_min_abund,
             verbose,
         } => {
             let err_fun = match errfun.as_str() {
@@ -1316,6 +1355,14 @@ fn main() -> io::Result<()> {
             let params_snapshot =
                 build_learned_err_params(&err_fun, max_consist, &dada_params, &align_params);
 
+            if let Some(ref dir) = cluster_trace_dir {
+                std::fs::create_dir_all(dir)?;
+            }
+            let trace_params = cluster_trace::TraceParams {
+                no_members: trace_no_members,
+                min_abund: trace_min_abund,
+            };
+
             let result = pool.install(|| {
                 learn_errors(
                     all_inputs,
@@ -1325,6 +1372,8 @@ fn main() -> io::Result<()> {
                     max_consist,
                     verbose,
                     diag_dir.as_deref(),
+                    cluster_trace_dir.as_deref(),
+                    trace_params,
                 )
             })?;
 
@@ -1767,6 +1816,9 @@ fn main() -> io::Result<()> {
             output,
             compact,
             diag_dir,
+            cluster_trace_dir,
+            trace_no_members,
+            trace_min_abund,
             verbose,
         } => {
             let err_fun = match errfun.as_str() {
@@ -1860,6 +1912,14 @@ fn main() -> io::Result<()> {
             let params_snapshot =
                 build_learned_err_params(&err_fun, max_consist, &dada_params, &align_params);
 
+            if let Some(ref dir) = cluster_trace_dir {
+                std::fs::create_dir_all(dir)?;
+            }
+            let trace_params = cluster_trace::TraceParams {
+                no_members: trace_no_members,
+                min_abund: trace_min_abund,
+            };
+
             let result = pool.install(|| {
                 learn_errors(
                     all_inputs,
@@ -1869,6 +1929,8 @@ fn main() -> io::Result<()> {
                     max_consist,
                     verbose,
                     diag_dir.as_deref(),
+                    cluster_trace_dir.as_deref(),
+                    trace_params,
                 )
             })?;
 

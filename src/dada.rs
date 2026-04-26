@@ -95,6 +95,13 @@ pub struct ClusterSummary {
     pub reads: u32,
     /// Indices (into the input `RawInput` slice) of member Raws.
     pub members: Vec<usize>,
+    /// Hamming distance to the cluster center for each entry in `members`
+    /// (parallel slice; same length as `members`).
+    pub member_hammings: Vec<u32>,
+    /// Per-member λ (transition-probability product against the center).
+    pub member_lambdas: Vec<f64>,
+    /// Per-member final abundance p-value.
+    pub member_pvals: Vec<f64>,
     pub birth_type: BirthType,
     /// Index of the parent cluster that this one was split from.
     pub birth_from: u32,
@@ -104,6 +111,9 @@ pub struct ClusterSummary {
     pub birth_fold: f64,
     /// Expected read count at the time of birth.
     pub birth_e: f64,
+    /// Hamming distance from this cluster's center to its birth-parent's
+    /// center at the time of budding (0 for the initial cluster).
+    pub birth_hamming: u32,
 }
 
 /// Output of `dada_uniques`.
@@ -280,15 +290,30 @@ pub fn dada_uniques_cached(
     let clusters = b
         .clusters
         .iter()
-        .map(|bi| ClusterSummary {
-            sequence: bi.seq.clone(),
-            reads: bi.reads,
-            members: bi.raws.clone(),
-            birth_type: bi.birth_type.clone(),
-            birth_from: bi.birth_from,
-            birth_pval: bi.birth_pval,
-            birth_fold: bi.birth_fold,
-            birth_e: bi.birth_e,
+        .map(|bi| {
+            let members = bi.raws.clone();
+            let mut member_hammings = Vec::with_capacity(members.len());
+            let mut member_lambdas = Vec::with_capacity(members.len());
+            let mut member_pvals = Vec::with_capacity(members.len());
+            for &raw_idx in &members {
+                member_hammings.push(b.raws[raw_idx].comp.hamming);
+                member_lambdas.push(b.raws[raw_idx].comp.lambda);
+                member_pvals.push(b.raws[raw_idx].p);
+            }
+            ClusterSummary {
+                sequence: bi.seq.clone(),
+                reads: bi.reads,
+                members,
+                member_hammings,
+                member_lambdas,
+                member_pvals,
+                birth_type: bi.birth_type.clone(),
+                birth_from: bi.birth_from,
+                birth_pval: bi.birth_pval,
+                birth_fold: bi.birth_fold,
+                birth_e: bi.birth_e,
+                birth_hamming: bi.birth_comp.hamming,
+            }
         })
         .collect();
 

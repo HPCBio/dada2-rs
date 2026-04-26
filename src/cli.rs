@@ -169,6 +169,23 @@ pub enum Commands {
         #[arg(long)]
         show_map: bool,
 
+        /// Write a single full cluster trace (clusters.json) to this file.
+        ///
+        /// Describes the final cluster structure: cluster centers, members
+        /// with hamming/λ/pval, birth metadata. Useful for ASV-calling QC
+        /// and one-off plots. See examples/cluster_trace/.
+        #[arg(long)]
+        cluster_trace: Option<PathBuf>,
+
+        /// Skip the per-cluster `members` array in the trace; emit only
+        /// cluster centers and birth metadata.
+        #[arg(long)]
+        trace_no_members: bool,
+
+        /// In the trace, only include members with abundance >= this value.
+        #[arg(long, default_value_t = 1)]
+        trace_min_abund: u32,
+
         /// Write JSON output to this file instead of stdout
         #[arg(long, short = 'o')]
         output: Option<PathBuf>,
@@ -769,6 +786,26 @@ pub enum Commands {
         #[arg(long)]
         diag_dir: Option<PathBuf>,
 
+        /// Directory to write full per-iteration cluster traces
+        /// (cluster_iter_NNN_sample_NNN.json).
+        ///
+        /// Each file describes the full cluster structure for one sample at one
+        /// iteration: cluster centers, members with their hamming distance, λ,
+        /// expected reads, and abundance p-value, plus the err matrix used for
+        /// that iteration. See examples/cluster_trace/ for plotting scripts.
+        #[arg(long)]
+        cluster_trace_dir: Option<PathBuf>,
+
+        /// Skip the per-cluster `members` array in trace files; emit only
+        /// cluster centers and birth metadata. Reduces trace size ~10×.
+        #[arg(long)]
+        trace_no_members: bool,
+
+        /// In trace files, only include members with abundance >= this value.
+        /// Default 1 (include all).
+        #[arg(long, default_value_t = 1)]
+        trace_min_abund: u32,
+
         /// Print per-iteration progress to stderr
         #[arg(long)]
         verbose: bool,
@@ -914,6 +951,26 @@ pub enum Commands {
         /// for that iteration. The directory is created if it does not exist.
         #[arg(long)]
         diag_dir: Option<PathBuf>,
+
+        /// Directory to write full per-iteration cluster traces
+        /// (cluster_iter_NNN_sample_NNN.json).
+        ///
+        /// Each file describes the full cluster structure for one sample at one
+        /// iteration: cluster centers, members with their hamming distance, λ,
+        /// expected reads, and abundance p-value, plus the err matrix used for
+        /// that iteration. See examples/cluster_trace/ for plotting scripts.
+        #[arg(long)]
+        cluster_trace_dir: Option<PathBuf>,
+
+        /// Skip the per-cluster `members` array in trace files; emit only
+        /// cluster centers and birth metadata. Reduces trace size ~10×.
+        #[arg(long)]
+        trace_no_members: bool,
+
+        /// In trace files, only include members with abundance >= this value.
+        /// Default 1 (include all).
+        #[arg(long, default_value_t = 1)]
+        trace_min_abund: u32,
 
         /// Print per-iteration progress to stderr
         #[arg(long)]
