@@ -100,7 +100,7 @@ fn main() -> io::Result<()> {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| io::Error::other(e))?;
 
             let summary = if input.extension().and_then(|e| e.to_str()) == Some("gz") {
                 process(
@@ -129,7 +129,7 @@ fn main() -> io::Result<()> {
             } else {
                 serde_json::to_string_pretty(&tagged)
             }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
             match output {
                 Some(path) => std::fs::write(&path, &json)?,
@@ -149,7 +149,7 @@ fn main() -> io::Result<()> {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| io::Error::other(e))?;
 
             let derep = if input.extension().and_then(|e| e.to_str()) == Some("gz") {
                 dereplicate(
@@ -202,7 +202,7 @@ fn main() -> io::Result<()> {
             } else {
                 serde_json::to_string_pretty(&tagged)
             }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
             match output {
                 Some(path) => std::fs::write(&path, &json)?,
@@ -241,7 +241,7 @@ fn main() -> io::Result<()> {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| io::Error::other(e))?;
 
             let derep = if input.extension().and_then(|e| e.to_str()) == Some("gz") {
                 dereplicate(
@@ -257,7 +257,7 @@ fn main() -> io::Result<()> {
             let raw_inputs: Vec<dada::RawInput> = derep
                 .uniques
                 .into_iter()
-                .zip(derep.quals.into_iter())
+                .zip(derep.quals)
                 .map(|((seq, count), quals)| {
                     let sequence = String::from_utf8(seq)
                         .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
@@ -434,7 +434,7 @@ fn main() -> io::Result<()> {
             // ---- Run DADA2 ----
             let result = pool
                 .install(|| dada::dada_uniques(&raw_inputs, &dada_params))
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| io::Error::other(e))?;
 
             if verbose {
                 eprintln!(
@@ -551,7 +551,7 @@ fn main() -> io::Result<()> {
             } else {
                 serde_json::to_string_pretty(&tagged)
             }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
             match output {
                 Some(path) => std::fs::write(&path, &json)?,
@@ -633,7 +633,7 @@ fn main() -> io::Result<()> {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| io::Error::other(e))?;
 
             let params = merge_pairs::MergeParams {
                 min_overlap,
@@ -683,7 +683,7 @@ fn main() -> io::Result<()> {
             } else {
                 serde_json::to_string_pretty(&tagged)
             }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
             match output {
                 Some(path) => std::fs::write(&path, &json)?,
@@ -832,7 +832,7 @@ fn main() -> io::Result<()> {
                 let pool = rayon::ThreadPoolBuilder::new()
                     .num_threads(threads)
                     .build()
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    .map_err(|e| io::Error::other(e))?;
 
                 // Build index list, process in parallel.
                 let indices: Vec<usize> = (0..n).collect();
@@ -907,7 +907,7 @@ fn main() -> io::Result<()> {
             } else {
                 serde_json::to_string_pretty(&tagged)
             }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
             match output {
                 Some(path) => std::fs::write(&path, &json)?,
@@ -956,7 +956,7 @@ fn main() -> io::Result<()> {
             } else {
                 serde_json::to_string_pretty(&tagged)
             }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
             match output {
                 Some(path) => std::fs::write(&path, &json)?,
                 None => println!("{json}"),
@@ -1004,7 +1004,7 @@ fn main() -> io::Result<()> {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| io::Error::other(e))?;
             let filtered = pool.install(|| remove_bimera_denovo(table, &method, &params, verbose));
 
             let tagged = Tagged::new("remove-bimera-denovo", filtered);
@@ -1013,7 +1013,7 @@ fn main() -> io::Result<()> {
             } else {
                 serde_json::to_string_pretty(&tagged)
             }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
             match output {
                 Some(path) => std::fs::write(&path, &json)?,
                 None => println!("{json}"),
@@ -1095,7 +1095,7 @@ fn main() -> io::Result<()> {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| io::Error::other(e))?;
 
             // Optionally shuffle file order.
             let mut ordered: Vec<&std::path::PathBuf> = input.iter().collect();
@@ -1192,7 +1192,7 @@ fn main() -> io::Result<()> {
                 } else {
                     serde_json::to_string_pretty(&tagged)
                 }
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| io::Error::other(e))?;
 
                 std::fs::write(&out_path, &json)?;
                 output_files.push(out_path.display().to_string());
@@ -1232,7 +1232,7 @@ fn main() -> io::Result<()> {
             } else {
                 serde_json::to_string_pretty(&tagged)
             }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
             println!("{summary_json}");
         }
 
@@ -1337,7 +1337,7 @@ fn main() -> io::Result<()> {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| io::Error::other(e))?;
 
             let all_inputs = load_derep_samples(&input)?;
 
@@ -1417,7 +1417,7 @@ fn main() -> io::Result<()> {
             } else {
                 serde_json::to_string_pretty(&tagged)
             }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
             match output {
                 Some(path) => std::fs::write(&path, &json)?,
@@ -1569,7 +1569,7 @@ fn main() -> io::Result<()> {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| io::Error::other(e))?;
 
             let result = pool
                 .install(|| {
@@ -1585,7 +1585,7 @@ fn main() -> io::Result<()> {
                         verbose,
                     )
                 })
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| io::Error::other(e))?;
 
             // ---- Assemble output ----
             #[derive(Serialize)]
@@ -1671,7 +1671,7 @@ fn main() -> io::Result<()> {
             } else {
                 serde_json::to_string_pretty(&tagged)
             }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
             match output {
                 Some(path) => std::fs::write(&path, &json)?,
@@ -1781,7 +1781,7 @@ fn main() -> io::Result<()> {
             } else {
                 serde_json::to_string_pretty(&tagged)
             }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
             match output {
                 Some(path) => std::fs::write(&path, &json)?,
@@ -1894,7 +1894,7 @@ fn main() -> io::Result<()> {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| io::Error::other(e))?;
             let all_inputs = load_fastq_samples(
                 &input,
                 nbases,
@@ -1982,7 +1982,7 @@ fn main() -> io::Result<()> {
             } else {
                 serde_json::to_string_pretty(&tagged)
             }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
             match output {
                 Some(path) => std::fs::write(&path, &json)?,

@@ -37,7 +37,7 @@ fn encode_kmer(window: &[u8]) -> Option<usize> {
     let mut kmer = 0usize;
     for &nt in window {
         let nti = nt as usize;
-        if nti < 1 || nti > 4 {
+        if !(1..=4).contains(&nti) {
             return None;
         }
         kmer = 4 * kmer + (nti - 1);

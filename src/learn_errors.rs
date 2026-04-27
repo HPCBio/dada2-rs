@@ -416,8 +416,7 @@ fn run_init_pass(
     }
 
     if sample_trans.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "All DADA runs failed during init pass; cannot estimate error model",
         ));
     }
@@ -426,8 +425,7 @@ fn run_init_pass(
     let (acc_trans, _) = accumulate_trans(&refs);
 
     let mut new_err = errfun.apply(&acc_trans, nq).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
+        io::Error::other(
             format!("init-pass errfun failed: {e}"),
         )
     })?;
@@ -750,8 +748,7 @@ pub fn learn_errors(
         }
 
         if sample_trans_pairs.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "All DADA runs failed; cannot estimate error model",
             ));
         }
@@ -766,7 +763,7 @@ pub fn learn_errors(
         // ---- Estimate new error rates ----
         let new_err = errfun
             .apply(&acc_trans, nq)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("errfun failed: {e}")))?;
+            .map_err(|e| io::Error::other(format!("errfun failed: {e}")))?;
 
         // ---- Check convergence ----
         let max_delta = err
@@ -795,7 +792,7 @@ pub fn learn_errors(
             };
             let path = dir.join(format!("iter_{:03}.json", iter + 1));
             let json = serde_json::to_string_pretty(&diag)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| io::Error::other(e))?;
             std::fs::write(&path, json)?;
             if verbose {
                 eprintln!("[learn_errors] diagnostics written to {}", path.display());

@@ -673,7 +673,7 @@ pub fn align_vectorized_with_buf(
 
     // Compressed matrix dimensions (diagonal layout).
     // Column index for original cell (i,j): (2*start_col + j - i) / 2
-    let start_col = 1 + (1 + band_usize.min(len1)) / 2;
+    let start_col = 1 + band_usize.min(len1).div_ceil(2);
     let ncol = 2 + start_col + (band_usize + len2 - len1).min(len2) / 2;
     let nrow = len1 + len2 + 1;
 
@@ -856,7 +856,7 @@ pub fn align_vectorized_with_buf(
                     p[row * ncol + col_max] = 3;
                 }
             }
-            let j_max_1idx = (row + 1) / 2 + col_max - start_col;
+            let j_max_1idx = row.div_ceil(2) + col_max - start_col;
             if j_max_1idx == len2 {
                 recalc_right = true;
             }
@@ -881,14 +881,12 @@ pub fn align_vectorized_with_buf(
                 } else {
                     i_max += 1;
                 }
+            } else if even {
+                col_min = col_min.saturating_sub(1);
+                i_max += 1;
             } else {
-                if even {
-                    col_min = col_min.saturating_sub(1);
-                    i_max += 1;
-                } else {
-                    col_min += 1;
-                    j_min = j_min.wrapping_add(1);
-                }
+                col_min += 1;
+                j_min = j_min.wrapping_add(1);
             }
         } else {
             // Lower triangle for s1
@@ -903,7 +901,7 @@ pub fn align_vectorized_with_buf(
             if !even {
                 col_max += 1;
             }
-        } else if (row + 1) / 2 + col_max - start_col < len2 {
+        } else if row.div_ceil(2) + col_max - start_col < len2 {
             let full_band = band_usize + len2 - len1;
             if full_band % 2 == 0 {
                 if even {
@@ -913,10 +911,8 @@ pub fn align_vectorized_with_buf(
                 }
             }
             // no action for odd full_band
-        } else {
-            if even {
-                col_max = col_max.saturating_sub(1);
-            }
+        } else if even {
+            col_max = col_max.saturating_sub(1);
         }
 
         row += 1;

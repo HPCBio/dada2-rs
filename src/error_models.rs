@@ -586,7 +586,7 @@ pub fn pacbio_errfun(trans: &[u32], qual_scores: &[f64]) -> Vec<f64> {
 
         // MLE for Q93: (count + 1) / (group_total + 4).
         let q93 = nq - 1;
-        let mut err93 = vec![0.0f64; 16];
+        let mut err93 = [0.0f64; 16];
         for nti in 0..4usize {
             let tot93: f64 = (0..4usize)
                 .map(|ntj| trans[(nti * 4 + ntj) * nq + q93] as f64)
