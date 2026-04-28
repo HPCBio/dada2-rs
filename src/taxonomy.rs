@@ -312,8 +312,8 @@ pub fn assign_taxonomy(
     }
 
     // Finalise kmer prior.
-    for km in 0..n_kmers {
-        kmer_prior[km] = (kmer_prior[km] + 0.5) / (1.0 + nref as f32);
+    for km in kmer_prior.iter_mut().take(n_kmers) {
+        *km = (*km + 0.5) / (1.0 + nref as f32);
     }
 
     // Convert counts to log probabilities: log((count + prior) / genus_num_plus1).
@@ -355,7 +355,7 @@ pub fn assign_taxonomy(
                 let arraylen = karray.len();
                 let sample_size = arraylen / 8;
 
-                for b in 0..NBOOT {
+                for b in boot_taxa.iter_mut().take(NBOOT) {
                     // Sample sample_size k-mers uniformly at random from karray.
                     let bootarray: Vec<usize> = (0..sample_size)
                         .map(|_| {
@@ -366,7 +366,7 @@ pub fn assign_taxonomy(
                         .collect();
 
                     let (boot_g, _) = get_best_genus(&bootarray, n_kmers, ngenus, &lgk, &mut rng);
-                    boot_taxa[b] = Some(boot_g);
+                    *b = Some(boot_g);
 
                     // Count levels where boot_g and best_g agree, stopping at first mismatch.
                     if nlevel > 0 {
