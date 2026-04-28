@@ -792,7 +792,7 @@ pub fn learn_errors(
             };
             let path = dir.join(format!("iter_{:03}.json", iter + 1));
             let json = serde_json::to_string_pretty(&diag)
-                .map_err(|e| io::Error::other(e))?;
+                .map_err(io::Error::other)?;
             std::fs::write(&path, json)?;
             if verbose {
                 eprintln!("[learn_errors] diagnostics written to {}", path.display());
