@@ -192,7 +192,7 @@ pub enum StopReason {
 // FASTQ loading with subsampling
 // ---------------------------------------------------------------------------
 
-fn is_gz(path: &PathBuf) -> bool {
+fn is_gz(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some("gz")
 }
 
@@ -568,7 +568,7 @@ struct IterDiag {
 /// - `max_consist`   — maximum self-consistency iterations (R default: 10)
 /// - `verbose`       — print progress to stderr
 /// - `diag_dir`      — if `Some`, write per-iteration cluster diagnostics as
-///                     `iter_001.json`, `iter_002.json`, … into this directory
+///   `iter_001.json`, `iter_002.json`, … into this directory
 ///
 /// # Returns
 /// [`LearnErrorsResult`] with transition counts and error-rate matrices, or an I/O error.
