@@ -129,10 +129,6 @@ impl Raw {
         self.seq.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.seq.is_empty()
-    }
-
     /// Reset per-iteration mutable state so this Raw can be fed back into a
     /// fresh DADA run without re-encoding the sequence or recomputing k-mer
     /// vectors. Leaves `seq`, `qual`, `kmer*`, `kord`, `reads`, `prior`
