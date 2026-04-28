@@ -230,6 +230,7 @@ fn main() -> io::Result<()> {
             kmer_size,
             no_kmer_screen,
             show_map,
+            aux_outputs,
             cluster_trace,
             trace_no_members,
             trace_min_abund,
@@ -382,6 +383,7 @@ fn main() -> io::Result<()> {
                 multithread: threads > 1,
                 verbose,
                 greedy: true,
+                aux_outputs,
             };
 
             // ---- Consistency warnings (only when NOT inheriting) ----
@@ -496,6 +498,44 @@ fn main() -> io::Result<()> {
             }
 
             #[derive(Serialize)]
+            struct ClusterStatJson {
+                sequence: String,
+                abundance: u32,
+                n0: u32,
+                n1: u32,
+                nunq: u32,
+                pval: f64,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                birth_from: Option<usize>,
+                birth_pval: f64,
+                birth_fold: f64,
+                birth_ham: u32,
+                birth_e: f64,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                birth_qave: Option<f64>,
+            }
+
+            #[derive(Serialize)]
+            struct BirthSubJson {
+                cluster: usize,
+                pos: u16,
+                nt0: char,
+                nt1: char,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                qual: Option<u8>,
+            }
+
+            #[derive(Serialize)]
+            struct AuxJson {
+                cluster_stats: Vec<ClusterStatJson>,
+                cluster_quality: Vec<Vec<f64>>,
+                cluster_quality_maxlen: usize,
+                birth_subs: Vec<BirthSubJson>,
+                transitions: Vec<u32>,
+                transitions_ncol: usize,
+            }
+
+            #[derive(Serialize)]
             struct DadaOutput {
                 num_asvs: usize,
                 total_reads: u32,
@@ -503,6 +543,8 @@ fn main() -> io::Result<()> {
                 stats: DadaStats,
                 #[serde(skip_serializing_if = "Option::is_none")]
                 map: Option<Vec<Option<usize>>>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                aux: Option<AuxJson>,
             }
 
             let total_reads: u32 = result.clusters.iter().map(|c| c.reads).sum();
@@ -534,6 +576,53 @@ fn main() -> io::Result<()> {
                 })
                 .collect();
 
+            let aux_json = result.aux.as_ref().map(|a| {
+                let cluster_stats_j = a
+                    .cluster_stats
+                    .iter()
+                    .map(|c| {
+                        let sequence: String = c
+                            .sequence
+                            .iter()
+                            .map(|&b| misc::nt_decode(b) as char)
+                            .collect();
+                        ClusterStatJson {
+                            sequence,
+                            abundance: c.abundance,
+                            n0: c.n0,
+                            n1: c.n1,
+                            nunq: c.nunq,
+                            pval: c.pval,
+                            birth_from: c.birth_from,
+                            birth_pval: c.birth_pval,
+                            birth_fold: c.birth_fold,
+                            birth_ham: c.birth_ham,
+                            birth_e: c.birth_e,
+                            birth_qave: c.birth_qave,
+                        }
+                    })
+                    .collect();
+                let birth_subs_j = a
+                    .birth_subs
+                    .iter()
+                    .map(|r| BirthSubJson {
+                        cluster: r.cluster,
+                        pos: r.pos,
+                        nt0: r.nt0 as char,
+                        nt1: r.nt1 as char,
+                        qual: r.qual,
+                    })
+                    .collect();
+                AuxJson {
+                    cluster_stats: cluster_stats_j,
+                    cluster_quality: a.cluster_quality.clone(),
+                    cluster_quality_maxlen: a.cluster_quality_maxlen,
+                    birth_subs: birth_subs_j,
+                    transitions: a.transitions.clone(),
+                    transitions_ncol: a.transitions_ncol,
+                }
+            });
+
             let out = DadaOutput {
                 num_asvs: asvs.len(),
                 total_reads,
@@ -543,6 +632,7 @@ fn main() -> io::Result<()> {
                     nshroud: result.nshroud,
                 },
                 map: if show_map { Some(result.map) } else { None },
+                aux: aux_json,
             };
 
             let tagged = Tagged::new("dada", out);
@@ -1332,6 +1422,7 @@ fn main() -> io::Result<()> {
                 multithread: threads > 1,
                 verbose,
                 greedy: true,
+                aux_outputs: false,
             };
 
             let pool = rayon::ThreadPoolBuilder::new()
@@ -1889,6 +1980,7 @@ fn main() -> io::Result<()> {
                 multithread: threads > 1,
                 verbose,
                 greedy: true,
+                aux_outputs: false,
             };
 
             let pool = rayon::ThreadPoolBuilder::new()

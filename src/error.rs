@@ -142,7 +142,7 @@ pub fn cluster_stats(
 /// `P(X ≥ center_reads | Poisson(tot_e))` (unconditional).
 ///
 /// Equivalent to the post-hoc pval block in C++ `b_make_clustering_df`.
-pub fn post_hoc_pvals(b: &B) -> Vec<f64> {
+fn post_hoc_pvals(b: &B) -> Vec<f64> {
     let nclust = b.clusters.len();
 
     // Map from raw.index → cluster index, for centers only.
@@ -233,94 +233,6 @@ pub fn transition_counts(b: &B, subs: &[Option<Sub>], has_quals: bool, ncol: usi
         }
     }
     mat
-}
-
-// ---------------------------------------------------------------------------
-// Positional substitution statistics (mirrors b_make_positional_substitution_df)
-// ---------------------------------------------------------------------------
-
-/// Per-position nucleotide counts, observed substitution counts, and expected
-/// substitution counts derived from the error model.
-pub struct PositionalSubStats {
-    /// `nts[pos]`: total reads covering position `pos` of the reference.
-    pub nts: Vec<u32>,
-    /// `subs[pos]`: total reads with a substitution at position `pos`.
-    pub subs: Vec<u32>,
-    /// `exp[pos]`: expected number of substitutions at position `pos`.
-    pub exp: Vec<f64>,
-}
-
-/// Compute per-position substitution statistics across all clusters.
-///
-/// `seqlen` should be the maximum reference sequence length.
-/// `err_mat` is a flat 16×`ncol` error rate matrix (row-major).
-/// Equivalent to C++ `b_make_positional_substitution_df`.
-pub fn positional_sub_stats(
-    b: &B,
-    subs: &[Option<Sub>],
-    seqlen: usize,
-    err_mat: &[f64],
-    ncol: usize,
-    use_quals: bool,
-) -> PositionalSubStats {
-    let mut nts = vec![0u32; seqlen];
-    let mut sub_counts = vec![0u32; seqlen];
-    let mut exp = vec![0.0f64; seqlen];
-
-    for ci in 0..b.clusters.len() {
-        let center_idx = match b.clusters[ci].center {
-            Some(c) => c,
-            None => continue,
-        };
-        let center_seq = &b.raws[center_idx].seq;
-        let center_len = center_seq.len().min(seqlen);
-
-        for &raw_idx in &b.clusters[ci].raws {
-            let raw = &b.raws[raw_idx];
-            let sub = match subs.get(raw.index as usize).and_then(|s| s.as_ref()) {
-                Some(s) => s,
-                None => continue,
-            };
-
-            for &sp in &sub.pos {
-                let p = sp as usize;
-                if p < seqlen {
-                    sub_counts[p] += raw.reads;
-                }
-            }
-
-            for pos0 in 0..center_len {
-                let pos1 = sub.map[pos0] as usize;
-                if sub.map[pos0] == GAP_GLYPH {
-                    continue;
-                }
-                nts[pos0] += raw.reads;
-                let qind = if use_quals {
-                    raw.qual
-                        .as_ref()
-                        .map_or(0, |q| q[pos1] as usize)
-                        .min(ncol - 1)
-                } else {
-                    0
-                };
-                let nti0 = center_seq[pos0].saturating_sub(1) as usize;
-                // Sum expected error rates for all non-match transitions from nti0.
-                for j in (4 * nti0)..(4 * nti0 + 4) {
-                    if j % 5 == 0 {
-                        continue; // skip diagonal (nti→nti)
-                    }
-                    if j < 16 {
-                        exp[pos0] += raw.reads as f64 * err_mat[j * ncol + qind];
-                    }
-                }
-            }
-        }
-    }
-    PositionalSubStats {
-        nts,
-        subs: sub_counts,
-        exp,
-    }
 }
 
 // ---------------------------------------------------------------------------

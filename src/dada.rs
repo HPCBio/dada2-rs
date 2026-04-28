@@ -16,11 +16,17 @@
 //!   has no effect (mirrors C++ where it is passed through but unused in the
 //!   loop itself).
 
+use rayon::prelude::*;
+
 use crate::cluster::{b_bud, b_compare, b_compare_parallel, b_shuffle2};
-use crate::containers::{B, BirthType, Raw};
+use crate::containers::{B, BirthType, Raw, Sub};
+use crate::error::{
+    BirthSubRecord, ClusterStats, birth_sub_records, cluster_quality, cluster_stats,
+    transition_counts,
+};
 use crate::kmers::{KMER_SIZE_MAX, KMER_SIZE_MIN, raw_assign_kmers};
 use crate::misc::nt_encode;
-use crate::nwalign::AlignParams;
+use crate::nwalign::{AlignBuffers, AlignParams, sub_new_with_buf};
 use crate::pval::{b_p_update, calc_pA};
 
 /// Maximum shuffle iterations before giving up on convergence.
@@ -71,6 +77,16 @@ pub struct DadaParams {
     pub verbose: bool,
     /// Greedy mode: lock Raws whose expected abundance already exceeds observed.
     pub greedy: bool,
+    /// Compute auxiliary outputs (R DADA2 parity: `$clustering`, `$birth_subs`,
+    /// `$subqual`, `$clusterquals`).
+    ///
+    /// When `true`, `dada_uniques` runs an extra final-subs alignment pass to
+    /// produce per-cluster substitution stats (n0/n1/nunq/birth_qave/post-hoc
+    /// p-value), per-cluster mean quality at each position, per-cluster birth
+    /// substitution records, and a 16 × `err_ncol` transition-by-quality
+    /// matrix. Defaults to `false` — the pass costs roughly one alignment per
+    /// raw against its cluster center.
+    pub aux_outputs: bool,
 }
 
 /// A single unique sequence with its abundance, optional quality profile,
@@ -116,6 +132,31 @@ pub struct ClusterSummary {
     pub birth_hamming: u32,
 }
 
+/// R DADA2 parity outputs computed when `DadaParams::aux_outputs` is set.
+///
+/// Mirrors the additional fields R's `dada()` returns alongside its main
+/// clustering result: `$clustering`, `$birth_subs`, `$subqual`, `$clusterquals`.
+pub struct DadaAux {
+    /// Per-cluster summary stats (R `$clustering`): n0, n1, nunq, birth_qave,
+    /// post-hoc abundance p-value.
+    pub cluster_stats: Vec<ClusterStats>,
+    /// Per-cluster read-weighted mean quality at each reference position
+    /// (R `$clusterquals`). Outer length = nclust, inner length = `cluster_quality_maxlen`.
+    /// Positions outside the cluster center or with no covering reads are NaN.
+    pub cluster_quality: Vec<Vec<f64>>,
+    /// Maximum reference length used to size each `cluster_quality` row.
+    pub cluster_quality_maxlen: usize,
+    /// Per-substitution records from each cluster's birth alignment
+    /// (R `$birth_subs`).
+    pub birth_subs: Vec<BirthSubRecord>,
+    /// Flat row-major 16 × `transitions_ncol` transition-by-quality count
+    /// matrix (R `$subqual`). `result[t*ncol + q]` = reads with transition `t`
+    /// (ref_nt*4 + query_nt) at quality `q`.
+    pub transitions: Vec<u32>,
+    /// Number of quality columns in `transitions` (1 when no quals were used).
+    pub transitions_ncol: usize,
+}
+
 /// Output of `dada_uniques`.
 pub struct DadaResult {
     /// One entry per cluster, in cluster order (cluster 0 is the initial
@@ -131,6 +172,9 @@ pub struct DadaResult {
     pub nalign: u32,
     /// Comparisons screened out by k-mer distance.
     pub nshroud: u32,
+    /// Auxiliary R-DADA2-parity outputs. `Some` only when
+    /// `DadaParams::aux_outputs` was true.
+    pub aux: Option<DadaAux>,
 }
 
 // ---------------------------------------------------------------------------
@@ -317,16 +361,117 @@ pub fn dada_uniques_cached(
         })
         .collect();
 
+    // ---- Aux outputs (R DADA2 parity: $clustering, $birth_subs, $subqual,
+    //      $clusterquals) ----
+    let aux = if params.aux_outputs {
+        Some(compute_aux(&b, params, has_quals))
+    } else {
+        None
+    };
+
     let result = DadaResult {
         clusters,
         map,
         pvals,
         nalign: b.nalign,
         nshroud: b.nshroud,
+        aux,
     };
 
     // Reclaim Raws for the caller to pass back on the next iteration.
     Ok((result, std::mem::take(&mut b.raws)))
+}
+
+// ---------------------------------------------------------------------------
+// Aux-output computation
+// ---------------------------------------------------------------------------
+
+/// Compute the R-DADA2-parity outputs (`DadaAux`).
+///
+/// Re-aligns every Raw against its cluster center (final-subs pass) and each
+/// cluster center against its parent (birth-subs pass), both with the k-mer
+/// screen disabled (`use_kmers=false, kdist_cutoff=1.0`) so every comparison
+/// produces a Sub. Mirrors the `FinalSubsParallel` block in C++ `Rmain.cpp`.
+fn compute_aux(b: &B, params: &DadaParams, has_quals: bool) -> DadaAux {
+    // Final-subs alignment params: no kmer screen.
+    let final_align = AlignParams {
+        use_kmers: false,
+        kdist_cutoff: 1.0,
+        ..params.align
+    };
+    // Birth-subs alignment params: keep kmer use, no kdist screen.
+    let birth_align = AlignParams {
+        kdist_cutoff: 1.0,
+        ..params.align
+    };
+
+    let final_subs = compute_final_subs(b, &final_align);
+    let birth_subs = compute_birth_subs(b, &birth_align);
+
+    let cluster_stats_v = cluster_stats(b, &final_subs, &birth_subs, has_quals);
+    let maxlen = b.raws.iter().map(|r| r.seq.len()).max().unwrap_or(0);
+    let cluster_quality_v = cluster_quality(b, &final_subs, has_quals, maxlen);
+    let birth_records = birth_sub_records(b, &birth_subs, has_quals);
+    let ncol = if has_quals { params.err_ncol } else { 1 };
+    let transitions = transition_counts(b, &final_subs, has_quals, ncol);
+
+    DadaAux {
+        cluster_stats: cluster_stats_v,
+        cluster_quality: cluster_quality_v,
+        cluster_quality_maxlen: maxlen,
+        birth_subs: birth_records,
+        transitions,
+        transitions_ncol: ncol,
+    }
+}
+
+/// For each Raw in `b`, align it against its cluster's center and store the
+/// resulting `Sub` indexed by `raw.index`. Raws not assigned to a cluster
+/// (none in current usage) get `None`. Parallel via Rayon.
+fn compute_final_subs(b: &B, align: &AlignParams) -> Vec<Option<Sub>> {
+    // (cluster_idx, raw_idx) work items.
+    let pairs: Vec<(usize, usize)> = b
+        .clusters
+        .iter()
+        .enumerate()
+        .flat_map(|(ci, bi)| bi.raws.iter().map(move |&ri| (ci, ri)))
+        .collect();
+
+    let computed: Vec<(u32, Option<Sub>)> = pairs
+        .par_iter()
+        .map_init(AlignBuffers::new, |buf, &(ci, raw_idx)| {
+            let center_idx = match b.clusters[ci].center {
+                Some(c) => c,
+                None => return (b.raws[raw_idx].index, None),
+            };
+            let sub = sub_new_with_buf(&b.raws[center_idx], &b.raws[raw_idx], align, buf);
+            (b.raws[raw_idx].index, sub)
+        })
+        .collect();
+
+    let mut out: Vec<Option<Sub>> = (0..b.raws.len()).map(|_| None).collect();
+    for (idx, sub) in computed {
+        out[idx as usize] = sub;
+    }
+    out
+}
+
+/// For each cluster `i ≥ 1`, align its center against its birth parent's
+/// center.  Cluster 0 (and any cluster missing a center) gets `None`.
+/// Parallel via Rayon.
+fn compute_birth_subs(b: &B, align: &AlignParams) -> Vec<Option<Sub>> {
+    (0..b.clusters.len())
+        .into_par_iter()
+        .map_init(AlignBuffers::new, |buf, ci| {
+            if ci == 0 {
+                return None;
+            }
+            let parent_ci = b.clusters[ci].birth_from as usize;
+            let parent_center = b.clusters[parent_ci].center?;
+            let center = b.clusters[ci].center?;
+            sub_new_with_buf(&b.raws[parent_center], &b.raws[center], align, buf)
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

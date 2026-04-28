@@ -169,6 +169,17 @@ pub enum Commands {
         #[arg(long)]
         show_map: bool,
 
+        /// Emit R-DADA2-parity per-cluster diagnostics in the output JSON:
+        /// `cluster_stats` (n0/n1/nunq/birth_qave/post-hoc pval),
+        /// `cluster_quality` (mean quality at each reference position),
+        /// `birth_subs` (the substitutions that drove each cluster split),
+        /// and `transitions` (16 × nq transition-by-quality matrix).
+        ///
+        /// Adds one alignment per Raw against its cluster center; only enable
+        /// when you need the extra diagnostics.
+        #[arg(long)]
+        aux_outputs: bool,
+
         /// Write a single full cluster trace (clusters.json) to this file.
         ///
         /// Describes the final cluster structure: cluster centers, members
