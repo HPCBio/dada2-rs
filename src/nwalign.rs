@@ -122,8 +122,8 @@ fn homopolymer_mask_into(seq: &[u8], mask: &mut Vec<bool>) {
             run_end += 1;
         }
         if run_end - run_start >= 3 {
-            for k in run_start..run_end {
-                mask[k] = true;
+            for k in mask.iter_mut().take(run_end).skip(run_start) {
+                *k = true;
             }
         }
         run_start = run_end;
@@ -256,12 +256,10 @@ pub fn align_endsfree_with_buf(
         let p = &mut buf.p32[..nrow * ncol];
 
         // Initialise edges (ends-free: score 0).
-        for i in 0..=len1 {
-            p[i * ncol] = 3;
+        for slot in p.iter_mut().step_by(ncol).take(len1 + 1) {
+            *slot = 3;
         }
-        for j in 0..=len2 {
-            p[j] = 2;
-        }
+        p[..=len2].fill(2);
 
         let (lband, rband) = band_adjust(len1, len2, band);
         fill_band_sentinels(d, ncol, len1, len2, lband, rband, band);
@@ -377,12 +375,10 @@ pub fn align_endsfree_homo_with_buf(
         let d = &mut buf.d32[..nrow * ncol];
         let p = &mut buf.p32[..nrow * ncol];
 
-        for i in 0..=len1 {
-            p[i * ncol] = 3;
+        for slot in p.iter_mut().step_by(ncol).take(len1 + 1) {
+            *slot = 3;
         }
-        for j in 0..=len2 {
-            p[j] = 2;
-        }
+        p[..=len2].fill(2);
 
         let (lband, rband) = band_adjust(len1, len2, band);
         fill_band_sentinels(d, ncol, len1, len2, lband, rband, band);
