@@ -213,12 +213,12 @@ pub fn transition_counts(b: &B, subs: &[Option<Sub>], has_quals: bool, ncol: usi
                 None => continue,
             };
 
-            for pos0 in 0..center_len {
+            for (pos0, slot) in center_seq.iter().enumerate().take(center_len) {
                 let pos1 = sub.map[pos0] as usize;
                 if sub.map[pos0] == GAP_GLYPH {
                     continue;
                 }
-                let nti0 = center_seq[pos0].saturating_sub(1) as usize;
+                let nti0 = (*slot).saturating_sub(1) as usize;
                 let nti1 = raw.seq[pos1].saturating_sub(1) as usize;
                 let qual = if has_quals {
                     raw.qual.as_ref().map_or(0, |q| q[pos1] as usize)
@@ -260,7 +260,7 @@ pub fn cluster_quality(
         return result;
     }
 
-    for ci in 0..nclust {
+    for (ci, slot) in result.iter_mut().enumerate().take(nclust) {
         let center_idx = match b.clusters[ci].center {
             Some(c) => c,
             None => continue,
@@ -294,7 +294,7 @@ pub fn cluster_quality(
         }
 
         for pos0 in 0..center_len {
-            result[ci][pos0] = if nreads[pos0] > 0 {
+            (*slot)[pos0] = if nreads[pos0] > 0 {
                 qual_sum[pos0] / nreads[pos0] as f64
             } else {
                 f64::NAN
