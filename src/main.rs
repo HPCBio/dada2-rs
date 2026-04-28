@@ -2088,7 +2088,6 @@ fn main() -> io::Result<()> {
 
 /// Collect all FASTQ files (`.fastq`, `.fastq.gz`, `.fq`, `.fq.gz`) from a directory.
 /// Returns paths in arbitrary order; the caller is responsible for sorting or shuffling.
-
 /// Read query sequences from a FASTA file or a sequence-table JSON.
 ///
 /// Returns `(sequence_id, sequence_bytes)` pairs.  The input format is
