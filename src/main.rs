@@ -1,3 +1,4 @@
+#![allow(clippy::doc_overindented_list_items)]
 use std::{fs::File, io, path::Path};
 
 use clap::Parser;
