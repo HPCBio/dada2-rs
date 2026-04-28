@@ -326,7 +326,6 @@ pub struct BirthSubRecord {
 ///
 /// Equivalent to C++ `b_make_birth_subs_df` (minus the R wrapper).
 pub fn birth_sub_records(
-    b: &B,
     birth_subs: &[Option<Sub>],
     has_quals: bool,
 ) -> Vec<BirthSubRecord> {
