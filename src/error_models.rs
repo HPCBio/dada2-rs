@@ -196,8 +196,8 @@ fn loess_predict(
             // Evaluate polynomial at x0.
             let mut pred = 0.0f64;
             let mut xpow = 1.0f64;
-            for j in 0..p {
-                pred += coeffs[j] * xpow;
+            for j in coeffs.iter().take(p) {
+                pred += j * xpow;
                 xpow *= x0;
             }
             Some(pred)
