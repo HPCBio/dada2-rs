@@ -178,8 +178,8 @@ fn loess_predict(
                 // row = [1, xi, xi^2, …]
                 let mut row = vec![1.0f64; p];
                 let mut xpow = xi;
-                for j in 1..p {
-                    row[j] = xpow;
+                for j in row.iter_mut().take(p).skip(1) {
+                    *j = xpow;
                     xpow *= xi;
                 }
 
@@ -227,12 +227,15 @@ fn extrapolate_flat(raw: Vec<Option<f64>>, n: usize) -> Vec<f64> {
     for &(i, v) in &valid {
         out[i] = v;
     }
-    for i in 0..min_i {
-        out[i] = min_v;
+    for i in out.iter_mut().take(min_i) {
+        *i = min_v;
     }
-    for i in (max_i + 1)..n {
-        out[i] = max_v;
+    for i in out.iter_mut().take(n).skip(max_i + 1) {
+        *i = max_v;
     }
+    // for i in (max_i + 1)..n {
+    //     out[i] = max_v;
+    // }
     out
 }
 
