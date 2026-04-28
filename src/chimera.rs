@@ -289,6 +289,8 @@ pub fn table_bimera2(
     assert_eq!(mat.len(), nrow * ncol, "mat length must be nrow * ncol");
     assert_eq!(seqs.len(), ncol, "seqs length must equal ncol");
 
+    type Cache = Vec<Option<(usize, usize, usize, usize, bool)>>;
+
     (0..ncol)
         .into_par_iter()
         .map_init(AlignBuffers::new, |buf, j| {
@@ -298,7 +300,7 @@ pub fn table_bimera2(
 
             // Cache computed (left, right, left_oo, right_oo, allowed) per parent k.
             // None = not yet computed.
-            let mut cache: Vec<Option<(usize, usize, usize, usize, bool)>> = vec![None; ncol];
+            let mut cache: Cache = vec![None; ncol];
 
             for i in 0..nrow {
                 let j_abund = mat[i + j * nrow];

@@ -590,6 +590,8 @@ pub fn learn_errors(
         ));
     }
 
+    type SampleResults = Vec<(usize, Result<(Vec<u32>, crate::dada::DadaResult), String>)>;
+
     let nq = detect_nq(&all_inputs);
 
     if verbose {
@@ -647,7 +649,7 @@ pub fn learn_errors(
         // `raw_cache` is zipped in so each sample's Raw Vec flows back out of
         // DADA and into the next iteration's call without reallocation.
         let collect_diags = diag_dir.is_some();
-        let sample_results: Vec<(usize, Result<(Vec<u32>, crate::dada::DadaResult), String>)> =
+        let sample_results: SampleResults =
             all_inputs
                 .par_iter()
                 .zip(raw_cache.par_iter_mut())
