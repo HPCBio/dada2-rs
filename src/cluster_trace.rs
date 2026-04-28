@@ -222,7 +222,7 @@ pub fn write_trace(
     } else {
         serde_json::to_string_pretty(&tagged)
     }
-    .map_err(|e| io::Error::other(e))?;
+    .map_err(io::Error::other)?;
     std::fs::write(path, json)?;
     Ok(())
 }
