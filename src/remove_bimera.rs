@@ -253,7 +253,6 @@ fn per_sample_cell_flags(
 /// Drop columns flagged as bimeric (consensus / pooled).
 fn drop_columns(table: SequenceTable, bimeric: &[bool]) -> SequenceTable {
     let keep = |j: usize| !bimeric[j];
-    let ncol = table.sequences.len();
 
     let sequences = table
         .sequences
