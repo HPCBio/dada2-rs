@@ -33,7 +33,10 @@ use crate::nwalign::{AlignBuffers, AlignParams, raw_align_with_buf};
 // Constants
 // ---------------------------------------------------------------------------
 
+// TODO: check why these aren't used
+#[allow(dead_code)]
 const MIN_ERR: f64 = 1e-7;
+#[allow(dead_code)]
 const MAX_ERR: f64 = 0.25;
 /// Maximum difference between consecutive error-model iterations considered converged.
 const CONVERGENCE_TOL: f64 = 1e-7;

@@ -16,6 +16,7 @@ use crate::containers::Raw;
 /// At runtime this is overridable via `AlignParams::kmer_size`; the const is
 /// kept only so callers without an `AlignParams` (e.g. tests, defaults) can
 /// reference it.
+#[allow(dead_code)]
 pub const KMER_SIZE: usize = 5;
 
 /// Valid k-mer size range. `assign_kmer` requires k ≥ 3 (smaller k produces
