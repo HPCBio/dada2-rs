@@ -224,6 +224,7 @@ fn poisson_upper_tail_direct(reads: u32, lambda: f64) -> f64 {
 ///
 /// Returns the product of `err[nti][nti]` (match diagonal) over all positions.
 /// Equivalent to C++ `get_self`.
+#[allow(dead_code)]
 pub fn get_self(seq: &[u8], err: &[[f64; 4]; 4]) -> f64 {
     seq.iter().fold(1.0, |acc, &nt| {
         let nti = (nt as usize).saturating_sub(1).min(3);

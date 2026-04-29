@@ -207,6 +207,7 @@ impl Bi {
         }
     }
 
+    #[allow(dead_code)]
     pub fn nraw(&self) -> usize {
         self.raws.len()
     }

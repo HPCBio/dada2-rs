@@ -220,6 +220,7 @@ fn fill_band_sentinels(
 /// Interior gaps have penalty `gap_p` (should be negative).
 /// `band < 0` disables banding.
 /// Equivalent to C++ `nwalign_endsfree`.
+#[allow(dead_code)]
 pub fn align_endsfree(
     s1: &[u8],
     s2: &[u8],
@@ -548,6 +549,7 @@ pub fn align_standard_with_buf(
 /// Position-by-position alignment without gaps.
 /// Shorter sequence is padded with gaps on the right.
 /// Equivalent to C++ `nwalign_gapless`.
+#[allow(dead_code)]
 pub fn align_gapless(s1: &[u8], s2: &[u8]) -> [Vec<u8>; 2] {
     let mut buf = AlignBuffers::new();
     align_gapless_with_buf(s1, s2, &mut buf);
@@ -622,6 +624,7 @@ fn dploop(
 /// memory access patterns that auto-vectorise with LLVM.  `end_gap_p = 0`
 /// gives ends-free behaviour; `end_gap_p = gap_p` gives standard NW edge costs.
 /// Equivalent to C++ `nwalign_vectorized2`.
+#[allow(dead_code)]
 pub fn align_vectorized(
     s1_in: &[u8],
     s2_in: &[u8],
@@ -1043,6 +1046,7 @@ pub fn al2subs(al0: &[u8], al1: &[u8]) -> Sub {
 /// Returns `None` if k-mer screening determines the sequences are too
 /// dissimilar to be worth aligning (i.e. they will produce a NULL Sub).
 /// Equivalent to C++ `raw_align`.
+#[allow(dead_code)]
 pub fn raw_align(raw1: &Raw, raw2: &Raw, p: &AlignParams) -> Option<[Vec<u8>; 2]> {
     let mut buf = AlignBuffers::new();
     raw_align_with_buf(raw1, raw2, p, &mut buf)?;
@@ -1149,6 +1153,7 @@ pub fn raw_align_with_buf(
 /// Returns `None` when the k-mer screen rejects the pair (equivalent to a
 /// NULL Sub in the C++ code).
 /// Equivalent to C++ `sub_new`.
+#[allow(dead_code)]
 pub fn sub_new(raw0: &Raw, raw1: &Raw, params: &AlignParams) -> Option<Sub> {
     let mut buf = AlignBuffers::new();
     sub_new_with_buf(raw0, raw1, params, &mut buf)

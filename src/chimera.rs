@@ -161,6 +161,7 @@ fn get_lr(
 ///
 /// Alignment uses the vectorized banded NW (`end_gap_p = 0`, ends-free).
 /// Equivalent to C++ `C_is_bimera`.
+#[allow(dead_code)]
 pub fn is_bimera(
     sq: &[u8],
     parents: &[&[u8]],

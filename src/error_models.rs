@@ -625,6 +625,7 @@ pub fn pacbio_errfun(trans: &[u32], qual_scores: &[f64]) -> Vec<f64> {
 /// - `nq`: number of quality-score columns
 /// - `inflation`: inflation factor
 /// - `inflate_self`: if `true`, also inflate diagonal (self-transition) rates
+#[allow(dead_code)]
 pub fn inflate_err(err: &[f64], nq: usize, inflation: f64, inflate_self: bool) -> Vec<f64> {
     assert_eq!(err.len(), 16 * nq, "err length must be 16 * nq");
 
@@ -695,6 +696,7 @@ pub fn accumulate_trans(matrices: &[(&[u32], usize)]) -> (Vec<u32>, usize) {
 ///
 /// # Returns
 /// Sorted vector of 0-indexed bad base positions.
+#[allow(dead_code)]
 pub fn get_bad_bases(
     seqlen: usize,
     birth_subs_pos_1ham: &[u16],
@@ -755,6 +757,7 @@ pub fn get_bad_bases(
 /// # Returns
 /// `Vec<bool>` of length `birth_subs_by_cluster.len()` — `true` when a cluster
 /// is likely a false positive caused by bad bases.
+#[allow(dead_code)]
 pub fn is_bad_base_fp(
     birth_subs_by_cluster: &[&[u16]],
     bad_bases: &[u16],

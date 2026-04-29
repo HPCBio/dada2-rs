@@ -75,6 +75,7 @@ pub fn match_ref(
 /// Expected errors = Σ 10^(−Q/10) for each non-missing Q in the row.
 ///
 /// Equivalent to C++ `C_matrixEE`.
+#[allow(dead_code)]
 pub fn matrix_ee(matrix: &[Vec<i32>]) -> Vec<f64> {
     matrix
         .iter()

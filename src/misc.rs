@@ -85,6 +85,7 @@ pub fn read_tagged_json<T: DeserializeOwned>(
 
 /// Open a JSON file and deserialize it, transparently decompressing gzip when
 /// the path ends with `.gz` (e.g. `foo.json.gz`).
+#[allow(dead_code)]
 pub fn read_json_file<T: DeserializeOwned>(path: &Path) -> io::Result<T> {
     let file = File::open(path)?;
     let is_gz = path.extension().and_then(|e| e.to_str()) == Some("gz");
@@ -176,12 +177,14 @@ pub fn intstr(seq: &[u8]) -> Vec<u8> {
 
 /// Decode an integer-encoded slice back to ASCII, returning a new `Vec<u8>`.
 /// Equivalent to C++ `ntstr`.
+#[allow(dead_code)]
 pub fn ntstr(seq: &[u8]) -> Vec<u8> {
     seq.iter().map(|&b| nt_decode(b)).collect()
 }
 
 /// Print an alignment of two integer-encoded sequences to stderr.
 /// Equivalent to C++ `align_print`.
+#[allow(dead_code)]
 pub fn align_print(al0: &[u8], al1: &[u8]) {
     assert_eq!(
         al0.len(),
@@ -200,6 +203,7 @@ pub fn align_print(al0: &[u8], al1: &[u8]) {
 
 /// Print a 4×4 error rate matrix to stderr.
 /// Equivalent to C++ `err_print`.
+#[allow(dead_code)]
 pub fn err_print(err: &[[f64; 4]; 4]) {
     for (i, row) in err.iter().enumerate() {
         if i == 0 {

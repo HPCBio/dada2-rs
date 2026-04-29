@@ -18,6 +18,7 @@ use crate::misc::nt_encode;
 ///
 /// Returns `(matches, mismatches, indels)`.
 /// Equivalent to C++ `C_eval_pair`.
+#[allow(dead_code)]
 pub fn eval_pair(al0: &[u8], al1: &[u8]) -> Result<(u32, u32, u32), String> {
     if al0.len() != al1.len() {
         return Err(format!(
@@ -81,6 +82,7 @@ pub fn eval_pair(al0: &[u8], al1: &[u8]) -> Result<(u32, u32, u32), String> {
 ///
 /// Remaining gaps are removed from the output.
 /// Equivalent to C++ `C_pair_consensus`.
+#[allow(dead_code)]
 pub fn pair_consensus(
     al0: &[u8],
     al1: &[u8],
@@ -140,6 +142,7 @@ pub fn pair_consensus(
 
 /// Return `true` if every byte of `seq` is one of A/C/G/T (upper-case only).
 /// Equivalent to C++ `C_isACGT`.
+#[allow(dead_code)]
 pub fn is_acgt(seq: &[u8]) -> bool {
     seq.iter().all(|&b| matches!(b, b'A' | b'C' | b'G' | b'T'))
 }
@@ -152,6 +155,7 @@ pub fn is_acgt(seq: &[u8]) -> bool {
 ///
 /// Inputs are ASCII sequences; integer-encoding is handled internally.
 /// Equivalent to the R-exported `kmer_dist` in `evaluate.cpp`.
+#[allow(dead_code)]
 pub fn kmer_dist_pairs(s1: &[&[u8]], s2: &[&[u8]], k: usize) -> Result<Vec<f64>, String> {
     if s1.len() != s2.len() {
         return Err(format!(
@@ -180,6 +184,7 @@ pub fn kmer_dist_pairs(s1: &[&[u8]], s2: &[&[u8]], k: usize) -> Result<Vec<f64>,
 ///
 /// Equivalent to the R-exported `kord_dist` in `evaluate.cpp` (scalar path,
 /// no SSE).
+#[allow(dead_code)]
 pub fn kord_dist_pairs(s1: &[&[u8]], s2: &[&[u8]], k: usize) -> Result<Vec<f64>, String> {
     if s1.len() != s2.len() {
         return Err(format!(
@@ -205,6 +210,7 @@ pub fn kord_dist_pairs(s1: &[&[u8]], s2: &[&[u8]], k: usize) -> Result<Vec<f64>,
 /// A positional match is a position `j` (within the shorter k-mer order
 /// array) where `kord1[j] == kord2[j]`.
 /// Equivalent to the R-exported `kmer_matches` in `evaluate.cpp`.
+#[allow(dead_code)]
 pub fn kmer_matches_pairs(s1: &[&[u8]], s2: &[&[u8]], k: usize) -> Result<Vec<u32>, String> {
     if s1.len() != s2.len() {
         return Err(format!(
@@ -238,6 +244,7 @@ pub fn kmer_matches_pairs(s1: &[&[u8]], s2: &[&[u8]], k: usize) -> Result<Vec<u3
 ///
 /// This is the numerator used in `kmer_dist`.
 /// Equivalent to the R-exported `kdist_matches` in `evaluate.cpp`.
+#[allow(dead_code)]
 pub fn kdist_matches_pairs(s1: &[&[u8]], s2: &[&[u8]], k: usize) -> Result<Vec<u32>, String> {
     if s1.len() != s2.len() {
         return Err(format!(
