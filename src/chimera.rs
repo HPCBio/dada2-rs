@@ -148,6 +148,17 @@ fn get_lr(
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Alignment and one-off parameters shared by bimera detection functions.
+#[derive(Clone, Copy, Debug)]
+pub struct BimeraAlignParams {
+    pub allow_one_off: bool,
+    pub min_one_off_par_dist: usize,
+    pub match_score: i16,
+    pub mismatch: i16,
+    pub gap_p: i16,
+    pub max_shift: i32,
+}
+
 /// Determine whether `sq` is a bimera of any pair from `parents`.
 ///
 /// A sequence is a bimera when the left portion of `sq` exactly matches one
@@ -162,42 +173,26 @@ fn get_lr(
 /// Alignment uses the vectorized banded NW (`end_gap_p = 0`, ends-free).
 /// Equivalent to C++ `C_is_bimera`.
 #[allow(dead_code)]
-pub fn is_bimera(
-    sq: &[u8],
-    parents: &[&[u8]],
-    allow_one_off: bool,
-    min_one_off_par_dist: usize,
-    match_score: i16,
-    mismatch: i16,
-    gap_p: i16,
-    max_shift: i32,
-) -> bool {
+pub fn is_bimera(sq: &[u8], parents: &[&[u8]], params: &BimeraAlignParams) -> bool {
     let mut buf = AlignBuffers::new();
-    is_bimera_with_buf(
-        sq,
-        parents,
-        allow_one_off,
-        min_one_off_par_dist,
-        match_score,
-        mismatch,
-        gap_p,
-        max_shift,
-        &mut buf,
-    )
+    is_bimera_with_buf(sq, parents, params, &mut buf)
 }
 
 /// Buffer-reusing variant of [`is_bimera`]. See [`AlignBuffers`].
 pub fn is_bimera_with_buf(
     sq: &[u8],
     parents: &[&[u8]],
-    allow_one_off: bool,
-    min_one_off_par_dist: usize,
-    match_score: i16,
-    mismatch: i16,
-    gap_p: i16,
-    max_shift: i32,
+    params: &BimeraAlignParams,
     buf: &mut AlignBuffers,
 ) -> bool {
+    let BimeraAlignParams {
+        allow_one_off,
+        min_one_off_par_dist,
+        match_score,
+        mismatch,
+        gap_p,
+        max_shift,
+    } = *params;
     let sqlen = sq.len();
     let mut max_left = 0usize;
     let mut max_right = 0usize;
@@ -280,13 +275,16 @@ pub fn table_bimera2(
     seqs: &[&[u8]],
     min_fold: f64,
     min_abund: u32,
-    allow_one_off: bool,
-    min_one_off_par_dist: usize,
-    match_score: i16,
-    mismatch: i16,
-    gap_p: i16,
-    max_shift: i32,
+    params: &BimeraAlignParams,
 ) -> Vec<BimeraFlags> {
+    let BimeraAlignParams {
+        allow_one_off,
+        min_one_off_par_dist,
+        match_score,
+        mismatch,
+        gap_p,
+        max_shift,
+    } = *params;
     assert_eq!(mat.len(), nrow * ncol, "mat length must be nrow * ncol");
     assert_eq!(seqs.len(), ncol, "seqs length must equal ncol");
 

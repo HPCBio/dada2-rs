@@ -7,7 +7,7 @@
 
 use rayon::prelude::*;
 
-use crate::chimera::{is_bimera_with_buf, table_bimera2};
+use crate::chimera::{BimeraAlignParams, is_bimera_with_buf, table_bimera2};
 use crate::nwalign::AlignBuffers;
 use crate::sequence_table::SequenceTable;
 
@@ -123,6 +123,14 @@ fn consensus_flags(
     seqs: &[&[u8]],
     p: &BimeraParams,
 ) -> Vec<bool> {
+    let align_params = BimeraAlignParams {
+        allow_one_off: p.allow_one_off,
+        min_one_off_par_dist: p.min_one_off_parent_distance,
+        match_score: p.match_score,
+        mismatch: p.mismatch,
+        gap_p: p.gap_p,
+        max_shift: p.max_shift,
+    };
     let flags = table_bimera2(
         mat,
         nrow,
@@ -130,12 +138,7 @@ fn consensus_flags(
         seqs,
         p.min_fold_parent_over_abundance,
         p.min_parent_abundance,
-        p.allow_one_off,
-        p.min_one_off_parent_distance,
-        p.match_score,
-        p.mismatch,
-        p.gap_p,
-        p.max_shift,
+        &align_params,
     );
 
     flags
@@ -163,6 +166,15 @@ fn pooled_flags(
         .map(|j| (0..nrow).map(|i| mat[i + j * nrow]).sum())
         .collect();
 
+    let align_params = BimeraAlignParams {
+        allow_one_off: p.allow_one_off,
+        min_one_off_par_dist: p.min_one_off_parent_distance,
+        match_score: p.match_score,
+        mismatch: p.mismatch,
+        gap_p: p.gap_p,
+        max_shift: p.max_shift,
+    };
+
     (0..ncol)
         .into_par_iter()
         .map_init(AlignBuffers::new, |buf, j| {
@@ -183,17 +195,7 @@ fn pooled_flags(
                 return false;
             }
 
-            is_bimera_with_buf(
-                seqs[j],
-                &parents,
-                p.allow_one_off,
-                p.min_one_off_parent_distance,
-                p.match_score,
-                p.mismatch,
-                p.gap_p,
-                p.max_shift,
-                buf,
-            )
+            is_bimera_with_buf(seqs[j], &parents, &align_params, buf)
         })
         .collect()
 }
@@ -206,6 +208,14 @@ fn per_sample_cell_flags(
     seqs: &[&[u8]],
     p: &BimeraParams,
 ) -> Vec<Vec<bool>> {
+    let align_params = BimeraAlignParams {
+        allow_one_off: p.allow_one_off,
+        min_one_off_par_dist: p.min_one_off_parent_distance,
+        match_score: p.match_score,
+        mismatch: p.mismatch,
+        gap_p: p.gap_p,
+        max_shift: p.max_shift,
+    };
     let mut buf = AlignBuffers::new();
     (0..nrow)
         .map(|i| {
@@ -229,17 +239,7 @@ fn per_sample_cell_flags(
                         return false;
                     }
 
-                    is_bimera_with_buf(
-                        seqs[j],
-                        &parents,
-                        p.allow_one_off,
-                        p.min_one_off_parent_distance,
-                        p.match_score,
-                        p.mismatch,
-                        p.gap_p,
-                        p.max_shift,
-                        &mut buf,
-                    )
+                    is_bimera_with_buf(seqs[j], &parents, &align_params, &mut buf)
                 })
                 .collect()
         })
