@@ -411,7 +411,7 @@ fn compute_aux(b: &B, params: &DadaParams, has_quals: bool) -> DadaAux {
     let cluster_stats_v = cluster_stats(b, &final_subs, &birth_subs, has_quals);
     let maxlen = b.raws.iter().map(|r| r.seq.len()).max().unwrap_or(0);
     let cluster_quality_v = cluster_quality(b, &final_subs, has_quals, maxlen);
-    let birth_records = birth_sub_records(b, &birth_subs, has_quals);
+    let birth_records = birth_sub_records(&birth_subs, has_quals);
     let ncol = if has_quals { params.err_ncol } else { 1 };
     let transitions = transition_counts(b, &final_subs, has_quals, ncol);
 
