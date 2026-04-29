@@ -168,6 +168,7 @@ pub struct DadaResult {
     /// was not corrected to any center.
     pub map: Vec<Option<usize>>,
     /// Final abundance p-value for each input Raw (in input order).
+    #[allow(dead_code)]
     pub pvals: Vec<f64>,
     /// Total pairwise alignments performed.
     pub nalign: u32,
