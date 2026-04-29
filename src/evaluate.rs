@@ -99,9 +99,7 @@ pub fn pair_consensus(
     let len = al0.len();
     let mut out: Vec<u8> = (0..len)
         .map(|i| {
-            if al0[i] == al1[i] {
-                al0[i]
-            } else if al1[i] == b'-' {
+            if al0[i] == al1[i] || al1[i] == b'-' {
                 al0[i]
             } else if al0[i] == b'-' {
                 al1[i]

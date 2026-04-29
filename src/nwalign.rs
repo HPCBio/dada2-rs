@@ -832,9 +832,7 @@ pub fn align_vectorized_with_buf(
                 if d_free > cur {
                     d[row * ncol + col_min] = d_free;
                     p[row * ncol + col_min] = 2;
-                } else if !swap && d_free == cur && pcur == 1 {
-                    p[row * ncol + col_min] = 2;
-                } else if swap && d_free == cur && pcur != 2 {
+                } else if !(d_free != cur || !swap && pcur != 1 || swap && pcur == 2) {
                     p[row * ncol + col_min] = 2;
                 }
             }
@@ -850,9 +848,7 @@ pub fn align_vectorized_with_buf(
                 if d_free > cur {
                     d[row * ncol + col_max] = d_free;
                     p[row * ncol + col_max] = 3;
-                } else if !swap && d_free == cur && pcur != 3 {
-                    p[row * ncol + col_max] = 3;
-                } else if swap && d_free == cur && pcur == 1 {
+                } else if !(d_free != cur || !swap && pcur == 3 || swap && pcur != 1) {
                     p[row * ncol + col_max] = 3;
                 }
             }

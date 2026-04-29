@@ -373,11 +373,10 @@ pub fn table_bimera2(
                     }
                 } // for k
 
-                if max_left + max_right >= sqlen {
-                    nflag += 1;
-                } else if allow_one_off
-                    && (oo_max_left + oo_max_right_oo >= sqlen
-                        || oo_max_left_oo + oo_max_right >= sqlen)
+                if max_left + max_right >= sqlen
+                    || (allow_one_off
+                        && (oo_max_left + oo_max_right_oo >= sqlen
+                            || oo_max_left_oo + oo_max_right >= sqlen))
                 {
                     nflag += 1;
                 }
