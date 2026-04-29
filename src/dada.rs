@@ -70,6 +70,7 @@ pub struct DadaParams {
     /// Whether quality scores are available and should be used.
     pub use_quals: bool,
     /// Reserved for future use (matches C++ `final_consensus` parameter).
+    #[allow(dead_code)]
     pub final_consensus: bool,
     /// Use Rayon for parallel comparisons.
     pub multithread: bool,

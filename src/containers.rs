@@ -63,6 +63,7 @@ pub enum BirthType {
     /// Born from a prior-sequence p-value test ("P").
     Prior,
     /// Born from a singleton p-value test ("S").
+    #[allow(dead_code)]
     Singleton,
 }
 
@@ -163,12 +164,14 @@ pub struct Bi {
     /// Recalculate expected abundances on next pass when true.
     pub update_e: bool,
     /// Raws should be reassigned between clusters when true.
+    #[allow(dead_code)]
     pub shuffle: bool,
     /// Check whether Raws should be locked to this cluster when true.
     pub check_locks: bool,
     /// Self-production genotype error probability.
     pub self_: f64,
     /// Total number of Raws across the entire partition (used as p-value denominator).
+    #[allow(dead_code)]
     pub totraw: u32,
     pub birth_type: BirthType,
     /// Index of the cluster from which this one was split.
@@ -236,8 +239,10 @@ pub struct B {
     pub omega_p: f64,
     pub use_quals: bool,
     /// Sorted unique lambda values (for CDF precomputation).
+    #[allow(dead_code)]
     pub lams: Vec<f64>,
     /// CDF values corresponding to `lams`.
+    #[allow(dead_code)]    
     pub cdf: Vec<f64>,
 }
 

@@ -54,6 +54,7 @@ pub struct TaxonomyResult {
     /// Per-bootstrap genus assignments with shape `[nseq][NBOOT]`.
     /// `boot_taxa[i][b]` is the 0-indexed genus chosen in replicate `b` for
     /// sequence `i`, or `None` if the sequence was too short.
+    #[allow(dead_code)]
     pub boot_taxa: Vec<Vec<Option<usize>>>,
 }
 

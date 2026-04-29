@@ -327,6 +327,7 @@ pub fn align_endsfree_with_buf(
 ///
 /// Gaps inside homopolymer runs (length ≥ 3) use `homo_gap_p` instead of
 /// `gap_p`.  Equivalent to C++ `nwalign_endsfree_homo`.
+#[allow(dead_code)]
 pub fn align_endsfree_homo(
     s1: &[u8],
     s2: &[u8],
