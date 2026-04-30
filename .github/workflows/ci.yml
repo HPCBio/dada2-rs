@@ -11,6 +11,28 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  version-metadata:
+    name: Version metadata
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Cargo.toml and CITATION.cff versions match
+        run: |
+          cargo_version="$(awk -F'"' '/^version = "/ { print $2; exit }' Cargo.toml)"
+          citation_version="$(awk -F': ' '/^version:/ { print $2; exit }' CITATION.cff)"
+
+          if [ -z "$cargo_version" ] || [ -z "$citation_version" ]; then
+            echo "Unable to read version metadata from Cargo.toml or CITATION.cff" >&2
+            exit 1
+          fi
+
+          if [ "$cargo_version" != "$citation_version" ]; then
+            echo "Version mismatch: Cargo.toml=$cargo_version, CITATION.cff=$citation_version" >&2
+            exit 1
+          fi
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

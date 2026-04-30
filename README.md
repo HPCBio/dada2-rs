@@ -176,6 +176,27 @@ Rscript comparison/compare_errors.R \
 
 Requires R packages: `dada2`, `jsonlite`, `ggplot2`, `gridExtra`.
 
+## Versioning and releases
+
+This repository uses [Semantic Versioning](https://semver.org/) with `vX.Y.Z`
+Git tags for releases.
+
+- Increment **PATCH** for backward-compatible bug fixes
+- Increment **MINOR** for backward-compatible new functionality
+- Increment **MAJOR** for backward-incompatible CLI, JSON, or algorithm-facing changes
+
+Releases are cut manually:
+
+1. Update `version` in `Cargo.toml`
+2. Update `version` in `CITATION.cff`
+3. Run the usual checks (`cargo test --release`, `cargo fmt --all -- --check`, `cargo clippy`)
+4. Commit the version bump
+5. Create and push a matching tag such as `v0.2.0`
+
+CI verifies that `Cargo.toml` and `CITATION.cff` stay aligned, and pushing a
+matching semver tag creates the GitHub release automatically. The existing
+Docker workflow also publishes semver-tagged images from those tags.
+
 ## AI Assistance Disclosure
 
 This tool was written with the assistance of AI coding agents, specificall Claude Code, using Sonnet 4.6. All commits using AI are noted.

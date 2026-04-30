@@ -32,6 +32,27 @@ The primary goal of this project is a faithful port of R DADA2. When in doubt, b
 
 Follow standard Rust idioms (`cargo fmt`, `cargo clippy`). Comments should explain *why* something is done, not *what* — especially where the code mirrors a non-obvious algorithmic choice from the R or C++ source.
 
+## Versioning and releases
+
+This project uses [Semantic Versioning](https://semver.org/).
+
+- **PATCH** releases are for backward-compatible fixes
+- **MINOR** releases are for backward-compatible features
+- **MAJOR** releases are for backward-incompatible changes, especially CLI,
+  output-format, or workflow changes that users would need to adapt to
+
+Version bumps are manual. When preparing a release:
+
+1. Update the version in `Cargo.toml`
+2. Update the version in `CITATION.cff`
+3. Run `cargo test --release`, `cargo fmt --all -- --check`, and `cargo clippy`
+4. Commit the release changes
+5. Push a matching Git tag in the form `vX.Y.Z`
+
+The CI workflow checks that `Cargo.toml` and `CITATION.cff` stay in sync, and
+the release workflow verifies that the pushed tag matches those files before it
+publishes a GitHub release.
+
 ## Reporting bugs
 
 Please open a GitHub issue with:
