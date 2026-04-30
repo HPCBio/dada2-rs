@@ -133,16 +133,15 @@ pub fn write_trace(
     let mut sequences: Vec<String> = Vec::new();
     let mut intern_table: HashMap<String, usize> = HashMap::new();
 
-    let intern =
-        |s: &str, table: &mut HashMap<String, usize>, pool: &mut Vec<String>| -> usize {
-            if let Some(&id) = table.get(s) {
-                return id;
-            }
-            let id = pool.len();
-            pool.push(s.to_string());
-            table.insert(s.to_string(), id);
-            id
-        };
+    let intern = |s: &str, table: &mut HashMap<String, usize>, pool: &mut Vec<String>| -> usize {
+        if let Some(&id) = table.get(s) {
+            return id;
+        }
+        let id = pool.len();
+        pool.push(s.to_string());
+        table.insert(s.to_string(), id);
+        id
+    };
 
     let total_reads: u32 = result.clusters.iter().map(|c| c.reads).sum();
 

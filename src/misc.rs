@@ -3,8 +3,8 @@ use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 
 use flate2::read::MultiGzDecoder;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 /// Crate version, embedded in every JSON output as `dada2_rs_version`.
 pub const DADA2_RS_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -39,10 +39,7 @@ impl<T: Serialize> Tagged<T> {
 ///
 /// Errors with `InvalidData` if the tag is missing or mismatched.
 /// Transparently decompresses gzip when the path ends in `.gz`.
-pub fn read_tagged_json<T: DeserializeOwned>(
-    path: &Path,
-    expected: &[&str],
-) -> io::Result<T> {
+pub fn read_tagged_json<T: DeserializeOwned>(path: &Path, expected: &[&str]) -> io::Result<T> {
     let file = File::open(path)?;
     let is_gz = path.extension().and_then(|e| e.to_str()) == Some("gz");
     let value: serde_json::Value = if is_gz {

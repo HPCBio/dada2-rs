@@ -242,7 +242,7 @@ pub struct B {
     #[allow(dead_code)]
     pub lams: Vec<f64>,
     /// CDF values corresponding to `lams`.
-    #[allow(dead_code)]    
+    #[allow(dead_code)]
     pub cdf: Vec<f64>,
 }
 

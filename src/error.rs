@@ -325,10 +325,7 @@ pub struct BirthSubRecord {
 /// Collect per-substitution records from each cluster's birth alignment.
 ///
 /// Equivalent to C++ `b_make_birth_subs_df` (minus the R wrapper).
-pub fn birth_sub_records(
-    birth_subs: &[Option<Sub>],
-    has_quals: bool,
-) -> Vec<BirthSubRecord> {
+pub fn birth_sub_records(birth_subs: &[Option<Sub>], has_quals: bool) -> Vec<BirthSubRecord> {
     let mut records = Vec::new();
     for (ci, maybe_sub) in birth_subs.iter().enumerate() {
         let sub = match maybe_sub {

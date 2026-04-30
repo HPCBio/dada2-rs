@@ -545,8 +545,11 @@ pub enum Commands {
         output_bootstraps: bool,
 
         /// Comma-separated names for taxonomic levels (applied in order)
-        #[arg(long, default_value = "Kingdom,Phylum,Class,Order,Family,Genus,Species",
-              value_delimiter = ',')]
+        #[arg(
+            long,
+            default_value = "Kingdom,Phylum,Class,Order,Family,Genus,Species",
+            value_delimiter = ','
+        )]
         tax_levels: Vec<String>,
 
         /// RNG seed for reproducible bootstrap sampling

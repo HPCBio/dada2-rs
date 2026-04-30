@@ -35,9 +35,9 @@ use filter_trim::{FilterParams, filter_paired, filter_single, read_fasta_first_s
 use learn_errors::{
     ErrFun, LearnedErrParams, learn_errors, load_derep_samples, load_fastq_samples,
 };
+use misc::{Tagged, read_fasta_records, read_tagged_json};
 use nwalign::AlignParams;
 use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
-use misc::{Tagged, read_fasta_records, read_tagged_json};
 use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
 use serde::Serialize;
 use summary::process;
@@ -989,10 +989,7 @@ fn main() -> io::Result<()> {
             struct FilterAndTrimOutput {
                 samples: Vec<SampleResult>,
             }
-            let tagged = Tagged::new(
-                "filter-and-trim",
-                FilterAndTrimOutput { samples: results },
-            );
+            let tagged = Tagged::new("filter-and-trim", FilterAndTrimOutput { samples: results });
             let json = if compact {
                 serde_json::to_string(&tagged)
             } else {
@@ -1069,10 +1066,8 @@ fn main() -> io::Result<()> {
             output,
             compact,
         } => {
-            let table: SequenceTable = read_tagged_json(
-                &input,
-                &["make-sequence-table", "remove-bimera-denovo"],
-            )?;
+            let table: SequenceTable =
+                read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])?;
 
             let method = match method.as_str() {
                 "pooled" => Method::Pooled,
@@ -1112,10 +1107,8 @@ fn main() -> io::Result<()> {
         }
 
         Commands::SeqTableToTsv { input, output } => {
-            let table: SequenceTable = read_tagged_json(
-                &input,
-                &["make-sequence-table", "remove-bimera-denovo"],
-            )?;
+            let table: SequenceTable =
+                read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])?;
 
             let mut out: Box<dyn io::Write> = match output {
                 Some(ref path) => Box::new(io::BufWriter::new(std::fs::File::create(path)?)),
@@ -1147,10 +1140,8 @@ fn main() -> io::Result<()> {
                 sequence_ids: Vec<String>,
             }
 
-            let table: SeqTable = read_tagged_json(
-                &input,
-                &["make-sequence-table", "remove-bimera-denovo"],
-            )?;
+            let table: SeqTable =
+                read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])?;
 
             if table.sequences.len() != table.sequence_ids.len() {
                 return Err(io::Error::new(
@@ -1588,8 +1579,7 @@ fn main() -> io::Result<()> {
                 .collect();
 
             // Build unique taxonomy strings and ref→genus mapping.
-            let full_strings: Vec<String> =
-                tax_padded.iter().map(|f| f.join(";")).collect();
+            let full_strings: Vec<String> = tax_padded.iter().map(|f| f.join(";")).collect();
             let mut genus_uniq: Vec<String> = {
                 let mut seen = std::collections::HashSet::new();
                 let mut v = Vec::new();
@@ -1606,8 +1596,10 @@ fn main() -> io::Result<()> {
                 .enumerate()
                 .map(|(i, s)| (s.as_str(), i))
                 .collect();
-            let ref_to_genus: Vec<usize> =
-                full_strings.iter().map(|s| genus_to_idx[s.as_str()]).collect();
+            let ref_to_genus: Vec<usize> = full_strings
+                .iter()
+                .map(|s| genus_to_idx[s.as_str()])
+                .collect();
 
             // Split each unique genus string into level fields.
             let genus_fields: Vec<Vec<String>> = genus_uniq
@@ -1644,8 +1636,7 @@ fn main() -> io::Result<()> {
                 }
             }
 
-            let ref_seqs: Vec<&[u8]> =
-                raw_refs.iter().map(|(_, s)| s.as_slice()).collect();
+            let ref_seqs: Vec<&[u8]> = raw_refs.iter().map(|(_, s)| s.as_slice()).collect();
 
             if verbose {
                 eprintln!(
@@ -1698,10 +1689,7 @@ fn main() -> io::Result<()> {
                 .iter()
                 .take(nlevel)
                 .cloned()
-                .chain(
-                    (tax_levels.len()..nlevel)
-                        .map(|i| format!("Level{}", i + 1)),
-                )
+                .chain((tax_levels.len()..nlevel).map(|i| format!("Level{}", i + 1)))
                 .collect();
 
             let assignments: Vec<TaxAssignment> = queries
@@ -1709,10 +1697,8 @@ fn main() -> io::Result<()> {
                 .enumerate()
                 .map(|(i, (id, seq))| {
                     let (taxonomy, bootstrap) = if let Some(g) = result.assignments[i] {
-                        let fields: Vec<&str> = genus_fields[g]
-                            .iter()
-                            .map(|s| s.as_str())
-                            .collect();
+                        let fields: Vec<&str> =
+                            genus_fields[g].iter().map(|s| s.as_str()).collect();
                         let boot = &result.boot_counts[i];
                         let mut tax = Vec::with_capacity(nlevel);
                         let mut passed = true;
@@ -1825,12 +1811,9 @@ fn main() -> io::Result<()> {
                 );
             }
 
-            let ref_seqs: Vec<&[u8]> =
-                ref_seqs_owned.iter().map(|s| s.as_slice()).collect();
-            let ref_genus: Vec<&str> =
-                ref_genus_owned.iter().map(|s| s.as_str()).collect();
-            let ref_species: Vec<&str> =
-                ref_species_owned.iter().map(|s| s.as_str()).collect();
+            let ref_seqs: Vec<&[u8]> = ref_seqs_owned.iter().map(|s| s.as_slice()).collect();
+            let ref_genus: Vec<&str> = ref_genus_owned.iter().map(|s| s.as_str()).collect();
+            let ref_species: Vec<&str> = ref_species_owned.iter().map(|s| s.as_str()).collect();
 
             let hits: Vec<SpeciesHit> = assign_species(
                 &query_seqs,

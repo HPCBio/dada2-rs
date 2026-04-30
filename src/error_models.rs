@@ -800,10 +800,7 @@ impl TempDir {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "{prefix}-{}-{nanos}",
-            std::process::id(),
-        ));
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id(),));
         std::fs::create_dir_all(&dir)?;
         Ok(Self(dir))
     }
@@ -937,8 +934,7 @@ fn parse_err_tsv(text: &str, nq: usize) -> Result<Vec<f64>, String> {
             if !v.is_finite() || !(0.0..=1.0).contains(&v) {
                 return Err(format!(
                     "external_errfun: err[{}][{}] = {v} is not a valid probability in [0, 1]",
-                    EXTERNAL_ROW_LABELS[row],
-                    q,
+                    EXTERNAL_ROW_LABELS[row], q,
                 ));
             }
             err[row * nq + q] = v;
@@ -1113,7 +1109,10 @@ mod tests {
         let result = external_errfun(&trans, 4, &script.to_string_lossy());
         let err_msg = result.expect_err("script exits 7 — should fail");
         assert!(err_msg.contains("exited with"), "got: {err_msg}");
-        assert!(err_msg.contains("oops"), "stderr should be propagated, got: {err_msg}");
+        assert!(
+            err_msg.contains("oops"),
+            "stderr should be propagated, got: {err_msg}"
+        );
         drop(dir);
     }
 
@@ -1139,7 +1138,10 @@ mod tests {
         let trans = vec![0u32; 16 * 4];
         let result = external_errfun(&trans, 4, &script.to_string_lossy());
         let err_msg = result.expect_err("1.5 is not a valid probability");
-        assert!(err_msg.contains("not a valid probability"), "got: {err_msg}");
+        assert!(
+            err_msg.contains("not a valid probability"),
+            "got: {err_msg}"
+        );
         drop(dir);
     }
 }

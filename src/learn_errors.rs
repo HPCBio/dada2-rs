@@ -311,12 +311,9 @@ pub fn load_derep_samples(paths: &[PathBuf]) -> io::Result<Vec<Vec<RawInput>>> {
     paths
         .iter()
         .map(|path| {
-            let sample: SampleJson =
-                crate::misc::read_tagged_json(path, &["derep", "sample"]).map_err(|e| {
-                    io::Error::new(
-                        e.kind(),
-                        format!("failed to parse {}: {e}", path.display()),
-                    )
+            let sample: SampleJson = crate::misc::read_tagged_json(path, &["derep", "sample"])
+                .map_err(|e| {
+                    io::Error::new(e.kind(), format!("failed to parse {}: {e}", path.display()))
                 })?;
 
             let mut inputs: Vec<RawInput> = sample
@@ -427,11 +424,9 @@ fn run_init_pass(
     let refs: Vec<(&[u32], usize)> = sample_trans.iter().map(|t| (t.as_slice(), nq)).collect();
     let (acc_trans, _) = accumulate_trans(&refs);
 
-    let mut new_err = errfun.apply(&acc_trans, nq).map_err(|e| {
-        io::Error::other(
-            format!("init-pass errfun failed: {e}"),
-        )
-    })?;
+    let mut new_err = errfun
+        .apply(&acc_trans, nq)
+        .map_err(|e| io::Error::other(format!("init-pass errfun failed: {e}")))?;
 
     // R: err[c(1,6,11,16),] <- 1.0 — force self-transitions to 1 at every q.
     // Row indices are 1-based in R; here they are 0,5,10,15 (A2A, C2C, G2G, T2T).
@@ -652,23 +647,22 @@ pub fn learn_errors(
         // `raw_cache` is zipped in so each sample's Raw Vec flows back out of
         // DADA and into the next iteration's call without reallocation.
         let collect_diags = diag_dir.is_some();
-        let sample_results: SampleResults =
-            all_inputs
-                .par_iter()
-                .zip(raw_cache.par_iter_mut())
-                .enumerate()
-                .map(|(si, (inputs, cache_slot))| {
-                    let cached = cache_slot.take();
-                    let outcome = dada_uniques_cached(inputs, cached, &dada_params).map(
-                        |(result, reused_raws)| {
-                            *cache_slot = Some(reused_raws);
-                            let t = build_trans_mat(inputs, &result, align_params, nq);
-                            (t, result)
-                        },
-                    );
-                    (si, outcome)
-                })
-                .collect();
+        let sample_results: SampleResults = all_inputs
+            .par_iter()
+            .zip(raw_cache.par_iter_mut())
+            .enumerate()
+            .map(|(si, (inputs, cache_slot))| {
+                let cached = cache_slot.take();
+                let outcome = dada_uniques_cached(inputs, cached, &dada_params).map(
+                    |(result, reused_raws)| {
+                        *cache_slot = Some(reused_raws);
+                        let t = build_trans_mat(inputs, &result, align_params, nq);
+                        (t, result)
+                    },
+                );
+                (si, outcome)
+            })
+            .collect();
 
         // Serial post-processing: logging and diagnostics.
         let mut sample_trans_pairs: Vec<(Vec<u32>, usize)> = Vec::new();
@@ -796,8 +790,7 @@ pub fn learn_errors(
                 samples: sample_diags,
             };
             let path = dir.join(format!("iter_{:03}.json", iter + 1));
-            let json = serde_json::to_string_pretty(&diag)
-                .map_err(io::Error::other)?;
+            let json = serde_json::to_string_pretty(&diag).map_err(io::Error::other)?;
             std::fs::write(&path, json)?;
             if verbose {
                 eprintln!("[learn_errors] diagnostics written to {}", path.display());
