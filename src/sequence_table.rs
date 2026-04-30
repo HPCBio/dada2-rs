@@ -2,7 +2,7 @@
 //!
 //! Mirrors R's `makeSequenceTable`.  Each input file is either:
 //!   - A single-sample `dada` JSON object (`{ "asvs": [...] }`), or
-//!   - A multi-sample `merge-pairs` JSON array (`[{ "sample": "...", "merges": [...] }, ...]`).
+//!   - A multi-sample `merge-pairs` JSON array (`[{ "sample": "...", "merged": [...] }, ...]`).
 //!
 //! Output is a flat matrix:
 //! ```json
@@ -45,7 +45,7 @@ struct MergeEntry {
 #[derive(Deserialize)]
 struct SampleMergeResult {
     sample: String,
-    merges: Vec<MergeEntry>,
+    merged: Vec<MergeEntry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ fn parse_file(path: &Path, sample_name: Option<&str>) -> io::Result<Vec<SampleCo
                 .map(|r| SampleCounts {
                     name: r.sample,
                     counts: r
-                        .merges
+                        .merged
                         .into_iter()
                         .filter(|m| m.accept && !m.sequence.is_empty())
                         .map(|m| (m.sequence, m.abundance))
