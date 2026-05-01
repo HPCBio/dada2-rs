@@ -236,14 +236,11 @@ fn make_rng(seed: Option<u64>, index: usize) -> SmallRng {
 pub fn assign_taxonomy(
     seqs: &[&[u8]],
     rcs: &[&[u8]],
-    refs: &[&[u8]],
-    ref_to_genus: &[usize],
-    genus_tax: &[usize],
-    nlevel: usize,
-    try_rc: bool,
-    seed: Option<u64>,
-    verbose: bool,
+    ref_db: &TaxonomyRef<'_>,
+    opts: TaxonomyOptions,
 ) -> Result<TaxonomyResult, String> {
+    let TaxonomyRef { refs, ref_to_genus, genus_tax, nlevel } = *ref_db;
+    let TaxonomyOptions { try_rc, seed, verbose } = opts;
     // ---- Validate ----
     let nseq = seqs.len();
     if nseq == 0 {
@@ -404,6 +401,39 @@ pub fn assign_taxonomy(
 // assignSpecies — exact-match species assignment
 // ---------------------------------------------------------------------------
 
+/// Reference database for [`assign_taxonomy`].
+#[derive(Clone, Copy)]
+pub struct TaxonomyRef<'a> {
+    pub refs: &'a [&'a [u8]],
+    pub ref_to_genus: &'a [usize],
+    pub genus_tax: &'a [usize],
+    pub nlevel: usize,
+}
+
+/// Runtime options for [`assign_taxonomy`].
+#[derive(Clone, Copy)]
+pub struct TaxonomyOptions {
+    pub try_rc: bool,
+    pub seed: Option<u64>,
+    pub verbose: bool,
+}
+
+/// Reference database for [`assign_species`].
+#[derive(Clone, Copy)]
+pub struct SpeciesRef<'a> {
+    pub ref_seqs: &'a [&'a [u8]],
+    pub ref_genus: &'a [&'a str],
+    pub ref_species: &'a [&'a str],
+}
+
+/// Runtime options for [`assign_species`].
+#[derive(Clone, Copy)]
+pub struct SpeciesOptions {
+    pub max_species: usize,
+    pub try_rc: bool,
+    pub verbose: bool,
+}
+
 /// Per-query result from [`assign_species`].
 pub struct SpeciesHit {
     /// Unambiguous genus (after Escherichia/Shigella merging); `None` if
@@ -448,13 +478,11 @@ fn escsh(s: &str) -> &str {
 /// Equivalent to R's `assignSpecies`.
 pub fn assign_species(
     seqs: &[&[u8]],
-    ref_seqs: &[&[u8]],
-    ref_genus: &[&str],
-    ref_species: &[&str],
-    max_species: usize,
-    try_rc: bool,
-    verbose: bool,
+    ref_db: &SpeciesRef<'_>,
+    opts: SpeciesOptions,
 ) -> Vec<SpeciesHit> {
+    let SpeciesRef { ref_seqs, ref_genus, ref_species } = *ref_db;
+    let SpeciesOptions { max_species, try_rc, verbose } = opts;
     assert_eq!(ref_seqs.len(), ref_genus.len());
     assert_eq!(ref_seqs.len(), ref_species.len());
 

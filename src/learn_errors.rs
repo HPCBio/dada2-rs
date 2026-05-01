@@ -19,6 +19,7 @@ use flate2::read::MultiGzDecoder;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::cluster_trace::TraceParams;
 use crate::containers::Raw;
 use crate::dada::{DadaParams, RawInput, dada_uniques_cached};
 use crate::derep::dereplicate;
@@ -28,6 +29,18 @@ use crate::error_models::{
 };
 use crate::misc::nt_encode;
 use crate::nwalign::{AlignBuffers, AlignParams, raw_align_with_buf};
+
+// ---------------------------------------------------------------------------
+// Public parameter types
+// ---------------------------------------------------------------------------
+
+/// Diagnostic and trace output options for [`learn_errors`].
+pub struct LearnDiagOptions<'a> {
+    pub verbose: bool,
+    pub diag_dir: Option<&'a Path>,
+    pub cluster_trace_dir: Option<&'a Path>,
+    pub trace_params: TraceParams,
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -373,10 +386,10 @@ fn run_init_pass(
     raw_cache: &mut [Option<Vec<Raw>>],
     errfun: &ErrFun,
     dada_params: &mut DadaParams,
-    align_params: &AlignParams,
     nq: usize,
     verbose: bool,
 ) -> io::Result<Vec<f64>> {
+    let align_params = dada_params.align;
     // R: erri = matrix(1, nrow=16, ncol=...). Every entry, not just diagonal.
     let saved_max_clust = dada_params.max_clust;
     dada_params.err_mat = vec![1.0f64; 16 * nq];
@@ -392,7 +405,7 @@ fn run_init_pass(
             let outcome =
                 dada_uniques_cached(inputs, cached, dada_params).map(|(result, reused_raws)| {
                     *cache_slot = Some(reused_raws);
-                    build_trans_mat(inputs, &result, align_params, nq)
+                    build_trans_mat(inputs, &result, &align_params, nq)
                 });
             (si, outcome)
         })
@@ -561,12 +574,10 @@ struct IterDiag {
 /// # Arguments
 /// - `all_inputs`    — one `Vec<RawInput>` per sample (from `load_fastq_samples`)
 /// - `errfun`        — which error model fitting function to use
-/// - `dada_params`   — DADA2 algorithm parameters (error matrix is overwritten each iteration)
-/// - `align_params`  — NW alignment parameters
+/// - `dada_params`   — DADA2 algorithm parameters (error matrix is overwritten each iteration;
+///   alignment parameters are taken from `dada_params.align`)
 /// - `max_consist`   — maximum self-consistency iterations (R default: 10)
-/// - `verbose`       — print progress to stderr
-/// - `diag_dir`      — if `Some`, write per-iteration cluster diagnostics as
-///   `iter_001.json`, `iter_002.json`, … into this directory
+/// - `diag`          — diagnostic/trace output options (verbosity, directories, trace config)
 ///
 /// # Returns
 /// [`LearnErrorsResult`] with transition counts and error-rate matrices, or an I/O error.
@@ -574,13 +585,10 @@ pub fn learn_errors(
     all_inputs: Vec<Vec<RawInput>>,
     errfun: &ErrFun,
     mut dada_params: DadaParams,
-    align_params: &AlignParams,
     max_consist: usize,
-    verbose: bool,
-    diag_dir: Option<&Path>,
-    cluster_trace_dir: Option<&Path>,
-    trace_params: crate::cluster_trace::TraceParams,
+    diag: LearnDiagOptions<'_>,
 ) -> io::Result<LearnErrorsResult> {
+    let LearnDiagOptions { verbose, diag_dir, cluster_trace_dir, trace_params } = diag;
     if all_inputs.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -619,7 +627,6 @@ pub fn learn_errors(
         &mut raw_cache,
         errfun,
         &mut dada_params,
-        align_params,
         nq,
         verbose,
     )?;
@@ -656,7 +663,7 @@ pub fn learn_errors(
                 let outcome = dada_uniques_cached(inputs, cached, &dada_params).map(
                     |(result, reused_raws)| {
                         *cache_slot = Some(reused_raws);
-                        let t = build_trans_mat(inputs, &result, align_params, nq);
+                        let t = build_trans_mat(inputs, &result, &dada_params.align, nq);
                         (t, result)
                     },
                 );

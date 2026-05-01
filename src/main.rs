@@ -33,7 +33,8 @@ use containers::BirthType;
 use derep::dereplicate;
 use filter_trim::{FilterParams, PairedFiles, WriteOptions, filter_paired, filter_single, read_fasta_first_seq};
 use learn_errors::{
-    ErrFun, LearnedErrParams, learn_errors, load_derep_samples, load_fastq_samples,
+    ErrFun, LearnDiagOptions, LearnedErrParams, learn_errors, load_derep_samples,
+    load_fastq_samples,
 };
 use misc::{Tagged, read_fasta_records, read_tagged_json};
 use nwalign::AlignParams;
@@ -41,7 +42,10 @@ use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
 use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
 use serde::Serialize;
 use summary::process;
-use taxonomy::{SpeciesHit, assign_species, assign_taxonomy};
+use taxonomy::{
+    SpeciesHit, SpeciesOptions, SpeciesRef, TaxonomyOptions, TaxonomyRef, assign_species,
+    assign_taxonomy,
+};
 
 /// Build a [`LearnedErrParams`] snapshot from the resolved errfun + dada/align
 /// params, for embedding in the err-model JSON. Captures everything dada cares
@@ -1455,12 +1459,13 @@ fn main() -> io::Result<()> {
                     all_inputs,
                     &err_fun,
                     dada_params,
-                    &align_params,
                     max_consist,
-                    verbose,
-                    diag_dir.as_deref(),
-                    cluster_trace_dir.as_deref(),
-                    trace_params,
+                    LearnDiagOptions {
+                        verbose,
+                        diag_dir: diag_dir.as_deref(),
+                        cluster_trace_dir: cluster_trace_dir.as_deref(),
+                        trace_params,
+                    },
                 )
             })?;
 
@@ -1663,13 +1668,8 @@ fn main() -> io::Result<()> {
                     assign_taxonomy(
                         &query_seqs,
                         &rc_refs,
-                        &ref_seqs,
-                        &ref_to_genus,
-                        &genus_tax,
-                        nlevel,
-                        try_rc,
-                        seed,
-                        verbose,
+                        &TaxonomyRef { refs: &ref_seqs, ref_to_genus: &ref_to_genus, genus_tax: &genus_tax, nlevel },
+                        TaxonomyOptions { try_rc, seed, verbose },
                     )
                 })
                 .map_err(io::Error::other)?;
@@ -1821,12 +1821,8 @@ fn main() -> io::Result<()> {
 
             let hits: Vec<SpeciesHit> = assign_species(
                 &query_seqs,
-                &ref_seqs,
-                &ref_genus,
-                &ref_species,
-                allow_multiple,
-                try_rc,
-                verbose,
+                &SpeciesRef { ref_seqs: &ref_seqs, ref_genus: &ref_genus, ref_species: &ref_species },
+                SpeciesOptions { max_species: allow_multiple, try_rc, verbose },
             );
 
             // ---- Serialize ----
@@ -2005,12 +2001,13 @@ fn main() -> io::Result<()> {
                     all_inputs,
                     &err_fun,
                     dada_params,
-                    &align_params,
                     max_consist,
-                    verbose,
-                    diag_dir.as_deref(),
-                    cluster_trace_dir.as_deref(),
-                    trace_params,
+                    LearnDiagOptions {
+                        verbose,
+                        diag_dir: diag_dir.as_deref(),
+                        cluster_trace_dir: cluster_trace_dir.as_deref(),
+                        trace_params,
+                    },
                 )
             })?;
 
