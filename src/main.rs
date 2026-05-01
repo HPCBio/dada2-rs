@@ -31,7 +31,7 @@ mod taxonomy;
 use cli::{Cli, Commands};
 use containers::BirthType;
 use derep::dereplicate;
-use filter_trim::{FilterParams, filter_paired, filter_single, read_fasta_first_seq};
+use filter_trim::{FilterParams, PairedFiles, WriteOptions, filter_paired, filter_single, read_fasta_first_seq};
 use learn_errors::{
     ErrFun, LearnedErrParams, learn_errors, load_derep_samples, load_fastq_samples,
 };
@@ -932,19 +932,21 @@ fn main() -> io::Result<()> {
                         .par_iter()
                         .map(|&i| {
                             let sample = fastq_stem(&fwd[i]);
+                            let opts = WriteOptions { compress, verbose };
                             let stats = if paired {
                                 filter_paired(
-                                    &fwd[i],
-                                    &rev_files[i],
-                                    &filt[i],
-                                    &filt_rev_files[i],
+                                    &PairedFiles {
+                                        fwd_in: &fwd[i],
+                                        rev_in: &rev_files[i],
+                                        fwd_out: &filt[i],
+                                        rev_out: &filt_rev_files[i],
+                                    },
                                     &params_fwd,
                                     &params_rev,
-                                    compress,
-                                    verbose,
+                                    opts,
                                 )?
                             } else {
-                                filter_single(&fwd[i], &filt[i], &params_fwd, compress, verbose)?
+                                filter_single(&fwd[i], &filt[i], &params_fwd, opts)?
                             };
                             Ok(SampleResult {
                                 sample,
@@ -960,19 +962,21 @@ fn main() -> io::Result<()> {
                 let mut out = Vec::with_capacity(n);
                 for i in 0..n {
                     let sample = fastq_stem(&fwd[i]);
+                    let opts = WriteOptions { compress, verbose };
                     let stats = if paired {
                         filter_paired(
-                            &fwd[i],
-                            &rev_files[i],
-                            &filt[i],
-                            &filt_rev_files[i],
+                            &PairedFiles {
+                                fwd_in: &fwd[i],
+                                rev_in: &rev_files[i],
+                                fwd_out: &filt[i],
+                                rev_out: &filt_rev_files[i],
+                            },
                             &params_fwd,
                             &params_rev,
-                            compress,
-                            verbose,
+                            opts,
                         )?
                     } else {
-                        filter_single(&fwd[i], &filt[i], &params_fwd, compress, verbose)?
+                        filter_single(&fwd[i], &filt[i], &params_fwd, opts)?
                     };
                     out.push(SampleResult {
                         sample,

@@ -68,6 +68,21 @@ pub struct SampleStats {
     pub reads_out: u64,
 }
 
+/// I/O options shared by all filter entry points.
+#[derive(Debug, Clone, Copy)]
+pub struct WriteOptions {
+    pub compress: bool,
+    pub verbose: bool,
+}
+
+/// Input/output path pair for a paired-end filter run.
+pub struct PairedFiles<'a> {
+    pub fwd_in: &'a Path,
+    pub rev_in: &'a Path,
+    pub fwd_out: &'a Path,
+    pub rev_out: &'a Path,
+}
+
 // ---------------------------------------------------------------------------
 // PhiX helpers
 // ---------------------------------------------------------------------------
@@ -308,9 +323,9 @@ pub fn filter_single(
     input: &Path,
     output: &Path,
     params: &FilterParams,
-    compress: bool,
-    verbose: bool,
+    opts: WriteOptions,
 ) -> io::Result<SampleStats> {
+    let WriteOptions { compress, verbose } = opts;
     let phix = params.phix_genome.clone().map(phix_genomes);
 
     let mut reader = open_reader(input)?;
@@ -390,15 +405,13 @@ pub fn filter_single(
 ///
 /// A pair is written to the outputs only when **both** reads pass all filters.
 pub fn filter_paired(
-    fwd_in: &Path,
-    rev_in: &Path,
-    fwd_out: &Path,
-    rev_out: &Path,
+    files: &PairedFiles<'_>,
     params_fwd: &FilterParams,
     params_rev: &FilterParams,
-    compress: bool,
-    verbose: bool,
+    opts: WriteOptions,
 ) -> io::Result<SampleStats> {
+    let PairedFiles { fwd_in, rev_in, fwd_out, rev_out } = files;
+    let WriteOptions { compress, verbose } = opts;
     let phix = params_fwd
         .phix_genome
         .clone()
