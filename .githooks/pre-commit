@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "--- pre-commit: cargo fmt check ---"
+if ! cargo fmt --all -- --check; then
+    echo ""
+    echo "Formatting issues detected. Run 'cargo fmt --all' to fix, then re-stage."
+    exit 1
+fi
+
+echo "--- pre-commit: cargo clippy ---"
+cargo clippy -- -D warnings

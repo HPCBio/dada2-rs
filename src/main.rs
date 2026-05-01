@@ -31,7 +31,9 @@ mod taxonomy;
 use cli::{Cli, Commands};
 use containers::BirthType;
 use derep::dereplicate;
-use filter_trim::{FilterParams, PairedFiles, WriteOptions, filter_paired, filter_single, read_fasta_first_seq};
+use filter_trim::{
+    FilterParams, PairedFiles, WriteOptions, filter_paired, filter_single, read_fasta_first_seq,
+};
 use learn_errors::{
     ErrFun, LearnDiagOptions, LearnedErrParams, learn_errors, load_derep_samples,
     load_fastq_samples,
@@ -286,13 +288,10 @@ fn main() -> io::Result<()> {
 
             // ---- Mark prior sequences ----
             if let Some(ref prior_path) = prior {
-                let prior_seqs: std::collections::HashSet<String> =
-                    read_fasta_records(prior_path)?
-                        .into_iter()
-                        .map(|(_, seq)| {
-                            String::from_utf8_lossy(&seq).to_ascii_uppercase()
-                        })
-                        .collect();
+                let prior_seqs: std::collections::HashSet<String> = read_fasta_records(prior_path)?
+                    .into_iter()
+                    .map(|(_, seq)| String::from_utf8_lossy(&seq).to_ascii_uppercase())
+                    .collect();
                 let mut n_marked = 0usize;
                 for inp in &mut raw_inputs {
                     if prior_seqs.contains(&inp.seq.to_ascii_uppercase()) {
@@ -773,9 +772,8 @@ fn main() -> io::Result<()> {
                             let i = merged_seqs.len();
                             seq_to_merged.insert(seq.clone(), i);
                             merged_seqs.push(seq.clone());
-                            merged_qual_sum.push(
-                                qual.iter().map(|&q| q * count_u32 as f64).collect(),
-                            );
+                            merged_qual_sum
+                                .push(qual.iter().map(|&q| q * count_u32 as f64).collect());
                             merged_total.push(count_u32);
                             i
                         }
@@ -802,9 +800,7 @@ fn main() -> io::Result<()> {
                     let mean_qual: Vec<f64> =
                         merged_qual_sum[i].iter().map(|&s| s / total).collect();
                     let sequence: String = String::from_utf8(merged_seqs[i].clone())
-                        .unwrap_or_else(|e| {
-                            String::from_utf8_lossy(e.as_bytes()).into_owned()
-                        });
+                        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
                     dada::RawInput {
                         seq: sequence,
                         abundance: merged_total[i],
@@ -979,8 +975,7 @@ fn main() -> io::Result<()> {
                 }
 
                 // Filter to clusters present in this sample; renumber globally → locally.
-                let mut global_to_local: Vec<Option<usize>> =
-                    vec![None; result.clusters.len()];
+                let mut global_to_local: Vec<Option<usize>> = vec![None; result.clusters.len()];
                 let mut asvs: Vec<AsvEntry> = Vec::new();
                 for (c, cluster) in result.clusters.iter().enumerate() {
                     if cluster_reads[c] == 0 {
@@ -2071,8 +2066,17 @@ fn main() -> io::Result<()> {
                     assign_taxonomy(
                         &query_seqs,
                         &rc_refs,
-                        &TaxonomyRef { refs: &ref_seqs, ref_to_genus: &ref_to_genus, genus_tax: &genus_tax, nlevel },
-                        TaxonomyOptions { try_rc, seed, verbose },
+                        &TaxonomyRef {
+                            refs: &ref_seqs,
+                            ref_to_genus: &ref_to_genus,
+                            genus_tax: &genus_tax,
+                            nlevel,
+                        },
+                        TaxonomyOptions {
+                            try_rc,
+                            seed,
+                            verbose,
+                        },
                     )
                 })
                 .map_err(io::Error::other)?;
@@ -2224,8 +2228,16 @@ fn main() -> io::Result<()> {
 
             let hits: Vec<SpeciesHit> = assign_species(
                 &query_seqs,
-                &SpeciesRef { ref_seqs: &ref_seqs, ref_genus: &ref_genus, ref_species: &ref_species },
-                SpeciesOptions { max_species: allow_multiple, try_rc, verbose },
+                &SpeciesRef {
+                    ref_seqs: &ref_seqs,
+                    ref_genus: &ref_genus,
+                    ref_species: &ref_species,
+                },
+                SpeciesOptions {
+                    max_species: allow_multiple,
+                    try_rc,
+                    verbose,
+                },
             );
 
             // ---- Serialize ----

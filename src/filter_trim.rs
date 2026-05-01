@@ -410,7 +410,12 @@ pub fn filter_paired(
     params_rev: &FilterParams,
     opts: WriteOptions,
 ) -> io::Result<SampleStats> {
-    let PairedFiles { fwd_in, rev_in, fwd_out, rev_out } = files;
+    let PairedFiles {
+        fwd_in,
+        rev_in,
+        fwd_out,
+        rev_out,
+    } = files;
     let WriteOptions { compress, verbose } = opts;
     let phix = params_fwd
         .phix_genome

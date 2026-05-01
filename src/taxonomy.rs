@@ -239,8 +239,17 @@ pub fn assign_taxonomy(
     ref_db: &TaxonomyRef<'_>,
     opts: TaxonomyOptions,
 ) -> Result<TaxonomyResult, String> {
-    let TaxonomyRef { refs, ref_to_genus, genus_tax, nlevel } = *ref_db;
-    let TaxonomyOptions { try_rc, seed, verbose } = opts;
+    let TaxonomyRef {
+        refs,
+        ref_to_genus,
+        genus_tax,
+        nlevel,
+    } = *ref_db;
+    let TaxonomyOptions {
+        try_rc,
+        seed,
+        verbose,
+    } = opts;
     // ---- Validate ----
     let nseq = seqs.len();
     if nseq == 0 {
@@ -481,8 +490,16 @@ pub fn assign_species(
     ref_db: &SpeciesRef<'_>,
     opts: SpeciesOptions,
 ) -> Vec<SpeciesHit> {
-    let SpeciesRef { ref_seqs, ref_genus, ref_species } = *ref_db;
-    let SpeciesOptions { max_species, try_rc, verbose } = opts;
+    let SpeciesRef {
+        ref_seqs,
+        ref_genus,
+        ref_species,
+    } = *ref_db;
+    let SpeciesOptions {
+        max_species,
+        try_rc,
+        verbose,
+    } = opts;
     assert_eq!(ref_seqs.len(), ref_genus.len());
     assert_eq!(ref_seqs.len(), ref_species.len());
 

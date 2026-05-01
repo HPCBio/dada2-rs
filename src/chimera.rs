@@ -193,7 +193,13 @@ pub fn is_bimera_with_buf(
         gap_p,
         max_shift,
     } = *params;
-    let align_scores = VectorizedAlignScores { match_score, mismatch, gap_p, end_gap_p: 0, band: max_shift };
+    let align_scores = VectorizedAlignScores {
+        match_score,
+        mismatch,
+        gap_p,
+        end_gap_p: 0,
+        band: max_shift,
+    };
     let sqlen = sq.len();
     let mut max_left = 0usize;
     let mut max_right = 0usize;
@@ -286,7 +292,13 @@ pub fn table_bimera2(
         gap_p,
         max_shift,
     } = *params;
-    let align_scores = VectorizedAlignScores { match_score, mismatch, gap_p, end_gap_p: 0, band: max_shift };
+    let align_scores = VectorizedAlignScores {
+        match_score,
+        mismatch,
+        gap_p,
+        end_gap_p: 0,
+        band: max_shift,
+    };
     assert_eq!(mat.len(), nrow * ncol, "mat length must be nrow * ncol");
     assert_eq!(seqs.len(), ncol, "seqs length must equal ncol");
 

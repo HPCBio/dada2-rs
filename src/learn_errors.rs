@@ -588,7 +588,12 @@ pub fn learn_errors(
     max_consist: usize,
     diag: LearnDiagOptions<'_>,
 ) -> io::Result<LearnErrorsResult> {
-    let LearnDiagOptions { verbose, diag_dir, cluster_trace_dir, trace_params } = diag;
+    let LearnDiagOptions {
+        verbose,
+        diag_dir,
+        cluster_trace_dir,
+        trace_params,
+    } = diag;
     if all_inputs.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

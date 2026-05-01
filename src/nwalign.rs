@@ -355,7 +355,14 @@ pub fn align_endsfree_homo_with_buf(
     params: &AlignParams,
     buf: &mut AlignBuffers,
 ) {
-    let AlignParams { match_score, mismatch, gap_p, homo_gap_p, band, .. } = *params;
+    let AlignParams {
+        match_score,
+        mismatch,
+        gap_p,
+        homo_gap_p,
+        band,
+        ..
+    } = *params;
     let len1 = s1.len();
     let len2 = s2.len();
     let ncol = len2 + 1;
@@ -640,7 +647,13 @@ pub fn align_vectorized_with_buf(
     scores: &VectorizedAlignScores,
     buf: &mut AlignBuffers,
 ) {
-    let VectorizedAlignScores { match_score, mismatch, gap_p, end_gap_p, band } = *scores;
+    let VectorizedAlignScores {
+        match_score,
+        mismatch,
+        gap_p,
+        end_gap_p,
+        band,
+    } = *scores;
     // Ensure s1 is the shorter sequence; record whether we swapped.
     let swap = s1_in.len() > s2_in.len();
     let (s1, s2) = if swap { (s2_in, s1_in) } else { (s1_in, s2_in) };
@@ -1239,7 +1252,17 @@ mod tests {
     /// Assert that align_vectorized produces the same optimal score as align_endsfree.
     fn compare_alignments(s1: &[u8], s2: &[u8], label: &str) {
         let ef = align_endsfree(s1, s2, MATCH, MM, GAP, BAND);
-        let ve = align_vectorized(s1, s2, &VectorizedAlignScores { match_score: MATCH as i16, mismatch: MM as i16, gap_p: GAP as i16, end_gap_p: 0, band: BAND });
+        let ve = align_vectorized(
+            s1,
+            s2,
+            &VectorizedAlignScores {
+                match_score: MATCH as i16,
+                mismatch: MM as i16,
+                gap_p: GAP as i16,
+                end_gap_p: 0,
+                band: BAND,
+            },
+        );
 
         let score_ef = score_alignment(&ef, MATCH, MM, GAP);
         let score_ve = score_alignment(&ve, MATCH, MM, GAP);
