@@ -219,6 +219,7 @@ fn main() -> io::Result<()> {
             input,
             error_model,
             use_err_in,
+            prior,
             inherit_err_params,
             phred_offset,
             threads,
@@ -260,7 +261,7 @@ fn main() -> io::Result<()> {
                 dereplicate(File::open(&input)?, phred_offset, &pool, verbose)?
             };
 
-            let raw_inputs: Vec<dada::RawInput> = derep
+            let mut raw_inputs: Vec<dada::RawInput> = derep
                 .uniques
                 .into_iter()
                 .zip(derep.quals)
@@ -281,6 +282,32 @@ fn main() -> io::Result<()> {
                     io::ErrorKind::InvalidData,
                     "FASTQ contains no reads",
                 ));
+            }
+
+            // ---- Mark prior sequences ----
+            if let Some(ref prior_path) = prior {
+                let prior_seqs: std::collections::HashSet<String> =
+                    read_fasta_records(prior_path)?
+                        .into_iter()
+                        .map(|(_, seq)| {
+                            String::from_utf8_lossy(&seq).to_ascii_uppercase()
+                        })
+                        .collect();
+                let mut n_marked = 0usize;
+                for inp in &mut raw_inputs {
+                    if prior_seqs.contains(&inp.seq.to_ascii_uppercase()) {
+                        inp.prior = true;
+                        n_marked += 1;
+                    }
+                }
+                if verbose {
+                    eprintln!(
+                        "[dada] {} of {} unique(s) marked as prior from {}",
+                        n_marked,
+                        raw_inputs.len(),
+                        prior_path.display(),
+                    );
+                }
             }
 
             // ---- Load error model JSON ----

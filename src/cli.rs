@@ -87,6 +87,14 @@ pub enum Commands {
         #[arg(long)]
         use_err_in: bool,
 
+        /// FASTA file of prior sequences (uncompressed or gzip-compressed).
+        ///
+        /// Each sequence in the file that matches a dereplicated unique exactly
+        /// is flagged as a prior, making it immune to the abundance p-value
+        /// filter. Prior-based splitting uses --omega-p instead of --omega-a.
+        #[arg(long)]
+        prior: Option<PathBuf>,
+
         /// Inherit any unspecified algorithm parameters (omega_*, min_*,
         /// detect_singletons, band, homo_gap_p, kdist_cutoff, kmer_size,
         /// no_kmer_screen) from the error model JSON's `params` block. Any
