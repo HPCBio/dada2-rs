@@ -32,6 +32,14 @@ The primary goal of this project is a faithful port of R DADA2. When in doubt, b
 
 Follow standard Rust idioms (`cargo fmt`, `cargo clippy`). Comments should explain *why* something is done, not *what* — especially where the code mirrors a non-obvious algorithmic choice from the R or C++ source.
 
+### Local pre-commit checks
+
+A pre-commit hook script lives in `.githooks/pre-commit`. It runs `cargo fmt --all -- --check` and `cargo clippy -- -D warnings` before each commit, matching the CI lint job. Activate it once after cloning:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## Reporting bugs
 
 Please open a GitHub issue with:
