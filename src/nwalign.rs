@@ -45,6 +45,19 @@ pub struct AlignParams {
     pub gapless: bool,
 }
 
+/// Scoring parameters for [`align_vectorized_with_buf`].
+///
+/// Uses `i16` to match the SIMD-friendly DP tables; `end_gap_p = 0` gives
+/// ends-free behaviour, `end_gap_p = gap_p` gives standard NW edge costs.
+#[derive(Clone, Copy, Debug)]
+pub struct VectorizedAlignScores {
+    pub match_score: i16,
+    pub mismatch: i16,
+    pub gap_p: i16,
+    pub end_gap_p: i16,
+    pub band: i32,
+}
+
 // ---------------------------------------------------------------------------
 // AlignBuffers
 // ---------------------------------------------------------------------------
@@ -134,6 +147,7 @@ fn homopolymer_mask_into(seq: &[u8], mask: &mut Vec<bool>) {
 /// alignment pair. Clears the buffers first so any prior alignment is
 /// overwritten; reuses the existing allocation.
 /// Shared by `align_endsfree`, `align_endsfree_homo`, and `align_standard`.
+#[allow(clippy::too_many_arguments)]
 fn traceback_into(
     p: &[u8],
     ncol: usize,
@@ -328,26 +342,9 @@ pub fn align_endsfree_with_buf(
 /// Gaps inside homopolymer runs (length ≥ 3) use `homo_gap_p` instead of
 /// `gap_p`.  Equivalent to C++ `nwalign_endsfree_homo`.
 #[allow(dead_code)]
-pub fn align_endsfree_homo(
-    s1: &[u8],
-    s2: &[u8],
-    match_score: i32,
-    mismatch: i32,
-    gap_p: i32,
-    homo_gap_p: i32,
-    band: i32,
-) -> [Vec<u8>; 2] {
+pub fn align_endsfree_homo(s1: &[u8], s2: &[u8], params: &AlignParams) -> [Vec<u8>; 2] {
     let mut buf = AlignBuffers::new();
-    align_endsfree_homo_with_buf(
-        s1,
-        s2,
-        match_score,
-        mismatch,
-        gap_p,
-        homo_gap_p,
-        band,
-        &mut buf,
-    );
+    align_endsfree_homo_with_buf(s1, s2, params, &mut buf);
     [std::mem::take(&mut buf.al0), std::mem::take(&mut buf.al1)]
 }
 
@@ -355,13 +352,10 @@ pub fn align_endsfree_homo(
 pub fn align_endsfree_homo_with_buf(
     s1: &[u8],
     s2: &[u8],
-    match_score: i32,
-    mismatch: i32,
-    gap_p: i32,
-    homo_gap_p: i32,
-    band: i32,
+    params: &AlignParams,
     buf: &mut AlignBuffers,
 ) {
+    let AlignParams { match_score, mismatch, gap_p, homo_gap_p, band, .. } = *params;
     let len1 = s1.len();
     let len2 = s2.len();
     let ncol = len2 + 1;
@@ -577,6 +571,7 @@ pub fn align_gapless_with_buf(s1: &[u8], s2: &[u8], buf: &mut AlignBuffers) {
 /// DP inner loop with `up ≥ left ≥ diag` tie-breaking precedence.
 /// Equivalent to C++ `dploop_vec`.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn dploop(
     d: &mut [i16],
     p: &mut [i16],
@@ -629,23 +624,10 @@ fn dploop(
 pub fn align_vectorized(
     s1_in: &[u8],
     s2_in: &[u8],
-    match_score: i16,
-    mismatch: i16,
-    gap_p: i16,
-    end_gap_p: i16,
-    band: i32,
+    scores: &VectorizedAlignScores,
 ) -> [Vec<u8>; 2] {
     let mut buf = AlignBuffers::new();
-    align_vectorized_with_buf(
-        s1_in,
-        s2_in,
-        match_score,
-        mismatch,
-        gap_p,
-        end_gap_p,
-        band,
-        &mut buf,
-    );
+    align_vectorized_with_buf(s1_in, s2_in, scores, &mut buf);
     [std::mem::take(&mut buf.al0), std::mem::take(&mut buf.al1)]
 }
 
@@ -655,13 +637,10 @@ pub fn align_vectorized(
 pub fn align_vectorized_with_buf(
     s1_in: &[u8],
     s2_in: &[u8],
-    match_score: i16,
-    mismatch: i16,
-    gap_p: i16,
-    end_gap_p: i16,
-    band: i32,
+    scores: &VectorizedAlignScores,
     buf: &mut AlignBuffers,
 ) {
+    let VectorizedAlignScores { match_score, mismatch, gap_p, end_gap_p, band } = *scores;
     // Ensure s1 is the shorter sequence; record whether we swapped.
     let swap = s1_in.len() > s2_in.len();
     let (s1, s2) = if swap { (s2_in, s1_in) } else { (s1_in, s2_in) };
@@ -1110,26 +1089,19 @@ pub fn raw_align_with_buf(
         align_vectorized_with_buf(
             &raw1.seq,
             &raw2.seq,
-            p.match_score as i16,
-            p.mismatch as i16,
-            p.gap_p as i16,
-            0, // end_gap_p = 0 for ends-free
-            p.band,
+            &VectorizedAlignScores {
+                match_score: p.match_score as i16,
+                mismatch: p.mismatch as i16,
+                gap_p: p.gap_p as i16,
+                end_gap_p: 0,
+                band: p.band,
+            },
             buf,
         );
         return Some(());
     }
     if p.homo_gap_p != p.gap_p && p.homo_gap_p <= 0 {
-        align_endsfree_homo_with_buf(
-            &raw1.seq,
-            &raw2.seq,
-            p.match_score,
-            p.mismatch,
-            p.gap_p,
-            p.homo_gap_p,
-            p.band,
-            buf,
-        );
+        align_endsfree_homo_with_buf(&raw1.seq, &raw2.seq, p, buf);
         return Some(());
     }
     align_endsfree_with_buf(
@@ -1267,7 +1239,7 @@ mod tests {
     /// Assert that align_vectorized produces the same optimal score as align_endsfree.
     fn compare_alignments(s1: &[u8], s2: &[u8], label: &str) {
         let ef = align_endsfree(s1, s2, MATCH, MM, GAP, BAND);
-        let ve = align_vectorized(s1, s2, MATCH as i16, MM as i16, GAP as i16, 0, BAND);
+        let ve = align_vectorized(s1, s2, &VectorizedAlignScores { match_score: MATCH as i16, mismatch: MM as i16, gap_p: GAP as i16, end_gap_p: 0, band: BAND });
 
         let score_ef = score_alignment(&ef, MATCH, MM, GAP);
         let score_ve = score_alignment(&ve, MATCH, MM, GAP);

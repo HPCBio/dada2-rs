@@ -9,7 +9,7 @@
 
 use rayon::prelude::*;
 
-use crate::nwalign::{AlignBuffers, align_vectorized_with_buf};
+use crate::nwalign::{AlignBuffers, VectorizedAlignScores, align_vectorized_with_buf};
 
 // ---------------------------------------------------------------------------
 // Private alignment helpers
@@ -193,6 +193,7 @@ pub fn is_bimera_with_buf(
         gap_p,
         max_shift,
     } = *params;
+    let align_scores = VectorizedAlignScores { match_score, mismatch, gap_p, end_gap_p: 0, band: max_shift };
     let sqlen = sq.len();
     let mut max_left = 0usize;
     let mut max_right = 0usize;
@@ -202,7 +203,7 @@ pub fn is_bimera_with_buf(
     let mut oo_max_right_oo = 0usize;
 
     for &par in parents {
-        align_vectorized_with_buf(sq, par, match_score, mismatch, gap_p, 0, max_shift, buf);
+        align_vectorized_with_buf(sq, par, &align_scores, buf);
         let (al0, al1) = buf.alignment();
         let (left, right, left_oo, right_oo) = get_lr(al0, al1, allow_one_off, max_shift as usize);
 
@@ -285,6 +286,7 @@ pub fn table_bimera2(
         gap_p,
         max_shift,
     } = *params;
+    let align_scores = VectorizedAlignScores { match_score, mismatch, gap_p, end_gap_p: 0, band: max_shift };
     assert_eq!(mat.len(), nrow * ncol, "mat length must be nrow * ncol");
     assert_eq!(seqs.len(), ncol, "seqs length must equal ncol");
 
@@ -323,16 +325,7 @@ pub fn table_bimera2(
 
                     // Compute alignment if not cached for this (j, k) pair.
                     if cache[k].is_none() {
-                        align_vectorized_with_buf(
-                            seqs[j],
-                            seqs[k],
-                            match_score,
-                            mismatch,
-                            gap_p,
-                            0,
-                            max_shift,
-                            buf,
-                        );
+                        align_vectorized_with_buf(seqs[j], seqs[k], &align_scores, buf);
                         let (al0, al1) = buf.alignment();
                         let (left, right, left_oo, right_oo) =
                             get_lr(al0, al1, allow_one_off, max_shift as usize);
