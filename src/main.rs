@@ -681,6 +681,382 @@ fn main() -> io::Result<()> {
             }
         }
 
+        Commands::DadaPooled {
+            input,
+            error_model,
+            use_err_in,
+            prior,
+            inherit_err_params,
+            sample_names,
+            output_dir,
+            phred_offset,
+            threads,
+            omega_a,
+            omega_c,
+            omega_p,
+            min_fold,
+            min_hamming,
+            min_abund,
+            detect_singletons,
+            band,
+            homo_gap_p,
+            kdist_cutoff,
+            kmer_size,
+            no_kmer_screen,
+            show_map,
+            compact,
+            verbose,
+        } => {
+            use std::collections::{HashMap, HashSet};
+
+            let n_samples = input.len();
+            let sample_names: Vec<String> = match sample_names {
+                Some(names) => {
+                    if names.len() != n_samples {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!(
+                                "--sample-names has {} entries but {} input file(s) given",
+                                names.len(),
+                                n_samples
+                            ),
+                        ));
+                    }
+                    names
+                }
+                None => input.iter().map(|p| fastq_stem(p)).collect(),
+            };
+
+            std::fs::create_dir_all(&output_dir)?;
+
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .map_err(io::Error::other)?;
+
+            // ---- Per-sample dereplication ----
+            let mut dereps: Vec<derep::Derep> = Vec::with_capacity(n_samples);
+            for path in &input {
+                let derep = if path.extension().and_then(|e| e.to_str()) == Some("gz") {
+                    dereplicate(
+                        MultiGzDecoder::new(File::open(path)?),
+                        phred_offset,
+                        &pool,
+                        verbose,
+                    )?
+                } else {
+                    dereplicate(File::open(path)?, phred_offset, &pool, verbose)?
+                };
+                dereps.push(derep);
+            }
+
+            // ---- Merge across samples (abundance-weighted quality average) ----
+            let mut seq_to_merged: HashMap<Vec<u8>, usize> = HashMap::new();
+            let mut merged_seqs: Vec<Vec<u8>> = Vec::new();
+            let mut merged_qual_sum: Vec<Vec<f64>> = Vec::new();
+            let mut merged_total: Vec<u32> = Vec::new();
+            let mut local_to_merged: Vec<Vec<usize>> = Vec::with_capacity(n_samples);
+
+            for derep in &dereps {
+                let mut local_map: Vec<usize> = Vec::with_capacity(derep.uniques.len());
+                for ((seq, count), qual) in derep.uniques.iter().zip(derep.quals.iter()) {
+                    let count_u32 = *count as u32;
+                    let mu = match seq_to_merged.get(seq) {
+                        Some(&i) => {
+                            merged_total[i] += count_u32;
+                            for (p, &q) in qual.iter().enumerate() {
+                                merged_qual_sum[i][p] += q * count_u32 as f64;
+                            }
+                            i
+                        }
+                        None => {
+                            let i = merged_seqs.len();
+                            seq_to_merged.insert(seq.clone(), i);
+                            merged_seqs.push(seq.clone());
+                            merged_qual_sum.push(
+                                qual.iter().map(|&q| q * count_u32 as f64).collect(),
+                            );
+                            merged_total.push(count_u32);
+                            i
+                        }
+                    };
+                    local_map.push(mu);
+                }
+                local_to_merged.push(local_map);
+            }
+
+            let n_merged = merged_seqs.len();
+            if verbose {
+                eprintln!(
+                    "[dada-pooled] {} sample(s) → {} merged unique(s), {} total reads",
+                    n_samples,
+                    n_merged,
+                    merged_total.iter().sum::<u32>()
+                );
+            }
+
+            // ---- Build merged RawInput list ----
+            let mut raw_inputs: Vec<dada::RawInput> = (0..n_merged)
+                .map(|i| {
+                    let total = merged_total[i] as f64;
+                    let mean_qual: Vec<f64> =
+                        merged_qual_sum[i].iter().map(|&s| s / total).collect();
+                    let sequence: String = String::from_utf8(merged_seqs[i].clone())
+                        .unwrap_or_else(|e| {
+                            String::from_utf8_lossy(e.as_bytes()).into_owned()
+                        });
+                    dada::RawInput {
+                        seq: sequence,
+                        abundance: merged_total[i],
+                        prior: false,
+                        quals: Some(mean_qual),
+                    }
+                })
+                .collect();
+
+            if raw_inputs.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "All input FASTQ files contain no reads",
+                ));
+            }
+
+            // ---- Mark prior sequences ----
+            if let Some(ref prior_path) = prior {
+                let prior_seqs: HashSet<String> = read_fasta_records(prior_path)?
+                    .into_iter()
+                    .map(|(_, seq)| String::from_utf8_lossy(&seq).to_ascii_uppercase())
+                    .collect();
+                let mut n_marked = 0usize;
+                for inp in &mut raw_inputs {
+                    if prior_seqs.contains(&inp.seq.to_ascii_uppercase()) {
+                        inp.prior = true;
+                        n_marked += 1;
+                    }
+                }
+                if verbose {
+                    eprintln!(
+                        "[dada-pooled] {} of {} merged unique(s) marked as prior from {}",
+                        n_marked,
+                        raw_inputs.len(),
+                        prior_path.display(),
+                    );
+                }
+            }
+
+            // ---- Load error model JSON (same logic as `dada`) ----
+            #[derive(serde::Deserialize)]
+            struct ErrorModelJson {
+                nq: usize,
+                err_in: Vec<Vec<f64>>,
+                err_out: Vec<Vec<f64>>,
+                #[serde(default)]
+                params: Option<LearnedErrParams>,
+            }
+            let em: ErrorModelJson =
+                read_tagged_json(&error_model, &["learn-errors", "errors-from-sample"])?;
+            let nq = em.nq;
+            let rows = if use_err_in { &em.err_in } else { &em.err_out };
+            if rows.len() != 16 || rows.iter().any(|r| r.len() != nq) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Error model matrix must be 16 × {nq}, got {} rows",
+                        rows.len()
+                    ),
+                ));
+            }
+            let err_mat: Vec<f64> = rows.iter().flat_map(|r| r.iter().copied()).collect();
+
+            // ---- Resolve parameters (same precedence as `dada`) ----
+            let p = em.params.as_ref();
+            macro_rules! resolve {
+                ($cli:expr, $em_field:ident, $default:expr) => {{
+                    match ($cli, inherit_err_params, p) {
+                        (Some(v), _, _) => v,
+                        (None, true, Some(em_params)) => em_params.$em_field,
+                        _ => $default,
+                    }
+                }};
+            }
+            let omega_a = resolve!(omega_a, omega_a, 1e-40);
+            let omega_c = resolve!(omega_c, omega_c, 1e-40);
+            let omega_p = resolve!(omega_p, omega_p, 1e-4);
+            let min_fold = resolve!(min_fold, min_fold, 1.0);
+            let min_hamming = resolve!(min_hamming, min_hamming, 1);
+            let min_abund = resolve!(min_abund, min_abund, 1);
+            let detect_singletons = resolve!(detect_singletons, detect_singletons, false);
+            let band = resolve!(band, band, 16);
+            let homo_gap_p = resolve!(homo_gap_p, homo_gap_p, -8);
+            let kdist_cutoff = resolve!(kdist_cutoff, kdist_cutoff, 0.42);
+            let kmer_size = resolve!(kmer_size, kmer_size, 5);
+            let use_kmers = match (no_kmer_screen, inherit_err_params, p) {
+                (Some(no), _, _) => !no,
+                (None, true, Some(em_params)) => em_params.use_kmers,
+                _ => true,
+            };
+
+            let align_params = AlignParams {
+                match_score: 5,
+                mismatch: -4,
+                gap_p: -8,
+                homo_gap_p,
+                use_kmers,
+                kdist_cutoff,
+                kmer_size,
+                band,
+                vectorized: true,
+                gapless: true,
+            };
+
+            let dada_params = dada::DadaParams {
+                align: align_params,
+                err_mat,
+                err_ncol: nq,
+                omega_a,
+                omega_c,
+                omega_p,
+                detect_singletons,
+                max_clust: 0,
+                min_fold,
+                min_hamming,
+                min_abund,
+                use_quals: true,
+                final_consensus: false,
+                multithread: threads > 1,
+                verbose,
+                greedy: true,
+                aux_outputs: false,
+            };
+
+            // ---- Run DADA once on the merged table ----
+            let result = pool
+                .install(|| dada::dada_uniques(&raw_inputs, &dada_params))
+                .map_err(io::Error::other)?;
+
+            if verbose {
+                eprintln!(
+                    "[dada-pooled] {} ASV(s) from {} merged unique(s); {} aligns, {} shrouded",
+                    result.clusters.len(),
+                    raw_inputs.len(),
+                    result.nalign,
+                    result.nshroud,
+                );
+            }
+
+            // ---- Per-sample output ----
+            #[derive(Serialize)]
+            struct AsvEntry {
+                sequence: String,
+                abundance: u32,
+                birth_type: String,
+                birth_pval: f64,
+                birth_fold: f64,
+                birth_e: f64,
+            }
+            #[derive(Serialize)]
+            struct DadaStats {
+                nalign: u32,
+                nshroud: u32,
+            }
+            #[derive(Serialize)]
+            struct DadaOutput {
+                num_asvs: usize,
+                total_reads: u32,
+                asvs: Vec<AsvEntry>,
+                stats: DadaStats,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                map: Option<Vec<Option<usize>>>,
+            }
+
+            for (s, sample_name) in sample_names.iter().enumerate() {
+                // Sum per-cluster reads for this sample by walking its local uniques.
+                let mut cluster_reads: Vec<u32> = vec![0u32; result.clusters.len()];
+                for (lu, &mu) in local_to_merged[s].iter().enumerate() {
+                    if let Some(c) = result.map[mu] {
+                        cluster_reads[c] += dereps[s].uniques[lu].1 as u32;
+                    }
+                }
+
+                // Filter to clusters present in this sample; renumber globally → locally.
+                let mut global_to_local: Vec<Option<usize>> =
+                    vec![None; result.clusters.len()];
+                let mut asvs: Vec<AsvEntry> = Vec::new();
+                for (c, cluster) in result.clusters.iter().enumerate() {
+                    if cluster_reads[c] == 0 {
+                        continue;
+                    }
+                    global_to_local[c] = Some(asvs.len());
+                    let sequence: String = cluster
+                        .sequence
+                        .iter()
+                        .map(|&b| misc::nt_decode(b) as char)
+                        .collect();
+                    let birth_type = match &cluster.birth_type {
+                        BirthType::Initial => "Initial",
+                        BirthType::Abundance => "Abundance",
+                        BirthType::Prior => "Prior",
+                        BirthType::Singleton => "Singleton",
+                    }
+                    .to_string();
+                    asvs.push(AsvEntry {
+                        sequence,
+                        abundance: cluster_reads[c],
+                        birth_type,
+                        birth_pval: cluster.birth_pval,
+                        birth_fold: cluster.birth_fold,
+                        birth_e: cluster.birth_e,
+                    });
+                }
+
+                let total_reads: u32 = cluster_reads.iter().sum();
+
+                // Per-sample local-unique → local-cluster map (mirrors single-sample dada).
+                let map = if show_map {
+                    let m: Vec<Option<usize>> = (0..dereps[s].uniques.len())
+                        .map(|lu| {
+                            let mu = local_to_merged[s][lu];
+                            result.map[mu].and_then(|c| global_to_local[c])
+                        })
+                        .collect();
+                    Some(m)
+                } else {
+                    None
+                };
+
+                let n_asvs = asvs.len();
+                let out = DadaOutput {
+                    num_asvs: n_asvs,
+                    total_reads,
+                    asvs,
+                    stats: DadaStats {
+                        nalign: result.nalign,
+                        nshroud: result.nshroud,
+                    },
+                    map,
+                };
+
+                let tagged = Tagged::new("dada", out);
+                let json = if compact {
+                    serde_json::to_string(&tagged)
+                } else {
+                    serde_json::to_string_pretty(&tagged)
+                }
+                .map_err(io::Error::other)?;
+
+                let path = output_dir.join(format!("{sample_name}.json"));
+                std::fs::write(&path, &json)?;
+                if verbose {
+                    eprintln!(
+                        "[dada-pooled] wrote {} ({} ASV(s), {} reads)",
+                        path.display(),
+                        n_asvs,
+                        total_reads
+                    );
+                }
+            }
+        }
+
         Commands::MergePairs {
             fwd_dada,
             rev_dada,

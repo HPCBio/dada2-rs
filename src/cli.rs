@@ -218,6 +218,114 @@ pub enum Commands {
         verbose: bool,
     },
 
+    /// Denoise multiple FASTQ files with full pooling (R DADA2 `pool=TRUE`)
+    ///
+    /// Dereplicates each sample, merges all unique sequences into one combined
+    /// table (abundances summed, qualities abundance-weighted-averaged), runs
+    /// DADA2 once on the merged table, then writes one JSON file per sample
+    /// into the output directory containing only the ASVs present in that sample.
+    DadaPooled {
+        /// One or more input FASTQ files (uncompressed or gzipped)
+        #[arg(required = true)]
+        input: Vec<PathBuf>,
+
+        /// JSON error model file produced by the `learn-errors` subcommand
+        #[arg(long)]
+        error_model: PathBuf,
+
+        /// Use `err_in` from the error model instead of `err_out`
+        #[arg(long)]
+        use_err_in: bool,
+
+        /// FASTA file of prior sequences (uncompressed or gzip-compressed).
+        /// Sequences in this file are flagged as priors in the merged unique
+        /// table, exempt from the abundance p-value filter.
+        #[arg(long)]
+        prior: Option<PathBuf>,
+
+        /// Inherit any unspecified algorithm parameters from the error model
+        /// JSON's `params` block. See the `dada` subcommand for full semantics.
+        #[arg(long)]
+        inherit_err_params: bool,
+
+        /// Sample names, one per input FASTQ. Defaults to filename stems
+        /// (e.g. `sample1.fastq.gz` → `sample1`).
+        #[arg(long, value_delimiter = ',')]
+        sample_names: Option<Vec<String>>,
+
+        /// Output directory for per-sample JSON files (created if absent)
+        #[arg(long, short = 'o')]
+        output_dir: PathBuf,
+
+        /// Phred quality score offset (33 for Sanger/Illumina 1.8+, 64 for Illumina 1.3–1.7)
+        #[arg(long, default_value_t = 33)]
+        phred_offset: u8,
+
+        /// Number of threads for dereplication and DADA2 comparisons
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+
+        /// Significance threshold for abundance-based cluster splitting (omega_a)
+        #[arg(long)]
+        omega_a: Option<f64>,
+
+        /// Significance threshold for reads not corrected to any center (omega_c)
+        #[arg(long)]
+        omega_c: Option<f64>,
+
+        /// Significance threshold for prior-sequence splitting (omega_p)
+        #[arg(long)]
+        omega_p: Option<f64>,
+
+        /// Minimum fold-enrichment above expected for cluster splitting
+        #[arg(long)]
+        min_fold: Option<f64>,
+
+        /// Minimum Hamming distance required for cluster splitting
+        #[arg(long)]
+        min_hamming: Option<u32>,
+
+        /// Minimum read abundance required for cluster splitting
+        #[arg(long)]
+        min_abund: Option<u32>,
+
+        /// Use singleton detection (omit to inherit / use default).
+        #[arg(long)]
+        detect_singletons: Option<bool>,
+
+        /// Alignment band radius (matches R's `BAND_SIZE`).
+        #[arg(long, allow_hyphen_values = true)]
+        band: Option<i32>,
+
+        /// Homopolymer-run gap penalty (matches R's `HOMOPOLYMER_GAP_PENALTY`).
+        #[arg(long, allow_hyphen_values = true)]
+        homo_gap_p: Option<i32>,
+
+        /// K-mer distance cutoff for the pre-alignment screen.
+        #[arg(long)]
+        kdist_cutoff: Option<f64>,
+
+        /// K-mer size used for the pre-alignment screen.
+        #[arg(long)]
+        kmer_size: Option<usize>,
+
+        /// Disable the k-mer pre-alignment screen.
+        #[arg(long)]
+        no_kmer_screen: Option<bool>,
+
+        /// Include a per-read-to-ASV index map in each sample's output
+        #[arg(long)]
+        show_map: bool,
+
+        /// Output compact (minified) JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
+
+        /// Print progress to stderr
+        #[arg(long)]
+        verbose: bool,
+    },
+
     /// Merge denoised forward and reverse reads into full-length amplicons
     ///
     /// For each sample, the forward and reverse FASTQ files are re-dereplicated
