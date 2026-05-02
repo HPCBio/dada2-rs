@@ -397,6 +397,12 @@ pub enum Commands {
         #[arg(long, num_args = 1..)]
         sample_names: Option<Vec<String>>,
 
+        /// Verify that the fwd and rev dada JSONs carry the same `sample`
+        /// field, that it matches the resolved sample name, and that both
+        /// FASTQ filenames contain the sample name as a substring.
+        #[arg(long)]
+        check_sample_ids: bool,
+
         /// Phred quality-score offset for FASTQ re-dereplication
         #[arg(long, default_value_t = 33)]
         phred_offset: u8,

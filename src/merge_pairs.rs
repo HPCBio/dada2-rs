@@ -73,6 +73,10 @@ pub struct MergeParams {
     pub trim_overhang: bool,
     /// Phred quality-score offset for FASTQ re-dereplication.
     pub phred_offset: u8,
+    /// When true, verify that the fwd and rev dada JSONs carry the same
+    /// `sample` field, that it equals the resolved sample name, and that both
+    /// FASTQ filenames contain the sample name as a substring.
+    pub check_sample_ids: bool,
     /// Print per-sample progress to stderr.
     pub verbose: bool,
 }
@@ -88,6 +92,8 @@ struct AsvJson {
 
 #[derive(Deserialize)]
 struct DadaJsonInput {
+    /// Sample identifier; absent in dada JSONs produced before --sample-name.
+    sample: Option<String>,
     asvs: Vec<AsvJson>,
     /// unique-index → ASV-index mapping; only present when `--show-map` was used.
     map: Option<Vec<Option<usize>>>,
@@ -265,6 +271,60 @@ fn build_merged(
 }
 
 // ---------------------------------------------------------------------------
+// Sample-ID sanity check
+// ---------------------------------------------------------------------------
+
+fn check_sample_ids(
+    sample_name: &str,
+    fwd_sample: Option<&str>,
+    rev_sample: Option<&str>,
+    fwd_dada_path: &Path,
+    rev_dada_path: &Path,
+    fwd_fastq_path: &Path,
+    rev_fastq_path: &Path,
+) -> io::Result<()> {
+    let mismatch = |msg: String| io::Error::new(io::ErrorKind::InvalidData, msg);
+
+    match (fwd_sample, rev_sample) {
+        (Some(f), Some(r)) if f != r => {
+            return Err(mismatch(format!(
+                "sample-id check: forward dada '{}' has sample '{f}' but reverse dada '{}' has sample '{r}'",
+                fwd_dada_path.display(),
+                rev_dada_path.display(),
+            )));
+        }
+        (Some(f), _) if f != sample_name => {
+            return Err(mismatch(format!(
+                "sample-id check: forward dada '{}' has sample '{f}' but resolved sample name is '{sample_name}'",
+                fwd_dada_path.display(),
+            )));
+        }
+        (_, Some(r)) if r != sample_name => {
+            return Err(mismatch(format!(
+                "sample-id check: reverse dada '{}' has sample '{r}' but resolved sample name is '{sample_name}'",
+                rev_dada_path.display(),
+            )));
+        }
+        _ => {}
+    }
+
+    for (label, path) in [("forward", fwd_fastq_path), ("reverse", rev_fastq_path)] {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if !name.contains(sample_name) {
+            return Err(mismatch(format!(
+                "sample-id check: {label} FASTQ '{}' does not contain sample name '{sample_name}'",
+                path.display(),
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -285,6 +345,18 @@ pub fn merge_sample(
     // ---- Load dada JSONs (plain or gzip-compressed) ----
     let fwd_dada: DadaJsonInput = crate::misc::read_tagged_json(fwd_dada_path, &["dada"])?;
     let rev_dada: DadaJsonInput = crate::misc::read_tagged_json(rev_dada_path, &["dada"])?;
+
+    if params.check_sample_ids {
+        check_sample_ids(
+            sample_name,
+            fwd_dada.sample.as_deref(),
+            rev_dada.sample.as_deref(),
+            fwd_dada_path,
+            rev_dada_path,
+            fwd_fastq_path,
+            rev_fastq_path,
+        )?;
+    }
 
     let fwd_map = fwd_dada.map.as_ref().ok_or_else(|| {
         io::Error::new(

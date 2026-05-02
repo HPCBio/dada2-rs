@@ -1068,6 +1068,7 @@ fn main() -> io::Result<()> {
             concat_nnn_len,
             trim_overhang,
             sample_names,
+            check_sample_ids,
             phred_offset,
             threads,
             output,
@@ -1140,6 +1141,7 @@ fn main() -> io::Result<()> {
                 concat_nnn_len,
                 trim_overhang,
                 phred_offset,
+                check_sample_ids,
                 verbose,
             };
 
