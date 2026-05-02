@@ -413,31 +413,36 @@ pub enum Commands {
         verbose: bool,
     },
 
-    /// Filter and trim FASTQ reads
+    /// Filter and trim a single sample's FASTQ reads
     ///
-    /// Mirrors R's `filterAndTrim` function.  Pass one or more forward (R1)
-    /// input/output file pairs; for paired-end data also supply matching
-    /// `--rev` / `--filt-rev` file lists.
+    /// Mirrors R's `filterAndTrim` function for a single sample.  Pass the
+    /// forward (R1) input/output file pair; for paired-end data also supply
+    /// `--rev` / `--filt-rev`.
     ///
     /// For parameters that accept paired values (`--trunc-len`, `--trim-left`,
     /// etc.) provide either one value (applied to both directions) or two
     /// space-separated values (first for forward, second for reverse).
     FilterAndTrim {
-        /// Forward (R1) input FASTQ files
-        #[arg(long, required = true, num_args = 1..)]
-        fwd: Vec<PathBuf>,
+        /// Forward (R1) input FASTQ file
+        #[arg(long, required = true)]
+        fwd: PathBuf,
 
-        /// Forward (R1) output FASTQ files (same count as --fwd)
-        #[arg(long, required = true, num_args = 1..)]
-        filt: Vec<PathBuf>,
+        /// Forward (R1) output FASTQ file
+        #[arg(long, required = true)]
+        filt: PathBuf,
 
-        /// Reverse (R2) input FASTQ files (enables paired-end mode)
-        #[arg(long, num_args = 1..)]
-        rev: Option<Vec<PathBuf>>,
+        /// Reverse (R2) input FASTQ file (enables paired-end mode)
+        #[arg(long)]
+        rev: Option<PathBuf>,
 
-        /// Reverse (R2) output FASTQ files (required when --rev is given)
-        #[arg(long, num_args = 1..)]
-        filt_rev: Option<Vec<PathBuf>>,
+        /// Reverse (R2) output FASTQ file (required when --rev is given)
+        #[arg(long)]
+        filt_rev: Option<PathBuf>,
+
+        /// Sample identifier included in the output JSON.
+        /// Defaults to the filename stem of --fwd.
+        #[arg(long)]
+        sample_name: Option<String>,
 
         /// Gzip-compress output files
         #[arg(long, default_value_t = true)]
@@ -500,10 +505,6 @@ pub enum Commands {
         #[arg(long, default_value_t = 33)]
         phred_offset: u8,
 
-        /// Process samples in parallel using this many threads
-        #[arg(long, default_value_t = 1)]
-        threads: usize,
-
         /// Write JSON summary to this file instead of stdout
         #[arg(long, short = 'o')]
         output: Option<PathBuf>,
@@ -512,7 +513,7 @@ pub enum Commands {
         #[arg(long)]
         compact: bool,
 
-        /// Print per-file progress to stderr
+        /// Print progress to stderr
         #[arg(long)]
         verbose: bool,
     },

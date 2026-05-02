@@ -1189,6 +1189,7 @@ fn main() -> io::Result<()> {
             filt,
             rev,
             filt_rev,
+            sample_name,
             compress,
             trunc_q,
             trunc_len,
@@ -1202,44 +1203,19 @@ fn main() -> io::Result<()> {
             phix_genome,
             rm_lowcomplex,
             phred_offset,
-            threads,
             output,
             compact,
             verbose,
         } => {
-            // ---- Validate file-list lengths ----
-            let n = fwd.len();
-            if filt.len() != n {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("--filt has {} entries but --fwd has {n}", filt.len()),
-                ));
-            }
-            let paired = rev.is_some();
-            let (rev_files, filt_rev_files) = if paired {
-                let rv = rev.unwrap();
-                let fr = filt_rev.ok_or_else(|| {
+            // ---- Validate paired-end files ----
+            if rev.is_some() {
+                filt_rev.as_ref().ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "--filt-rev is required when --rev is provided",
                     )
                 })?;
-                if rv.len() != n {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("--rev has {} entries but --fwd has {n}", rv.len()),
-                    ));
-                }
-                if fr.len() != n {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("--filt-rev has {} entries but --fwd has {n}", fr.len()),
-                    ));
-                }
-                (rv, fr)
-            } else {
-                (vec![], vec![])
-            };
+            }
 
             // ---- Helper: expand a 1-or-2-element Vec into (fwd_val, rev_val) ----
             macro_rules! pair {
@@ -1311,91 +1287,39 @@ fn main() -> io::Result<()> {
                 rm_lowcomplex_r,
             );
 
-            // ---- Run (optionally parallel across samples) ----
+            let sample = sample_name.unwrap_or_else(|| fastq_stem(&fwd));
+            let opts = WriteOptions { compress, verbose };
+
+            let stats = if let (Some(rev_in), Some(rev_out)) = (rev, filt_rev) {
+                filter_paired(
+                    &PairedFiles {
+                        fwd_in: &fwd,
+                        rev_in: &rev_in,
+                        fwd_out: &filt,
+                        rev_out: &rev_out,
+                    },
+                    &params_fwd,
+                    &params_rev,
+                    opts,
+                )?
+            } else {
+                filter_single(&fwd, &filt, &params_fwd, opts)?
+            };
+
             #[derive(Serialize)]
-            struct SampleResult {
+            struct FilterAndTrimOutput {
                 sample: String,
                 reads_in: u64,
                 reads_out: u64,
             }
-
-            let results: io::Result<Vec<SampleResult>> = if threads > 1 {
-                use rayon::prelude::*;
-
-                let pool = rayon::ThreadPoolBuilder::new()
-                    .num_threads(threads)
-                    .build()
-                    .map_err(io::Error::other)?;
-
-                // Build index list, process in parallel.
-                let indices: Vec<usize> = (0..n).collect();
-                let par_results: Vec<io::Result<SampleResult>> = pool.install(|| {
-                    indices
-                        .par_iter()
-                        .map(|&i| {
-                            let sample = fastq_stem(&fwd[i]);
-                            let opts = WriteOptions { compress, verbose };
-                            let stats = if paired {
-                                filter_paired(
-                                    &PairedFiles {
-                                        fwd_in: &fwd[i],
-                                        rev_in: &rev_files[i],
-                                        fwd_out: &filt[i],
-                                        rev_out: &filt_rev_files[i],
-                                    },
-                                    &params_fwd,
-                                    &params_rev,
-                                    opts,
-                                )?
-                            } else {
-                                filter_single(&fwd[i], &filt[i], &params_fwd, opts)?
-                            };
-                            Ok(SampleResult {
-                                sample,
-                                reads_in: stats.reads_in,
-                                reads_out: stats.reads_out,
-                            })
-                        })
-                        .collect()
-                });
-
-                par_results.into_iter().collect()
-            } else {
-                let mut out = Vec::with_capacity(n);
-                for i in 0..n {
-                    let sample = fastq_stem(&fwd[i]);
-                    let opts = WriteOptions { compress, verbose };
-                    let stats = if paired {
-                        filter_paired(
-                            &PairedFiles {
-                                fwd_in: &fwd[i],
-                                rev_in: &rev_files[i],
-                                fwd_out: &filt[i],
-                                rev_out: &filt_rev_files[i],
-                            },
-                            &params_fwd,
-                            &params_rev,
-                            opts,
-                        )?
-                    } else {
-                        filter_single(&fwd[i], &filt[i], &params_fwd, opts)?
-                    };
-                    out.push(SampleResult {
-                        sample,
-                        reads_in: stats.reads_in,
-                        reads_out: stats.reads_out,
-                    });
-                }
-                Ok(out)
-            };
-
-            let results = results?;
-
-            #[derive(Serialize)]
-            struct FilterAndTrimOutput {
-                samples: Vec<SampleResult>,
-            }
-            let tagged = Tagged::new("filter-and-trim", FilterAndTrimOutput { samples: results });
+            let tagged = Tagged::new(
+                "filter-and-trim",
+                FilterAndTrimOutput {
+                    sample,
+                    reads_in: stats.reads_in,
+                    reads_out: stats.reads_out,
+                },
+            );
             let json = if compact {
                 serde_json::to_string(&tagged)
             } else {
