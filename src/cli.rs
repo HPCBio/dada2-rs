@@ -1,12 +1,22 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
+
+use crate::misc::DADA2_RS_VERSION;
 
 #[derive(Parser)]
-#[command(about = "DADA2 toolkit")]
+#[command(
+    about = "DADA2 toolkit",
+    version = DADA2_RS_VERSION,
+    disable_version_flag = true,
+)]
 pub struct Cli {
+    /// Print the dada2-rs version and exit.
+    #[arg(short = 'v', long = "version", action = ArgAction::Version)]
+    version: Option<bool>,
+
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
 
 #[derive(Subcommand)]

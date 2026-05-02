@@ -28,6 +28,7 @@ mod sequence_table;
 mod summary;
 mod taxonomy;
 
+use clap::CommandFactory;
 use cli::{Cli, Commands};
 use containers::BirthType;
 use derep::dereplicate;
@@ -38,7 +39,7 @@ use learn_errors::{
     ErrFun, LearnDiagOptions, LearnedErrParams, learn_errors, load_derep_samples,
     load_fastq_samples,
 };
-use misc::{Tagged, read_fasta_records, read_tagged_json};
+use misc::{DADA2_RS_VERSION, Tagged, read_fasta_records, read_tagged_json};
 use nwalign::AlignParams;
 use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
 use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
@@ -96,7 +97,17 @@ fn build_learned_err_params(
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
-    match cli.command {
+    let command = match cli.command {
+        Some(c) => c,
+        None => {
+            eprintln!("dada2-rs {DADA2_RS_VERSION}");
+            eprintln!();
+            Cli::command().print_help()?;
+            return Ok(());
+        }
+    };
+
+    match command {
         Commands::Summary {
             input,
             phred_offset,

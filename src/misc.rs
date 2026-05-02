@@ -7,7 +7,11 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 /// Crate version, embedded in every JSON output as `dada2_rs_version`.
-pub const DADA2_RS_VERSION: &str = env!("CARGO_PKG_VERSION");
+///
+/// On a tagged release build (HEAD == `v<CARGO_PKG_VERSION>` or
+/// `<CARGO_PKG_VERSION>`) this is the bare semver string; otherwise it is
+/// `<CARGO_PKG_VERSION>-<short-sha>`. See `build.rs`.
+pub const DADA2_RS_VERSION: &str = env!("DADA2_RS_VERSION_FULL");
 
 /// Wraps a serializable output with the dada2-rs command name and version.
 /// The two tag fields are emitted at the top of the resulting JSON object,
