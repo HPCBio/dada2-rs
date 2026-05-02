@@ -1,0 +1,35 @@
+name: Cleanup GHCR Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (preview without deleting)'
+        required: true
+        default: 'true'
+        type: boolean
+      keep_n_tagged:
+        description: 'Number of tagged versions to keep'
+        required: true
+        default: '5'
+      delete_untagged:
+        description: 'Delete untagged images'
+        required: true
+        default: 'true'
+        type: boolean
+
+jobs:
+  cleanup:
+    name: Cleanup old images
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+
+    steps:
+      - name: Run GHCR cleanup
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          dry-run: ${{ inputs.dry_run }}
+          keep-n-tagged: ${{ inputs.keep_n_tagged }}
+          delete-untagged: ${{ inputs.delete_untagged }}
+          token: ${{ secrets.GITHUB_TOKEN }}
