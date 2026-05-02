@@ -87,6 +87,11 @@ pub enum Commands {
         #[arg(long)]
         use_err_in: bool,
 
+        /// Sample identifier included in the output JSON.
+        /// Defaults to the filename stem of the input FASTQ.
+        #[arg(long)]
+        sample_name: Option<String>,
+
         /// FASTA file of prior sequences (uncompressed or gzip-compressed).
         ///
         /// Each sequence in the file that matches a dereplicated unique exactly

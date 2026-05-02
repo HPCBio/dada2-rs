@@ -221,6 +221,7 @@ fn main() -> io::Result<()> {
             input,
             error_model,
             use_err_in,
+            sample_name,
             prior,
             inherit_err_params,
             phred_offset,
@@ -568,6 +569,7 @@ fn main() -> io::Result<()> {
 
             #[derive(Serialize)]
             struct DadaOutput {
+                sample: String,
                 num_asvs: usize,
                 total_reads: u32,
                 asvs: Vec<AsvEntry>,
@@ -578,6 +580,7 @@ fn main() -> io::Result<()> {
                 aux: Option<AuxJson>,
             }
 
+            let sample = sample_name.unwrap_or_else(|| fastq_stem(&input));
             let total_reads: u32 = result.clusters.iter().map(|c| c.reads).sum();
 
             let asvs: Vec<AsvEntry> = result
@@ -655,6 +658,7 @@ fn main() -> io::Result<()> {
             });
 
             let out = DadaOutput {
+                sample,
                 num_asvs: asvs.len(),
                 total_reads,
                 asvs,
