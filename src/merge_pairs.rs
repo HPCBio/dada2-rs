@@ -6,8 +6,8 @@
 //!
 //! 1. The forward and reverse FASTQ files are re-dereplicated to recover the
 //!    read → unique-index mapping.
-//! 2. The dada JSON files supply the unique-index → ASV-index map (`map` field,
-//!    only present when `dada --show-map` was used) and the ASV sequences.
+//! 2. The dada JSON files supply the unique-index → ASV-index map (`map`
+//!    field, always emitted by `dada` / `dada-pooled`) and the ASV sequences.
 //! 3. For every read, the two maps are composed to give (fwd_asv, rev_asv).
 //!    Reads where either direction is unassigned (map entry = `null`) are
 //!    silently dropped.
@@ -27,9 +27,7 @@
 //! a separate derep JSON: the dada JSON's `map` field references unique
 //! indices that re-derepping the source FASTQ will reproduce exactly.
 //!
-//! **Caveat**: the dada JSON **must** have been produced with `--show-map`;
-//! without that flag the `map` field is absent and merging is impossible.
-//! Also, dada JSON files saved with the pre-sort first-seen ordering
+//! **Caveat**: dada JSON files saved with the pre-sort first-seen ordering
 //! cannot be merged with a post-sort dereplicate — re-derep the FASTQ
 //! through the current pipeline first.
 
@@ -95,7 +93,8 @@ struct DadaJsonInput {
     /// Sample identifier; absent in dada JSONs produced before --sample-name.
     sample: Option<String>,
     asvs: Vec<AsvJson>,
-    /// unique-index → ASV-index mapping; only present when `--show-map` was used.
+    /// unique-index → ASV-index mapping; absent in dada JSONs produced
+    /// before the map became part of the default output.
     map: Option<Vec<Option<usize>>>,
 }
 
@@ -362,7 +361,7 @@ pub fn merge_sample(
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "{}: 'map' field is absent — re-run `dada` with `--show-map`",
+                "{}: 'map' field is absent — re-run `dada` with the current dada2-rs",
                 fwd_dada_path.display()
             ),
         )
@@ -371,7 +370,7 @@ pub fn merge_sample(
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "{}: 'map' field is absent — re-run `dada` with `--show-map`",
+                "{}: 'map' field is absent — re-run `dada` with the current dada2-rs",
                 rev_dada_path.display()
             ),
         )

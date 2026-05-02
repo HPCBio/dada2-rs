@@ -258,7 +258,6 @@ fn main() -> io::Result<()> {
             kdist_cutoff,
             kmer_size,
             no_kmer_screen,
-            show_map,
             aux_outputs,
             cluster_trace,
             trace_no_members,
@@ -594,8 +593,7 @@ fn main() -> io::Result<()> {
                 total_reads: u32,
                 asvs: Vec<AsvEntry>,
                 stats: DadaStats,
-                #[serde(skip_serializing_if = "Option::is_none")]
-                map: Option<Vec<Option<usize>>>,
+                map: Vec<Option<usize>>,
                 #[serde(skip_serializing_if = "Option::is_none")]
                 aux: Option<AuxJson>,
             }
@@ -686,7 +684,7 @@ fn main() -> io::Result<()> {
                     nalign: result.nalign,
                     nshroud: result.nshroud,
                 },
-                map: if show_map { Some(result.map) } else { None },
+                map: result.map,
                 aux: aux_json,
             };
 
@@ -726,7 +724,6 @@ fn main() -> io::Result<()> {
             kdist_cutoff,
             kmer_size,
             no_kmer_screen,
-            show_map,
             compact,
             verbose,
         } => {
@@ -985,8 +982,7 @@ fn main() -> io::Result<()> {
                 total_reads: u32,
                 asvs: Vec<AsvEntry>,
                 stats: DadaStats,
-                #[serde(skip_serializing_if = "Option::is_none")]
-                map: Option<Vec<Option<usize>>>,
+                map: Vec<Option<usize>>,
             }
 
             for (s, sample_name) in sample_names.iter().enumerate() {
@@ -1031,17 +1027,12 @@ fn main() -> io::Result<()> {
                 let total_reads: u32 = cluster_reads.iter().sum();
 
                 // Per-sample local-unique → local-cluster map (mirrors single-sample dada).
-                let map = if show_map {
-                    let m: Vec<Option<usize>> = (0..dereps[s].uniques.len())
-                        .map(|lu| {
-                            let mu = local_to_merged[s][lu];
-                            result.map[mu].and_then(|c| global_to_local[c])
-                        })
-                        .collect();
-                    Some(m)
-                } else {
-                    None
-                };
+                let map: Vec<Option<usize>> = (0..dereps[s].uniques.len())
+                    .map(|lu| {
+                        let mu = local_to_merged[s][lu];
+                        result.map[mu].and_then(|c| global_to_local[c])
+                    })
+                    .collect();
 
                 let n_asvs = asvs.len();
                 let out = DadaOutput {

@@ -188,10 +188,6 @@ pub enum Commands {
         #[arg(long)]
         no_kmer_screen: Option<bool>,
 
-        /// Include a per-unique-to-ASV index map in the output
-        #[arg(long)]
-        show_map: bool,
-
         /// Emit R-DADA2-parity per-cluster diagnostics in the output JSON:
         /// `cluster_stats` (n0/n1/nunq/birth_qave/post-hoc pval),
         /// `cluster_quality` (mean quality at each reference position),
@@ -328,10 +324,6 @@ pub enum Commands {
         #[arg(long)]
         no_kmer_screen: Option<bool>,
 
-        /// Include a per-read-to-ASV index map in each sample's output
-        #[arg(long)]
-        show_map: bool,
-
         /// Output compact (minified) JSON instead of pretty-printed
         #[arg(long)]
         compact: bool,
@@ -351,7 +343,6 @@ pub enum Commands {
     /// reverse-complement of the reverse ASV) and accepted or rejected based on
     /// overlap length, mismatches, and indels.
     ///
-    /// **The dada JSON files must have been produced with `--show-map`.**
     ///
     /// Files are matched by position: the first `--fwd-dada` corresponds to the
     /// first `--rev-dada`, `--fwd-fastq`, and `--rev-fastq`.  For hundreds of
@@ -363,11 +354,11 @@ pub enum Commands {
     ///     --fwd-fastq fwd_fastq/*.fastq.gz \
     ///     --rev-fastq rev_fastq/*.fastq.gz
     MergePairs {
-        /// Forward dada JSON files (produced with `dada --show-map`)
+        /// Forward dada JSON files
         #[arg(long, required = true, num_args = 1..)]
         fwd_dada: Vec<PathBuf>,
 
-        /// Reverse dada JSON files (produced with `dada --show-map`)
+        /// Reverse dada JSON files
         #[arg(long, required = true, num_args = 1..)]
         rev_dada: Vec<PathBuf>,
 
