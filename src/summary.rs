@@ -3,10 +3,17 @@ use std::io::{self, BufReader};
 use noodles::fastq;
 use rayon::prelude::*;
 
+/// Highest quality score we track per position. 0..=MAX_QUAL inclusive.
+/// Covers Illumina (≤41), Sanger (≤40), and PacBio HiFi (≤93) ranges.
+const MAX_QUAL: usize = 93;
+
 pub struct QualitySummary {
     pub total_reads: u64,
     sums: Vec<f64>,
     counts: Vec<u64>,
+    /// Per-cycle quality distribution: `hist[pos][q]` is the count of reads
+    /// with quality `q` at zero-based cycle `pos`.
+    hist: Vec<[u64; MAX_QUAL + 1]>,
 }
 
 impl QualitySummary {
@@ -15,6 +22,7 @@ impl QualitySummary {
             total_reads: 0,
             sums: Vec::new(),
             counts: Vec::new(),
+            hist: Vec::new(),
         }
     }
 
@@ -22,10 +30,14 @@ impl QualitySummary {
         if quality.len() > self.sums.len() {
             self.sums.resize(quality.len(), 0.0);
             self.counts.resize(quality.len(), 0);
+            self.hist.resize(quality.len(), [0; MAX_QUAL + 1]);
         }
         for (i, &q) in quality.iter().enumerate() {
-            self.sums[i] += ((q as i16) - (phred_offset as i16)) as f64;
+            let q_phred = (q as i16) - (phred_offset as i16);
+            self.sums[i] += q_phred as f64;
             self.counts[i] += 1;
+            let idx = q_phred.clamp(0, MAX_QUAL as i16) as usize;
+            self.hist[i][idx] += 1;
         }
         self.total_reads += 1;
     }
@@ -34,9 +46,15 @@ impl QualitySummary {
         let len = self.sums.len().max(other.sums.len());
         self.sums.resize(len, 0.0);
         self.counts.resize(len, 0);
+        self.hist.resize(len, [0; MAX_QUAL + 1]);
         for (i, (s, c)) in other.sums.iter().zip(other.counts.iter()).enumerate() {
             self.sums[i] += s;
             self.counts[i] += c;
+        }
+        for (i, row) in other.hist.iter().enumerate() {
+            for (q, &n) in row.iter().enumerate() {
+                self.hist[i][q] += n;
+            }
         }
         self.total_reads += other.total_reads;
         self
@@ -48,6 +66,26 @@ impl QualitySummary {
             .zip(self.counts.iter())
             .map(|(sum, &count)| if count > 0 { sum / count as f64 } else { 0.0 })
             .collect()
+    }
+
+    /// Per-position read coverage (reads with a base at each cycle).
+    pub fn reads_per_position(&self) -> &[u64] {
+        &self.counts
+    }
+
+    /// Per-position quality histogram trimmed to the highest quality observed
+    /// across any position. Returns `(max_quality, hist[pos][0..=max_quality])`.
+    pub fn quality_histogram(&self) -> (usize, Vec<Vec<u64>>) {
+        let mut max_q = 0usize;
+        for row in &self.hist {
+            for (q, &n) in row.iter().enumerate() {
+                if n > 0 && q > max_q {
+                    max_q = q;
+                }
+            }
+        }
+        let trimmed = self.hist.iter().map(|row| row[..=max_q].to_vec()).collect();
+        (max_q, trimmed)
     }
 }
 

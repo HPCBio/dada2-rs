@@ -123,11 +123,20 @@ fn main() -> io::Result<()> {
             struct SummaryOutput {
                 total_reads: u64,
                 mean_quality_per_position: Vec<f64>,
+                reads_per_position: Vec<u64>,
+                max_quality: usize,
+                /// `quality_histogram[pos][q]` = count of reads with quality `q`
+                /// at zero-based cycle `pos`. Inner length is `max_quality + 1`.
+                quality_histogram: Vec<Vec<u64>>,
             }
 
+            let (max_quality, quality_histogram) = summary.quality_histogram();
             let out = SummaryOutput {
                 total_reads: summary.total_reads,
                 mean_quality_per_position: summary.mean_quality_per_position(),
+                reads_per_position: summary.reads_per_position().to_vec(),
+                max_quality,
+                quality_histogram,
             };
 
             let tagged = Tagged::new("summary", out);
