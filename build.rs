@@ -8,8 +8,20 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/refs/heads");
     println!("cargo:rerun-if-changed=.git/refs/tags");
     println!("cargo:rerun-if-changed=.git/packed-refs");
+    // Allow callers to inject the version (e.g. Docker builds without .git).
+    println!("cargo:rerun-if-env-changed=DADA2_RS_VERSION_FULL");
 
     let cargo_version = env!("CARGO_PKG_VERSION");
+
+    // If the caller pre-set DADA2_RS_VERSION_FULL, trust it verbatim. This is
+    // the escape hatch for Docker / CI builds where .git is unavailable.
+    if let Ok(injected) = std::env::var("DADA2_RS_VERSION_FULL") {
+        let injected = injected.trim();
+        if !injected.is_empty() {
+            println!("cargo:rustc-env=DADA2_RS_VERSION_FULL={injected}");
+            return;
+        }
+    }
 
     // Short SHA of HEAD (8 chars). Empty when not in a git checkout or git is
     // unavailable (e.g. building from a release tarball).

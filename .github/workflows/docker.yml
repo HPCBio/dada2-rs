@@ -23,6 +23,22 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Compute version string
+        id: version
+        run: |
+          set -euo pipefail
+          CARGO_VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            SHORT_SHA="${GITHUB_SHA:0:8}"
+            VERSION="${CARGO_VERSION}-${SHORT_SHA}"
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Computed DADA2_RS_VERSION_FULL=${VERSION}"
+
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
@@ -52,5 +68,7 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            DADA2_RS_VERSION_FULL=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
