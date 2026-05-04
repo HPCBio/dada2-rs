@@ -630,9 +630,23 @@ pub enum Commands {
     ///
     /// Reads JSON produced by `make-sequence-table` or `remove-bimera-denovo`
     /// and writes a TSV with sequence IDs as rows and sample names as columns.
+    ///
+    /// Pass `--prevalence` and/or `--min-abundance` to filter rows the same
+    /// way R DADA2's pseudo-pooling selects priors
+    /// (`colSums(st>0) >= PSEUDO_PREVALENCE | colSums(st) >= PSEUDO_ABUNDANCE`).
     SeqTableToTsv {
         /// Sequence table JSON produced by `make-sequence-table` or `remove-bimera-denovo`
         input: PathBuf,
+
+        /// Keep only sequences present in at least this many samples
+        /// (mirrors R DADA2's `PSEUDO_PREVALENCE`).  Omit to disable.
+        #[arg(long)]
+        prevalence: Option<u32>,
+
+        /// Keep only sequences whose total abundance is at least this value
+        /// (mirrors R DADA2's `PSEUDO_ABUNDANCE`).  Omit to disable.
+        #[arg(long)]
+        min_abundance: Option<u64>,
 
         /// Write TSV output to this file instead of stdout
         #[arg(long, short = 'o')]
@@ -748,9 +762,26 @@ pub enum Commands {
     /// Convert a make-sequence-table JSON file to FASTA
     ///
     /// Writes one record per sequence using the sequence ID as the header.
+    ///
+    /// To extract pseudo-pooling priors (mirroring R DADA2's
+    /// `pool="pseudo"` selection rule
+    /// `colSums(st>0) >= PSEUDO_PREVALENCE | colSums(st) >= PSEUDO_ABUNDANCE`),
+    /// pass `--prevalence` and/or `--min-abundance`.
     SeqTableToFasta {
         /// JSON file produced by the `make-sequence-table` subcommand
         input: PathBuf,
+
+        /// Keep only sequences present in at least this many samples
+        /// (mirrors R DADA2's `PSEUDO_PREVALENCE`, default 2 in R).
+        /// Omit to disable the prevalence rule.
+        #[arg(long)]
+        prevalence: Option<u32>,
+
+        /// Keep only sequences whose total abundance across samples is at
+        /// least this value (mirrors R DADA2's `PSEUDO_ABUNDANCE`).  Omit to
+        /// disable the abundance rule (equivalent to R's default of `Inf`).
+        #[arg(long)]
+        min_abundance: Option<u64>,
 
         /// Write FASTA output to this file instead of stdout
         #[arg(long, short = 'o')]

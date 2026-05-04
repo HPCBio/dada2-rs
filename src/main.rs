@@ -1453,9 +1453,15 @@ fn main() -> io::Result<()> {
             }
         }
 
-        Commands::SeqTableToTsv { input, output } => {
+        Commands::SeqTableToTsv {
+            input,
+            prevalence,
+            min_abundance,
+            output,
+        } => {
             let table: SequenceTable =
                 read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])?;
+            let keep = select_sequences(&table, prevalence, min_abundance);
 
             let mut out: Box<dyn io::Write> = match output {
                 Some(ref path) => Box::new(io::BufWriter::new(std::fs::File::create(path)?)),
@@ -1469,9 +1475,9 @@ fn main() -> io::Result<()> {
             }
             writeln!(out)?;
 
-            // One row per sequence: id <TAB> count_per_sample...
-            for (j, id) in table.sequence_ids.iter().enumerate() {
-                write!(out, "{id}")?;
+            // One row per kept sequence: id <TAB> count_per_sample...
+            for &j in &keep {
+                write!(out, "{}", table.sequence_ids[j])?;
                 for sample_counts in &table.counts {
                     write!(out, "\t{}", sample_counts[j])?;
                 }
@@ -1480,14 +1486,13 @@ fn main() -> io::Result<()> {
             out.flush()?;
         }
 
-        Commands::SeqTableToFasta { input, output } => {
-            #[derive(serde::Deserialize)]
-            struct SeqTable {
-                sequences: Vec<String>,
-                sequence_ids: Vec<String>,
-            }
-
-            let table: SeqTable =
+        Commands::SeqTableToFasta {
+            input,
+            prevalence,
+            min_abundance,
+            output,
+        } => {
+            let table: SequenceTable =
                 read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])?;
 
             if table.sequences.len() != table.sequence_ids.len() {
@@ -1497,13 +1502,15 @@ fn main() -> io::Result<()> {
                 ));
             }
 
+            let keep = select_sequences(&table, prevalence, min_abundance);
+
             let mut out: Box<dyn io::Write> = match output {
                 Some(ref path) => Box::new(io::BufWriter::new(std::fs::File::create(path)?)),
                 None => Box::new(io::BufWriter::new(std::io::stdout())),
             };
 
-            for (id, seq) in table.sequence_ids.iter().zip(table.sequences.iter()) {
-                writeln!(out, ">{id}\n{seq}")?;
+            for &j in &keep {
+                writeln!(out, ">{}\n{}", table.sequence_ids[j], table.sequences[j])?;
             }
             out.flush()?;
         }
@@ -2484,6 +2491,33 @@ fn rc_bytes(seq: &[u8]) -> Vec<u8> {
 /// Derive a base stem from a FASTQ path by stripping recognised extensions.
 ///
 /// `sample1.fastq.gz` → `"sample1"`,  `sample2.fq` → `"sample2"`.
+/// Sequence-table column filter mirroring R DADA2's pseudo-pooling prior selection:
+///   keep[j] = (n_samples_present[j] >= prevalence) || (total_abundance[j] >= min_abundance)
+/// When both thresholds are `None` every column is kept.
+fn select_sequences(
+    table: &SequenceTable,
+    prevalence: Option<u32>,
+    min_abundance: Option<u64>,
+) -> Vec<usize> {
+    let nseq = table.sequences.len();
+    if prevalence.is_none() && min_abundance.is_none() {
+        return (0..nseq).collect();
+    }
+    (0..nseq)
+        .filter(|&j| {
+            let by_prev = prevalence.is_some_and(|p| {
+                let n_present = table.counts.iter().filter(|row| row[j] > 0).count() as u32;
+                n_present >= p
+            });
+            let by_abund = min_abundance.is_some_and(|m| {
+                let total: u64 = table.counts.iter().map(|row| row[j]).sum();
+                total >= m
+            });
+            by_prev || by_abund
+        })
+        .collect()
+}
+
 fn fastq_stem(path: &Path) -> String {
     let name = path
         .file_name()
