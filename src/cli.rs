@@ -77,16 +77,17 @@ pub enum Commands {
         verbose: bool,
     },
 
-    /// Denoise a FASTQ file using the DADA2 algorithm
+    /// Denoise a sample using the DADA2 algorithm
     ///
-    /// Dereplicate the input FASTQ in memory, then run DADA2 sample inference
-    /// using the supplied error model.  Outputs a JSON object describing the
-    /// inferred ASVs.
+    /// Accepts either a FASTQ file (dereplicated in memory) or a JSON file
+    /// produced by the `derep` or `sample` subcommand (`.json` / `.json.gz`).
+    /// Pre-dereplicated input avoids re-reading the FASTQ when iterating on
+    /// parameters.  Outputs a JSON object describing the inferred ASVs.
     ///
     /// By default `err_out` from the error model file is used as the error
     /// matrix.  Pass `--use-err-in` to use `err_in` instead.
     Dada {
-        /// Input FASTQ file (uncompressed or gzipped)
+        /// Input file: FASTQ (uncompressed or gzipped) or a derep/sample JSON.
         input: PathBuf,
 
         /// JSON error model file produced by the `learn-errors` subcommand
@@ -229,14 +230,17 @@ pub enum Commands {
         verbose: bool,
     },
 
-    /// Denoise multiple FASTQ files with full pooling (R DADA2 `pool=TRUE`)
+    /// Denoise multiple samples with full pooling (R DADA2 `pool=TRUE`)
     ///
-    /// Dereplicates each sample, merges all unique sequences into one combined
-    /// table (abundances summed, qualities abundance-weighted-averaged), runs
-    /// DADA2 once on the merged table, then writes one JSON file per sample
-    /// into the output directory containing only the ASVs present in that sample.
+    /// Each input may be a FASTQ file (uncompressed or gzipped) or a JSON file
+    /// produced by the `derep` or `sample` subcommand (`.json` / `.json.gz`),
+    /// independently per sample.  Per-sample uniques are merged into one
+    /// combined table (abundances summed, qualities abundance-weighted-averaged),
+    /// DADA2 is run once on the merged table, and one JSON file per sample is
+    /// written into the output directory containing only the ASVs present in
+    /// that sample.
     DadaPooled {
-        /// One or more input FASTQ files (uncompressed or gzipped)
+        /// One or more input files — FASTQ (.fastq/.fastq.gz) or derep/sample JSON
         #[arg(required = true)]
         input: Vec<PathBuf>,
 

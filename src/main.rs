@@ -266,22 +266,13 @@ fn main() -> io::Result<()> {
             compact,
             verbose,
         } => {
-            // ---- Dereplicate FASTQ in memory ----
+            // ---- Load uniques from FASTQ or a derep/sample JSON ----
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .map_err(io::Error::other)?;
 
-            let derep = if input.extension().and_then(|e| e.to_str()) == Some("gz") {
-                dereplicate(
-                    MultiGzDecoder::new(File::open(&input)?),
-                    phred_offset,
-                    &pool,
-                    verbose,
-                )?
-            } else {
-                dereplicate(File::open(&input)?, phred_offset, &pool, verbose)?
-            };
+            let derep = load_derep_for_dada(&input, phred_offset, &pool, verbose)?;
 
             let mut raw_inputs: Vec<dada::RawInput> = derep
                 .uniques
@@ -302,7 +293,7 @@ fn main() -> io::Result<()> {
             if raw_inputs.is_empty() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "FASTQ contains no reads",
+                    format!("{}: no uniques found", input.display()),
                 ));
             }
 
@@ -754,20 +745,10 @@ fn main() -> io::Result<()> {
                 .build()
                 .map_err(io::Error::other)?;
 
-            // ---- Per-sample dereplication ----
+            // ---- Per-sample dereplication (or load from derep/sample JSON) ----
             let mut dereps: Vec<derep::Derep> = Vec::with_capacity(n_samples);
             for path in &input {
-                let derep = if path.extension().and_then(|e| e.to_str()) == Some("gz") {
-                    dereplicate(
-                        MultiGzDecoder::new(File::open(path)?),
-                        phred_offset,
-                        &pool,
-                        verbose,
-                    )?
-                } else {
-                    dereplicate(File::open(path)?, phred_offset, &pool, verbose)?
-                };
-                dereps.push(derep);
+                dereps.push(load_derep_for_dada(path, phred_offset, &pool, verbose)?);
             }
 
             // ---- Merge across samples (abundance-weighted quality average) ----
@@ -2491,6 +2472,78 @@ fn rc_bytes(seq: &[u8]) -> Vec<u8> {
 /// Derive a base stem from a FASTQ path by stripping recognised extensions.
 ///
 /// `sample1.fastq.gz` → `"sample1"`,  `sample2.fq` → `"sample2"`.
+/// `true` when `path` looks like a JSON file (`.json` or `.json.gz`).
+fn is_json_path(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    ext == "json"
+        || path
+            .file_stem()
+            .and_then(|s| Path::new(s).extension())
+            .and_then(|e| e.to_str())
+            == Some("json")
+}
+
+/// Build a [`derep::Derep`] for `dada` / `dada-pooled` from either a FASTQ file
+/// (uncompressed or gzipped) or a derep/sample JSON file.
+///
+/// JSON inputs are defensively sorted by abundance descending — DADA2 assumes
+/// the most-abundant unique is at index 0.  The `map` (read → unique) field is
+/// only populated from the FASTQ path; JSON inputs leave it empty since neither
+/// `dada` nor `dada-pooled` consult it.
+fn load_derep_for_dada(
+    path: &Path,
+    phred_offset: u8,
+    pool: &rayon::ThreadPool,
+    verbose: bool,
+) -> io::Result<derep::Derep> {
+    if is_json_path(path) {
+        #[derive(serde::Deserialize)]
+        struct UniqueEntryJson {
+            sequence: String,
+            count: u64,
+            mean_quality: Vec<f64>,
+        }
+        #[derive(serde::Deserialize)]
+        struct SampleJson {
+            uniques: Vec<UniqueEntryJson>,
+        }
+        let parsed: SampleJson = read_tagged_json(path, &["derep", "sample"])?;
+        let mut entries = parsed.uniques;
+        entries.sort_by(|a, b| b.count.cmp(&a.count));
+        let mut uniques: Vec<(Vec<u8>, u64)> = Vec::with_capacity(entries.len());
+        let mut quals: Vec<Vec<f64>> = Vec::with_capacity(entries.len());
+        for u in entries {
+            if !u.mean_quality.is_empty() && u.mean_quality.len() != u.sequence.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "{}: mean_quality length {} != sequence length {}",
+                        path.display(),
+                        u.mean_quality.len(),
+                        u.sequence.len(),
+                    ),
+                ));
+            }
+            uniques.push((u.sequence.into_bytes(), u.count));
+            quals.push(u.mean_quality);
+        }
+        Ok(derep::Derep {
+            uniques,
+            quals,
+            map: Vec::new(),
+        })
+    } else if path.extension().and_then(|e| e.to_str()) == Some("gz") {
+        dereplicate(
+            MultiGzDecoder::new(File::open(path)?),
+            phred_offset,
+            pool,
+            verbose,
+        )
+    } else {
+        dereplicate(File::open(path)?, phred_offset, pool, verbose)
+    }
+}
+
 /// Sequence-table column filter mirroring R DADA2's pseudo-pooling prior selection:
 ///   keep[j] = (n_samples_present[j] >= prevalence) || (total_abundance[j] >= min_abundance)
 /// When both thresholds are `None` every column is kept.
