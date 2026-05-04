@@ -311,6 +311,8 @@ struct UniqueEntryJson {
 /// Top-level structure of a derep/sample JSON file.
 #[derive(Deserialize)]
 struct SampleJson {
+    #[serde(default)]
+    sort_order: Option<String>,
     uniques: Vec<UniqueEntryJson>,
 }
 
@@ -329,6 +331,7 @@ pub fn load_derep_samples(paths: &[PathBuf]) -> io::Result<Vec<Vec<RawInput>>> {
                     io::Error::new(e.kind(), format!("failed to parse {}: {e}", path.display()))
                 })?;
 
+            let already_sorted = sample.sort_order.as_deref() == Some("abundance_desc");
             let mut inputs: Vec<RawInput> = sample
                 .uniques
                 .into_iter()
@@ -343,7 +346,9 @@ pub fn load_derep_samples(paths: &[PathBuf]) -> io::Result<Vec<Vec<RawInput>>> {
             // other tools) may not be abundance-sorted. The DADA2 algorithm
             // assumes the most-abundant raw is at index 0 (issue #4).
             // `sort_by` is stable so ties preserve the file's original order.
-            inputs.sort_by(|a, b| b.abundance.cmp(&a.abundance));
+            if !already_sorted {
+                inputs.sort_by(|a, b| b.abundance.cmp(&a.abundance));
+            }
             Ok(inputs)
         })
         .collect()

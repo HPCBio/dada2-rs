@@ -200,6 +200,9 @@ fn main() -> io::Result<()> {
             struct DerepOutput<'a> {
                 total_reads: usize,
                 unique_sequences: usize,
+                /// "abundance_desc" — produced by `dereplicate()`; lets dada /
+                /// dada-pooled skip the defensive abundance sort on reload.
+                sort_order: &'static str,
                 uniques: Vec<UniqueEntry<'a>>,
                 #[serde(skip_serializing_if = "Option::is_none")]
                 map: Option<&'a [usize]>,
@@ -219,6 +222,7 @@ fn main() -> io::Result<()> {
             let derep_out = DerepOutput {
                 total_reads: derep.map.len(),
                 unique_sequences: derep.uniques.len(),
+                sort_order: "abundance_desc",
                 uniques: uniq_entries,
                 map: if show_map { Some(&derep.map) } else { None },
             };
@@ -1535,6 +1539,7 @@ fn main() -> io::Result<()> {
             struct DerepOutput<'a> {
                 total_reads: usize,
                 unique_sequences: usize,
+                sort_order: &'static str,
                 uniques: Vec<UniqueEntry<'a>>,
             }
             #[derive(Serialize)]
@@ -1599,6 +1604,7 @@ fn main() -> io::Result<()> {
                 let sample_out = DerepOutput {
                     total_reads: derep.map.len(),
                     unique_sequences: uniq_entries.len(),
+                    sort_order: "abundance_desc",
                     uniques: uniq_entries,
                 };
 
@@ -2505,11 +2511,17 @@ fn load_derep_for_dada(
         }
         #[derive(serde::Deserialize)]
         struct SampleJson {
+            #[serde(default)]
+            sort_order: Option<String>,
             uniques: Vec<UniqueEntryJson>,
         }
         let parsed: SampleJson = read_tagged_json(path, &["derep", "sample"])?;
         let mut entries = parsed.uniques;
-        entries.sort_by(|a, b| b.count.cmp(&a.count));
+        // Skip the defensive sort when the producer has declared the order.
+        // Older JSONs without `sort_order` get sorted, matching prior behaviour.
+        if parsed.sort_order.as_deref() != Some("abundance_desc") {
+            entries.sort_by(|a, b| b.count.cmp(&a.count));
+        }
         let mut uniques: Vec<(Vec<u8>, u64)> = Vec::with_capacity(entries.len());
         let mut quals: Vec<Vec<f64>> = Vec::with_capacity(entries.len());
         for u in entries {
