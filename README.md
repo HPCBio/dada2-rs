@@ -214,6 +214,6 @@ Thankfully, within the bioinformatics community these are starting to coalesce, 
 
 #### Caveat
 
-One point where this implementation will vary from the rewrites.bio standards: due to some key implementation details (conversion of R/C++ to Rust including error models), results will vary slightly. However we will strive to reproduce results as closely as possible, including the future possibility to add bridging code for Rust/R (and maybe Rust/Python) for custom error model analysis to more closely emulate what we see from the original implementation. 
+One point where this implementation will vary from the rewrites.bio standards: due to some key implementation details (conversion of R/C++ to Rust including error models), results will vary slightly. However we will strive to reproduce results as closely as possible. We have added the ability to use R and Python for custom error model analysis to more closely emulate what we see from the original implementation.
 
 We also do not want to prevent additional outcomes or functionality that may come from the work in this project by being constrained to emulating the original code. For example, one interesting side benefit for PacBio HiFi reads has come from exposing the k-mer size as an option: alternative k-mer lengths appear to improve performance for PacBio denoising; this is something that needs to be explored more but could result in a substantial improvement in processing. 
