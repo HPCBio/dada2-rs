@@ -720,20 +720,23 @@ pub enum Commands {
         verbose: bool,
     },
 
-    /// Assign species by exact sequence matching
+    /// Fill in the Species column of an assign-taxonomy JSON by exact match
     ///
-    /// Mirrors R's `assignSpecies`.  The query input may be a FASTA file or a
-    /// sequence-table JSON from `make-sequence-table`.  The reference FASTA
-    /// must use the DADA2 species-assignment format where the header contains
-    /// three whitespace-delimited fields: accession, genus, species, e.g.
+    /// Mirrors R DADA2's `addSpecies()`.  Reads a JSON file produced by
+    /// `assign-taxonomy`, runs exact-match species assignment against
+    /// `--ref-fasta`, and writes a JSON file with the same shape.  The
+    /// "Species" level is appended (or replaced if already present), and is
+    /// only filled when the species reference's genus matches the query's
+    /// assigned Genus level (when present), using R's `matchGenera` rules
+    /// (exact, "Genus " prefix, or `Genus/…`/`…/Genus` split-genus forms).
+    ///
+    /// The reference FASTA must use the DADA2 species-assignment format
+    /// where each header contains three whitespace-delimited fields:
+    /// accession, genus, species, e.g.
     ///
     ///   >AY123456 Staphylococcus aureus
-    ///
-    /// Each query is looked up by exact match; the RC is also tried when
-    /// `--try-rc` is set.  Output is a JSON array with genus and species
-    /// fields for each query (null when unassigned).
     AssignSpecies {
-        /// Query sequences: FASTA (.fa/.fa.gz/.fasta) or sequence-table JSON
+        /// Taxonomy JSON produced by `assign-taxonomy`
         input: PathBuf,
 
         /// Reference FASTA with ">ID genus species" headers

@@ -2114,12 +2114,30 @@ fn main() -> io::Result<()> {
         } => {
             const MIN_REF_LEN: usize = 20;
 
-            // ---- Read queries ----
-            let queries = read_query_sequences(&input)?;
-            let query_seqs: Vec<&[u8]> = queries.iter().map(|(_, s)| s.as_slice()).collect();
+            // ---- Read input taxonomy JSON ----
+            #[derive(serde::Deserialize)]
+            struct TaxAssignmentIn {
+                sequence_id: String,
+                sequence: String,
+                taxonomy: Vec<Option<String>>,
+                #[serde(default)]
+                bootstrap: Option<Vec<u32>>,
+            }
+            #[derive(serde::Deserialize)]
+            struct AssignTaxIn {
+                levels: Vec<String>,
+                assignments: Vec<TaxAssignmentIn>,
+            }
+            let tax_in: AssignTaxIn = read_tagged_json(&input, &["assign-taxonomy"])?;
 
-            // ---- Read and parse reference FASTA ----
-            // Expected header format: ">SeqID genus species"
+            let query_seqs_owned: Vec<Vec<u8>> = tax_in
+                .assignments
+                .iter()
+                .map(|a| a.sequence.as_bytes().to_vec())
+                .collect();
+            let query_seqs: Vec<&[u8]> = query_seqs_owned.iter().map(|s| s.as_slice()).collect();
+
+            // ---- Read and parse species reference FASTA ----
             let raw_refs = read_fasta_records(&ref_fasta)?;
             let mut ref_seqs_owned: Vec<Vec<u8>> = Vec::new();
             let mut ref_genus_owned: Vec<String> = Vec::new();
@@ -2129,13 +2147,12 @@ fn main() -> io::Result<()> {
                 if seq.len() < MIN_REF_LEN {
                     continue;
                 }
-                // Header: "SeqID genus species [...]"
                 let mut fields = header.split_whitespace();
                 let _id = fields.next(); // accession, ignored
                 let genus = fields.next().unwrap_or("").to_string();
                 let species = fields.next().unwrap_or("").to_string();
                 if genus.is_empty() || species.is_empty() {
-                    continue; // skip malformed records
+                    continue;
                 }
                 ref_seqs_owned.push(seq);
                 ref_genus_owned.push(genus);
@@ -2152,7 +2169,7 @@ fn main() -> io::Result<()> {
             if verbose {
                 eprintln!(
                     "[assign-species] {} queries, {} references",
-                    queries.len(),
+                    query_seqs.len(),
                     ref_seqs_owned.len(),
                 );
             }
@@ -2175,31 +2192,86 @@ fn main() -> io::Result<()> {
                 },
             );
 
-            // ---- Serialize ----
+            // ---- Build new levels: drop existing "Species", append new "Species" ----
+            let genus_idx = tax_in.levels.iter().position(|l| l == "Genus");
+            let species_idx = tax_in.levels.iter().position(|l| l == "Species");
+            let new_levels: Vec<String> = tax_in
+                .levels
+                .iter()
+                .filter(|l| *l != "Species")
+                .cloned()
+                .chain(std::iter::once("Species".to_string()))
+                .collect();
+
+            // ---- Combine taxonomy + species hit per assignment ----
             #[derive(Serialize)]
-            struct SpeciesAssignment {
+            struct TaxAssignmentOut {
                 sequence_id: String,
                 sequence: String,
-                genus: Option<String>,
-                species: Option<String>,
-            }
-            #[derive(Serialize)]
-            struct AssignSpeciesOutput {
-                assignments: Vec<SpeciesAssignment>,
+                taxonomy: Vec<Option<String>>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                bootstrap: Option<Vec<u32>>,
             }
 
-            let assignments: Vec<SpeciesAssignment> = queries
+            let assignments_out: Vec<TaxAssignmentOut> = tax_in
+                .assignments
                 .into_iter()
                 .zip(hits)
-                .map(|((id, seq), hit)| SpeciesAssignment {
-                    sequence_id: id,
-                    sequence: String::from_utf8_lossy(&seq).into_owned(),
-                    genus: hit.genus,
-                    species: hit.species,
+                .map(|(a, hit)| {
+                    // Genus matching: when input has a Genus level, only fill species
+                    // if the species hit's genus matches the assigned genus
+                    // (mirrors R's matchGenera rules).
+                    let species = match (genus_idx, hit.genus.as_deref()) {
+                        (Some(gi), Some(hit_gen)) => {
+                            match a.taxonomy.get(gi).and_then(|x| x.as_deref()) {
+                                Some(assigned_gen) if match_genera(assigned_gen, hit_gen) => {
+                                    hit.species
+                                }
+                                _ => None,
+                            }
+                        }
+                        _ => hit.species,
+                    };
+
+                    // Drop the old Species column from taxonomy + bootstrap, then
+                    // append the species call (no bootstrap entry — exact-match).
+                    let mut new_tax: Vec<Option<String>> = a
+                        .taxonomy
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(i, _)| Some(*i) != species_idx)
+                        .map(|(_, t)| t)
+                        .collect();
+                    new_tax.push(species);
+
+                    let new_boot = a.bootstrap.map(|mut b| {
+                        if let Some(si) = species_idx {
+                            if si < b.len() {
+                                b.remove(si);
+                            }
+                        }
+                        b
+                    });
+
+                    TaxAssignmentOut {
+                        sequence_id: a.sequence_id,
+                        sequence: a.sequence,
+                        taxonomy: new_tax,
+                        bootstrap: new_boot,
+                    }
                 })
                 .collect();
 
-            let out = AssignSpeciesOutput { assignments };
+            #[derive(Serialize)]
+            struct AssignSpeciesOutput {
+                levels: Vec<String>,
+                assignments: Vec<TaxAssignmentOut>,
+            }
+
+            let out = AssignSpeciesOutput {
+                levels: new_levels,
+                assignments: assignments_out,
+            };
             let tagged = Tagged::new("assign-species", out);
             let json = if compact {
                 serde_json::to_string(&tagged)
@@ -2478,6 +2550,37 @@ fn rc_bytes(seq: &[u8]) -> Vec<u8> {
 /// Derive a base stem from a FASTQ path by stripping recognised extensions.
 ///
 /// `sample1.fastq.gz` → `"sample1"`,  `sample2.fq` → `"sample2"`.
+/// Mirrors R DADA2's `matchGenera()`.  Returns `true` when the genus assigned
+/// by the taxonomy classifier (`gen_tax`) matches the genus of a species
+/// reference hit (`gen_binom`).  Tolerates split genus names like
+/// `Escherichia/Shigella` and the "Candidatus X" prefix form.
+fn match_genera(gen_tax: &str, gen_binom: &str) -> bool {
+    if gen_tax == gen_binom {
+        return true;
+    }
+    // gen_tax starts with "<gen_binom> " — e.g. "Candidatus Saccharimonas" vs "Candidatus".
+    if gen_tax.len() > gen_binom.len()
+        && gen_tax.starts_with(gen_binom)
+        && gen_tax.as_bytes()[gen_binom.len()] == b' '
+    {
+        return true;
+    }
+    // gen_binom is a "/"-split genus that contains gen_tax at either end.
+    if gen_binom.starts_with(gen_tax)
+        && gen_binom.len() > gen_tax.len()
+        && gen_binom.as_bytes()[gen_tax.len()] == b'/'
+    {
+        return true;
+    }
+    if gen_binom.ends_with(gen_tax)
+        && gen_binom.len() > gen_tax.len()
+        && gen_binom.as_bytes()[gen_binom.len() - gen_tax.len() - 1] == b'/'
+    {
+        return true;
+    }
+    false
+}
+
 /// `true` when `path` looks like a JSON file (`.json` or `.json.gz`).
 fn is_json_path(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -2599,4 +2702,29 @@ fn fastq_stem(path: &Path) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("unknown")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn match_genera_rules() {
+        // Exact match.
+        assert!(match_genera("Lactobacillus", "Lactobacillus"));
+
+        // Split-genus reference: "/"-joined name on either side of gen_tax.
+        assert!(match_genera("Escherichia", "Escherichia/Shigella"));
+        assert!(match_genera("Shigella", "Escherichia/Shigella"));
+        assert!(!match_genera("Salmonella", "Escherichia/Shigella"));
+
+        // "Candidatus X" form: gen_tax has the prefix word that gen_binom is.
+        assert!(match_genera("Candidatus Saccharimonas", "Candidatus"));
+
+        // Mismatches.
+        assert!(!match_genera("Lactobacillus", "Streptococcus"));
+        // Substring without separator must not match.
+        assert!(!match_genera("Lacto", "Lactobacillus"));
+        assert!(!match_genera("Lactobacillus", "Lacto"));
+    }
 }
