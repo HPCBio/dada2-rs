@@ -7,6 +7,11 @@ use crate::misc::DADA2_RS_VERSION;
 #[derive(Parser)]
 #[command(
     about = "DADA2 toolkit",
+    long_about = "DADA2 toolkit\n\n\
+                  For subcommands that take a single JSON input file, pass `-` \
+                  to read from stdin (gzip auto-detected from the leading magic \
+                  bytes). Output flags such as -o/--output remain explicit; \
+                  omit them to write to stdout.",
     version = DADA2_RS_VERSION,
     disable_version_flag = true,
 )]

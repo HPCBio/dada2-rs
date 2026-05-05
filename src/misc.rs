@@ -1,10 +1,51 @@
 use std::fs::File;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 
 use flate2::read::MultiGzDecoder;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+
+/// Returns `true` when `path` is the stdin sentinel `-`.
+fn is_stdin(path: &Path) -> bool {
+    path.as_os_str() == "-"
+}
+
+/// Read the full contents of `path` into a `Vec<u8>`.  Treats `-` as stdin and
+/// transparently decompresses gzip — by extension when reading a real file,
+/// by sniffing the magic bytes (`1f 8b`) when reading stdin.
+fn read_all_maybe_gz(path: &Path) -> io::Result<Vec<u8>> {
+    if is_stdin(path) {
+        let mut raw = Vec::new();
+        io::stdin().lock().read_to_end(&mut raw)?;
+        if raw.len() >= 2 && raw[0] == 0x1f && raw[1] == 0x8b {
+            let mut out = Vec::new();
+            MultiGzDecoder::new(raw.as_slice()).read_to_end(&mut out)?;
+            Ok(out)
+        } else {
+            Ok(raw)
+        }
+    } else {
+        let file = File::open(path)?;
+        let is_gz = path.extension().and_then(|e| e.to_str()) == Some("gz");
+        let mut out = Vec::new();
+        if is_gz {
+            MultiGzDecoder::new(file).read_to_end(&mut out)?;
+        } else {
+            BufReader::new(file).read_to_end(&mut out)?;
+        }
+        Ok(out)
+    }
+}
+
+/// Format a path for use in error messages.  `-` becomes `<stdin>`.
+fn display_input(path: &Path) -> String {
+    if is_stdin(path) {
+        "<stdin>".to_string()
+    } else {
+        path.display().to_string()
+    }
+}
 
 /// Crate version, embedded in every JSON output as `dada2_rs_version`.
 ///
@@ -42,46 +83,33 @@ impl<T: Serialize> Tagged<T> {
 /// "missing field X" error when the file came from the wrong subcommand.
 ///
 /// Errors with `InvalidData` if the tag is missing or mismatched.
-/// Transparently decompresses gzip when the path ends in `.gz`.
+/// Transparently decompresses gzip — by `.gz` extension for real files, or by
+/// gzip-magic detection when reading stdin (`path == "-"`).
 pub fn read_tagged_json<T: DeserializeOwned>(path: &Path, expected: &[&str]) -> io::Result<T> {
-    let file = File::open(path)?;
-    let is_gz = path.extension().and_then(|e| e.to_str()) == Some("gz");
-    let value: serde_json::Value = if is_gz {
-        serde_json::from_reader(BufReader::new(MultiGzDecoder::new(file)))
-    } else {
-        serde_json::from_reader(BufReader::new(file))
-    }
-    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let bytes = read_all_maybe_gz(path)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
+    let label = display_input(path);
     let cmd = value.get("dada2_rs_command").and_then(|v| v.as_str());
     match cmd {
         Some(c) if expected.contains(&c) => {}
         Some(c) => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "{}: dada2_rs_command={c:?}, expected one of {expected:?}",
-                    path.display()
-                ),
+                format!("{label}: dada2_rs_command={c:?}, expected one of {expected:?}"),
             ));
         }
         None => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "{}: missing dada2_rs_command tag (expected one of {expected:?})",
-                    path.display()
-                ),
+                format!("{label}: missing dada2_rs_command tag (expected one of {expected:?})"),
             ));
         }
     }
 
-    serde_json::from_value(value).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{}: {e}", path.display()),
-        )
-    })
+    serde_json::from_value(value)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{label}: {e}")))
 }
 
 /// Open a JSON file and deserialize it, transparently decompressing gzip when
