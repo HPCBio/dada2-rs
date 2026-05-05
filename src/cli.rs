@@ -766,6 +766,24 @@ pub enum Commands {
         verbose: bool,
     },
 
+    /// Convert an assign-taxonomy or assign-species JSON to a TSV table
+    ///
+    /// Emits one row per assignment with the sequence ID first, followed by
+    /// one column per taxonomic level in the order they appear in the input
+    /// JSON.  Unassigned levels are written as `NA` (matching R DADA2 output).
+    TaxToTsv {
+        /// JSON file produced by `assign-taxonomy` or `assign-species`
+        input: PathBuf,
+
+        /// String written for unassigned (null) taxonomy levels
+        #[arg(long, default_value = "NA")]
+        na_string: String,
+
+        /// Write TSV output to this file instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+    },
+
     /// Convert a make-sequence-table JSON file to FASTA
     ///
     /// Writes one record per sequence using the sequence ID as the header.

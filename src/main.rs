@@ -1500,6 +1500,51 @@ fn main() -> io::Result<()> {
             out.flush()?;
         }
 
+        Commands::TaxToTsv {
+            input,
+            na_string,
+            output,
+        } => {
+            #[derive(serde::Deserialize)]
+            struct TaxAssignment {
+                sequence_id: String,
+                taxonomy: Vec<Option<String>>,
+            }
+            #[derive(serde::Deserialize)]
+            struct TaxJson {
+                levels: Vec<String>,
+                assignments: Vec<TaxAssignment>,
+            }
+
+            let tax: TaxJson = read_tagged_json(&input, &["assign-taxonomy", "assign-species"])?;
+
+            let mut out: Box<dyn io::Write> = match output {
+                Some(ref path) => Box::new(io::BufWriter::new(std::fs::File::create(path)?)),
+                None => Box::new(io::BufWriter::new(std::io::stdout())),
+            };
+
+            // Header: sequence_id <TAB> level1 <TAB> level2 ...
+            write!(out, "sequence_id")?;
+            for level in &tax.levels {
+                write!(out, "\t{level}")?;
+            }
+            writeln!(out)?;
+
+            for a in &tax.assignments {
+                write!(out, "{}", a.sequence_id)?;
+                for l in 0..tax.levels.len() {
+                    let cell = a
+                        .taxonomy
+                        .get(l)
+                        .and_then(|x| x.as_deref())
+                        .unwrap_or(na_string.as_str());
+                    write!(out, "\t{cell}")?;
+                }
+                writeln!(out)?;
+            }
+            out.flush()?;
+        }
+
         Commands::Sample {
             input,
             output_dir,
