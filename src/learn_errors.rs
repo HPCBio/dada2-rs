@@ -27,6 +27,7 @@ use crate::error_models::{
     accumulate_trans, binned_qual_errfun, external_errfun, loess_errfun, noqual_errfun,
     pacbio_errfun,
 };
+use crate::misc::WithPath;
 use crate::misc::nt_encode;
 use crate::nwalign::{AlignBuffers, AlignParams, raw_align_with_buf};
 
@@ -327,6 +328,7 @@ pub fn load_derep_samples(paths: &[PathBuf]) -> io::Result<Vec<Vec<RawInput>>> {
         .iter()
         .map(|path| {
             let sample: SampleJson = crate::misc::read_tagged_json(path, &["derep", "sample"])
+                .with_path(path)
                 .map_err(|e| {
                     io::Error::new(e.kind(), format!("failed to parse {}: {e}", path.display()))
                 })?;

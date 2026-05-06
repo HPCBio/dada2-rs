@@ -40,6 +40,7 @@ use flate2::read::MultiGzDecoder;
 use serde::{Deserialize, Serialize};
 
 use crate::derep::dereplicate;
+use crate::misc::WithPath;
 use crate::misc::{intstr, nt_decode};
 use crate::nwalign::{AlignBuffers, align_endsfree_with_buf};
 
@@ -342,8 +343,10 @@ pub fn merge_sample(
     pool: &rayon::ThreadPool,
 ) -> io::Result<SampleMergeResult> {
     // ---- Load dada JSONs (plain or gzip-compressed) ----
-    let fwd_dada: DadaJsonInput = crate::misc::read_tagged_json(fwd_dada_path, &["dada"])?;
-    let rev_dada: DadaJsonInput = crate::misc::read_tagged_json(rev_dada_path, &["dada"])?;
+    let fwd_dada: DadaJsonInput =
+        crate::misc::read_tagged_json(fwd_dada_path, &["dada"]).with_path(fwd_dada_path)?;
+    let rev_dada: DadaJsonInput =
+        crate::misc::read_tagged_json(rev_dada_path, &["dada"]).with_path(rev_dada_path)?;
 
     if params.check_sample_ids {
         check_sample_ids(

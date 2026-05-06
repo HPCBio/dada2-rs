@@ -25,6 +25,7 @@ use flate2::write::GzEncoder;
 use noodles::fastq;
 
 use crate::filter::match_ref;
+use crate::misc::WithPath;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -89,7 +90,7 @@ pub struct PairedFiles<'a> {
 
 /// Read the first sequence from a FASTA file using noodles.
 pub fn read_fasta_first_seq(path: &Path) -> io::Result<Vec<u8>> {
-    let file = File::open(path)?;
+    let file = File::open(path).with_path(path)?;
     let mut reader = fasta::io::Reader::new(BufReader::new(file));
     let record = reader
         .records()
@@ -269,7 +270,7 @@ fn is_gz(path: &Path) -> bool {
 type FastqReader = fastq::io::Reader<Box<dyn BufRead>>;
 
 fn open_reader(path: &Path) -> io::Result<FastqReader> {
-    let file = File::open(path)?;
+    let file = File::open(path).with_path(path)?;
     let inner: Box<dyn BufRead> = if is_gz(path) {
         Box::new(BufReader::new(MultiGzDecoder::new(file)))
     } else {

@@ -11,6 +11,17 @@ fn is_stdin(path: &Path) -> bool {
     path.as_os_str() == "-"
 }
 
+/// A trait for call paths to add the path causing the error
+pub trait WithPath<T> {
+    fn with_path(self, path: &Path) -> io::Result<T>;
+}
+
+impl<T> WithPath<T> for io::Result<T> {
+    fn with_path(self, path: &Path) -> io::Result<T> {
+        self.map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
+    }
+}
+
 /// Read the full contents of `path` into a `Vec<u8>`.  Treats `-` as stdin and
 /// transparently decompresses gzip — by extension when reading a real file,
 /// by sniffing the magic bytes (`1f 8b`) when reading stdin.

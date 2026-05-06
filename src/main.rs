@@ -50,6 +50,8 @@ use taxonomy::{
     assign_taxonomy,
 };
 
+use crate::misc::WithPath;
+
 /// Build a [`LearnedErrParams`] snapshot from the resolved errfun + dada/align
 /// params, for embedding in the err-model JSON. Captures everything dada cares
 /// about so a downstream invocation can validate or inherit.
@@ -122,12 +124,12 @@ fn main() -> io::Result<()> {
 
             let summary = if input.extension().and_then(|e| e.to_str()) == Some("gz") {
                 process(
-                    MultiGzDecoder::new(File::open(&input)?),
+                    MultiGzDecoder::new(File::open(&input).with_path(&input)?),
                     phred_offset,
                     &pool,
                 )?
             } else {
-                process(File::open(&input)?, phred_offset, &pool)?
+                process(File::open(&input).with_path(&input)?, phred_offset, &pool)?
             };
 
             #[derive(Serialize)]
@@ -180,13 +182,18 @@ fn main() -> io::Result<()> {
 
             let derep = if input.extension().and_then(|e| e.to_str()) == Some("gz") {
                 dereplicate(
-                    MultiGzDecoder::new(File::open(&input)?),
+                    MultiGzDecoder::new(File::open(&input).with_path(&input)?),
                     phred_offset,
                     &pool,
                     verbose,
                 )?
             } else {
-                dereplicate(File::open(&input)?, phred_offset, &pool, verbose)?
+                dereplicate(
+                    File::open(&input).with_path(&input)?,
+                    phred_offset,
+                    &pool,
+                    verbose,
+                )?
             };
 
             #[derive(Serialize)]
@@ -303,7 +310,8 @@ fn main() -> io::Result<()> {
 
             // ---- Mark prior sequences ----
             if let Some(ref prior_path) = prior {
-                let prior_seqs: std::collections::HashSet<String> = read_fasta_records(prior_path)?
+                let prior_seqs: std::collections::HashSet<String> = read_fasta_records(prior_path)
+                    .with_path(prior_path)?
                     .into_iter()
                     .map(|(_, seq)| String::from_utf8_lossy(&seq).to_ascii_uppercase())
                     .collect();
@@ -341,7 +349,8 @@ fn main() -> io::Result<()> {
             }
 
             let em: ErrorModelJson =
-                read_tagged_json(&error_model, &["learn-errors", "errors-from-sample"])?;
+                read_tagged_json(&error_model, &["learn-errors", "errors-from-sample"])
+                    .with_path(&error_model)?;
 
             let nq = em.nq;
             let rows = if use_err_in { &em.err_in } else { &em.err_out };
@@ -825,7 +834,8 @@ fn main() -> io::Result<()> {
 
             // ---- Mark prior sequences ----
             if let Some(ref prior_path) = prior {
-                let prior_seqs: HashSet<String> = read_fasta_records(prior_path)?
+                let prior_seqs: HashSet<String> = read_fasta_records(prior_path)
+                    .with_path(prior_path)?
                     .into_iter()
                     .map(|(_, seq)| String::from_utf8_lossy(&seq).to_ascii_uppercase())
                     .collect();
@@ -856,7 +866,8 @@ fn main() -> io::Result<()> {
                 params: Option<LearnedErrParams>,
             }
             let em: ErrorModelJson =
-                read_tagged_json(&error_model, &["learn-errors", "errors-from-sample"])?;
+                read_tagged_json(&error_model, &["learn-errors", "errors-from-sample"])
+                    .with_path(&error_model)?;
             let nq = em.nq;
             let rows = if use_err_in { &em.err_in } else { &em.err_out };
             if rows.len() != 16 || rows.iter().any(|r| r.len() != nq) {
@@ -1399,7 +1410,8 @@ fn main() -> io::Result<()> {
             compact,
         } => {
             let table: SequenceTable =
-                read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])?;
+                read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])
+                    .with_path(&input)?;
 
             let method = match method.as_str() {
                 "pooled" => Method::Pooled,
@@ -1445,7 +1457,8 @@ fn main() -> io::Result<()> {
             output,
         } => {
             let table: SequenceTable =
-                read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])?;
+                read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])
+                    .with_path(&input)?;
             let keep = select_sequences(&table, prevalence, min_abundance);
 
             let mut out: Box<dyn io::Write> = match output {
@@ -1478,7 +1491,8 @@ fn main() -> io::Result<()> {
             output,
         } => {
             let table: SequenceTable =
-                read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])?;
+                read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])
+                    .with_path(&input)?;
 
             if table.sequences.len() != table.sequence_ids.len() {
                 return Err(io::Error::new(
@@ -1516,7 +1530,8 @@ fn main() -> io::Result<()> {
                 assignments: Vec<TaxAssignment>,
             }
 
-            let tax: TaxJson = read_tagged_json(&input, &["assign-taxonomy", "assign-species"])?;
+            let tax: TaxJson = read_tagged_json(&input, &["assign-taxonomy", "assign-species"])
+                .with_path(&input)?;
 
             let mut out: Box<dyn io::Write> = match output {
                 Some(ref path) => Box::new(io::BufWriter::new(std::fs::File::create(path)?)),
@@ -1603,13 +1618,18 @@ fn main() -> io::Result<()> {
                 let is_gz = path.extension().and_then(|e| e.to_str()) == Some("gz");
                 let derep = if is_gz {
                     dereplicate(
-                        MultiGzDecoder::new(File::open(path)?),
+                        MultiGzDecoder::new(File::open(path).with_path(path)?),
                         phred_offset,
                         &pool,
                         verbose,
                     )?
                 } else {
-                    dereplicate(File::open(path)?, phred_offset, &pool, verbose)?
+                    dereplicate(
+                        File::open(path).with_path(path)?,
+                        phred_offset,
+                        &pool,
+                        verbose,
+                    )?
                 };
 
                 let file_bases: u64 = derep
@@ -1912,7 +1932,7 @@ fn main() -> io::Result<()> {
             const DADA2_UNSPEC: &str = "_DADA2_UNSPECIFIED";
 
             // ---- Read queries ----
-            let queries = read_query_sequences(&input)?;
+            let queries = read_query_sequences(&input).with_path(&input)?;
             let query_seqs: Vec<&[u8]> = queries.iter().map(|(_, s)| s.as_slice()).collect();
             let rcs: Vec<Vec<u8>> = if try_rc {
                 query_seqs.iter().map(|&s| rc_bytes(s)).collect()
@@ -1922,7 +1942,7 @@ fn main() -> io::Result<()> {
             let rc_refs: Vec<&[u8]> = rcs.iter().map(|s| s.as_slice()).collect();
 
             // ---- Read and parse reference FASTA ----
-            let raw_refs = read_fasta_records(&ref_fasta)?;
+            let raw_refs = read_fasta_records(&ref_fasta).with_path(&ref_fasta)?;
             let raw_refs: Vec<(String, Vec<u8>)> = raw_refs
                 .into_iter()
                 .filter(|(_, seq)| seq.len() >= MIN_REF_LEN)
@@ -2173,7 +2193,8 @@ fn main() -> io::Result<()> {
                 levels: Vec<String>,
                 assignments: Vec<TaxAssignmentIn>,
             }
-            let tax_in: AssignTaxIn = read_tagged_json(&input, &["assign-taxonomy"])?;
+            let tax_in: AssignTaxIn =
+                read_tagged_json(&input, &["assign-taxonomy"]).with_path(&input)?;
 
             let query_seqs_owned: Vec<Vec<u8>> = tax_in
                 .assignments
@@ -2183,7 +2204,7 @@ fn main() -> io::Result<()> {
             let query_seqs: Vec<&[u8]> = query_seqs_owned.iter().map(|s| s.as_slice()).collect();
 
             // ---- Read and parse species reference FASTA ----
-            let raw_refs = read_fasta_records(&ref_fasta)?;
+            let raw_refs = read_fasta_records(&ref_fasta).with_path(&ref_fasta)?;
             let mut ref_seqs_owned: Vec<Vec<u8>> = Vec::new();
             let mut ref_genus_owned: Vec<String> = Vec::new();
             let mut ref_species_owned: Vec<String> = Vec::new();
@@ -2561,7 +2582,8 @@ fn read_query_sequences(path: &Path) -> io::Result<Vec<(String, Vec<u8>)>> {
             sequence_ids: Vec<String>,
         }
         let table: SeqTable =
-            read_tagged_json(path, &["make-sequence-table", "remove-bimera-denovo"])?;
+            read_tagged_json(path, &["make-sequence-table", "remove-bimera-denovo"])
+                .with_path(path)?;
         if table.sequences.len() != table.sequence_ids.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -2575,7 +2597,7 @@ fn read_query_sequences(path: &Path) -> io::Result<Vec<(String, Vec<u8>)>> {
             .map(|(id, seq)| (id, seq.into_bytes()))
             .collect())
     } else {
-        read_fasta_records(path)
+        read_fasta_records(path).with_path(path)
     }
 }
 
@@ -2663,7 +2685,7 @@ fn load_derep_for_dada(
             sort_order: Option<String>,
             uniques: Vec<UniqueEntryJson>,
         }
-        let parsed: SampleJson = read_tagged_json(path, &["derep", "sample"])?;
+        let parsed: SampleJson = read_tagged_json(path, &["derep", "sample"]).with_path(path)?;
         let mut entries = parsed.uniques;
         // Skip the defensive sort when the producer has declared the order.
         // Older JSONs without `sort_order` get sorted, matching prior behaviour.
@@ -2694,13 +2716,18 @@ fn load_derep_for_dada(
         })
     } else if path.extension().and_then(|e| e.to_str()) == Some("gz") {
         dereplicate(
-            MultiGzDecoder::new(File::open(path)?),
+            MultiGzDecoder::new(File::open(path).with_path(path)?),
             phred_offset,
             pool,
             verbose,
         )
     } else {
-        dereplicate(File::open(path)?, phred_offset, pool, verbose)
+        dereplicate(
+            File::open(path).with_path(path)?,
+            phred_offset,
+            pool,
+            verbose,
+        )
     }
 }
 
