@@ -112,20 +112,20 @@ def main(argv: list[str] | None = None) -> int:
         description="Summarize per-sample read counts across dada2-rs steps.",
     )
     ap.add_argument(
-        "--filter-and-trim", nargs="+", type=Path, default=[], metavar="JSON",
+        "-f", "--filter-and-trim", nargs="+", type=Path, default=[], metavar="JSON",
         help="One or more filter-and-trim output JSONs (one per sample).",
     )
     ap.add_argument(
-        "--dada", nargs="+", type=Path, default=[], metavar="JSON",
+        "-d", "--dada", nargs="+", type=Path, default=[], metavar="JSON",
         help="One (single-end) or two (paired-end: R1 R2) make-sequence-table JSONs "
              "built from the dada / dada-pooled per-sample outputs.",
     )
     ap.add_argument(
-        "--merge-pairs", type=Path, default=None, metavar="JSON",
+        "-m", "--merge-pairs", type=Path, default=None, metavar="JSON",
         help="merge-pairs output JSON (paired-end only).  Omit for single-end runs.",
     )
     ap.add_argument(
-        "--seqtab", type=Path, default=None, metavar="JSON",
+        "-s", "--seqtab", type=Path, default=None, metavar="JSON",
         help="Final sequence-table JSON after remove-bimera-denovo.",
     )
     ap.add_argument(
