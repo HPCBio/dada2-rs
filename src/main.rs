@@ -168,6 +168,7 @@ fn main() -> io::Result<()> {
 
         Commands::Derep {
             input,
+            sample_name,
             phred_offset,
             threads,
             output,
@@ -205,6 +206,7 @@ fn main() -> io::Result<()> {
 
             #[derive(Serialize)]
             struct DerepOutput<'a> {
+                sample: &'a str,
                 total_reads: usize,
                 unique_sequences: usize,
                 /// "abundance_desc" — produced by `dereplicate()`; lets dada /
@@ -226,7 +228,9 @@ fn main() -> io::Result<()> {
                 });
             }
 
+            let sample = sample_name.unwrap_or_else(|| fastq_stem(&input));
             let derep_out = DerepOutput {
+                sample: &sample,
                 total_reads: derep.map.len(),
                 unique_sequences: derep.uniques.len(),
                 sort_order: "abundance_desc",
@@ -283,7 +287,7 @@ fn main() -> io::Result<()> {
                 .build()
                 .map_err(io::Error::other)?;
 
-            let derep = load_derep_for_dada(&input, phred_offset, &pool, verbose)?;
+            let (derep, json_sample) = load_derep_for_dada(&input, phred_offset, &pool, verbose)?;
 
             let mut raw_inputs: Vec<dada::RawInput> = derep
                 .uniques
@@ -602,7 +606,9 @@ fn main() -> io::Result<()> {
                 aux: Option<AuxJson>,
             }
 
-            let sample = sample_name.unwrap_or_else(|| fastq_stem(&input));
+            let sample = sample_name
+                .or(json_sample)
+                .unwrap_or_else(|| fastq_stem(&input));
             let total_reads: u32 = result.clusters.iter().map(|c| c.reads).sum();
 
             let asvs: Vec<AsvEntry> = result
@@ -734,22 +740,18 @@ fn main() -> io::Result<()> {
             use std::collections::{HashMap, HashSet};
 
             let n_samples = input.len();
-            let sample_names: Vec<String> = match sample_names {
-                Some(names) => {
-                    if names.len() != n_samples {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!(
-                                "--sample-names has {} entries but {} input file(s) given",
-                                names.len(),
-                                n_samples
-                            ),
-                        ));
-                    }
-                    names
+            if let Some(ref names) = sample_names {
+                if names.len() != n_samples {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "--sample-names has {} entries but {} input file(s) given",
+                            names.len(),
+                            n_samples
+                        ),
+                    ));
                 }
-                None => input.iter().map(|p| fastq_stem(p)).collect(),
-            };
+            }
 
             std::fs::create_dir_all(&output_dir)?;
 
@@ -760,9 +762,22 @@ fn main() -> io::Result<()> {
 
             // ---- Per-sample dereplication (or load from derep/sample JSON) ----
             let mut dereps: Vec<derep::Derep> = Vec::with_capacity(n_samples);
+            let mut json_samples: Vec<Option<String>> = Vec::with_capacity(n_samples);
             for path in &input {
-                dereps.push(load_derep_for_dada(path, phred_offset, &pool, verbose)?);
+                let (d, name) = load_derep_for_dada(path, phred_offset, &pool, verbose)?;
+                dereps.push(d);
+                json_samples.push(name);
             }
+
+            // Resolve sample names: CLI override > JSON-embedded > filename stem.
+            let sample_names: Vec<String> = match sample_names {
+                Some(names) => names,
+                None => input
+                    .iter()
+                    .zip(json_samples)
+                    .map(|(p, js)| js.unwrap_or_else(|| fastq_stem(p)))
+                    .collect(),
+            };
 
             // ---- Merge across samples (abundance-weighted quality average) ----
             let mut seq_to_merged: HashMap<Vec<u8>, usize> = HashMap::new();
@@ -1597,6 +1612,7 @@ fn main() -> io::Result<()> {
             }
             #[derive(Serialize)]
             struct DerepOutput<'a> {
+                sample: &'a str,
                 total_reads: usize,
                 unique_sequences: usize,
                 sort_order: &'static str,
@@ -1667,6 +1683,7 @@ fn main() -> io::Result<()> {
                     });
                 }
                 let sample_out = DerepOutput {
+                    sample: &stem,
                     total_reads: derep.map.len(),
                     unique_sequences: uniq_entries.len(),
                     sort_order: "abundance_desc",
@@ -2666,12 +2683,15 @@ fn is_json_path(path: &Path) -> bool {
 /// the most-abundant unique is at index 0.  The `map` (read → unique) field is
 /// only populated from the FASTQ path; JSON inputs leave it empty since neither
 /// `dada` nor `dada-pooled` consult it.
+///
+/// Returns the dereplicated table plus the JSON's embedded `sample` field
+/// when present; FASTQ inputs always return `None` for the name.
 fn load_derep_for_dada(
     path: &Path,
     phred_offset: u8,
     pool: &rayon::ThreadPool,
     verbose: bool,
-) -> io::Result<derep::Derep> {
+) -> io::Result<(derep::Derep, Option<String>)> {
     if is_json_path(path) {
         #[derive(serde::Deserialize)]
         struct UniqueEntryJson {
@@ -2682,10 +2702,13 @@ fn load_derep_for_dada(
         #[derive(serde::Deserialize)]
         struct SampleJson {
             #[serde(default)]
+            sample: Option<String>,
+            #[serde(default)]
             sort_order: Option<String>,
             uniques: Vec<UniqueEntryJson>,
         }
         let parsed: SampleJson = read_tagged_json(path, &["derep", "sample"]).with_path(path)?;
+        let sample_name = parsed.sample;
         let mut entries = parsed.uniques;
         // Skip the defensive sort when the producer has declared the order.
         // Older JSONs without `sort_order` get sorted, matching prior behaviour.
@@ -2709,25 +2732,30 @@ fn load_derep_for_dada(
             uniques.push((u.sequence.into_bytes(), u.count));
             quals.push(u.mean_quality);
         }
-        Ok(derep::Derep {
-            uniques,
-            quals,
-            map: Vec::new(),
-        })
+        Ok((
+            derep::Derep {
+                uniques,
+                quals,
+                map: Vec::new(),
+            },
+            sample_name,
+        ))
     } else if path.extension().and_then(|e| e.to_str()) == Some("gz") {
-        dereplicate(
+        let derep = dereplicate(
             MultiGzDecoder::new(File::open(path).with_path(path)?),
             phred_offset,
             pool,
             verbose,
-        )
+        )?;
+        Ok((derep, None))
     } else {
-        dereplicate(
+        let derep = dereplicate(
             File::open(path).with_path(path)?,
             phred_offset,
             pool,
             verbose,
-        )
+        )?;
+        Ok((derep, None))
     }
 }
 
