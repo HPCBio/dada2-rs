@@ -1369,6 +1369,8 @@ fn main() -> io::Result<()> {
             input,
             sample_names,
             order_by,
+            min_len,
+            max_len,
             hash,
             output,
             compact,
@@ -1399,7 +1401,29 @@ fn main() -> io::Result<()> {
                 HashAlgo::Md5
             };
             let paths: Vec<&Path> = input.iter().map(|p| p.as_path()).collect();
-            let table = make_sequence_table(&paths, names_opt, order, hash_algo)?;
+            let mut table = make_sequence_table(&paths, names_opt, order, hash_algo)?;
+
+            if min_len.is_some() || max_len.is_some() {
+                let keep: Vec<usize> = table
+                    .sequences
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| {
+                        min_len.is_none_or(|mn| s.len() >= mn)
+                            && max_len.is_none_or(|mx| s.len() <= mx)
+                    })
+                    .map(|(j, _)| j)
+                    .collect();
+                table.sequences = keep.iter().map(|&j| table.sequences[j].clone()).collect();
+                table.sequence_ids = keep
+                    .iter()
+                    .map(|&j| table.sequence_ids[j].clone())
+                    .collect();
+                for row in &mut table.counts {
+                    *row = keep.iter().map(|&j| row[j]).collect();
+                }
+            }
+
             let tagged = Tagged::new("make-sequence-table", table);
             let json = if compact {
                 serde_json::to_string(&tagged)

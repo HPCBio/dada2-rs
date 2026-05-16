@@ -574,6 +574,16 @@ pub enum Commands {
               value_parser = ["abundance", "nsamples", "none"])]
         order_by: String,
 
+        /// Discard ASV sequences shorter than this length (inclusive).
+        /// Useful for removing off-target amplicons.
+        #[arg(long)]
+        min_len: Option<usize>,
+
+        /// Discard ASV sequences longer than this length (inclusive).
+        /// Useful for removing off-target amplicons.
+        #[arg(long)]
+        max_len: Option<usize>,
+
         /// Write JSON output to this file instead of stdout
         #[arg(long, short = 'o')]
         output: Option<PathBuf>,
