@@ -5,11 +5,11 @@ Reads a combination of JSON outputs and emits a TSV with one row per sample.
 
 Inputs
 ------
---filter-and-trim   one or more filter-and-trim JSONs (one per sample)
---dada              one (single-end) or two (paired-end: R1, R2) make-sequence-table
-                    JSONs built from the per-sample dada / dada-pooled outputs
---merge-pairs       a single merge-pairs JSON (paired-end only)
---seqtab            the final sequence table after remove-bimera-denovo
+-f | --filter-and-trim   one or more filter-and-trim JSONs (one per sample)
+-d | --dada              one (single-end) or two (paired-end: R1, R2) make-sequence-table
+                         JSONs built from the per-sample dada / dada-pooled outputs
+-m | --merge-pairs       a single merge-pairs JSON (paired-end only)
+-s | --seqtab            the final sequence table after remove-bimera-denovo
 
 Output columns are emitted only when the corresponding input was supplied.
 For paired-end runs (two --dada files) the denoised columns are split into
@@ -68,9 +68,7 @@ def _load_seqtab_rowsums(path: Path) -> dict[str, int]:
     return out
 
 
-def load_dada_seqtabs(
-    paths: list[Path], counts: dict[str, dict[str, int]]
-) -> bool:
+def load_dada_seqtabs(paths: list[Path], counts: dict[str, dict[str, int]]) -> bool:
     """Populate denoised counts from one or two sequence-table JSONs.
 
     Returns True when paired-end (two paths supplied), False otherwise.
@@ -99,12 +97,14 @@ def load_merge_pairs(path: Path | None, counts: dict[str, dict[str, int]]) -> No
         row["merged"] = int(entry.get("accepted_pairs", 0))
 
 
-def load_seqtab(path: Path | None, counts: dict[str, dict[str, int]]) -> None:
-    if path is None:
+def load_seqtab(
+    path: Path | None, counts: dict[str, dict[str, int]], label: None
+) -> None:
+    if path is None or label is None:
         return
     rowsums = _load_seqtab_rowsums(path)
     for sample, n in rowsums.items():
-        counts.setdefault(sample, {})["nochim"] = n
+        counts.setdefault(sample, {})[label] = n
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -112,39 +112,80 @@ def main(argv: list[str] | None = None) -> int:
         description="Summarize per-sample read counts across dada2-rs steps.",
     )
     ap.add_argument(
-        "-f", "--filter-and-trim", nargs="+", type=Path, default=[], metavar="JSON",
+        "-f",
+        "--filter-and-trim",
+        nargs="+",
+        type=Path,
+        default=[],
+        metavar="JSON",
         help="One or more filter-and-trim output JSONs (one per sample).",
     )
     ap.add_argument(
-        "-d", "--dada", nargs="+", type=Path, default=[], metavar="JSON",
+        "-d",
+        "--dada",
+        nargs="+",
+        type=Path,
+        default=[],
+        metavar="JSON",
         help="One (single-end) or two (paired-end: R1 R2) make-sequence-table JSONs "
-             "built from the dada / dada-pooled per-sample outputs.",
+        "built from the dada / dada-pooled per-sample outputs.",
     )
     ap.add_argument(
-        "-m", "--merge-pairs", type=Path, default=None, metavar="JSON",
+        "-m",
+        "--merge-pairs",
+        type=Path,
+        default=None,
+        metavar="JSON",
         help="merge-pairs output JSON (paired-end only).  Omit for single-end runs.",
     )
     ap.add_argument(
-        "-s", "--seqtab", type=Path, default=None, metavar="JSON",
+        "-l",
+        "--length-filtered",
+        type=Path,
+        default=None,
+        metavar="JSON",
+        help="Optional sequence-table JSON filtering input by ASV length.",
+    )
+    ap.add_argument(
+        "-s",
+        "--seqtab",
+        type=Path,
+        default=None,
+        metavar="JSON",
         help="Final sequence-table JSON after remove-bimera-denovo.",
     )
     ap.add_argument(
-        "-o", "--output", type=Path, default=None,
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
         help="Write TSV to this file instead of stdout.",
     )
     args = ap.parse_args(argv)
 
-    if not (args.filter_and_trim or args.dada or args.merge_pairs or args.seqtab):
-        ap.error("supply at least one of --filter-and-trim / --dada / --merge-pairs / --seqtab")
+    if not (
+        args.filter_and_trim
+        or args.dada
+        or args.merge_pairs
+        or args.seqtab
+        or args.length_filtered
+    ):
+        ap.error(
+            "supply at least one of --filter-and-trim / --dada / --merge-pairs / --seqtab / --length-filtered"
+        )
 
     if args.merge_pairs is not None and len(args.dada) < 2:
-        ap.error("--merge-pairs is only meaningful with paired-end --dada (two seq tables)")
+        ap.error(
+            "--merge-pairs is only meaningful with paired-end --dada (two seq tables)"
+        )
 
     counts: dict[str, dict[str, int]] = {}
     load_filter_trim(args.filter_and_trim, counts)
     paired = load_dada_seqtabs(args.dada, counts)
     load_merge_pairs(args.merge_pairs, counts)
-    load_seqtab(args.seqtab, counts)
+    load_seqtab(args.length_filtered, counts, "prefiltered")
+    load_seqtab(args.seqtab, counts, "nochim")
+    # print(counts)
 
     cols: list[str] = []
     if args.filter_and_trim:
@@ -153,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
         cols += ["denoisedF", "denoisedR"] if paired else ["denoised"]
     if args.merge_pairs is not None:
         cols += ["merged"]
+    if args.length_filtered is not None:
+        cols += ["prefiltered"]
     if args.seqtab is not None:
         cols += ["nochim"]
 
