@@ -31,6 +31,11 @@ pub enum Commands {
         /// Input FASTQ file (uncompressed or gzipped)
         input: PathBuf,
 
+        /// Sample identifier included in the output JSON's `sample` field.
+        /// Defaults to the filename stem of the input FASTQ.
+        #[arg(long)]
+        sample_name: Option<String>,
+
         /// Phred quality score offset (33 for Sanger/Illumina 1.8+, 64 for Illumina 1.3–1.7)
         #[arg(long, default_value_t = 33)]
         phred_offset: u8,

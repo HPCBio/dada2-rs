@@ -112,6 +112,7 @@ fn main() -> io::Result<()> {
     match command {
         Commands::Summary {
             input,
+            sample_name,
             phred_offset,
             threads,
             output,
@@ -134,6 +135,7 @@ fn main() -> io::Result<()> {
 
             #[derive(Serialize)]
             struct SummaryOutput {
+                sample: String,
                 total_reads: u64,
                 mean_quality_per_position: Vec<f64>,
                 reads_per_position: Vec<u64>,
@@ -143,8 +145,10 @@ fn main() -> io::Result<()> {
                 quality_histogram: Vec<Vec<u64>>,
             }
 
+            let sample = sample_name.unwrap_or_else(|| fastq_stem(&input));
             let (max_quality, quality_histogram) = summary.quality_histogram();
             let out = SummaryOutput {
+                sample,
                 total_reads: summary.total_reads,
                 mean_quality_per_position: summary.mean_quality_per_position(),
                 reads_per_position: summary.reads_per_position().to_vec(),
