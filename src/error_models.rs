@@ -118,7 +118,12 @@ fn loess_predict(
         return vec![None; n];
     }
 
-    let n_local = ((span * nv as f64).ceil() as usize)
+    // R's `loess` (with surface="direct") uses `floor(span * n)` for the
+    // neighborhood size; see `simpleLoess` → C kernel in `loessc.c`. dada2-rs
+    // previously used `ceil`, which agrees when `span * nv` is integer but
+    // differs by 1 otherwise — enough to nudge the local fit at nontrivial
+    // numbers of observations. See issue #14 checklist item 1.
+    let n_local = ((span * nv as f64).floor() as usize)
         .max(eff_degree + 1)
         .min(nv);
     let p = eff_degree + 1; // number of polynomial coefficients
