@@ -902,9 +902,18 @@ pub enum Commands {
         #[arg(required = true)]
         input: Vec<PathBuf>,
 
-        /// Error model fitting function to use
+        /// Error model fitting function to use.
         ///
-        /// Allowed values: loess (default), noqual, binned-qual, pacbio, external
+        /// Allowed values: loess (default), noqual, binned-qual, pacbio, external.
+        ///
+        /// Note on `loess` vs R DADA2: the native Rust loess uses a
+        /// normal-equations solve which diverges from R's `stats::loess`
+        /// (QR with orthogonal polynomials) by up to ~1e-3 absolute at the
+        /// low-quality edges where the local design matrix is poorly
+        /// conditioned. Downstream ASV impact is minimal in practice.
+        /// For bit-for-bit R parity, use:
+        ///   --errfun external --errfun-cmd "Rscript examples/external_errfun/loess_reference.R"
+        /// See issue #14 for the tracking discussion.
         #[arg(long, default_value = "loess")]
         errfun: String,
 
@@ -1072,9 +1081,18 @@ pub enum Commands {
         #[arg(long, default_value_t = 33)]
         phred_offset: u8,
 
-        /// Error model fitting function to use
+        /// Error model fitting function to use.
         ///
-        /// Allowed values: loess (default), noqual, binned-qual, pacbio, external
+        /// Allowed values: loess (default), noqual, binned-qual, pacbio, external.
+        ///
+        /// Note on `loess` vs R DADA2: the native Rust loess uses a
+        /// normal-equations solve which diverges from R's `stats::loess`
+        /// (QR with orthogonal polynomials) by up to ~1e-3 absolute at the
+        /// low-quality edges where the local design matrix is poorly
+        /// conditioned. Downstream ASV impact is minimal in practice.
+        /// For bit-for-bit R parity, use:
+        ///   --errfun external --errfun-cmd "Rscript examples/external_errfun/loess_reference.R"
+        /// See issue #14 for the tracking discussion.
         #[arg(long, default_value = "loess")]
         errfun: String,
 
