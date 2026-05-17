@@ -33,9 +33,16 @@ loessErrfun <- function(trans) {
         rlogp <- log10((errs + 1) / tot)
         rlogp[is.infinite(rlogp)] <- NA
         df    <- data.frame(q = qq, errs = errs, tot = tot, rlogp = rlogp)
-        # Only difference from loess_reference.R: surface = "direct".
+        # surface = "direct" evaluates the local polynomial at every query
+        # point — including outside the data range, where the polynomial
+        # extrapolates wildly.  surface = "interpolate" naturally returns NA
+        # there (via the kd-tree).  Replicate that explicitly so the existing
+        # flat-fill logic still triggers, matching dada2-rs's `loess_predict`
+        # which short-circuits to None outside [x_min, x_max].
         mod.lo <- loess(rlogp ~ q, df, weights = tot, surface = "direct")
         pred   <- predict(mod.lo, qq)
+        valid_q <- df$q[!is.na(df$rlogp) & df$tot > 0]
+        pred[qq < min(valid_q) | qq > max(valid_q)] <- NA
         maxrli <- max(which(!is.na(pred)))
         minrli <- min(which(!is.na(pred)))
         pred[seq_along(pred) > maxrli] <- pred[[maxrli]]
