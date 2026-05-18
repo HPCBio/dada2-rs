@@ -943,25 +943,46 @@ pub enum Commands {
         #[arg(long)]
         errfun_cmd: Option<String>,
 
-        /// LOESS fitting surface (only used with --errfun loess).
+        /// LOESS configuration preset.  Resolves a bundle of related knobs
+        /// (`--loess-surface`, `--loess-cell`, `--loess-max-rate`,
+        /// `--loess-min-rate`); any of those flags passed explicitly overrides
+        /// the preset's value for that knob.
         ///
-        /// `direct` (default) evaluates the local polynomial at every query
-        /// point. Matches R `loess(surface = "direct")` to machine precision.
+        /// - `default`: surface=direct, max-rate=0.25, min-rate=1e-7 — the
+        ///   historical dada2-rs behavior (safety clamp).
+        /// - `r-dada2`: surface=interpolate, cell=0.2, max-rate=1.0, min-rate=0.0.
+        ///   Mirrors R DADA2's `loessErrfun` (R's default `loess()` surface +
+        ///   no clamp on output rates).
+        #[arg(long, default_value = "default",
+              value_parser = ["default", "r-dada2"])]
+        loess_preset: String,
+
+        /// LOESS fitting surface (overrides preset).
         ///
-        /// `interpolate` builds a 1-D kd-tree partition, fits the local
-        /// polynomial at each vertex, and blends adjacent vertex polynomials
-        /// with a cubic smoothstep at query points.  Matches R's default
-        /// `loess(surface = "interpolate")` — the variant R DADA2's
-        /// `loessErrfun` uses.
-        #[arg(long, default_value = "direct",
-              value_parser = ["direct", "interpolate"])]
-        loess_surface: String,
+        /// `direct` evaluates the local polynomial at every query point
+        /// (matches R `loess(surface = "direct")`).  `interpolate` builds a
+        /// 1-D kd-tree partition, fits at each vertex, and blends with cubic
+        /// Hermite at queries (matches R's default `loess()`).
+        #[arg(long, value_parser = ["direct", "interpolate"])]
+        loess_surface: Option<String>,
 
         /// Maximum fraction of observations allowed per kd-tree cell before
-        /// it is subdivided.  Only used with --loess-surface interpolate.
+        /// it is subdivided.  Only used with `--loess-surface interpolate`.
         /// Mirrors R `loess.control(cell = ...)`; R's default is 0.2.
-        #[arg(long, default_value_t = 0.2)]
-        loess_cell: f64,
+        #[arg(long)]
+        loess_cell: Option<f64>,
+
+        /// Upper clamp on off-diagonal error rates from the LOESS errfun.
+        /// `default` preset uses 0.25; `r-dada2` preset uses 1.0 (no upper
+        /// clamp, matching R DADA2).  Set to `1.0` to disable.
+        #[arg(long)]
+        loess_max_rate: Option<f64>,
+
+        /// Lower clamp on off-diagonal error rates from the LOESS errfun.
+        /// `default` preset uses 1e-7; `r-dada2` preset uses 0.0 (no lower
+        /// clamp, matching R DADA2).
+        #[arg(long)]
+        loess_min_rate: Option<f64>,
 
         /// Maximum self-consistency iterations (mirrors R's MAX_CONSIST)
         #[arg(long, default_value_t = 10)]
@@ -1148,25 +1169,46 @@ pub enum Commands {
         #[arg(long)]
         errfun_cmd: Option<String>,
 
-        /// LOESS fitting surface (only used with --errfun loess).
+        /// LOESS configuration preset.  Resolves a bundle of related knobs
+        /// (`--loess-surface`, `--loess-cell`, `--loess-max-rate`,
+        /// `--loess-min-rate`); any of those flags passed explicitly overrides
+        /// the preset's value for that knob.
         ///
-        /// `direct` (default) evaluates the local polynomial at every query
-        /// point. Matches R `loess(surface = "direct")` to machine precision.
+        /// - `default`: surface=direct, max-rate=0.25, min-rate=1e-7 — the
+        ///   historical dada2-rs behavior (safety clamp).
+        /// - `r-dada2`: surface=interpolate, cell=0.2, max-rate=1.0, min-rate=0.0.
+        ///   Mirrors R DADA2's `loessErrfun` (R's default `loess()` surface +
+        ///   no clamp on output rates).
+        #[arg(long, default_value = "default",
+              value_parser = ["default", "r-dada2"])]
+        loess_preset: String,
+
+        /// LOESS fitting surface (overrides preset).
         ///
-        /// `interpolate` builds a 1-D kd-tree partition, fits the local
-        /// polynomial at each vertex, and blends adjacent vertex polynomials
-        /// with a cubic smoothstep at query points.  Matches R's default
-        /// `loess(surface = "interpolate")` — the variant R DADA2's
-        /// `loessErrfun` uses.
-        #[arg(long, default_value = "direct",
-              value_parser = ["direct", "interpolate"])]
-        loess_surface: String,
+        /// `direct` evaluates the local polynomial at every query point
+        /// (matches R `loess(surface = "direct")`).  `interpolate` builds a
+        /// 1-D kd-tree partition, fits at each vertex, and blends with cubic
+        /// Hermite at queries (matches R's default `loess()`).
+        #[arg(long, value_parser = ["direct", "interpolate"])]
+        loess_surface: Option<String>,
 
         /// Maximum fraction of observations allowed per kd-tree cell before
-        /// it is subdivided.  Only used with --loess-surface interpolate.
+        /// it is subdivided.  Only used with `--loess-surface interpolate`.
         /// Mirrors R `loess.control(cell = ...)`; R's default is 0.2.
-        #[arg(long, default_value_t = 0.2)]
-        loess_cell: f64,
+        #[arg(long)]
+        loess_cell: Option<f64>,
+
+        /// Upper clamp on off-diagonal error rates from the LOESS errfun.
+        /// `default` preset uses 0.25; `r-dada2` preset uses 1.0 (no upper
+        /// clamp, matching R DADA2).  Set to `1.0` to disable.
+        #[arg(long)]
+        loess_max_rate: Option<f64>,
+
+        /// Lower clamp on off-diagonal error rates from the LOESS errfun.
+        /// `default` preset uses 1e-7; `r-dada2` preset uses 0.0 (no lower
+        /// clamp, matching R DADA2).
+        #[arg(long)]
+        loess_min_rate: Option<f64>,
 
         /// Maximum self-consistency iterations (mirrors R's MAX_CONSIST)
         #[arg(long, default_value_t = 10)]

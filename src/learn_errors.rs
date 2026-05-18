@@ -24,7 +24,7 @@ use crate::containers::Raw;
 use crate::dada::{DadaParams, RawInput, dada_uniques_cached};
 use crate::derep::dereplicate;
 use crate::error_models::{
-    LoessSurface, accumulate_trans, binned_qual_errfun, external_errfun, loess_errfun,
+    LoessConfig, accumulate_trans, binned_qual_errfun, external_errfun, loess_errfun,
     noqual_errfun, pacbio_errfun,
 };
 use crate::misc::WithPath;
@@ -58,20 +58,24 @@ const MAX_ERR: f64 = 0.25;
 // ---------------------------------------------------------------------------
 
 /// Which error model fitting function to apply to the accumulated transition matrix.
+///
+/// All variants except `External` carry a [`LoessConfig`] — for `Loess` it
+/// controls the surface choice and rate-clamp bounds; for `Noqual`, `BinnedQual`,
+/// and `PacBio` only the clamp bounds are consulted (and, in `PacBio`'s
+/// LOESS-fallback path, the surface).
 #[derive(Clone, Debug)]
 pub enum ErrFun {
     /// Locally-weighted polynomial regression (default for Illumina).
-    /// `surface` selects between direct per-query fits (matches R
-    /// `loess(surface = "direct")`) and kd-tree-vertex fits with smoothstep
-    /// blending (matches R's default `loess(surface = "interpolate")`,
-    /// which is what R DADA2's `loessErrfun` uses).
-    Loess { surface: LoessSurface },
+    Loess { config: LoessConfig },
     /// Quality-score-free: one rate per transition type, broadcast across all Q.
-    Noqual { pseudocount: f64 },
+    Noqual {
+        pseudocount: f64,
+        config: LoessConfig,
+    },
     /// Piecewise linear interpolation between anchor quality bins.
-    BinnedQual { bins: Vec<f64> },
+    BinnedQual { bins: Vec<f64>, config: LoessConfig },
     /// PacBio-specific model.
-    PacBio,
+    PacBio { config: LoessConfig },
     /// User-supplied command that reads a trans TSV and writes an err TSV.
     /// See [`external_errfun`] for the wire format.
     External { command: String },
@@ -82,10 +86,15 @@ impl ErrFun {
     pub fn apply(&self, trans: &[u32], nq: usize) -> Result<Vec<f64>, String> {
         let qual_scores: Vec<f64> = (0..nq).map(|q| q as f64).collect();
         match self {
-            ErrFun::Loess { surface } => Ok(loess_errfun(trans, &qual_scores, *surface)),
-            ErrFun::Noqual { pseudocount } => Ok(noqual_errfun(trans, nq, *pseudocount)),
-            ErrFun::BinnedQual { bins } => binned_qual_errfun(trans, &qual_scores, bins),
-            ErrFun::PacBio => Ok(pacbio_errfun(trans, &qual_scores)),
+            ErrFun::Loess { config } => Ok(loess_errfun(trans, &qual_scores, config)),
+            ErrFun::Noqual {
+                pseudocount,
+                config,
+            } => Ok(noqual_errfun(trans, nq, *pseudocount, config)),
+            ErrFun::BinnedQual { bins, config } => {
+                binned_qual_errfun(trans, &qual_scores, bins, config)
+            }
+            ErrFun::PacBio { config } => Ok(pacbio_errfun(trans, &qual_scores, config)),
             ErrFun::External { command } => external_errfun(trans, nq, command),
         }
     }

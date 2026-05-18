@@ -22,8 +22,13 @@ use std::io;
 
 use statrs::distribution::{DiscreteCDF, Poisson};
 
-const MAX_ERROR_RATE: f64 = 0.25;
-const MIN_ERROR_RATE: f64 = 1e-7;
+/// Default clamp bounds applied to off-diagonal rates returned by
+/// [`loess_errfun`] (and the loess-fallback paths in [`pacbio_errfun`] /
+/// [`binned_qual_errfun`]).  The `LoessConfig::default()` values match
+/// these.  R DADA2's `loessErrfun` does **not** clamp — see the `r-dada2`
+/// preset, which sets `max_error_rate = 1.0` and `min_error_rate = 0.0`.
+pub const DEFAULT_MAX_ERROR_RATE: f64 = 0.25;
+pub const DEFAULT_MIN_ERROR_RATE: f64 = 1e-7;
 
 // ---------------------------------------------------------------------------
 // Private helpers
@@ -94,14 +99,62 @@ pub enum LoessSurface {
     /// Bit-equivalent to R `loess(surface = "direct")`.
     Direct,
     /// Build a kd-tree partition of the data, fit local polynomials at each
-    /// vertex, then blend neighboring vertex polynomials with a cubic
-    /// smoothstep at query points.  Mirrors R `loess(surface = "interpolate")`,
-    /// which is R DADA2's default `loessErrfun` path.
+    /// vertex, then blend neighboring vertex polynomials with cubic Hermite
+    /// at query points.  Mirrors R `loess(surface = "interpolate")`, which
+    /// is R DADA2's default `loessErrfun` path.
     ///
     /// `cell` controls the maximum number of observations per kd-tree cell;
     /// cells with more than `floor(cell * span * nv)` points are subdivided.
     /// R's default is `0.2` (see `loess.control`).
     Interpolate { cell: f64 },
+}
+
+/// Resolved configuration for the LOESS errfun and the loess-fallback path
+/// inside [`pacbio_errfun`] / [`binned_qual_errfun`].
+///
+/// The CLI layer builds this from a preset (`default` or `r-dada2`) plus any
+/// explicit overrides.  Two presets are exposed:
+///
+/// | Knob | `default` | `r-dada2` |
+/// |---|---|---|
+/// | `surface` | `Direct` | `Interpolate { cell: 0.2 }` |
+/// | `max_error_rate` | `0.25` | `1.0` (effectively no upper clamp) |
+/// | `min_error_rate` | `1e-7` | `0.0` (no lower clamp; matches R) |
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoessConfig {
+    pub surface: LoessSurface,
+    /// Upper clamp on off-diagonal rate output. `1.0` disables the upper clamp.
+    pub max_error_rate: f64,
+    /// Lower clamp on off-diagonal rate output. `0.0` disables the lower clamp.
+    pub min_error_rate: f64,
+}
+
+impl Default for LoessConfig {
+    /// The dada2-rs default: direct surface + R-style `[1e-7, 0.25]` clamp.
+    fn default() -> Self {
+        Self {
+            surface: LoessSurface::Direct,
+            max_error_rate: DEFAULT_MAX_ERROR_RATE,
+            min_error_rate: DEFAULT_MIN_ERROR_RATE,
+        }
+    }
+}
+
+impl LoessConfig {
+    /// `r-dada2` preset: surface=`Interpolate { cell: 0.2 }`, no clamp.
+    /// Mirrors R DADA2's `loessErrfun` (R `loess(...)` default surface +
+    /// no clamp on the resulting rates).
+    pub fn r_dada2() -> Self {
+        Self {
+            surface: LoessSurface::Interpolate { cell: 0.2 },
+            max_error_rate: 1.0,
+            min_error_rate: 0.0,
+        }
+    }
+
+    fn clamp(&self, r: f64) -> f64 {
+        r.clamp(self.min_error_rate, self.max_error_rate)
+    }
 }
 
 /// Fit a local weighted polynomial at `x0` and return the coefficients
@@ -412,12 +465,6 @@ fn extrapolate_flat(raw: Vec<Option<f64>>, n: usize) -> Vec<f64> {
     out
 }
 
-/// Clamp a rate to the canonical `[MIN_ERROR_RATE, MAX_ERROR_RATE]` interval.
-#[inline]
-fn clamp_rate(r: f64) -> f64 {
-    r.clamp(MIN_ERROR_RATE, MAX_ERROR_RATE)
-}
-
 /// Expand the 12 off-diagonal estimated rates into the full 16 × `nq` error matrix.
 ///
 /// The 12 off-diagonal rows (0-indexed) are ordered by iterating source
@@ -474,17 +521,18 @@ fn expand_err_matrix(off_diag: &[f64], nq: usize) -> Vec<f64> {
 /// transition types, fits `log10((errs + 1) / tot) ~ quality` (weighted by
 /// `tot`) with `span = 0.75` and `degree = 2`, then converts predictions back
 /// with `10^pred`.  Predictions are extrapolated flat outside the data range.
-/// All rates are clamped to `[1e-7, 0.25]`.  Diagonal entries are filled as
-/// `1 − sum(off-diagonals)`.
+/// Off-diagonal rates are clamped to `[config.min_error_rate, config.max_error_rate]`
+/// (the `default` preset uses `[1e-7, 0.25]`; the `r-dada2` preset uses `[0, 1]`).
+/// Diagonal entries are filled as `1 − sum(off-diagonals)` regardless of preset.
 ///
 /// # Arguments
 /// - `trans`: flat 16 × `nq` row-major matrix of transition counts
 /// - `qual_scores`: quality score value for each column (length `nq`)
-/// - `surface`: see [`LoessSurface`]
+/// - `config`: surface + clamp bounds — see [`LoessConfig`]
 ///
 /// # Returns
 /// Flat 16 × `nq` row-major error rate matrix.
-pub fn loess_errfun(trans: &[u32], qual_scores: &[f64], surface: LoessSurface) -> Vec<f64> {
+pub fn loess_errfun(trans: &[u32], qual_scores: &[f64], config: &LoessConfig) -> Vec<f64> {
     let nq = qual_scores.len();
     assert_eq!(trans.len(), 16 * nq, "trans length must be 16 * nq");
 
@@ -521,16 +569,16 @@ pub fn loess_errfun(trans: &[u32], qual_scores: &[f64], surface: LoessSurface) -
                 })
                 .collect();
 
-            let raw_pred = loess_predict(qual_scores, &rlogp, &tot, 0.75, 2, surface);
+            let raw_pred = loess_predict(qual_scores, &rlogp, &tot, 0.75, 2, config.surface);
             let filled = extrapolate_flat(raw_pred, nq);
 
             for q in 0..nq {
                 let rate = if filled[q].is_finite() {
                     10.0f64.powf(filled[q])
                 } else {
-                    MIN_ERROR_RATE
+                    config.min_error_rate
                 };
-                off_diag[off_row * nq + q] = clamp_rate(rate);
+                off_diag[off_row * nq + q] = config.clamp(rate);
             }
             off_row += 1;
         }
@@ -553,7 +601,7 @@ pub fn loess_errfun(trans: &[u32], qual_scores: &[f64], surface: LoessSurface) -
 ///
 /// # Returns
 /// Flat 16 × `nq` row-major error rate matrix (all columns identical).
-pub fn noqual_errfun(trans: &[u32], nq: usize, pseudocount: f64) -> Vec<f64> {
+pub fn noqual_errfun(trans: &[u32], nq: usize, pseudocount: f64, config: &LoessConfig) -> Vec<f64> {
     assert_eq!(trans.len(), 16 * nq, "trans length must be 16 * nq");
 
     // obs[r] = sum over quality columns + pseudocount
@@ -573,9 +621,9 @@ pub fn noqual_errfun(trans: &[u32], nq: usize, pseudocount: f64) -> Vec<f64> {
             }
 
             let rate = if tot_init > 0.0 {
-                clamp_rate(obs[nti * 4 + ntj] / tot_init)
+                config.clamp(obs[nti * 4 + ntj] / tot_init)
             } else {
-                MIN_ERROR_RATE
+                config.min_error_rate
             };
 
             // Same rate broadcast to every quality column.
@@ -608,6 +656,7 @@ pub fn binned_qual_errfun(
     trans: &[u32],
     qual_scores: &[f64],
     binned_quals: &[f64],
+    config: &LoessConfig,
 ) -> Result<Vec<f64>, String> {
     let nq = qual_scores.len();
     assert_eq!(trans.len(), 16 * nq, "trans length must be 16 * nq");
@@ -726,9 +775,9 @@ pub fn binned_qual_errfun(
 
             for q in 0..nq {
                 off_diag[off_row * nq + q] = if filled[q].is_finite() {
-                    clamp_rate(filled[q])
+                    config.clamp(filled[q])
                 } else {
-                    MIN_ERROR_RATE
+                    config.min_error_rate
                 };
             }
             off_row += 1;
@@ -748,7 +797,7 @@ pub fn binned_qual_errfun(
 /// # Arguments
 /// - `trans`: flat 16 × `nq` row-major transition count matrix
 /// - `qual_scores`: quality score values for each column
-pub fn pacbio_errfun(trans: &[u32], qual_scores: &[f64]) -> Vec<f64> {
+pub fn pacbio_errfun(trans: &[u32], qual_scores: &[f64], config: &LoessConfig) -> Vec<f64> {
     let nq = qual_scores.len();
     assert_eq!(trans.len(), 16 * nq, "trans length must be 16 * nq");
 
@@ -759,7 +808,7 @@ pub fn pacbio_errfun(trans: &[u32], qual_scores: &[f64]) -> Vec<f64> {
             .flat_map(|r| (0..sub_nq).map(move |q| trans[r * nq + q]))
             .collect();
         let qs_sub = &qual_scores[..sub_nq];
-        let err_sub = loess_errfun(&trans_sub, qs_sub, LoessSurface::Direct); // 16 × sub_nq
+        let err_sub = loess_errfun(&trans_sub, qs_sub, config); // 16 × sub_nq
 
         // MLE for Q93: (count + 1) / (group_total + 4).
         let q93 = nq - 1;
@@ -784,7 +833,7 @@ pub fn pacbio_errfun(trans: &[u32], qual_scores: &[f64]) -> Vec<f64> {
         }
         full_err
     } else {
-        loess_errfun(trans, qual_scores, LoessSurface::Direct)
+        loess_errfun(trans, qual_scores, config)
     }
 }
 
@@ -1148,7 +1197,7 @@ mod tests {
     fn test_noqual_errfun_rows_sum_to_one() {
         let nq = 5;
         let trans = make_uniform_trans(nq, 100, 1);
-        let err = noqual_errfun(&trans, nq, 1.0);
+        let err = noqual_errfun(&trans, nq, 1.0, &LoessConfig::default());
         assert_eq!(err.len(), 16 * nq);
 
         for nti in 0..4 {
@@ -1161,11 +1210,31 @@ mod tests {
     }
 
     #[test]
+    fn loess_config_default_and_r_dada2_presets() {
+        let d = LoessConfig::default();
+        assert!(matches!(d.surface, LoessSurface::Direct));
+        assert_eq!(d.max_error_rate, DEFAULT_MAX_ERROR_RATE);
+        assert_eq!(d.min_error_rate, DEFAULT_MIN_ERROR_RATE);
+
+        let r = LoessConfig::r_dada2();
+        assert!(matches!(r.surface, LoessSurface::Interpolate { cell }
+                         if (cell - 0.2).abs() < 1e-12));
+        assert_eq!(r.max_error_rate, 1.0);
+        assert_eq!(r.min_error_rate, 0.0);
+
+        // Clamp behavior matches the preset.
+        assert_eq!(d.clamp(0.5), 0.25); // default upper-clamps
+        assert_eq!(d.clamp(1e-10), 1e-7); // default lower-clamps
+        assert_eq!(r.clamp(0.5), 0.5); // r-dada2 doesn't upper-clamp
+        assert_eq!(r.clamp(1e-10), 1e-10); // r-dada2 doesn't lower-clamp
+    }
+
+    #[test]
     fn test_loess_errfun_shape() {
         let nq = 41;
         let qs: Vec<f64> = (0..nq).map(|i| i as f64).collect();
         let trans = make_uniform_trans(nq, 10_000, 10);
-        let err = loess_errfun(&trans, &qs, LoessSurface::Direct);
+        let err = loess_errfun(&trans, &qs, &LoessConfig::default());
         assert_eq!(err.len(), 16 * nq);
         // All rates should be in [0, 1].
         for &r in &err {
@@ -1178,7 +1247,7 @@ mod tests {
         let nq = 5;
         let trans = make_uniform_trans(nq, 1000, 1);
         let qs: Vec<f64> = (0..nq).map(|i| i as f64).collect();
-        let err = loess_errfun(&trans, &qs, LoessSurface::Direct);
+        let err = loess_errfun(&trans, &qs, &LoessConfig::default());
         let inflated = inflate_err(&err, nq, 2.0, false);
 
         for nti in 0..4 {

@@ -50,7 +50,46 @@ use taxonomy::{
     assign_taxonomy,
 };
 
+use crate::error_models::{LoessConfig, LoessSurface};
 use crate::misc::WithPath;
+
+/// Resolve a [`LoessConfig`] from CLI inputs: preset + per-knob overrides.
+/// `--loess-surface`, `--loess-cell`, `--loess-max-rate`, and `--loess-min-rate`
+/// each override the preset's value for that knob if supplied.  `--loess-cell`
+/// is ignored unless the resolved surface is `Interpolate`.
+fn resolve_loess_config(
+    preset: &str,
+    surface: Option<&str>,
+    cell: Option<f64>,
+    max_rate: Option<f64>,
+    min_rate: Option<f64>,
+) -> LoessConfig {
+    let base = match preset {
+        "r-dada2" => LoessConfig::r_dada2(),
+        _ => LoessConfig::default(),
+    };
+    let surface = match surface {
+        Some("interpolate") => {
+            let c = cell.unwrap_or(match base.surface {
+                LoessSurface::Interpolate { cell } => cell,
+                LoessSurface::Direct => 0.2,
+            });
+            LoessSurface::Interpolate { cell: c }
+        }
+        Some("direct") => LoessSurface::Direct,
+        _ => match base.surface {
+            LoessSurface::Interpolate { cell: base_cell } => LoessSurface::Interpolate {
+                cell: cell.unwrap_or(base_cell),
+            },
+            LoessSurface::Direct => LoessSurface::Direct,
+        },
+    };
+    LoessConfig {
+        surface,
+        max_error_rate: max_rate.unwrap_or(base.max_error_rate),
+        min_error_rate: min_rate.unwrap_or(base.min_error_rate),
+    }
+}
 
 /// Build a [`LearnedErrParams`] snapshot from the resolved errfun + dada/align
 /// params, for embedding in the err-model JSON. Captures everything dada cares
@@ -63,9 +102,9 @@ fn build_learned_err_params(
 ) -> LearnedErrParams {
     let (errfun_name, errfun_pseudocount, errfun_bins, errfun_cmd) = match errfun {
         ErrFun::Loess { .. } => ("loess", None, None, None),
-        ErrFun::Noqual { pseudocount } => ("noqual", Some(*pseudocount), None, None),
-        ErrFun::BinnedQual { bins } => ("binned-qual", None, Some(bins.clone()), None),
-        ErrFun::PacBio => ("pacbio", None, None, None),
+        ErrFun::Noqual { pseudocount, .. } => ("noqual", Some(*pseudocount), None, None),
+        ErrFun::BinnedQual { bins, .. } => ("binned-qual", None, Some(bins.clone()), None),
+        ErrFun::PacBio { .. } => ("pacbio", None, None, None),
         ErrFun::External { command } => ("external", None, None, Some(command.clone())),
     };
     LearnedErrParams {
@@ -1783,8 +1822,11 @@ fn main() -> io::Result<()> {
             pseudocount,
             binned_quals,
             errfun_cmd,
+            loess_preset,
             loess_surface,
             loess_cell,
+            loess_max_rate,
+            loess_min_rate,
             max_consist,
             omega_a,
             omega_c,
@@ -1807,15 +1849,21 @@ fn main() -> io::Result<()> {
             trace_min_abund,
             verbose,
         } => {
-            let surface = match loess_surface.as_str() {
-                "interpolate" => {
-                    crate::error_models::LoessSurface::Interpolate { cell: loess_cell }
-                }
-                _ => crate::error_models::LoessSurface::Direct,
-            };
+            let loess_config = resolve_loess_config(
+                &loess_preset,
+                loess_surface.as_deref(),
+                loess_cell,
+                loess_max_rate,
+                loess_min_rate,
+            );
             let err_fun = match errfun.as_str() {
-                "loess" => ErrFun::Loess { surface },
-                "noqual" => ErrFun::Noqual { pseudocount },
+                "loess" => ErrFun::Loess {
+                    config: loess_config,
+                },
+                "noqual" => ErrFun::Noqual {
+                    pseudocount,
+                    config: loess_config,
+                },
                 "binned-qual" => {
                     let bins = binned_quals.ok_or_else(|| {
                         io::Error::new(
@@ -1823,9 +1871,14 @@ fn main() -> io::Result<()> {
                             "--binned-quals is required when --errfun binned-qual is used",
                         )
                     })?;
-                    ErrFun::BinnedQual { bins }
+                    ErrFun::BinnedQual {
+                        bins,
+                        config: loess_config,
+                    }
                 }
-                "pacbio" => ErrFun::PacBio,
+                "pacbio" => ErrFun::PacBio {
+                    config: loess_config,
+                },
                 "external" => {
                     let command = errfun_cmd.clone().ok_or_else(|| {
                         io::Error::new(
@@ -2423,8 +2476,11 @@ fn main() -> io::Result<()> {
             pseudocount,
             binned_quals,
             errfun_cmd,
+            loess_preset,
             loess_surface,
             loess_cell,
+            loess_max_rate,
+            loess_min_rate,
             max_consist,
             omega_a,
             omega_c,
@@ -2447,15 +2503,21 @@ fn main() -> io::Result<()> {
             trace_min_abund,
             verbose,
         } => {
-            let surface = match loess_surface.as_str() {
-                "interpolate" => {
-                    crate::error_models::LoessSurface::Interpolate { cell: loess_cell }
-                }
-                _ => crate::error_models::LoessSurface::Direct,
-            };
+            let loess_config = resolve_loess_config(
+                &loess_preset,
+                loess_surface.as_deref(),
+                loess_cell,
+                loess_max_rate,
+                loess_min_rate,
+            );
             let err_fun = match errfun.as_str() {
-                "loess" => ErrFun::Loess { surface },
-                "noqual" => ErrFun::Noqual { pseudocount },
+                "loess" => ErrFun::Loess {
+                    config: loess_config,
+                },
+                "noqual" => ErrFun::Noqual {
+                    pseudocount,
+                    config: loess_config,
+                },
                 "binned-qual" => {
                     let bins = binned_quals.ok_or_else(|| {
                         io::Error::new(
@@ -2463,9 +2525,14 @@ fn main() -> io::Result<()> {
                             "--binned-quals is required when --errfun binned-qual is used",
                         )
                     })?;
-                    ErrFun::BinnedQual { bins }
+                    ErrFun::BinnedQual {
+                        bins,
+                        config: loess_config,
+                    }
                 }
-                "pacbio" => ErrFun::PacBio,
+                "pacbio" => ErrFun::PacBio {
+                    config: loess_config,
+                },
                 "external" => {
                     let command = errfun_cmd.clone().ok_or_else(|| {
                         io::Error::new(
