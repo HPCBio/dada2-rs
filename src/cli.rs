@@ -949,10 +949,14 @@ pub enum Commands {
         /// the preset's value for that knob.
         ///
         /// - `default`: surface=direct, max-rate=0.25, min-rate=1e-7 — the
-        ///   historical dada2-rs behavior (safety clamp).
-        /// - `r-dada2`: surface=interpolate, cell=0.2, max-rate=1.0, min-rate=0.0.
-        ///   Mirrors R DADA2's `loessErrfun` (R's default `loess()` surface +
-        ///   no clamp on output rates).
+        ///   historical dada2-rs behavior.
+        /// - `r-dada2`: surface=interpolate, cell=0.2, max-rate=0.25,
+        ///   min-rate=1e-7.  Mirrors R DADA2's `loessErrfun` — R's default
+        ///   `loess()` surface plus the same `[1e-7, 0.25]` clamp R DADA2
+        ///   applies after the fit (errorModels.R:53-56).
+        ///
+        /// Both presets clamp to the same range; they differ only in the
+        /// fitting surface.
         #[arg(long, default_value = "default",
               value_parser = ["default", "r-dada2"])]
         loess_preset: String,
@@ -973,14 +977,14 @@ pub enum Commands {
         loess_cell: Option<f64>,
 
         /// Upper clamp on off-diagonal error rates from the LOESS errfun.
-        /// `default` preset uses 0.25; `r-dada2` preset uses 1.0 (no upper
-        /// clamp, matching R DADA2).  Set to `1.0` to disable.
+        /// Both presets default to 0.25 (matching R DADA2's `loessErrfun`).
+        /// Set to `1.0` to disable.
         #[arg(long)]
         loess_max_rate: Option<f64>,
 
         /// Lower clamp on off-diagonal error rates from the LOESS errfun.
-        /// `default` preset uses 1e-7; `r-dada2` preset uses 0.0 (no lower
-        /// clamp, matching R DADA2).
+        /// Both presets default to 1e-7 (matching R DADA2's `loessErrfun`).
+        /// Set to `0.0` to disable.
         #[arg(long)]
         loess_min_rate: Option<f64>,
 
@@ -1175,10 +1179,14 @@ pub enum Commands {
         /// the preset's value for that knob.
         ///
         /// - `default`: surface=direct, max-rate=0.25, min-rate=1e-7 — the
-        ///   historical dada2-rs behavior (safety clamp).
-        /// - `r-dada2`: surface=interpolate, cell=0.2, max-rate=1.0, min-rate=0.0.
-        ///   Mirrors R DADA2's `loessErrfun` (R's default `loess()` surface +
-        ///   no clamp on output rates).
+        ///   historical dada2-rs behavior.
+        /// - `r-dada2`: surface=interpolate, cell=0.2, max-rate=0.25,
+        ///   min-rate=1e-7.  Mirrors R DADA2's `loessErrfun` — R's default
+        ///   `loess()` surface plus the same `[1e-7, 0.25]` clamp R DADA2
+        ///   applies after the fit (errorModels.R:53-56).
+        ///
+        /// Both presets clamp to the same range; they differ only in the
+        /// fitting surface.
         #[arg(long, default_value = "default",
               value_parser = ["default", "r-dada2"])]
         loess_preset: String,
@@ -1199,14 +1207,14 @@ pub enum Commands {
         loess_cell: Option<f64>,
 
         /// Upper clamp on off-diagonal error rates from the LOESS errfun.
-        /// `default` preset uses 0.25; `r-dada2` preset uses 1.0 (no upper
-        /// clamp, matching R DADA2).  Set to `1.0` to disable.
+        /// Both presets default to 0.25 (matching R DADA2's `loessErrfun`).
+        /// Set to `1.0` to disable.
         #[arg(long)]
         loess_max_rate: Option<f64>,
 
         /// Lower clamp on off-diagonal error rates from the LOESS errfun.
-        /// `default` preset uses 1e-7; `r-dada2` preset uses 0.0 (no lower
-        /// clamp, matching R DADA2).
+        /// Both presets default to 1e-7 (matching R DADA2's `loessErrfun`).
+        /// Set to `0.0` to disable.
         #[arg(long)]
         loess_min_rate: Option<f64>,
 

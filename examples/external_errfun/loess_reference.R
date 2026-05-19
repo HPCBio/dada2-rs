@@ -42,6 +42,15 @@ loessErrfun <- function(trans) {
       }
     }
   }
+  # Post-fit clamp (R DADA2 errorModels.R:53-56 — the `# HACKY` step).
+  # Off-diagonal rates are pinned to [1e-7, 0.25] before the diagonal is
+  # computed.  Omitting this was a long-running bug in this reference
+  # script; see issue #14.
+  MAX_ERROR_RATE <- 0.25
+  MIN_ERROR_RATE <- 1e-7
+  est[est > MAX_ERROR_RATE] <- MAX_ERROR_RATE
+  est[est < MIN_ERROR_RATE] <- MIN_ERROR_RATE
+
   # Reconstruct the full 16-row matrix with self-transition probabilities.
   err <- rbind(1 - colSums(est[1:3, ]),  est[1:3, ],
                est[4, ],     1 - colSums(est[4:6, ]),  est[5:6, ],

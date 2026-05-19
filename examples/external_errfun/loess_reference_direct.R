@@ -51,6 +51,12 @@ loessErrfun <- function(trans) {
       }
     }
   }
+  # Post-fit clamp from dada2 errorModels.R:53-56.
+  MAX_ERROR_RATE <- 0.25
+  MIN_ERROR_RATE <- 1e-7
+  est[est > MAX_ERROR_RATE] <- MAX_ERROR_RATE
+  est[est < MIN_ERROR_RATE] <- MIN_ERROR_RATE
+
   err <- rbind(1 - colSums(est[1:3, ]),  est[1:3, ],
                est[4, ],     1 - colSums(est[4:6, ]),  est[5:6, ],
                est[7:8, ],   1 - colSums(est[7:9, ]),  est[9, ],

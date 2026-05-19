@@ -32,7 +32,7 @@ ROW_NAMES <- paste0(rep(c("A", "C", "G", "T"), each = 4L), "2",
 
 # Verbatim port of dada2:::loessErrfun (same code as
 # examples/external_errfun/loess_reference.R).
-loessErrfun <- function(trans) {
+loessErrfun <- function(trans, surface = "interpolate") {
   qq  <- as.numeric(colnames(trans))
   est <- matrix(0, nrow = 0, ncol = length(qq))
   for (nti in c("A", "C", "G", "T")) {
@@ -43,8 +43,15 @@ loessErrfun <- function(trans) {
         rlogp <- log10((errs + 1) / tot)
         rlogp[is.infinite(rlogp)] <- NA
         df    <- data.frame(q = qq, errs = errs, tot = tot, rlogp = rlogp)
-        mod.lo <- loess(rlogp ~ q, df, weights = tot)
+        mod.lo <- loess(rlogp ~ q, df, weights = tot, surface = surface)
         pred   <- predict(mod.lo, qq)
+        # surface="direct" extrapolates the polynomial outside the data
+        # range; mirror dada2-rs's None-then-flat-fill by NA-ing those.
+        if (surface == "direct") {
+          valid_q <- df$q[!is.na(df$rlogp) & df$tot > 0]
+          pred[qq < min(valid_q) | qq > max(valid_q)] <- NA
+        }
+
         maxrli <- max(which(!is.na(pred)))
         minrli <- min(which(!is.na(pred)))
         pred[seq_along(pred) > maxrli] <- pred[[maxrli]]
@@ -53,6 +60,13 @@ loessErrfun <- function(trans) {
       }
     }
   }
+  # Post-fit clamp from dada2 errorModels.R:53-56 (R DADA2's `# HACKY` step).
+  # Off-diagonals pinned to [1e-7, 0.25] before the diagonal is computed.
+  MAX_ERROR_RATE <- 0.25
+  MIN_ERROR_RATE <- 1e-7
+  est[est > MAX_ERROR_RATE] <- MAX_ERROR_RATE
+  est[est < MIN_ERROR_RATE] <- MIN_ERROR_RATE
+
   err <- rbind(1 - colSums(est[1:3, ]),  est[1:3, ],
                est[4, ],     1 - colSums(est[4:6, ]),  est[5:6, ],
                est[7:8, ],   1 - colSums(est[7:9, ]),  est[9, ],
@@ -88,7 +102,7 @@ compare_one <- function(path) {
   if (!is.null(em$iterations)) cat(sprintf("  iterations = %d\n", em$iterations))
   if (!is.null(em$converged)) cat(sprintf("  converged = %s\n", em$converged))
 
-  err_R <- loessErrfun(trans)
+  err_R <- loessErrfun(trans, "direct")
   d <- abs(err_R - err_orig)
 
   cat(sprintf("\n  per-cell |diff|:\n"))

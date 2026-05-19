@@ -24,9 +24,10 @@ use statrs::distribution::{DiscreteCDF, Poisson};
 
 /// Default clamp bounds applied to off-diagonal rates returned by
 /// [`loess_errfun`] (and the loess-fallback paths in [`pacbio_errfun`] /
-/// [`binned_qual_errfun`]).  The `LoessConfig::default()` values match
-/// these.  R DADA2's `loessErrfun` does **not** clamp — see the `r-dada2`
-/// preset, which sets `max_error_rate = 1.0` and `min_error_rate = 0.0`.
+/// [`binned_qual_errfun`]).  Match R DADA2's `loessErrfun` clamp at
+/// errorModels.R:53-56 (`MAX_ERROR_RATE <- 0.25; MIN_ERROR_RATE <- 1e-7`,
+/// applied to the off-diagonal `est` matrix before the diagonals are
+/// computed).  Both the `default` and `r-dada2` presets use these.
 pub const DEFAULT_MAX_ERROR_RATE: f64 = 0.25;
 pub const DEFAULT_MIN_ERROR_RATE: f64 = 1e-7;
 
@@ -118,8 +119,12 @@ pub enum LoessSurface {
 /// | Knob | `default` | `r-dada2` |
 /// |---|---|---|
 /// | `surface` | `Direct` | `Interpolate { cell: 0.2 }` |
-/// | `max_error_rate` | `0.25` | `1.0` (effectively no upper clamp) |
-/// | `min_error_rate` | `1e-7` | `0.0` (no lower clamp; matches R) |
+/// | `max_error_rate` | `0.25` | `0.25` |
+/// | `min_error_rate` | `1e-7` | `1e-7` |
+///
+/// Both presets clamp off-diagonals to `[1e-7, 0.25]` — R DADA2's
+/// `loessErrfun` (errorModels.R:53-56) applies the same clamp after the
+/// `loess()` fit.  The presets differ only in the fitting surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoessConfig {
     pub surface: LoessSurface,
@@ -141,14 +146,15 @@ impl Default for LoessConfig {
 }
 
 impl LoessConfig {
-    /// `r-dada2` preset: surface=`Interpolate { cell: 0.2 }`, no clamp.
-    /// Mirrors R DADA2's `loessErrfun` (R `loess(...)` default surface +
-    /// no clamp on the resulting rates).
+    /// `r-dada2` preset: surface=`Interpolate { cell: 0.2 }`, clamp at
+    /// `[1e-7, 0.25]`.  Mirrors R DADA2's `loessErrfun` — both the R
+    /// default `loess()` surface and the post-fit clamp applied at
+    /// errorModels.R:53-56 (`MAX_ERROR_RATE <- 0.25; MIN_ERROR_RATE <- 1e-7`).
     pub fn r_dada2() -> Self {
         Self {
             surface: LoessSurface::Interpolate { cell: 0.2 },
-            max_error_rate: 1.0,
-            min_error_rate: 0.0,
+            max_error_rate: DEFAULT_MAX_ERROR_RATE,
+            min_error_rate: DEFAULT_MIN_ERROR_RATE,
         }
     }
 
@@ -1219,14 +1225,16 @@ mod tests {
         let r = LoessConfig::r_dada2();
         assert!(matches!(r.surface, LoessSurface::Interpolate { cell }
                          if (cell - 0.2).abs() < 1e-12));
-        assert_eq!(r.max_error_rate, 1.0);
-        assert_eq!(r.min_error_rate, 0.0);
+        // Both presets clamp to [1e-7, 0.25] — R DADA2's loessErrfun does too
+        // (errorModels.R:53-56).  The presets differ only in the surface.
+        assert_eq!(r.max_error_rate, DEFAULT_MAX_ERROR_RATE);
+        assert_eq!(r.min_error_rate, DEFAULT_MIN_ERROR_RATE);
 
-        // Clamp behavior matches the preset.
-        assert_eq!(d.clamp(0.5), 0.25); // default upper-clamps
-        assert_eq!(d.clamp(1e-10), 1e-7); // default lower-clamps
-        assert_eq!(r.clamp(0.5), 0.5); // r-dada2 doesn't upper-clamp
-        assert_eq!(r.clamp(1e-10), 1e-10); // r-dada2 doesn't lower-clamp
+        for cfg in [&d, &r] {
+            assert_eq!(cfg.clamp(0.5), 0.25); // upper-clamps
+            assert_eq!(cfg.clamp(1e-10), 1e-7); // lower-clamps
+            assert_eq!(cfg.clamp(0.1), 0.1); // in-range pass-through
+        }
     }
 
     #[test]
