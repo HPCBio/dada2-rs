@@ -446,6 +446,78 @@ pub enum Commands {
         verbose: bool,
     },
 
+    /// Remove primer sequences from a FASTQ file
+    ///
+    /// Mirrors R's `removePrimers()`.  Detects and trims forward (and
+    /// optionally reverse) primers from each read using mismatch-tolerant
+    /// IUPAC-aware matching.  Reads lacking a primer match are discarded.
+    ///
+    /// With `--orient` (default), reads that match primers only in the
+    /// reverse-complement direction are flipped before trimming.
+    ///
+    /// Outputs a trimmed FASTQ file; JSON stats (reads_in / reads_out) go to
+    /// stdout or the file given by `-o`.
+    RemovePrimers {
+        /// Input FASTQ file (uncompressed or gzipped)
+        input: PathBuf,
+
+        /// Output FASTQ file
+        #[arg(long, short = 'f')]
+        fout: PathBuf,
+
+        /// Forward primer sequence (IUPAC ambiguity codes accepted,
+        /// e.g. AGRGTTYGATYMTGGCTCAG)
+        #[arg(long)]
+        primer_fwd: String,
+
+        /// Reverse primer sequence (IUPAC ambiguity codes accepted).
+        /// Provide the sequence as it appears in the read (typically the
+        /// reverse complement of the reverse primer, e.g. via `rc()`).
+        /// Omit to skip reverse primer detection.
+        #[arg(long)]
+        primer_rev: Option<String>,
+
+        /// Maximum mismatches allowed when matching each primer
+        #[arg(long, default_value_t = 2)]
+        max_mismatch: usize,
+
+        /// Allow insertions and deletions (indels) when matching primers, in
+        /// addition to mismatches.  Uses Levenshtein edit distance where each
+        /// mismatch or indel counts as 1 toward `--max-mismatch`.
+        /// Significantly slower than the default mismatch-only mode.
+        #[arg(long)]
+        allow_indels: bool,
+
+        /// Trim the forward primer from the 5′ end of each read
+        #[arg(long, default_value_t = true)]
+        trim_fwd: bool,
+
+        /// Trim the reverse primer from the 3′ end of each read
+        #[arg(long, default_value_t = true)]
+        trim_rev: bool,
+
+        /// Detect and correct read orientation: reads that match primers only
+        /// in the reverse complement are flipped before trimming
+        #[arg(long, default_value_t = true)]
+        orient: bool,
+
+        /// Gzip-compress the output FASTQ file
+        #[arg(long, default_value_t = true)]
+        compress: bool,
+
+        /// Write JSON stats (reads_in / reads_out) to this file instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+
+        /// Output compact (minified) JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
+
+        /// Print progress to stderr
+        #[arg(long)]
+        verbose: bool,
+    },
+
     /// Filter and trim a single sample's FASTQ reads
     ///
     /// Mirrors R's `filterAndTrim` function for a single sample.  Pass the

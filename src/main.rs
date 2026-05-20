@@ -24,6 +24,7 @@ mod misc;
 mod nwalign;
 mod pval;
 mod remove_bimera;
+mod remove_primers;
 mod sequence_table;
 mod summary;
 mod taxonomy;
@@ -42,6 +43,7 @@ use learn_errors::{
 use misc::{DADA2_RS_VERSION, Tagged, read_fasta_records, read_tagged_json};
 use nwalign::AlignParams;
 use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
+use remove_primers::{RemovePrimersParams, remove_primers};
 use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
 use serde::Serialize;
 use summary::process;
@@ -1250,6 +1252,60 @@ fn main() -> io::Result<()> {
                 samples: Vec<merge_pairs::SampleMergeResult>,
             }
             let tagged = Tagged::new("merge-pairs", MergePairsOutput { samples: results });
+            let json = if compact {
+                serde_json::to_string(&tagged)
+            } else {
+                serde_json::to_string_pretty(&tagged)
+            }
+            .map_err(io::Error::other)?;
+
+            match output {
+                Some(path) => std::fs::write(&path, &json)?,
+                None => println!("{json}"),
+            }
+        }
+
+        Commands::RemovePrimers {
+            input,
+            fout,
+            primer_fwd,
+            primer_rev,
+            max_mismatch,
+            allow_indels,
+            trim_fwd,
+            trim_rev,
+            orient,
+            compress,
+            output,
+            compact,
+            verbose,
+        } => {
+            if allow_indels && verbose {
+                eprintln!("[remove-primers] indel mode enabled — expect ~4× slower matching");
+            }
+            let params = RemovePrimersParams {
+                primer_fwd: primer_fwd.into_bytes(),
+                primer_rev: primer_rev.map(|s| s.into_bytes()),
+                max_mismatch,
+                allow_indels,
+                trim_fwd,
+                trim_rev,
+                orient,
+            };
+            let stats = remove_primers(&input, &fout, &params, compress, verbose)?;
+
+            #[derive(Serialize)]
+            struct RemovePrimersOutput {
+                reads_in: u64,
+                reads_out: u64,
+            }
+            let tagged = Tagged::new(
+                "remove-primers",
+                RemovePrimersOutput {
+                    reads_in: stats.reads_in,
+                    reads_out: stats.reads_out,
+                },
+            );
             let json = if compact {
                 serde_json::to_string(&tagged)
             } else {
