@@ -1268,6 +1268,7 @@ fn main() -> io::Result<()> {
         Commands::RemovePrimers {
             input,
             fout,
+            sample_name,
             primer_fwd,
             primer_rev,
             max_mismatch,
@@ -1292,16 +1293,19 @@ fn main() -> io::Result<()> {
                 trim_rev,
                 orient,
             };
+            let sample = sample_name.unwrap_or_else(|| fastq_stem(&input));
             let stats = remove_primers(&input, &fout, &params, compress, verbose)?;
 
             #[derive(Serialize)]
             struct RemovePrimersOutput {
+                sample: String,
                 reads_in: u64,
                 reads_out: u64,
             }
             let tagged = Tagged::new(
                 "remove-primers",
                 RemovePrimersOutput {
+                    sample,
                     reads_in: stats.reads_in,
                     reads_out: stats.reads_out,
                 },

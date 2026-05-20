@@ -465,6 +465,11 @@ pub enum Commands {
         #[arg(long, short = 'f')]
         fout: PathBuf,
 
+        /// Sample identifier included in the output JSON's `sample` field.
+        /// Defaults to the filename stem of the input FASTQ.
+        #[arg(long)]
+        sample_name: Option<String>,
+
         /// Forward primer sequence (IUPAC ambiguity codes accepted,
         /// e.g. AGRGTTYGATYMTGGCTCAG)
         #[arg(long)]
