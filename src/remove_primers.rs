@@ -346,6 +346,7 @@ pub struct RemovePrimersParams {
 pub struct PrimerStats {
     pub reads_in: u64,
     pub reads_out: u64,
+    pub reads_reoriented: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -354,13 +355,14 @@ pub struct PrimerStats {
 
 /// Apply primer detection and trimming to one read.
 ///
-/// Returns `Some((trimmed_seq, trimmed_qual))` when the read passes, or `None`
-/// when it should be discarded.
+/// Returns `Some((trimmed_seq, trimmed_qual, reoriented))` when the read
+/// passes, where `reoriented` is `true` if the read was reverse-complemented
+/// before trimming.  Returns `None` when the read should be discarded.
 fn process_read(
     seq: &[u8],
     qual: &[u8],
     params: &RemovePrimersParams,
-) -> Option<(Vec<u8>, Vec<u8>)> {
+) -> Option<(Vec<u8>, Vec<u8>, bool)> {
     let mm = params.max_mismatch;
     let find_fwd = |p: &[u8], r: &[u8]| {
         if params.allow_indels {
@@ -381,13 +383,13 @@ fn process_read(
 
     // Resolve working orientation: forward if fwd primer found, or RC if orient
     // is enabled and the fwd primer matches in the reverse complement.
-    let (work_seq, work_qual, fwd_hit) = match (fwd_hit, params.orient) {
-        (Some(hit), _) => (seq.to_vec(), qual.to_vec(), hit),
+    let (work_seq, work_qual, fwd_hit, reoriented) = match (fwd_hit, params.orient) {
+        (Some(hit), _) => (seq.to_vec(), qual.to_vec(), hit, false),
         (None, true) => {
             let rc_seq = reverse_complement(seq);
             let rc_qual: Vec<u8> = qual.iter().copied().rev().collect();
             let rc_hit = find_fwd(&params.primer_fwd, &rc_seq)?;
-            (rc_seq, rc_qual, rc_hit)
+            (rc_seq, rc_qual, rc_hit, true)
         }
         (None, false) => return None,
     };
@@ -419,6 +421,7 @@ fn process_read(
     Some((
         work_seq[trim_start..trim_end].to_vec(),
         work_qual[trim_start..trim_end].to_vec(),
+        reoriented,
     ))
 }
 
@@ -506,6 +509,7 @@ pub fn remove_primers(
 
     let mut reads_in: u64 = 0;
     let mut reads_out: u64 = 0;
+    let mut reads_reoriented: u64 = 0;
     let mut record = fastq::Record::default();
 
     type ReadRecord = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
@@ -537,8 +541,9 @@ pub fn remove_primers(
         }
         reads_in += batch.len() as u64;
 
+        type ProcessResult = Option<(Vec<u8>, Vec<u8>, bool)>;
         // Process all reads in the chunk in parallel using the local pool.
-        let results: Vec<Option<(Vec<u8>, Vec<u8>)>> = pool.install(|| {
+        let results: Vec<ProcessResult> = pool.install(|| {
             batch
                 .par_iter()
                 .map(|(_, _, seq, qual)| process_read(seq, qual, params))
@@ -547,9 +552,12 @@ pub fn remove_primers(
 
         // Write passing reads in original order (single-threaded I/O).
         for ((name, desc, _, _), result) in batch.iter().zip(results.iter()) {
-            if let Some((seq_out, qual_out)) = result {
+            if let Some((seq_out, qual_out, reoriented)) = result {
                 write_record(&mut *writer, name, desc, seq_out, qual_out)?;
                 reads_out += 1;
+                if *reoriented {
+                    reads_reoriented += 1;
+                }
             }
         }
     }
@@ -568,17 +576,19 @@ pub fn remove_primers(
     } else if verbose {
         let pct = reads_out as f64 * 100.0 / reads_in as f64;
         eprintln!(
-            "[remove-primers] {} → {} reads in, {} out ({:.1}%)",
+            "[remove-primers] {} → {} reads in, {} out ({:.1}%), {} reoriented",
             input.display(),
             reads_in,
             reads_out,
-            pct
+            pct,
+            reads_reoriented,
         );
     }
 
     Ok(PrimerStats {
         reads_in,
         reads_out,
+        reads_reoriented,
     })
 }
 
@@ -681,13 +691,14 @@ mod tests {
         };
         let result = process_read(seq, qual, &params);
         assert_eq!(
-            result.as_ref().map(|(s, _)| s.as_slice()),
+            result.as_ref().map(|(s, _, _)| s.as_slice()),
             Some(b"CCC".as_slice())
         );
         assert_eq!(
-            result.as_ref().map(|(_, q)| q.as_slice()),
+            result.as_ref().map(|(_, q, _)| q.as_slice()),
             Some(b"III".as_slice())
         );
+        assert_eq!(result.as_ref().map(|&(_, _, r)| r), Some(false));
     }
 
     #[test]
@@ -708,9 +719,10 @@ mod tests {
         let result = process_read(seq, qual, &params);
         // RC of GGGTTT = AAACCC; after trimming fwd primer (AAA), seq = CCC
         assert_eq!(
-            result.as_ref().map(|(s, _)| s.as_slice()),
+            result.as_ref().map(|(s, _, _)| s.as_slice()),
             Some(b"CCC".as_slice())
         );
+        assert_eq!(result.as_ref().map(|&(_, _, r)| r), Some(true));
     }
 
     #[test]
@@ -834,7 +846,7 @@ mod tests {
             "read should pass with 1-deletion indel tolerance"
         );
         // Trimmed region starts after the matched primer region
-        let (trimmed_seq, _) = result.unwrap();
+        let (trimmed_seq, _, _) = result.unwrap();
         assert!(
             !trimmed_seq.starts_with(b"AGT"),
             "primer region should be trimmed"

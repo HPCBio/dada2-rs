@@ -1311,6 +1311,7 @@ fn main() -> io::Result<()> {
                 sample: String,
                 reads_in: u64,
                 reads_out: u64,
+                reads_reoriented: u64,
             }
             let tagged = Tagged::new(
                 "remove-primers",
@@ -1318,6 +1319,7 @@ fn main() -> io::Result<()> {
                     sample,
                     reads_in: stats.reads_in,
                     reads_out: stats.reads_out,
+                    reads_reoriented: stats.reads_reoriented,
                 },
             );
             let json = if compact {
