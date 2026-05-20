@@ -86,14 +86,43 @@ fn count_mismatches(primer: &[u8], window: &[u8]) -> usize {
 
 /// Return the `(start, end)` (end exclusive) of the **first** window in `read`
 /// where `primer` matches with ≤ `max_mismatch` mismatches.
+///
+/// Mirrors R's `vmatchPattern(fixed=FALSE, max.mismatch=N)` boundary behaviour:
+/// the primer may overhang either read boundary by up to `max_mismatch` bases,
+/// with each out-of-bounds base counted as one mismatch.
 fn find_first_match(primer: &[u8], read: &[u8], max_mismatch: usize) -> Option<(usize, usize)> {
     let plen = primer.len();
-    if read.len() < plen {
+    let rlen = read.len();
+    if plen == 0 || rlen == 0 {
         return None;
     }
-    (0..=(read.len() - plen))
-        .find(|&i| count_mismatches(primer, &read[i..i + plen]) <= max_mismatch)
-        .map(|i| (i, i + plen))
+    let i_min = -(max_mismatch as isize);
+    let i_max = rlen as isize - 1 + max_mismatch as isize;
+    for raw_i in i_min..=i_max {
+        let oob_left = if raw_i < 0 { (-raw_i) as usize } else { 0 };
+        let right_end = raw_i + plen as isize;
+        let oob_right = if right_end > rlen as isize {
+            (right_end - rlen as isize) as usize
+        } else {
+            0
+        };
+        if oob_left + oob_right > max_mismatch {
+            continue;
+        }
+        let read_start = raw_i.max(0) as usize;
+        let read_end = right_end.min(rlen as isize) as usize;
+        if read_start >= read_end {
+            continue;
+        }
+        let inner_mm = count_mismatches(
+            &primer[oob_left..plen - oob_right],
+            &read[read_start..read_end],
+        );
+        if oob_left + inner_mm + oob_right <= max_mismatch {
+            return Some((read_start, read_end));
+        }
+    }
+    None
 }
 
 /// Return the `(start, end)` (end exclusive) of the **last** window in `read`
@@ -101,15 +130,40 @@ fn find_first_match(primer: &[u8], read: &[u8], max_mismatch: usize) -> Option<(
 ///
 /// Mirrors R's behaviour for reverse primers: when multiple matches exist, use
 /// the rightmost one so the longest possible internal fragment is retained.
+/// Also supports boundary overhang (see [`find_first_match`]).
 fn find_last_match(primer: &[u8], read: &[u8], max_mismatch: usize) -> Option<(usize, usize)> {
     let plen = primer.len();
-    if read.len() < plen {
+    let rlen = read.len();
+    if plen == 0 || rlen == 0 {
         return None;
     }
-    (0..=(read.len() - plen))
-        .rev()
-        .find(|&i| count_mismatches(primer, &read[i..i + plen]) <= max_mismatch)
-        .map(|i| (i, i + plen))
+    let i_min = -(max_mismatch as isize);
+    let i_max = rlen as isize - 1 + max_mismatch as isize;
+    for raw_i in (i_min..=i_max).rev() {
+        let oob_left = if raw_i < 0 { (-raw_i) as usize } else { 0 };
+        let right_end = raw_i + plen as isize;
+        let oob_right = if right_end > rlen as isize {
+            (right_end - rlen as isize) as usize
+        } else {
+            0
+        };
+        if oob_left + oob_right > max_mismatch {
+            continue;
+        }
+        let read_start = raw_i.max(0) as usize;
+        let read_end = right_end.min(rlen as isize) as usize;
+        if read_start >= read_end {
+            continue;
+        }
+        let inner_mm = count_mismatches(
+            &primer[oob_left..plen - oob_right],
+            &read[read_start..read_end],
+        );
+        if oob_left + inner_mm + oob_right <= max_mismatch {
+            return Some((read_start, read_end));
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -513,6 +567,32 @@ mod tests {
         assert!(iupac_matches(b'Y', b'T'));
         assert!(!iupac_matches(b'Y', b'A'));
         assert!(iupac_matches(b'N', b'T')); // N matches anything
+    }
+
+    #[test]
+    fn find_first_left_boundary_overhang() {
+        // Primer "AACGT" (5bp), read "CGTAAA" (6bp), max_mismatch=2.
+        // raw_i=-2: oob_left=2, primer[2..5]="CGT" vs read[0..3]="CGT" (0 mm).
+        // Total = 2+0+0 = 2 ≤ 2.  First valid start → (0, 3).
+        let primer = b"AACGT";
+        let read = b"CGTAAA";
+        assert_eq!(find_first_match(primer, read, 2), Some((0, 3)));
+        // With max_mismatch=1 the overhang budget is only 1, so raw_i=-2 is skipped.
+        // raw_i=-1: oob_left=1, primer[1..5]="ACGT" vs read[0..4]="CGTA" — mismatches C≠A,G=G,T=T,A≠A? "CGTA" vs "ACGT": C≠A, G=G, T=T, A≠A = 2 inner mm → total 1+2=3 > 1. Skip.
+        // No earlier match → None (or check deeper into the read).
+        // Just verify the 2-budget case works.
+        assert_eq!(find_first_match(primer, read, 0), None);
+    }
+
+    #[test]
+    fn find_last_right_boundary_overhang() {
+        // Primer "CGTAA" (5bp), read "AAACGT" (6bp), max_mismatch=2.
+        // raw_i=4: right_end=9, oob_right=3 > 2. Skip.
+        // raw_i=3: right_end=8, oob_right=2. primer[0..3]="CGT" vs read[3..6]="CGT" = 0 mm.
+        // Total = 0+0+2 = 2 ≤ 2. Last (rightmost) → (3, 6).
+        let primer = b"CGTAA";
+        let read = b"AAACGT";
+        assert_eq!(find_last_match(primer, read, 2), Some((3, 6)));
     }
 
     #[test]
