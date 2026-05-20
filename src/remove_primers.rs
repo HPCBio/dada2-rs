@@ -6,14 +6,19 @@
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::num::NonZeroUsize;
 use std::path::Path;
 
 use flate2::Compression;
 use flate2::read::MultiGzDecoder;
 use flate2::write::GzEncoder;
+use noodles::bgzf;
 use noodles::fastq;
+use rayon::prelude::*;
 
 use crate::misc::WithPath;
+
+const CHUNK_SIZE: usize = 4096;
 
 // ---------------------------------------------------------------------------
 // IUPAC bitmask table
@@ -437,7 +442,7 @@ fn open_reader(path: &Path) -> io::Result<FastqReader> {
     Ok(fastq::io::Reader::new(inner))
 }
 
-fn open_writer(path: &Path, compress: bool) -> io::Result<Box<dyn Write>> {
+fn open_writer(path: &Path, compress: bool, threads: usize) -> io::Result<Box<dyn Write>> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
@@ -445,7 +450,14 @@ fn open_writer(path: &Path, compress: bool) -> io::Result<Box<dyn Write>> {
     }
     let file = File::create(path).with_path(path)?;
     if compress {
-        Ok(Box::new(GzEncoder::new(file, Compression::default())))
+        if threads > 1 {
+            let w = bgzf::multithreaded_writer::Builder::default()
+                .set_worker_count(NonZeroUsize::new(threads).unwrap())
+                .build_from_writer(file);
+            Ok(Box::new(w))
+        } else {
+            Ok(Box::new(GzEncoder::new(file, Compression::default())))
+        }
     } else {
         Ok(Box::new(BufWriter::new(file)))
     }
@@ -481,38 +493,65 @@ pub fn remove_primers(
     output: &Path,
     params: &RemovePrimersParams,
     compress: bool,
+    threads: usize,
     verbose: bool,
 ) -> io::Result<PrimerStats> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map_err(io::Error::other)?;
+
     let mut reader = open_reader(input)?;
-    let mut writer = open_writer(output, compress)?;
+    let mut writer = open_writer(output, compress, threads)?;
 
     let mut reads_in: u64 = 0;
     let mut reads_out: u64 = 0;
     let mut record = fastq::Record::default();
 
+    type ReadRecord = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+    // Batch of (name, description, seq, qual) owned buffers.
+    let mut batch: Vec<ReadRecord> = Vec::with_capacity(CHUNK_SIZE);
+
     loop {
-        match reader.read_record(&mut record) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(e) => return Err(e),
+        // Fill one chunk from the reader (single-threaded I/O).
+        batch.clear();
+        loop {
+            match reader.read_record(&mut record) {
+                Ok(0) => break,
+                Ok(_) => {
+                    batch.push((
+                        record.name().to_vec(),
+                        record.description().to_vec(),
+                        record.sequence().to_vec(),
+                        record.quality_scores().to_vec(),
+                    ));
+                    if batch.len() == CHUNK_SIZE {
+                        break;
+                    }
+                }
+                Err(e) => return Err(e),
+            }
         }
+        if batch.is_empty() {
+            break;
+        }
+        reads_in += batch.len() as u64;
 
-        reads_in += 1;
-        let seq = record.sequence();
-        let qual = record.quality_scores();
+        // Process all reads in the chunk in parallel using the local pool.
+        let results: Vec<Option<(Vec<u8>, Vec<u8>)>> = pool.install(|| {
+            batch
+                .par_iter()
+                .map(|(_, _, seq, qual)| process_read(seq, qual, params))
+                .collect()
+        });
 
-        let Some((seq_out, qual_out)) = process_read(seq, qual, params) else {
-            continue;
-        };
-
-        write_record(
-            &mut *writer,
-            record.name(),
-            record.description(),
-            &seq_out,
-            &qual_out,
-        )?;
-        reads_out += 1;
+        // Write passing reads in original order (single-threaded I/O).
+        for ((name, desc, _, _), result) in batch.iter().zip(results.iter()) {
+            if let Some((seq_out, qual_out)) = result {
+                write_record(&mut *writer, name, desc, seq_out, qual_out)?;
+                reads_out += 1;
+            }
+        }
     }
 
     writer.flush()?;

@@ -518,6 +518,11 @@ pub enum Commands {
         #[arg(long, default_value_t = true)]
         compress: bool,
 
+        /// Number of threads for parallel primer matching and bgzf output compression.
+        /// Values > 1 enable bgzf (blocked gzip) output, which is valid gzip but seekable.
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+
         /// Write JSON stats (reads_in / reads_out) to this file instead of stdout
         #[arg(long, short = 'o')]
         output: Option<PathBuf>,
@@ -565,6 +570,11 @@ pub enum Commands {
         /// Gzip-compress output files
         #[arg(long, default_value_t = true)]
         compress: bool,
+
+        /// Number of threads for bgzf output compression.
+        /// Values > 1 enable bgzf (blocked gzip) output, which is valid gzip but seekable.
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
 
         /// Truncate reads at first Phred score ≤ this value.
         /// One value (both directions) or two (fwd rev).

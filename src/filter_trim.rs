@@ -15,8 +15,10 @@
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::num::NonZeroUsize;
 use std::path::Path;
 
+use noodles::bgzf;
 use noodles::fasta;
 
 use flate2::Compression;
@@ -73,6 +75,7 @@ pub struct SampleStats {
 #[derive(Debug, Clone, Copy)]
 pub struct WriteOptions {
     pub compress: bool,
+    pub threads: usize,
     pub verbose: bool,
 }
 
@@ -279,7 +282,7 @@ fn open_reader(path: &Path) -> io::Result<FastqReader> {
     Ok(fastq::io::Reader::new(inner))
 }
 
-fn open_writer(path: &Path, compress: bool) -> io::Result<Box<dyn Write>> {
+fn open_writer(path: &Path, compress: bool, threads: usize) -> io::Result<Box<dyn Write>> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
@@ -287,7 +290,14 @@ fn open_writer(path: &Path, compress: bool) -> io::Result<Box<dyn Write>> {
     }
     let file = File::create(path)?;
     if compress {
-        Ok(Box::new(GzEncoder::new(file, Compression::default())))
+        if threads > 1 {
+            let w = bgzf::multithreaded_writer::Builder::default()
+                .set_worker_count(NonZeroUsize::new(threads).unwrap())
+                .build_from_writer(file);
+            Ok(Box::new(w))
+        } else {
+            Ok(Box::new(GzEncoder::new(file, Compression::default())))
+        }
     } else {
         Ok(Box::new(BufWriter::new(file)))
     }
@@ -326,11 +336,15 @@ pub fn filter_single(
     params: &FilterParams,
     opts: WriteOptions,
 ) -> io::Result<SampleStats> {
-    let WriteOptions { compress, verbose } = opts;
+    let WriteOptions {
+        compress,
+        threads,
+        verbose,
+    } = opts;
     let phix = params.phix_genome.clone().map(phix_genomes);
 
     let mut reader = open_reader(input)?;
-    let mut writer = open_writer(output, compress)?;
+    let mut writer = open_writer(output, compress, threads)?;
 
     let mut reads_in: u64 = 0;
     let mut reads_out: u64 = 0;
@@ -417,7 +431,11 @@ pub fn filter_paired(
         fwd_out,
         rev_out,
     } = files;
-    let WriteOptions { compress, verbose } = opts;
+    let WriteOptions {
+        compress,
+        threads,
+        verbose,
+    } = opts;
     let phix = params_fwd
         .phix_genome
         .clone()
@@ -426,8 +444,8 @@ pub fn filter_paired(
 
     let mut reader_fwd = open_reader(fwd_in)?;
     let mut reader_rev = open_reader(rev_in)?;
-    let mut writer_fwd = open_writer(fwd_out, compress)?;
-    let mut writer_rev = open_writer(rev_out, compress)?;
+    let mut writer_fwd = open_writer(fwd_out, compress, threads)?;
+    let mut writer_rev = open_writer(rev_out, compress, threads)?;
 
     let mut reads_in: u64 = 0;
     let mut reads_out: u64 = 0;

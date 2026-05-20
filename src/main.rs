@@ -1278,6 +1278,7 @@ fn main() -> io::Result<()> {
             trim_rev,
             orient,
             compress,
+            threads,
             output,
             compact,
             verbose,
@@ -1303,7 +1304,7 @@ fn main() -> io::Result<()> {
                 orient,
             };
             let sample = sample_name.unwrap_or_else(|| fastq_stem(&input));
-            let stats = remove_primers(&input, &fout, &params, compress, verbose)?;
+            let stats = remove_primers(&input, &fout, &params, compress, threads, verbose)?;
 
             #[derive(Serialize)]
             struct RemovePrimersOutput {
@@ -1339,6 +1340,7 @@ fn main() -> io::Result<()> {
             filt_rev,
             sample_name,
             compress,
+            threads,
             trunc_q,
             trunc_len,
             trim_left,
@@ -1436,7 +1438,11 @@ fn main() -> io::Result<()> {
             );
 
             let sample = sample_name.unwrap_or_else(|| fastq_stem(&fwd));
-            let opts = WriteOptions { compress, verbose };
+            let opts = WriteOptions {
+                compress,
+                threads,
+                verbose,
+            };
 
             let stats = if let (Some(rev_in), Some(rev_out)) = (rev, filt_rev) {
                 filter_paired(
