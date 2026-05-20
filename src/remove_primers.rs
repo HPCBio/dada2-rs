@@ -224,9 +224,10 @@ fn find_last_match_indels(
 }
 
 // ---------------------------------------------------------------------------
-// Reverse complement (reads only — ACGT + N)
+// Reverse complement
 // ---------------------------------------------------------------------------
 
+/// RC for read sequences (ACGT + N only). Non-ACGT bases become N.
 fn reverse_complement(seq: &[u8]) -> Vec<u8> {
     seq.iter()
         .rev()
@@ -235,6 +236,34 @@ fn reverse_complement(seq: &[u8]) -> Vec<u8> {
             b'T' | b't' | b'U' | b'u' => b'A',
             b'G' | b'g' => b'C',
             b'C' | b'c' => b'G',
+            _ => b'N',
+        })
+        .collect()
+}
+
+/// RC for primer sequences with full IUPAC ambiguity support.
+///
+/// Mirrors R DADA2's `rc()` helper.  Output is upper-case.
+/// Self-complementary codes: S (G|C), W (A|T), N.
+pub fn iupac_reverse_complement(seq: &[u8]) -> Vec<u8> {
+    seq.iter()
+        .rev()
+        .map(|&b| match b {
+            b'A' | b'a' => b'T',
+            b'T' | b't' | b'U' | b'u' => b'A',
+            b'G' | b'g' => b'C',
+            b'C' | b'c' => b'G',
+            b'R' | b'r' => b'Y', // A|G -> C|T
+            b'Y' | b'y' => b'R', // C|T -> A|G
+            b'S' | b's' => b'S', // G|C -> G|C
+            b'W' | b'w' => b'W', // A|T -> A|T
+            b'K' | b'k' => b'M', // G|T -> A|C
+            b'M' | b'm' => b'K', // A|C -> G|T
+            b'B' | b'b' => b'V', // C|G|T -> A|C|G
+            b'V' | b'v' => b'B', // A|C|G -> C|G|T
+            b'D' | b'd' => b'H', // A|G|T -> A|C|T
+            b'H' | b'h' => b'D', // A|C|T -> A|G|T
+            b'N' | b'n' => b'N',
             _ => b'N',
         })
         .collect()
@@ -579,6 +608,40 @@ mod tests {
             orient: false,
         };
         assert!(process_read(seq, qual, &params).is_none());
+    }
+
+    // -------------------------------------------------------------------------
+    // iupac_reverse_complement tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn iupac_rc_acgt() {
+        assert_eq!(iupac_reverse_complement(b"ACGT"), b"ACGT");
+    }
+
+    #[test]
+    fn iupac_rc_ambig() {
+        // Single-base complement pairs
+        assert_eq!(iupac_reverse_complement(b"R"), b"Y"); // A|G -> C|T
+        assert_eq!(iupac_reverse_complement(b"Y"), b"R"); // C|T -> A|G
+        assert_eq!(iupac_reverse_complement(b"K"), b"M"); // G|T -> A|C
+        assert_eq!(iupac_reverse_complement(b"M"), b"K"); // A|C -> G|T
+        assert_eq!(iupac_reverse_complement(b"B"), b"V"); // C|G|T -> A|C|G
+        assert_eq!(iupac_reverse_complement(b"V"), b"B"); // A|C|G -> C|G|T
+        assert_eq!(iupac_reverse_complement(b"D"), b"H"); // A|G|T -> A|C|T
+        assert_eq!(iupac_reverse_complement(b"H"), b"D"); // A|C|T -> A|G|T
+        // Self-complementary codes
+        assert_eq!(iupac_reverse_complement(b"S"), b"S"); // G|C
+        assert_eq!(iupac_reverse_complement(b"W"), b"W"); // A|T
+        assert_eq!(iupac_reverse_complement(b"N"), b"N");
+        // Two-base: reverse + complement
+        assert_eq!(iupac_reverse_complement(b"RR"), b"YY");
+        assert_eq!(iupac_reverse_complement(b"RY"), b"RY"); // palindrome: rev(YR) -> complement -> RY
+    }
+
+    #[test]
+    fn iupac_rc_lowercase() {
+        assert_eq!(iupac_reverse_complement(b"acgt"), b"ACGT");
     }
 
     // -------------------------------------------------------------------------

@@ -43,7 +43,7 @@ use learn_errors::{
 use misc::{DADA2_RS_VERSION, Tagged, read_fasta_records, read_tagged_json};
 use nwalign::AlignParams;
 use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
-use remove_primers::{RemovePrimersParams, remove_primers};
+use remove_primers::{RemovePrimersParams, iupac_reverse_complement, remove_primers};
 use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
 use serde::Serialize;
 use summary::process;
@@ -1271,6 +1271,7 @@ fn main() -> io::Result<()> {
             sample_name,
             primer_fwd,
             primer_rev,
+            rc_primer_rev,
             max_mismatch,
             allow_indels,
             trim_fwd,
@@ -1284,9 +1285,17 @@ fn main() -> io::Result<()> {
             if allow_indels && verbose {
                 eprintln!("[remove-primers] indel mode enabled — expect ~4× slower matching");
             }
+            let primer_rev_bytes = primer_rev.map(|s| {
+                let b = s.into_bytes();
+                if rc_primer_rev {
+                    iupac_reverse_complement(&b)
+                } else {
+                    b
+                }
+            });
             let params = RemovePrimersParams {
                 primer_fwd: primer_fwd.into_bytes(),
-                primer_rev: primer_rev.map(|s| s.into_bytes()),
+                primer_rev: primer_rev_bytes,
                 max_mismatch,
                 allow_indels,
                 trim_fwd,

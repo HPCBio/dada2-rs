@@ -476,11 +476,19 @@ pub enum Commands {
         primer_fwd: String,
 
         /// Reverse primer sequence (IUPAC ambiguity codes accepted).
-        /// Provide the sequence as it appears in the read (typically the
-        /// reverse complement of the reverse primer, e.g. via `rc()`).
+        /// By default, provide the sequence as it appears in the read
+        /// (i.e. already reverse-complemented, as with R's `rc()`).
+        /// Use `--rc-primer-rev` to supply the catalog / synthesis-direction
+        /// sequence instead and let dada2-rs reverse-complement it.
         /// Omit to skip reverse primer detection.
         #[arg(long)]
         primer_rev: Option<String>,
+
+        /// Automatically reverse-complement `--primer-rev` before matching.
+        /// Use this when supplying the primer in its catalog / synthesis
+        /// direction rather than as it appears in the read.
+        #[arg(long)]
+        rc_primer_rev: bool,
 
         /// Maximum mismatches allowed when matching each primer
         #[arg(long, default_value_t = 2)]
