@@ -1042,6 +1042,7 @@ fn main() -> io::Result<()> {
             }
             #[derive(Serialize)]
             struct DadaOutput {
+                sample: String,
                 num_asvs: usize,
                 total_reads: u32,
                 asvs: Vec<AsvEntry>,
@@ -1100,6 +1101,7 @@ fn main() -> io::Result<()> {
 
                 let n_asvs = asvs.len();
                 let out = DadaOutput {
+                    sample: sample_name.clone(),
                     num_asvs: n_asvs,
                     total_reads,
                     asvs,
