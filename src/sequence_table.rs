@@ -32,6 +32,7 @@ struct DadaAsv {
 
 #[derive(Deserialize)]
 struct DadaOutput {
+    sample: Option<String>,
     asvs: Vec<DadaAsv>,
 }
 
@@ -91,6 +92,7 @@ fn parse_file(path: &Path, sample_name: Option<&str>) -> io::Result<Vec<SampleCo
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             let name = sample_name
                 .map(str::to_owned)
+                .or(out.sample)
                 .unwrap_or_else(|| file_stem(path));
             let counts = out
                 .asvs
