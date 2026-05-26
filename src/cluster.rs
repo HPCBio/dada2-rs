@@ -3,11 +3,29 @@
 //! Ports `cluster.cpp`, excluding R/Rcpp and RcppParallel wrappers.
 //! Parallel comparisons use Rayon in place of RcppParallel.
 
+use std::sync::OnceLock;
+
 use rayon::prelude::*;
 
 use crate::containers::{B, Bi, BirthType, Comparison};
 use crate::nwalign::{AlignBuffers, AlignParams, sub_new_with_buf};
 use crate::pval::compute_lambda;
+
+/// Maximum chunk size for the parallel raw-compare loop in `b_compare_parallel`
+/// (passed to rayon's `with_max_len`). Default `32`. Overridable for tuning via
+/// the `DADA2_RS_PAR_GRAIN` env var (must be > 0; invalid values fall back to
+/// the default). Read once per process and cached. Undocumented in `--help`:
+/// this is a tuning knob, not user-facing config.
+fn par_max_len() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("DADA2_RS_PAR_GRAIN")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(32)
+    })
+}
 
 // ---------------------------------------------------------------------------
 // b_compare  (serial)
@@ -114,11 +132,12 @@ pub fn b_compare_parallel(
     //
     // 32 was chosen empirically: ~7% faster than the default on an 8-core
     // box with F3D0 (nraw≈2000); larger thread counts on skewed workloads
-    // benefit more. Smaller values (16, 8) were not meaningfully better.
-    const PAR_MAX_LEN: usize = 32;
+    // benefit more. Smaller values (16, 8) were not meaningfully better at
+    // 8 threads, but may help at higher thread counts — override via the
+    // `DADA2_RS_PAR_GRAIN` env var to tune for your workload.
     let comps: Vec<(f64, u32, bool)> = (0..nraw)
         .into_par_iter()
-        .with_max_len(PAR_MAX_LEN)
+        .with_max_len(par_max_len())
         .map_init(AlignBuffers::new, |buf, index| {
             let raw = &raws[index];
             if greedy && (raw.reads > center_reads || raw.lock) {
