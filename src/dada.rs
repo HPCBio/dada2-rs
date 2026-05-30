@@ -494,7 +494,18 @@ fn compute_birth_subs(b: &B, align: &AlignParams) -> Vec<Option<Sub>> {
 ///
 /// Equivalent to C++ `run_dada`.
 pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
+    use std::time::{Duration, Instant};
     let mut bb = B::new(raws, params.omega_a, params.omega_p, params.use_quals);
+
+    // Cumulative phase timers. Only `b_compare_parallel` is multithreaded;
+    // shuffle/bud/p_update are serial, so their share quantifies the Amdahl
+    // serial fraction that caps thread utilization (printed under verbose).
+    let (mut t_compare, mut t_shuffle, mut t_bud, mut t_pupdate) = (
+        Duration::ZERO,
+        Duration::ZERO,
+        Duration::ZERO,
+        Duration::ZERO,
+    );
 
     // Initial compare: no k-mer distance screen so that cluster 0 accumulates
     // comparisons for every Raw (required by b_shuffle2).
@@ -503,6 +514,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         ..params.align
     };
 
+    let t = Instant::now();
     if params.multithread {
         b_compare_parallel(
             &mut bb,
@@ -523,7 +535,10 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             params.verbose,
         );
     }
+    t_compare += t.elapsed();
+    let t = Instant::now();
     b_p_update(&mut bb, params.greedy, params.detect_singletons);
+    t_pupdate += t.elapsed();
 
     let max_clust = if params.max_clust == 0 {
         bb.raws.len()
@@ -532,13 +547,16 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     };
 
     while bb.clusters.len() < max_clust {
-        let newi = match b_bud(
+        let t = Instant::now();
+        let bud = b_bud(
             &mut bb,
             params.min_fold,
             params.min_hamming,
             params.min_abund,
             params.verbose,
-        ) {
+        );
+        t_bud += t.elapsed();
+        let newi = match bud {
             Some(i) => i,
             None => break,
         };
@@ -547,6 +565,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             eprint!("\nNew Cluster C{newi}:");
         }
 
+        let t = Instant::now();
         if params.multithread {
             b_compare_parallel(
                 &mut bb,
@@ -567,8 +586,10 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 params.verbose,
             );
         }
+        t_compare += t.elapsed();
 
         // Shuffle until stable or MAX_SHUFFLE reached.
+        let t = Instant::now();
         let mut nshuffle = 0usize;
         loop {
             let shuffled = b_shuffle2(&mut bb);
@@ -580,11 +601,14 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 break;
             }
         }
+        t_shuffle += t.elapsed();
         if params.verbose && nshuffle >= MAX_SHUFFLE {
             eprintln!("Warning: Reached maximum ({MAX_SHUFFLE}) shuffles.");
         }
 
+        let t = Instant::now();
         b_p_update(&mut bb, params.greedy, params.detect_singletons);
+        t_pupdate += t.elapsed();
     }
 
     if params.verbose {
@@ -593,6 +617,13 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             bb.nalign,
             bb.nshroud,
             bb.raws.len()
+        );
+        eprintln!(
+            "[dada] phase times (serial except compare): compare={:.2}s  shuffle={:.2}s  bud={:.2}s  p_update={:.2}s",
+            t_compare.as_secs_f64(),
+            t_shuffle.as_secs_f64(),
+            t_bud.as_secs_f64(),
+            t_pupdate.as_secs_f64(),
         );
     }
 

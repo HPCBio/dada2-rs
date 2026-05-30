@@ -847,6 +847,10 @@ fn main() -> io::Result<()> {
                 .map_err(io::Error::other)?;
 
             // ---- Per-sample dereplication (or load from derep/sample JSON) ----
+            // Phase timers (printed under --verbose): derep and merge are
+            // serial, so their share quantifies the single-threaded front of a
+            // pooled run vs the parallel `run_dada`.
+            let t_derep = std::time::Instant::now();
             let mut dereps: Vec<derep::Derep> = Vec::with_capacity(n_samples);
             let mut json_samples: Vec<Option<String>> = Vec::with_capacity(n_samples);
             for path in &input {
@@ -854,6 +858,7 @@ fn main() -> io::Result<()> {
                 dereps.push(d);
                 json_samples.push(name);
             }
+            let t_derep = t_derep.elapsed();
 
             // Resolve sample names: CLI override > JSON-embedded > filename stem.
             let sample_names: Vec<String> = match sample_names {
@@ -866,6 +871,7 @@ fn main() -> io::Result<()> {
             };
 
             // ---- Merge across samples (abundance-weighted quality average) ----
+            let t_merge = std::time::Instant::now();
             let mut seq_to_merged: HashMap<Vec<u8>, usize> = HashMap::new();
             let mut merged_seqs: Vec<Vec<u8>> = Vec::new();
             let mut merged_qual_sum: Vec<Vec<f64>> = Vec::new();
@@ -1046,9 +1052,12 @@ fn main() -> io::Result<()> {
             };
 
             // ---- Run DADA once on the merged table ----
+            let t_merge = t_merge.elapsed();
+            let t_dada = std::time::Instant::now();
             let result = pool
                 .install(|| dada::dada_uniques(&raw_inputs, &dada_params))
                 .map_err(io::Error::other)?;
+            let t_dada = t_dada.elapsed();
 
             if verbose {
                 eprintln!(
@@ -1061,6 +1070,7 @@ fn main() -> io::Result<()> {
             }
 
             // ---- Per-sample output ----
+            let t_output = std::time::Instant::now();
             #[derive(Serialize)]
             struct AsvEntry {
                 sequence: String,
@@ -1182,6 +1192,24 @@ fn main() -> io::Result<()> {
                         total_reads
                     );
                 }
+            }
+            if verbose {
+                let t_output = t_output.elapsed();
+                let total = (t_derep + t_merge + t_dada + t_output)
+                    .as_secs_f64()
+                    .max(1e-9);
+                let pct = |d: std::time::Duration| 100.0 * d.as_secs_f64() / total;
+                eprintln!(
+                    "[dada-pooled] phase wall times: derep={:.1}s ({:.0}%, serial)  merge={:.1}s ({:.0}%, serial)  run_dada={:.1}s ({:.0}%, parallel)  output={:.1}s ({:.0}%, serial)",
+                    t_derep.as_secs_f64(),
+                    pct(t_derep),
+                    t_merge.as_secs_f64(),
+                    pct(t_merge),
+                    t_dada.as_secs_f64(),
+                    pct(t_dada),
+                    t_output.as_secs_f64(),
+                    pct(t_output),
+                );
             }
         }
 
