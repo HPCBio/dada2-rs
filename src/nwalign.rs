@@ -785,13 +785,19 @@ pub fn align_vectorized_with_buf(
         // We guard with explicit bounds checks and use fill_val so the sentinel
         // columns in d suppress any influence on the traceback.
         {
-            let mut si = i_max;
-            let mut sj = j_min;
-            // si decrements while sj increments along the anti-diagonal, so a
-            // single iterator counter can't express both; keep the explicit
-            // dual counters (this is the hot diag-fill loop).
-            #[allow(clippy::explicit_counter_loop)]
-            for k in 0..n {
+            // Bind exact-length subslices so the per-cell writes/reads carry no
+            // bounds checks (the single range-slice panics at most once, before
+            // the loop) — the same de-bounds-checking that let `dploop`
+            // vectorize. `si`/`sj` are derived from the zip index `k`: `si`
+            // decrements (i64, may go negative — guarded) while `sj` increments.
+            // The guarded `s1[si]`/`s2[sj]` reads keep their bounds checks
+            // elided via the explicit range guard.
+            let base = (row - 2) * ncol + col_min;
+            let d_prev2 = &d[base..base + n];
+            let diag_out = &mut diag_buf[col_min..col_min + n];
+            for (k, (dst, &prev)) in diag_out.iter_mut().zip(d_prev2).enumerate() {
+                let si = i_max - k as i64;
+                let sj = j_min + k;
                 let score = if si >= 0 && (si as usize) < len1 && sj < len2 {
                     if s1[si as usize] == s2[sj] {
                         match_score
@@ -801,9 +807,7 @@ pub fn align_vectorized_with_buf(
                 } else {
                     fill_val // out-of-range cell; sentinel ensures it won't affect traceback
                 };
-                diag_buf[col_min + k] = d[(row - 2) * ncol + col_min + k].saturating_add(score);
-                si -= 1;
-                sj += 1;
+                *dst = prev.saturating_add(score);
             }
         }
 
