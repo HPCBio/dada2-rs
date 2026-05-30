@@ -319,61 +319,61 @@ pub fn b_bud(
     let p_p = min_p_prior;
 
     // Abundance-based bud.
-    if p_a < b.omega_a {
-        if let Some((ci, r, raw_idx)) = mini {
-            // Capture pre-pop state.
-            let expected = b.raws[raw_idx].comp.lambda * b.clusters[ci].reads as f64;
-            let birth_comp = b.raws[raw_idx].comp.clone();
-            let birth_fold = b.raws[raw_idx].reads as f64 / expected.max(f64::MIN_POSITIVE);
-            let nraw_total = b.raws.len() as u32;
+    if p_a < b.omega_a
+        && let Some((ci, r, raw_idx)) = mini
+    {
+        // Capture pre-pop state.
+        let expected = b.raws[raw_idx].comp.lambda * b.clusters[ci].reads as f64;
+        let birth_comp = b.raws[raw_idx].comp.clone();
+        let birth_fold = b.raws[raw_idx].reads as f64 / expected.max(f64::MIN_POSITIVE);
+        let nraw_total = b.raws.len() as u32;
 
-            b.bi_pop_raw(ci, r);
+        b.bi_pop_raw(ci, r);
 
-            let mut new_bi = Bi::new(nraw_total);
-            new_bi.birth_type = BirthType::Abundance;
-            new_bi.birth_from = ci as u32;
-            new_bi.birth_pval = p_a;
-            new_bi.birth_fold = birth_fold;
-            new_bi.birth_e = expected;
-            new_bi.birth_comp = birth_comp;
+        let mut new_bi = Bi::new(nraw_total);
+        new_bi.birth_type = BirthType::Abundance;
+        new_bi.birth_from = ci as u32;
+        new_bi.birth_pval = p_a;
+        new_bi.birth_fold = birth_fold;
+        new_bi.birth_e = expected;
+        new_bi.birth_comp = birth_comp;
 
-            let new_ci = b.add_cluster(new_bi);
-            b.bi_add_raw(new_ci, raw_idx);
-            b.assign_center(new_ci);
+        let new_ci = b.add_cluster(new_bi);
+        b.bi_add_raw(new_ci, raw_idx);
+        b.assign_center(new_ci);
 
-            if verbose {
-                eprint!(", Division (naive): Raw {raw_idx} from Bi {ci}, pA={p_a:.2e}");
-            }
-            return Some(new_ci);
+        if verbose {
+            eprint!(", Division (naive): Raw {raw_idx} from Bi {ci}, pA={p_a:.2e}");
         }
+        return Some(new_ci);
     }
 
     // Prior-based bud.
-    if p_p < b.omega_p {
-        if let Some((ci, r, raw_idx)) = mini_prior {
-            let expected = b.raws[raw_idx].comp.lambda * b.clusters[ci].reads as f64;
-            let birth_comp = b.raws[raw_idx].comp.clone();
-            let birth_fold = b.raws[raw_idx].reads as f64 / expected.max(f64::MIN_POSITIVE);
-            let nraw_total = b.raws.len() as u32;
+    if p_p < b.omega_p
+        && let Some((ci, r, raw_idx)) = mini_prior
+    {
+        let expected = b.raws[raw_idx].comp.lambda * b.clusters[ci].reads as f64;
+        let birth_comp = b.raws[raw_idx].comp.clone();
+        let birth_fold = b.raws[raw_idx].reads as f64 / expected.max(f64::MIN_POSITIVE);
+        let nraw_total = b.raws.len() as u32;
 
-            b.bi_pop_raw(ci, r);
+        b.bi_pop_raw(ci, r);
 
-            let mut new_bi = Bi::new(nraw_total);
-            new_bi.birth_type = BirthType::Prior;
-            new_bi.birth_pval = p_p;
-            new_bi.birth_fold = birth_fold;
-            new_bi.birth_e = expected;
-            new_bi.birth_comp = birth_comp;
+        let mut new_bi = Bi::new(nraw_total);
+        new_bi.birth_type = BirthType::Prior;
+        new_bi.birth_pval = p_p;
+        new_bi.birth_fold = birth_fold;
+        new_bi.birth_e = expected;
+        new_bi.birth_comp = birth_comp;
 
-            let new_ci = b.add_cluster(new_bi);
-            b.bi_add_raw(new_ci, raw_idx);
-            b.assign_center(new_ci);
+        let new_ci = b.add_cluster(new_bi);
+        b.bi_add_raw(new_ci, raw_idx);
+        b.assign_center(new_ci);
 
-            if verbose {
-                eprint!(", Division (prior): Raw {raw_idx} from Bi {ci}, pP={p_p:.2e}");
-            }
-            return Some(new_ci);
+        if verbose {
+            eprint!(", Division (prior): Raw {raw_idx} from Bi {ci}, pP={p_p:.2e}");
         }
+        return Some(new_ci);
     }
 
     if verbose {

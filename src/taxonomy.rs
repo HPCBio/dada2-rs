@@ -263,11 +263,7 @@ pub fn assign_taxonomy(
             ref_to_genus.len()
         ));
     }
-    let ngenus = if nlevel > 0 {
-        genus_tax.len() / nlevel
-    } else {
-        0
-    };
+    let ngenus = genus_tax.len().checked_div(nlevel).unwrap_or(0);
     if nlevel > 0 && genus_tax.len() != ngenus * nlevel {
         return Err(format!(
             "genus_tax length {} is not divisible by nlevel {}.",

@@ -521,46 +521,44 @@ fn main() -> io::Result<()> {
             // notice if their dada-call params drifted from the err model,
             // so emit a one-line warning per mismatched field.  Comparison
             // tolerates the absence of `params` in older err models.
-            if !inherit_err_params {
-                if let Some(em_params) = p {
-                    let mut mismatches: Vec<String> = Vec::new();
-                    macro_rules! check {
-                        ($name:literal, $cli_val:expr, $em_val:expr) => {
-                            if $cli_val != $em_val {
-                                mismatches.push(format!(
-                                    "  {} = {:?} (err model: {:?})",
-                                    $name, $cli_val, $em_val
-                                ));
-                            }
-                        };
-                    }
-                    check!("omega_a", omega_a, em_params.omega_a);
-                    // omega_c is intentionally not embedded by learn-errors
-                    // (learn-time and dada-time defaults differ in R DADA2),
-                    // so we don't compare against the err model here.
-                    check!("omega_p", omega_p, em_params.omega_p);
-                    check!("min_fold", min_fold, em_params.min_fold);
-                    check!("min_hamming", min_hamming, em_params.min_hamming);
-                    check!("min_abund", min_abund, em_params.min_abund);
-                    check!(
-                        "detect_singletons",
-                        detect_singletons,
-                        em_params.detect_singletons
-                    );
-                    check!("band", band, em_params.band);
-                    check!("homo_gap_p", homo_gap_p, em_params.homo_gap_p);
-                    check!("kdist_cutoff", kdist_cutoff, em_params.kdist_cutoff);
-                    check!("kmer_size", kmer_size, em_params.kmer_size);
-                    check!("use_kmers", use_kmers, em_params.use_kmers);
-                    if !mismatches.is_empty() {
-                        eprintln!(
-                            "[dada] warning: {} dada parameter(s) differ from error model {}; pass --inherit-err-params to adopt the err model's values:",
-                            mismatches.len(),
-                            error_model.display(),
-                        );
-                        for line in &mismatches {
-                            eprintln!("{line}");
+            if !inherit_err_params && let Some(em_params) = p {
+                let mut mismatches: Vec<String> = Vec::new();
+                macro_rules! check {
+                    ($name:literal, $cli_val:expr, $em_val:expr) => {
+                        if $cli_val != $em_val {
+                            mismatches.push(format!(
+                                "  {} = {:?} (err model: {:?})",
+                                $name, $cli_val, $em_val
+                            ));
                         }
+                    };
+                }
+                check!("omega_a", omega_a, em_params.omega_a);
+                // omega_c is intentionally not embedded by learn-errors
+                // (learn-time and dada-time defaults differ in R DADA2),
+                // so we don't compare against the err model here.
+                check!("omega_p", omega_p, em_params.omega_p);
+                check!("min_fold", min_fold, em_params.min_fold);
+                check!("min_hamming", min_hamming, em_params.min_hamming);
+                check!("min_abund", min_abund, em_params.min_abund);
+                check!(
+                    "detect_singletons",
+                    detect_singletons,
+                    em_params.detect_singletons
+                );
+                check!("band", band, em_params.band);
+                check!("homo_gap_p", homo_gap_p, em_params.homo_gap_p);
+                check!("kdist_cutoff", kdist_cutoff, em_params.kdist_cutoff);
+                check!("kmer_size", kmer_size, em_params.kmer_size);
+                check!("use_kmers", use_kmers, em_params.use_kmers);
+                if !mismatches.is_empty() {
+                    eprintln!(
+                        "[dada] warning: {} dada parameter(s) differ from error model {}; pass --inherit-err-params to adopt the err model's values:",
+                        mismatches.len(),
+                        error_model.display(),
+                    );
+                    for line in &mismatches {
+                        eprintln!("{line}");
                     }
                 }
             }
@@ -582,10 +580,10 @@ fn main() -> io::Result<()> {
 
             // ---- Optional cluster trace ----
             if let Some(ref trace_path) = cluster_trace {
-                if let Some(parent) = trace_path.parent() {
-                    if !parent.as_os_str().is_empty() {
-                        std::fs::create_dir_all(parent)?;
-                    }
+                if let Some(parent) = trace_path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent)?;
                 }
                 let sample_name = input
                     .file_stem()
@@ -828,17 +826,17 @@ fn main() -> io::Result<()> {
             use std::collections::{HashMap, HashSet};
 
             let n_samples = input.len();
-            if let Some(ref names) = sample_names {
-                if names.len() != n_samples {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "--sample-names has {} entries but {} input file(s) given",
-                            names.len(),
-                            n_samples
-                        ),
-                    ));
-                }
+            if let Some(ref names) = sample_names
+                && names.len() != n_samples
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "--sample-names has {} entries but {} input file(s) given",
+                        names.len(),
+                        n_samples
+                    ),
+                ));
             }
 
             std::fs::create_dir_all(&output_dir)?;
@@ -1396,16 +1394,17 @@ fn main() -> io::Result<()> {
                 None
             };
             // Validate filter params before processing.
-            if let Some(ref fp) = filter_params {
-                if fp.max_len > 0 && fp.min_len > fp.max_len {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "--min-len ({}) is greater than --max-len ({}); no read can satisfy both",
-                            fp.min_len, fp.max_len
-                        ),
-                    ));
-                }
+            if let Some(ref fp) = filter_params
+                && fp.max_len > 0
+                && fp.min_len > fp.max_len
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "--min-len ({}) is greater than --max-len ({}); no read can satisfy both",
+                        fp.min_len, fp.max_len
+                    ),
+                ));
             }
             let params = RemovePrimersParams {
                 primer_fwd: primer_fwd.into_bytes(),
@@ -2622,10 +2621,10 @@ fn main() -> io::Result<()> {
                     new_tax.push(species);
 
                     let new_boot = a.bootstrap.map(|mut b| {
-                        if let Some(si) = species_idx {
-                            if si < b.len() {
-                                b.remove(si);
-                            }
+                        if let Some(si) = species_idx
+                            && si < b.len()
+                        {
+                            b.remove(si);
                         }
                         b
                     });
@@ -3029,7 +3028,7 @@ fn load_derep_for_dada(
         // Skip the defensive sort when the producer has declared the order.
         // Older JSONs without `sort_order` get sorted, matching prior behaviour.
         if parsed.sort_order.as_deref() != Some("abundance_desc") {
-            entries.sort_by(|a, b| b.count.cmp(&a.count));
+            entries.sort_by_key(|a| std::cmp::Reverse(a.count));
         }
         let mut uniques: Vec<(Vec<u8>, u64)> = Vec::with_capacity(entries.len());
         let mut quals: Vec<Vec<f64>> = Vec::with_capacity(entries.len());

@@ -157,10 +157,10 @@ fn post_hoc_pvals(b: &B) -> Vec<f64> {
     let mut tot_e = vec![0.0f64; nclust];
     for (ci, cluster) in b.clusters.iter().enumerate() {
         for comp in &cluster.comp {
-            if let Some(&j) = center_of.get(&comp.index) {
-                if j != ci {
-                    tot_e[j] += comp.lambda * cluster.reads as f64;
-                }
+            if let Some(&j) = center_of.get(&comp.index)
+                && j != ci
+            {
+                tot_e[j] += comp.lambda * cluster.reads as f64;
             }
         }
     }

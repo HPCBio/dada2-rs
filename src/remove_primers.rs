@@ -460,10 +460,10 @@ fn open_reader(path: &Path) -> io::Result<FastqReader> {
 }
 
 fn open_writer(path: &Path, compress: bool, threads: usize) -> io::Result<Box<dyn Write>> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
     }
     let file = File::create(path).with_path(path)?;
     if compress {

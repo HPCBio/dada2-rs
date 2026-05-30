@@ -393,9 +393,9 @@ pub fn load_derep_samples(paths: &[PathBuf]) -> io::Result<Vec<Vec<RawInput>>> {
             // Defensive sort: derep JSONs produced by older versions (or by
             // other tools) may not be abundance-sorted. The DADA2 algorithm
             // assumes the most-abundant raw is at index 0 (issue #4).
-            // `sort_by` is stable so ties preserve the file's original order.
+            // `sort_by_key` is stable so ties preserve the file's original order.
             if !already_sorted {
-                inputs.sort_by(|a, b| b.abundance.cmp(&a.abundance));
+                inputs.sort_by_key(|a| std::cmp::Reverse(a.abundance));
             }
             Ok(inputs)
         })

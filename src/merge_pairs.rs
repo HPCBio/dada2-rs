@@ -226,10 +226,8 @@ fn build_merged(
             // fwd has a base, rcrev has a gap → fwd prefix (always include)
             (false, true) => result.push(nt_decode(al0[i])),
             // rcrev has a base, fwd has a gap → rcrev left-overhang
-            (true, false) => {
-                if !trim_overhang {
-                    result.push(nt_decode(al1[i]));
-                }
+            (true, false) if !trim_overhang => {
+                result.push(nt_decode(al1[i]));
             }
             // Both gap or both base outside the overlap shouldn't happen in a
             // well-formed ends-free alignment, but handle gracefully.
@@ -258,10 +256,8 @@ fn build_merged(
             // rcrev has a base, fwd has a gap → rcrev suffix (always include)
             (true, false) => result.push(nt_decode(al1[i])),
             // fwd has a base, rcrev has a gap → fwd right-overhang
-            (false, true) => {
-                if !trim_overhang {
-                    result.push(nt_decode(al0[i]));
-                }
+            (false, true) if !trim_overhang => {
+                result.push(nt_decode(al0[i]));
             }
             _ => {}
         }
@@ -583,7 +579,7 @@ pub fn merge_sample(
     }
 
     // Sort by abundance descending for readability.
-    merged.sort_unstable_by(|a, b| b.abundance.cmp(&a.abundance));
+    merged.sort_unstable_by_key(|a| std::cmp::Reverse(a.abundance));
 
     let num_merged = merged.iter().filter(|m| m.accept).count();
 

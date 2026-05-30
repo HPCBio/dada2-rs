@@ -737,7 +737,7 @@ pub fn align_vectorized_with_buf(
         while row < limit {
             d[row * ncol + col] = d_free;
             p[row * ncol + col] = 3;
-            if row % 2 == 0 {
+            if row.is_multiple_of(2) {
                 col = col.saturating_sub(1);
             }
             row += 1;
@@ -787,6 +787,10 @@ pub fn align_vectorized_with_buf(
         {
             let mut si = i_max;
             let mut sj = j_min;
+            // si decrements while sj increments along the anti-diagonal, so a
+            // single iterator counter can't express both; keep the explicit
+            // dual counters (this is the hot diag-fill loop).
+            #[allow(clippy::explicit_counter_loop)]
             for k in 0..n {
                 let score = if si >= 0 && (si as usize) < len1 && sj < len2 {
                     if s1[si as usize] == s2[sj] {
@@ -928,7 +932,7 @@ pub fn align_vectorized_with_buf(
             }
         } else if row.div_ceil(2) + col_max - start_col < len2 {
             let full_band = band_usize + len2 - len1;
-            if full_band % 2 == 0 {
+            if full_band.is_multiple_of(2) {
                 if even {
                     col_max = col_max.saturating_sub(1);
                 } else {
@@ -1113,10 +1117,10 @@ pub fn raw_align_with_buf(
             },
         };
 
-        if p.gapless {
-            if let (Some(o1), Some(o2)) = (&raw1.kord, &raw2.kord) {
-                kodist = kord_dist(o1, raw1.len(), o2, raw2.len(), k);
-            }
+        if p.gapless
+            && let (Some(o1), Some(o2)) = (&raw1.kord, &raw2.kord)
+        {
+            kodist = kord_dist(o1, raw1.len(), o2, raw2.len(), k);
         }
     }
 
