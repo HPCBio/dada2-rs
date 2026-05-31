@@ -101,6 +101,12 @@ pub fn b_compare(
 
 /// Parallel version of `b_compare` using Rayon.
 /// Equivalent to C++ `b_compare_parallel`.
+/// Returns `(map, serial)` wall durations: time in the parallel alignment map
+/// vs. the serial post-processing store loop. Lets `run_dada` report the split
+/// under `--verbose` — distinguishing memory-bandwidth saturation in the
+/// parallel map from serial-store overhead as the cause of low thread
+/// utilization. Returned (not accumulated in a global) so it stays correct when
+/// multiple `run_dada` calls nest under per-sample parallelism.
 pub fn b_compare_parallel(
     b: &mut B,
     i: usize,
@@ -108,13 +114,14 @@ pub fn b_compare_parallel(
     ncol: usize,
     params: &AlignParams,
     greedy: bool,
-) {
+) -> (std::time::Duration, std::time::Duration) {
     let center_idx = b.clusters[i]
         .center
         .expect("b_compare_parallel: cluster has no center");
     let center_reads = b.raws[center_idx].reads;
     let nraw = b.raws.len();
     let use_quals = b.use_quals;
+    let t_map = std::time::Instant::now();
 
     // Read-only parallel pass over raws.
     //
@@ -151,8 +158,10 @@ pub fn b_compare_parallel(
             }
         })
         .collect();
+    let map_dur = t_map.elapsed();
 
     // Serial post-processing: selectively store comparisons.
+    let t_serial = std::time::Instant::now();
     let total_reads = b.reads as f64;
     for (index, (lambda, hamming, skipped)) in comps.into_iter().enumerate() {
         // Match serial b_compare counting: only count non-skipped raws.
@@ -185,6 +194,7 @@ pub fn b_compare_parallel(
             }
         }
     }
+    (map_dur, t_serial.elapsed())
 }
 
 // ---------------------------------------------------------------------------

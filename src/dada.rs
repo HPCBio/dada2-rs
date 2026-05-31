@@ -506,6 +506,8 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         Duration::ZERO,
         Duration::ZERO,
     );
+    // Split of `compare` into the parallel alignment map vs. the serial store.
+    let (mut t_cmp_map, mut t_cmp_serial) = (Duration::ZERO, Duration::ZERO);
 
     // Initial compare: no k-mer distance screen so that cluster 0 accumulates
     // comparisons for every Raw (required by b_shuffle2).
@@ -516,7 +518,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
 
     let t = Instant::now();
     if params.multithread {
-        b_compare_parallel(
+        let (m, s) = b_compare_parallel(
             &mut bb,
             0,
             &params.err_mat,
@@ -524,6 +526,8 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             &init_params,
             params.greedy,
         );
+        t_cmp_map += m;
+        t_cmp_serial += s;
     } else {
         b_compare(
             &mut bb,
@@ -567,7 +571,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
 
         let t = Instant::now();
         if params.multithread {
-            b_compare_parallel(
+            let (m, s) = b_compare_parallel(
                 &mut bb,
                 newi,
                 &params.err_mat,
@@ -575,6 +579,8 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 &params.align,
                 params.greedy,
             );
+            t_cmp_map += m;
+            t_cmp_serial += s;
         } else {
             b_compare(
                 &mut bb,
@@ -619,8 +625,10 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             bb.raws.len()
         );
         eprintln!(
-            "[dada] phase times (serial except compare): compare={:.2}s  shuffle={:.2}s  bud={:.2}s  p_update={:.2}s",
+            "[dada] phase times (serial except compare-map): compare={:.2}s (map={:.2}s parallel, store={:.2}s serial)  shuffle={:.2}s  bud={:.2}s  p_update={:.2}s",
             t_compare.as_secs_f64(),
+            t_cmp_map.as_secs_f64(),
+            t_cmp_serial.as_secs_f64(),
             t_shuffle.as_secs_f64(),
             t_bud.as_secs_f64(),
             t_pupdate.as_secs_f64(),
