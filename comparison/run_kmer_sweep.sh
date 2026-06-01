@@ -68,6 +68,10 @@ MAX_CONSIST="${MAX_CONSIST:-10}"
 KDIST_CUTOFF="${KDIST_CUTOFF:-0.42}"
 THREADS="${THREADS:-1}"
 FILE_GLOB="${FILE_GLOB:-*.fastq.gz *.fastq *.json *.json.gz}"
+# Bases used to LEARN the error model, matching R DADA2's learnErrors(nbases=1e8).
+# Error learning runs on this subsample; denoising (dada/dada-pooled) always runs
+# on the FULL data. Set NBASES=0 to disable subsampling (learn on everything).
+NBASES="${NBASES:-100000000}"
 
 if [[ ! -x "$DADA2RS" ]]; then
     echo "ERROR: binary not found/executable at $DADA2RS" >&2
@@ -142,31 +146,70 @@ POOLED=0
 [[ $NSAMPLES -gt 1 ]] && POOLED=1
 
 # ---------------------------------------------------------------------------
-# Step 0b: ensure every input is a derep/sample JSON. `errors-from-sample`
-# only accepts JSON; FASTQ inputs are dereplicated here (once, reused across
-# all k). The derep JSONs are also what we feed to dada/dada-pooled so the
-# unique set is identical between error-learning and denoising.
+# Step 0b: build the JSON inputs. `errors-from-sample`, `dada`, and
+# `dada-pooled` all take derep/sample JSON, not FASTQ. We build TWO sets:
+#
+#   DEREPS  — FULL dereplication of each sample (every unique). Used for
+#             denoising (dada / dada-pooled): the ASV output we measure must
+#             reflect the whole dataset.
+#   LEARN   — SUBSAMPLE for error learning, matching R DADA2's
+#             learnErrors(nbases=1e8): `sample --nbases NBASES`. Without this
+#             the error fit (errors-from-sample) runs on every unique, doing
+#             far more alignments than R would and inflating runtime.
+#
+# Both are derived once and reused across all k. JSON inputs are taken as-is
+# for both sets (already dereplicated; subsampling a pre-derep'd JSON isn't
+# supported, so pass FASTQ if you want learn-time subsampling).
 # ---------------------------------------------------------------------------
 DEREP_DIR="${OUTDIR}/derep"
-mkdir -p "$DEREP_DIR"
-declare -a DEREPS=()
+LEARN_DIR="${OUTDIR}/learn_input"
+mkdir -p "$DEREP_DIR" "$LEARN_DIR"
+declare -a DEREPS=()   # full uniques, per sample (for denoising)
+declare -a FASTQS=()   # FASTQ inputs only (for subsampled learning)
+declare -a JSON_IN=()  # JSON inputs passed straight through
+
 for f in "${INPUTS[@]}"; do
     case "$f" in
         *.json|*.json.gz)
             DEREPS+=("$f")
+            JSON_IN+=("$f")
             ;;
         *)
             base="$(basename "$f")"
             base="${base%.gz}"; base="${base%.fastq}"
             dj="${DEREP_DIR}/${base}.derep.json"
             if [[ ! -s "$dj" ]]; then
-                echo "==> derep $f"
+                echo "==> derep (full) $f"
                 "$DADA2RS" derep "$f" -o "$dj"
             fi
             DEREPS+=("$dj")
+            FASTQS+=("$f")
             ;;
     esac
 done
+
+# Build the LEARN set: subsample FASTQ inputs to NBASES (R-style), pass any
+# JSON inputs through unchanged. With NBASES=0, learn on the full derep set.
+declare -a LEARN=()
+if [[ "$NBASES" != "0" && ${#FASTQS[@]} -gt 0 ]]; then
+    echo "==> subsampling ${#FASTQS[@]} FASTQ(s) to NBASES=${NBASES} for error learning"
+    "$DADA2RS" sample "${FASTQS[@]}" --output-dir "$LEARN_DIR" \
+        --nbases "$NBASES" --threads "$THREADS"
+    # `sample` writes one JSON per input; collect them.
+    shopt -s nullglob
+    for j in "$LEARN_DIR"/*.json "$LEARN_DIR"/*.json.gz; do LEARN+=("$j"); done
+    shopt -u nullglob
+    # Plus any JSON inputs that bypassed subsampling (guard empty array under set -u).
+    [[ ${#JSON_IN[@]} -gt 0 ]] && LEARN+=("${JSON_IN[@]}")
+else
+    [[ "$NBASES" == "0" ]] && echo "==> NBASES=0: learning errors on FULL data (no subsampling)"
+    LEARN=("${DEREPS[@]}")
+fi
+
+if [[ ${#LEARN[@]} -eq 0 ]]; then
+    echo "ERROR: no JSON inputs assembled for error learning." >&2
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Step 1: per-k learn-errors (pooled over all samples) + dada / dada-pooled.
@@ -186,8 +229,8 @@ for k in $KLIST; do
     DADA_TIME="${OUTDIR}/dada_k${k}.time"
     mkdir -p "$DADA_OUTDIR"
 
-    echo "==> learn-errors (k=$k, ${NSAMPLES} sample(s) pooled into the fit)"
-    "$DADA2RS" errors-from-sample "${DEREPS[@]}" \
+    echo "==> learn-errors (k=$k, ${#LEARN[@]} subsampled input(s), NBASES=${NBASES})"
+    "$DADA2RS" errors-from-sample "${LEARN[@]}" \
         --errfun "$ERRFUN" --band "$BAND" \
         --kmer-size "$k" --kdist-cutoff "$KDIST_CUTOFF" \
         --max-consist "$MAX_CONSIST" --threads "$THREADS" \
