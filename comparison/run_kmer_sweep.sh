@@ -215,7 +215,34 @@ fi
 # Step 1: per-k learn-errors (pooled over all samples) + dada / dada-pooled.
 # All samples and parameters are held constant; only --kmer-size changes.
 # ---------------------------------------------------------------------------
+# Portable wall-time + peak-RSS capture. GNU coreutils `time` (Linux clusters)
+# uses `-v`; BSD `time` (macOS) uses `-l`. Probe once and pick the flag. If
+# neither works, fall back to no external timer (wall/RSS columns stay blank,
+# but the run still completes). The parser in Step 2 understands both formats.
 TIME_BIN=/usr/bin/time
+TIME_FLAG=""
+if [[ -x "$TIME_BIN" ]]; then
+    if "$TIME_BIN" -v true >/dev/null 2>&1; then
+        TIME_FLAG="-v"        # GNU time
+    elif "$TIME_BIN" -l true >/dev/null 2>&1; then
+        TIME_FLAG="-l"        # BSD time
+    fi
+fi
+if [[ -z "$TIME_FLAG" ]]; then
+    echo "WARNING: no usable /usr/bin/time (-v or -l); wall_s / maxrss columns will be blank." >&2
+fi
+
+# Run "$@" under the timer, sending the timer's report AND the command's stderr
+# to $1 (the time file). Usage: run_timed <timefile> <cmd...>
+run_timed() {
+    local tf="$1"; shift
+    if [[ -n "$TIME_FLAG" ]]; then
+        "$TIME_BIN" "$TIME_FLAG" "$@" >/dev/null 2>"$tf"
+    else
+        "$@" >/dev/null 2>"$tf"
+    fi
+}
+
 SUMMARY_CSV="${OUTDIR}/summary.csv"
 echo "k,learn_iters,dada_aligns,dada_shrouded,shroud_pct,n_asv_total,wall_s_dada,maxrss_kb_dada" > "$SUMMARY_CSV"
 
@@ -238,28 +265,16 @@ for k in $KLIST; do
 
     if [[ $POOLED -eq 1 ]]; then
         echo "==> dada-pooled (k=$k)"
-        "$TIME_BIN" -l "$DADA2RS" dada-pooled "${DEREPS[@]}" \
+        run_timed "$DADA_TIME" "$DADA2RS" dada-pooled "${DEREPS[@]}" \
             --error-model "$ERR_JSON" --output-dir "$DADA_OUTDIR" \
             --band "$BAND" --kmer-size "$k" --kdist-cutoff "$KDIST_CUTOFF" \
-            --threads "$THREADS" --verbose \
-            > /dev/null 2> "$DADA_TIME" || {
-                "$DADA2RS" dada-pooled "${DEREPS[@]}" \
-                    --error-model "$ERR_JSON" --output-dir "$DADA_OUTDIR" \
-                    --band "$BAND" --kmer-size "$k" --kdist-cutoff "$KDIST_CUTOFF" \
-                    --threads "$THREADS" --verbose 2> "$DADA_TIME"
-            }
+            --threads "$THREADS" --verbose
     else
         echo "==> dada (k=$k, single sample)"
-        "$TIME_BIN" -l "$DADA2RS" dada "${DEREPS[0]}" \
+        run_timed "$DADA_TIME" "$DADA2RS" dada "${DEREPS[0]}" \
             --error-model "$ERR_JSON" \
             --band "$BAND" --kmer-size "$k" --kdist-cutoff "$KDIST_CUTOFF" \
-            --threads "$THREADS" --verbose -o "${DADA_OUTDIR}/sample.dada.json" \
-            > /dev/null 2> "$DADA_TIME" || {
-                "$DADA2RS" dada "${DEREPS[0]}" --error-model "$ERR_JSON" \
-                    --band "$BAND" --kmer-size "$k" --kdist-cutoff "$KDIST_CUTOFF" \
-                    --threads "$THREADS" --verbose -o "${DADA_OUTDIR}/sample.dada.json" \
-                    2> "$DADA_TIME"
-            }
+            --threads "$THREADS" --verbose -o "${DADA_OUTDIR}/sample.dada.json"
     fi
     cp "$DADA_TIME" "$DADA_LOG"
     echo "    errors -> $ERR_JSON"
@@ -340,11 +355,18 @@ def parse_time(tf):
     if not os.path.exists(tf): return ("", "")
     wall = rss = ""
     txt = open(tf, errors="replace").read()
-    m = re.search(r"^\s*([\d.]+)\s+real", txt, re.M)
-    if m: wall = m.group(1)
+    m = re.search(r"^\s*([\d.]+)\s+real", txt, re.M)   # BSD: "3.14 real"
+    if m:
+        wall = m.group(1)
     else:
-        m = re.search(r"wall clock.*?(\d+):([\d.]+)", txt)
-        if m: wall = str(int(m.group(1))*60 + float(m.group(2)))
+        # GNU: "Elapsed (wall clock) time (h:mm:ss or m:ss): [h:]mm:ss[.ss]"
+        m = re.search(r"wall clock.*?:\s*([\d:.]+)\s*$", txt, re.M)
+        if m:
+            parts = m.group(1).split(":")
+            secs = 0.0
+            for p in parts:               # accumulate h:m:s or m:s or s
+                secs = secs * 60 + float(p)
+            wall = f"{secs:g}"
     m = re.search(r"(\d+)\s+maximum resident set size", txt)
     if m: rss = str(round(int(m.group(1))/1024))
     else:
