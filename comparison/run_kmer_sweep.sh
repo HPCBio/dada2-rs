@@ -252,8 +252,10 @@ for k in $KLIST; do
     ERR_JSON="${OUTDIR}/errors_k${k}.json"
     LEARN_LOG="${OUTDIR}/learn_k${k}.log"
     DADA_OUTDIR="${OUTDIR}/dada_k${k}"
+    # Single combined file: dada's --verbose stderr (the "ALIGN:" line) AND the
+    # timer report both land here, so Step 2 reads aligns/shrouded and wall/RSS
+    # from the one file. (run_timed sends both to this path.)
     DADA_LOG="${OUTDIR}/dada_k${k}.log"
-    DADA_TIME="${OUTDIR}/dada_k${k}.time"
     mkdir -p "$DADA_OUTDIR"
 
     echo "==> learn-errors (k=$k, ${#LEARN[@]} subsampled input(s), NBASES=${NBASES})"
@@ -265,18 +267,17 @@ for k in $KLIST; do
 
     if [[ $POOLED -eq 1 ]]; then
         echo "==> dada-pooled (k=$k)"
-        run_timed "$DADA_TIME" "$DADA2RS" dada-pooled "${DEREPS[@]}" \
+        run_timed "$DADA_LOG" "$DADA2RS" dada-pooled "${DEREPS[@]}" \
             --error-model "$ERR_JSON" --output-dir "$DADA_OUTDIR" \
             --band "$BAND" --kmer-size "$k" --kdist-cutoff "$KDIST_CUTOFF" \
             --threads "$THREADS" --verbose
     else
         echo "==> dada (k=$k, single sample)"
-        run_timed "$DADA_TIME" "$DADA2RS" dada "${DEREPS[0]}" \
+        run_timed "$DADA_LOG" "$DADA2RS" dada "${DEREPS[0]}" \
             --error-model "$ERR_JSON" \
             --band "$BAND" --kmer-size "$k" --kdist-cutoff "$KDIST_CUTOFF" \
             --threads "$THREADS" --verbose -o "${DADA_OUTDIR}/sample.dada.json"
     fi
-    cp "$DADA_TIME" "$DADA_LOG"
     echo "    errors -> $ERR_JSON"
     echo "    dada   -> $DADA_OUTDIR/"
 done
@@ -378,7 +379,7 @@ asv_sets = {}; rows = []
 for k in klist:
     iters = parse_iters(f"{outdir}/learn_k{k}.log")
     aligns, shrouded = parse_align(f"{outdir}/dada_k{k}.log")
-    wall, rss = parse_time(f"{outdir}/dada_k{k}.time")
+    wall, rss = parse_time(f"{outdir}/dada_k{k}.log")
     asvs = pooled_asvs(k)
     asv_sets[k] = asvs
     pct = f"{100*shrouded/(aligns+shrouded):.1f}" if (aligns+shrouded) else ""
