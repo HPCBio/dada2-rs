@@ -12,20 +12,40 @@
 # every pair is fully aligned); larger k makes it engage. The open question
 # (issue #15) is whether a larger k changes the final ASVs vs. k=5 / k=6 —
 # the hypothesis being that a larger k better isolates highly-similar
-# sequences and may be an acceptable memory/speed tradeoff. This script lets
-# you test that on any dataset.
+# sequences and may be an acceptable memory/speed tradeoff.
+#
+# This version accepts MULTIPLE samples (a directory or a list of files) and
+# denoises them POOLED (R DADA2 pool=TRUE): all per-sample uniques are merged
+# into one table and DADA2 runs once on the combined set. Pooling is the right
+# mode for a large-scale ASV-impact test — it maximizes the unique count fed to
+# the screen and surfaces rare/cross-sample variants, which is exactly where a
+# larger k could change calls.
 #
 # Usage:
-#   bash run_kmer_sweep.sh <input.fastq[.gz] | derep.json> [outdir] [errfun] [band] [k-list]
+#   bash run_kmer_sweep.sh <input> [outdir] [errfun] [band] [k-list]
+#
+#   <input> may be:
+#     - a directory      : all *.fastq / *.fastq.gz (or *.json / *.json.gz)
+#                          inside are used as pooled samples
+#     - a glob/file list  : quote it, e.g. "data/*.fastq.gz"
+#     - a single file     : FASTQ or a derep/sample JSON
 #
 # Examples:
-#   # PacBio HiFi sample, default k list (5 6 8):
-#   bash run_kmer_sweep.sh reads.trim.fastq.gz ./ksweep_out pacbio 32
+#   # All HiFi samples in a directory, pooled, default k list (5 6 8):
+#   bash run_kmer_sweep.sh /path/to/fastq_dir ./ksweep_out pacbio 32
 #
-#   # Illumina, custom k list:
+#   # Explicit file list, custom k list:
+#   bash run_kmer_sweep.sh "data/*.filt.fastq.gz" ./ksweep_out pacbio 32 "5 6 7 8"
+#
+#   # Single Illumina sample:
 #   bash run_kmer_sweep.sh F3D0_R1.fastq.gz ./ksweep_out loess 16 "5 6 7 8"
 #
 # Defaults: outdir=./kmer_sweep_out  errfun=pacbio  band=32  k-list="5 6 8"
+#
+# Environment overrides (held CONSTANT across all k):
+#   MAX_CONSIST=10  KDIST_CUTOFF=0.42  THREADS=1  FILE_GLOB="*.fastq.gz *.fastq *.json *.json.gz"
+# Set THREADS>1 to speed up large runs (wall times then are not directly
+# comparable across machines, but the ASV/shroud results are unaffected).
 #
 # IMPORTANT for PacBio raw reads: reads must already be primer-trimmed AND
 # uniformly oriented before this script. A sequence and its reverse complement
@@ -38,17 +58,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DADA2RS="${SCRIPT_DIR}/../target/release/dada2-rs"
 
-INPUT="${1:?Usage: run_kmer_sweep.sh <input.fastq|derep.json> [outdir] [errfun] [band] [k-list]}"
+INPUT="${1:?Usage: run_kmer_sweep.sh <dir|glob|file> [outdir] [errfun] [band] [k-list]}"
 OUTDIR="${2:-${SCRIPT_DIR}/kmer_sweep_out}"
 ERRFUN="${3:-pacbio}"
 BAND="${4:-32}"
 KLIST="${5:-5 6 8}"
 
-# Tunables (override via environment): held CONSTANT across all k so the only
-# variable is the k-mer screen size.
 MAX_CONSIST="${MAX_CONSIST:-10}"
 KDIST_CUTOFF="${KDIST_CUTOFF:-0.42}"
-THREADS="${THREADS:-1}"   # keep at 1 for clean, comparable wall times
+THREADS="${THREADS:-1}"
+FILE_GLOB="${FILE_GLOB:-*.fastq.gz *.fastq *.json *.json.gz}"
 
 if [[ ! -x "$DADA2RS" ]]; then
     echo "ERROR: binary not found/executable at $DADA2RS" >&2
@@ -57,227 +76,251 @@ if [[ ! -x "$DADA2RS" ]]; then
 fi
 
 mkdir -p "$OUTDIR"
-SAMPLE="$(basename "$INPUT")"
-SAMPLE="${SAMPLE%.gz}"; SAMPLE="${SAMPLE%.fastq}"; SAMPLE="${SAMPLE%.json}"
 
 # ---------------------------------------------------------------------------
-# Step 0: get a derep JSON (skip if input is already one).
+# Step 0: resolve <input> into an array of sample files.
 # ---------------------------------------------------------------------------
-case "$INPUT" in
-    *.json|*.json.gz)
-        DEREP="$INPUT"
-        echo "==> Using existing derep JSON: $DEREP"
-        ;;
-    *)
-        DEREP="${OUTDIR}/${SAMPLE}_derep.json"
-        echo "==> Dereplicating $INPUT"
-        "$DADA2RS" derep "$INPUT" -o "$DEREP"
-        echo "    -> $DEREP"
-        ;;
-esac
+declare -a INPUTS=()
+# Split FILE_GLOB into patterns with globbing OFF, so the pattern strings
+# themselves are not expanded against the cwd (a nullglob footgun).
+read -r -a GLOB_PATS <<< "$FILE_GLOB"
+if [[ -d "$INPUT" ]]; then
+    # Directory: collect by FILE_GLOB. nullglob makes non-matching patterns
+    # expand to nothing instead of to the literal pattern.
+    shopt -s nullglob
+    for pat in "${GLOB_PATS[@]}"; do
+        for f in "$INPUT"/$pat; do
+            INPUTS+=("$f")
+        done
+    done
+    shopt -u nullglob
+elif [[ -f "$INPUT" ]]; then
+    INPUTS+=("$INPUT")
+else
+    # Treat as a glob (already expanded by the caller, or expand here).
+    shopt -s nullglob
+    for f in $INPUT; do INPUTS+=("$f"); done
+    shopt -u nullglob
+fi
+# Sort for deterministic, reproducible ordering across runs.
+if [[ ${#INPUTS[@]} -gt 1 ]]; then
+    IFS=$'\n' INPUTS=($(printf '%s\n' "${INPUTS[@]}" | sort)); unset IFS
+fi
+
+if [[ ${#INPUTS[@]} -eq 0 ]]; then
+    echo "ERROR: no input files found for '$INPUT'" >&2
+    echo "       (directory glob was: $FILE_GLOB)" >&2
+    exit 1
+fi
+
+NSAMPLES=${#INPUTS[@]}
+echo "==> ${NSAMPLES} sample(s):"
+for f in "${INPUTS[@]}"; do echo "      $f"; done
+
+POOLED=0
+[[ $NSAMPLES -gt 1 ]] && POOLED=1
 
 # ---------------------------------------------------------------------------
-# Step 1: per-k learn-errors + dada. Capture iterations, shroud counts, ASVs.
+# Step 0b: ensure every input is a derep/sample JSON. `errors-from-sample`
+# only accepts JSON; FASTQ inputs are dereplicated here (once, reused across
+# all k). The derep JSONs are also what we feed to dada/dada-pooled so the
+# unique set is identical between error-learning and denoising.
 # ---------------------------------------------------------------------------
-# /usr/bin/time -l on macOS prints "<bytes> maximum resident set size"; GNU
-# /usr/bin/time -v prints "Maximum resident set size (kbytes)". We grab peak
-# RSS in a portable-ish way below.
+DEREP_DIR="${OUTDIR}/derep"
+mkdir -p "$DEREP_DIR"
+declare -a DEREPS=()
+for f in "${INPUTS[@]}"; do
+    case "$f" in
+        *.json|*.json.gz)
+            DEREPS+=("$f")
+            ;;
+        *)
+            base="$(basename "$f")"
+            base="${base%.gz}"; base="${base%.fastq}"
+            dj="${DEREP_DIR}/${base}.derep.json"
+            if [[ ! -s "$dj" ]]; then
+                echo "==> derep $f"
+                "$DADA2RS" derep "$f" -o "$dj"
+            fi
+            DEREPS+=("$dj")
+            ;;
+    esac
+done
+
+# ---------------------------------------------------------------------------
+# Step 1: per-k learn-errors (pooled over all samples) + dada / dada-pooled.
+# All samples and parameters are held constant; only --kmer-size changes.
+# ---------------------------------------------------------------------------
 TIME_BIN=/usr/bin/time
-
 SUMMARY_CSV="${OUTDIR}/summary.csv"
-echo "k,learn_iters,dada_aligns,dada_shrouded,shroud_pct,n_asv,wall_s_dada,maxrss_kb_dada" > "$SUMMARY_CSV"
+echo "k,learn_iters,dada_aligns,dada_shrouded,shroud_pct,n_asv_total,wall_s_dada,maxrss_kb_dada" > "$SUMMARY_CSV"
 
 for k in $KLIST; do
     echo ""
     echo "================  k = $k  ================"
-    ERR_JSON="${OUTDIR}/${SAMPLE}_errors_k${k}.json"
-    DADA_JSON="${OUTDIR}/${SAMPLE}_dada_k${k}.json"
-    LEARN_LOG="${OUTDIR}/${SAMPLE}_learn_k${k}.log"
-    DADA_LOG="${OUTDIR}/${SAMPLE}_dada_k${k}.log"
-    DADA_TIME="${OUTDIR}/${SAMPLE}_dada_k${k}.time"
+    ERR_JSON="${OUTDIR}/errors_k${k}.json"
+    LEARN_LOG="${OUTDIR}/learn_k${k}.log"
+    DADA_OUTDIR="${OUTDIR}/dada_k${k}"
+    DADA_LOG="${OUTDIR}/dada_k${k}.log"
+    DADA_TIME="${OUTDIR}/dada_k${k}.time"
+    mkdir -p "$DADA_OUTDIR"
 
-    echo "==> learn-errors (k=$k)"
-    "$DADA2RS" errors-from-sample "$DEREP" \
+    echo "==> learn-errors (k=$k, ${NSAMPLES} sample(s) pooled into the fit)"
+    "$DADA2RS" errors-from-sample "${DEREPS[@]}" \
         --errfun "$ERRFUN" --band "$BAND" \
         --kmer-size "$k" --kdist-cutoff "$KDIST_CUTOFF" \
         --max-consist "$MAX_CONSIST" --threads "$THREADS" \
         --verbose -o "$ERR_JSON" 2> "$LEARN_LOG"
 
-    echo "==> dada (k=$k)"
-    # Time the dada step; tolerate either BSD or GNU /usr/bin/time output.
-    "$TIME_BIN" -l "$DADA2RS" dada "$DEREP" \
-        --error-model "$ERR_JSON" \
-        --band "$BAND" --kmer-size "$k" --kdist-cutoff "$KDIST_CUTOFF" \
-        --threads "$THREADS" --verbose -o "$DADA_JSON" \
-        > /dev/null 2> "$DADA_TIME" || {
-            # Some systems lack `/usr/bin/time -l`; retry without timing.
-            "$DADA2RS" dada "$DEREP" --error-model "$ERR_JSON" \
-                --band "$BAND" --kmer-size "$k" --kdist-cutoff "$KDIST_CUTOFF" \
-                --threads "$THREADS" --verbose -o "$DADA_JSON" 2> "$DADA_TIME"
-        }
-    # The dada --verbose progress (incl. the "ALIGN:" line) goes to stderr,
-    # which /usr/bin/time also writes to; keep a copy for grepping.
+    if [[ $POOLED -eq 1 ]]; then
+        echo "==> dada-pooled (k=$k)"
+        "$TIME_BIN" -l "$DADA2RS" dada-pooled "${DEREPS[@]}" \
+            --error-model "$ERR_JSON" --output-dir "$DADA_OUTDIR" \
+            --band "$BAND" --kmer-size "$k" --kdist-cutoff "$KDIST_CUTOFF" \
+            --threads "$THREADS" --verbose \
+            > /dev/null 2> "$DADA_TIME" || {
+                "$DADA2RS" dada-pooled "${DEREPS[@]}" \
+                    --error-model "$ERR_JSON" --output-dir "$DADA_OUTDIR" \
+                    --band "$BAND" --kmer-size "$k" --kdist-cutoff "$KDIST_CUTOFF" \
+                    --threads "$THREADS" --verbose 2> "$DADA_TIME"
+            }
+    else
+        echo "==> dada (k=$k, single sample)"
+        "$TIME_BIN" -l "$DADA2RS" dada "${DEREPS[0]}" \
+            --error-model "$ERR_JSON" \
+            --band "$BAND" --kmer-size "$k" --kdist-cutoff "$KDIST_CUTOFF" \
+            --threads "$THREADS" --verbose -o "${DADA_OUTDIR}/sample.dada.json" \
+            > /dev/null 2> "$DADA_TIME" || {
+                "$DADA2RS" dada "${DEREPS[0]}" --error-model "$ERR_JSON" \
+                    --band "$BAND" --kmer-size "$k" --kdist-cutoff "$KDIST_CUTOFF" \
+                    --threads "$THREADS" --verbose -o "${DADA_OUTDIR}/sample.dada.json" \
+                    2> "$DADA_TIME"
+            }
+    fi
     cp "$DADA_TIME" "$DADA_LOG"
-
     echo "    errors -> $ERR_JSON"
-    echo "    dada   -> $DADA_JSON"
+    echo "    dada   -> $DADA_OUTDIR/"
 done
 
 # ---------------------------------------------------------------------------
-# Step 2: analyze — fill the CSV and compare ASV sets across k.
-# All parsing is in python for robustness; ASV extraction is schema-tolerant.
+# Step 2: analyze — fill the CSV and compare the POOLED ASV set across k.
+# The ASV set is the UNION of ASV sequences across all per-sample dada outputs
+# (pooled mode writes one JSON per sample, each containing only that sample's
+# ASVs; the union is the full pooled ASV catalogue).
 # ---------------------------------------------------------------------------
-python3 - "$OUTDIR" "$SAMPLE" "$SUMMARY_CSV" "$KLIST" <<'PY'
-import json, os, re, sys
+python3 - "$OUTDIR" "$SUMMARY_CSV" "$KLIST" <<'PY'
+import json, os, re, sys, glob
 
-outdir, sample, csv_path, klist = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4].split()
+outdir, csv_path, klist = sys.argv[1], sys.argv[2], sys.argv[3].split()
 
-def extract_asvs(path):
-    """Return the set of inferred ASV sequences from a dada output JSON.
-    Schema-tolerant: finds the largest list whose elements are dicts carrying
-    a sequence-like string field."""
+def asvs_from_file(path):
+    """Set of ASV sequences from one dada output JSON (schema-tolerant)."""
     try:
         d = json.load(open(path))
-    except Exception as e:
-        return None
-    # Canonical dada output schema: {"asvs": [{"sequence","abundance","reads"}]}
+    except Exception:
+        return set()
     if isinstance(d, dict) and isinstance(d.get("asvs"), list):
-        seqs = [el["sequence"].upper() for el in d["asvs"]
-                if isinstance(el, dict) and isinstance(el.get("sequence"), str)]
-        if seqs:
-            return set(seqs)
-    # Fallback heuristic for other/older schemas.
-    best = None
+        return {el["sequence"].upper() for el in d["asvs"]
+                if isinstance(el, dict) and isinstance(el.get("sequence"), str)}
+    # Fallback: largest list of dicts carrying a sequence-like field.
+    best = set()
     def walk(node):
         nonlocal best
         if isinstance(node, list):
-            seqs = []
+            seqs = set()
             for el in node:
                 if isinstance(el, dict):
                     for key in ("sequence", "seq", "denoised", "asv"):
                         v = el.get(key)
                         if isinstance(v, str) and set(v.upper()) <= set("ACGTN-"):
-                            seqs.append(v.upper())
-                            break
-            if seqs and (best is None or len(seqs) > len(best)):
-                best = seqs
-            for el in node:
-                walk(el)
+                            seqs.add(v.upper()); break
+            if len(seqs) > len(best): best = seqs
+            for el in node: walk(el)
         elif isinstance(node, dict):
-            # top-level "sequence":count maps are also common
-            strkeys = [kk for kk in node
-                       if isinstance(kk, str) and kk
-                       and set(kk.upper()) <= set("ACGTN-") and len(kk) > 20]
-            if len(strkeys) > 1 and (best is None or len(strkeys) > len(best)):
-                best = [s.upper() for s in strkeys]
-            for v in node.values():
-                walk(v)
+            for v in node.values(): walk(v)
     walk(d)
-    return set(best) if best else set()
+    return best
+
+def pooled_asvs(k):
+    """Union of ASVs across every per-sample JSON written for this k."""
+    ddir = f"{outdir}/dada_k{k}"
+    union = set()
+    for path in glob.glob(f"{ddir}/*.json"):
+        union |= asvs_from_file(path)
+    return union
 
 def parse_iters(log):
-    """Count self-consistency rounds. The learn-errors --verbose log emits one
-    line per round like '[learn_errors] iter=N sample=1: K cluster(s)' and a
-    final '[learn_errors] converged after N iteration(s)'. Prefer the explicit
-    'converged after N' count; otherwise fall back to the max iter= seen
-    (de-duped). Also tolerate older 'Selfconsist round N' / 'Iteration N' logs."""
     if not os.path.exists(log): return ""
-    converged = None
-    rounds = set()
+    converged = None; rounds = set()
     for ln in open(log, errors="replace"):
         m = re.search(r"converged after\s+(\d+)\s+iteration", ln)
-        if m:
-            converged = int(m.group(1))
-            continue
+        if m: converged = int(m.group(1)); continue
         m = re.search(r"\biter=(\d+)", ln)
-        if m:
-            rounds.add(int(m.group(1)))
-            continue
+        if m: rounds.add(int(m.group(1))); continue
         m = re.search(r"Selfconsist round\s+(\d+)", ln) or re.search(r"Iteration\s+(\d+)", ln)
-        if m:
-            rounds.add(int(m.group(1)))
-    if converged is not None:
-        return converged
+        if m: rounds.add(int(m.group(1)))
+    if converged is not None: return converged
     return max(rounds) if rounds else 0
 
 def parse_align(log):
-    """Return (aligns, shrouded) from the dada 'ALIGN:' verbose line."""
-    if not os.path.exists(log): return ("", "")
-    a = s = ""
+    """Sum (aligns, shrouded) over all 'ALIGN:' lines (one per sample in a
+    pooled run is possible; sum gives the total screen workload)."""
+    if not os.path.exists(log): return (0, 0)
+    a = s = 0
     for ln in open(log, errors="replace"):
         m = re.search(r"ALIGN:\s*(\d+)\s+aligns,\s*(\d+)\s+shrouded", ln)
-        if m:
-            a, s = m.group(1), m.group(2)
+        if m: a += int(m.group(1)); s += int(m.group(2))
     return (a, s)
 
 def parse_time(tf):
-    """Return (wall_s, maxrss_kb) from BSD or GNU /usr/bin/time output."""
     if not os.path.exists(tf): return ("", "")
     wall = rss = ""
     txt = open(tf, errors="replace").read()
-    # BSD: "        2.45 real ..."  ;  GNU: "Elapsed (wall clock) time ... m:ss"
     m = re.search(r"^\s*([\d.]+)\s+real", txt, re.M)
     if m: wall = m.group(1)
     else:
         m = re.search(r"wall clock.*?(\d+):([\d.]+)", txt)
         if m: wall = str(int(m.group(1))*60 + float(m.group(2)))
-    # BSD: "<bytes> maximum resident set size" ; GNU: "Maximum resident set size (kbytes): N"
     m = re.search(r"(\d+)\s+maximum resident set size", txt)
-    if m: rss = str(round(int(m.group(1))/1024))      # bytes -> kB
+    if m: rss = str(round(int(m.group(1))/1024))
     else:
         m = re.search(r"Maximum resident set size \(kbytes\):\s*(\d+)", txt)
         if m: rss = m.group(1)
     return (wall, rss)
 
-asv_sets = {}
-rows = []
+asv_sets = {}; rows = []
 for k in klist:
-    learn_log = f"{outdir}/{sample}_learn_k{k}.log"
-    dada_log  = f"{outdir}/{sample}_dada_k{k}.log"
-    dada_time = f"{outdir}/{sample}_dada_k{k}.time"
-    dada_json = f"{outdir}/{sample}_dada_k{k}.json"
-    iters = parse_iters(learn_log)
-    aligns, shrouded = parse_align(dada_log)
-    wall, rss = parse_time(dada_time)
-    asvs = extract_asvs(dada_json)
+    iters = parse_iters(f"{outdir}/learn_k{k}.log")
+    aligns, shrouded = parse_align(f"{outdir}/dada_k{k}.log")
+    wall, rss = parse_time(f"{outdir}/dada_k{k}.time")
+    asvs = pooled_asvs(k)
     asv_sets[k] = asvs
-    n_asv = len(asvs) if asvs is not None else ""
-    pct = ""
-    try:
-        tot = int(aligns) + int(shrouded)
-        if tot: pct = f"{100*int(shrouded)/tot:.1f}"
-    except ValueError:
-        pass
-    rows.append((k, iters, aligns, shrouded, pct, n_asv, wall, rss))
+    pct = f"{100*shrouded/(aligns+shrouded):.1f}" if (aligns+shrouded) else ""
+    rows.append((k, iters, aligns, shrouded, pct, len(asvs), wall, rss))
 
 with open(csv_path, "w") as fh:
-    fh.write("k,learn_iters,dada_aligns,dada_shrouded,shroud_pct,n_asv,wall_s_dada,maxrss_kb_dada\n")
+    fh.write("k,learn_iters,dada_aligns,dada_shrouded,shroud_pct,n_asv_total,wall_s_dada,maxrss_kb_dada\n")
     for r in rows:
         fh.write(",".join(str(x) for x in r) + "\n")
 
-# Console summary
 print("\n================  SUMMARY  ================")
-hdr = f"{'k':>3} {'iters':>5} {'aligns':>9} {'shroud':>9} {'shroud%':>7} {'#ASV':>6} {'wall_s':>7} {'RSS_MB':>7}"
+hdr = f"{'k':>3} {'iters':>5} {'aligns':>10} {'shroud':>10} {'shroud%':>7} {'#ASV':>6} {'wall_s':>8} {'RSS_MB':>7}"
 print(hdr); print("-"*len(hdr))
 for k, iters, aligns, shrouded, pct, n_asv, wall, rss in rows:
     rss_mb = f"{int(rss)/1024:.0f}" if rss else ""
-    print(f"{k:>3} {iters:>5} {aligns:>9} {shrouded:>9} {pct:>7} {n_asv:>6} {wall:>7} {rss_mb:>7}")
+    print(f"{k:>3} {iters:>5} {aligns:>10} {shrouded:>10} {pct:>7} {n_asv:>6} {wall:>8} {rss_mb:>7}")
 
-# ASV set comparison vs the smallest k in the list (usually k=5, the baseline)
-ks = list(klist)
-base = ks[0]
+ks = list(klist); base = ks[0]
 b = asv_sets.get(base) or set()
-print(f"\nASV set comparison (baseline k={base}, {len(b)} ASVs):")
+print(f"\nPooled ASV-set comparison (baseline k={base}, {len(b)} ASVs):")
 for k in ks[1:]:
     s = asv_sets.get(k) or set()
-    only_base = len(b - s)
-    only_k    = len(s - b)
-    shared    = len(b & s)
+    only_base = len(b - s); only_k = len(s - b); shared = len(b & s)
     status = "IDENTICAL" if (only_base == 0 and only_k == 0) else "DIFFERS"
     print(f"  k={k}: shared={shared}  only_in_k{base}={only_base}  only_in_k{k}={only_k}   [{status}]")
 
 print(f"\nWrote {csv_path}")
-print("Per-k outputs: errors_k*.json, dada_k*.json, *_learn_k*.log, *_dada_k*.log")
+print("Per-k outputs: errors_k*.json, dada_k*/ (one JSON per sample), learn_k*.log, dada_k*.log")
 PY
 
 echo ""
