@@ -260,16 +260,48 @@ vs k=5. Aligns/shroud/ASV-counts reproduce the table above; new columns:
 - **R2/k5 hitting max-consist 10** is error-model oscillation, not slow
   convergence or a k effect (see the `*` note above).
 
-### Open items
+### Churn mechanism — DIAGNOSED (2026-06-02, closes open item #1)
 
-1. **Abundance-stratify the churned ASVs** (`only_k5` and `only_kN` sets): are
-   they singletons/low-count noise (ignorable) or do any carry real abundance
-   (concerning)? Decides real-variant-vs-noise. Needs per-ASV abundance from the
-   `dada_k*/` JSONs.
-2. **Does the per-orientation churn survive merging?** The 2-sample k5/k6 merge
+A controlled k=5→k=7 comparison on the 20-sample `data/illumina/full-pooling`
+run (dada-pooled, error model relearned at k=7, all other params identical;
+outputs under `/tmp/churn_k7/`) traced the churned ASVs back to their derep
+uniques via the inverted dada `map`. Result:
+
+| Orient | k5 ASVs | k7 ASVs | shared | only_k5 | only_k7 |
+|--------|---------|---------|--------|---------|---------|
+| R1 | 517 | 514 | 511 | 6 | 3 |
+| R2 | 420 | 426 | 419 | 1 | 7 |
+
+- **Mechanism: k-mer-screen-driven cluster fragmentation, not convergence.**
+  Raising k tightens the pre-alignment screen, so near-identical reads that k=5
+  shrouded into a larger cluster are no longer pre-clustered and are born as
+  their own `Abundance` ASVs. Two traced R2 examples are **exactly Hamming-1**
+  from their k5 parent: an ab=215 ASV split from a 488-read k5 parent, and ab=155
+  from a 278-read parent. `only_k5` is the mirror image (uniques re-merge/re-split
+  at k7), **not** reads dropping below `omega_c`.
+- **Benign — never touches dominant biology.** Churned ASVs are low-to-moderate
+  abundance (max 215 reads; **no singletons**) sitting alongside shared ASVs of
+  700–1150+ reads. ~1–2 % set churn.
+- **Convergence ruled out.** R1's error model converged in 5 iterations at *both*
+  k5 and k7 yet R1 still churned — so the screen, not the error-model fit, drives
+  it. (R2 took 7 iters at k7 vs 5 at k5, but the churn doesn't track that.)
+
+Verdict: the ~1–2 % churn is real but cosmetic — k-mer-screen fragmentation of
+rare variants, not movement of abundant biology. This is consistent on both
+platforms (PacBio's +9 and Illumina's churn are the same phenomenon).
+
+### Open items (remaining)
+
+1. **Does the per-orientation churn survive merging?** The 2-sample k5/k6 merge
    test came out IDENTICAL, but that was tiny and only k5/k6. With this larger
    churn (esp. R2 k7/k8) the merge-level question is live — run the documented
-   merge across the full set and diff merged ASVs across k.
+   merge across the full set and diff merged ASVs across k. (The fragmentation
+   diagnosis suggests it likely collapses at merge, since the fragments are
+   Hamming-1 neighbors that overlap-merge to the same or adjacent amplicons — but
+   unverified.)
+2. **PacBio set-diff + abundance stratification** — PacBio only had a count check
+   (+9); apply the same trace to confirm its churn is the same benign
+   fragmentation.
 
 ### Conclusion — REVISED (still: k=5 default, now better justified for Illumina)
 
