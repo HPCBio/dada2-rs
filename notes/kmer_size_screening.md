@@ -1,9 +1,18 @@
-# K-mer size: PacBio HiFi screen behavior + memory (issue #15)
+# K-mer size: pre-alignment screen behavior, memory, and ASV impact (issue #15)
 
-Follow-up to `notes/benchmark_kmer_size.md` (Illumina-only). Resolves the two
-open questions in issue #15 for long reads: (1) does a larger `--kmer-size`
-mis-handle the pre-alignment screen on ~1.4 kb PacBio HiFi reads, and (2) what
-is the memory cost of large k.
+Follow-up to `notes/benchmark_kmer_size.md` (Illumina-only). Covers the
+`--kmer-size` pre-alignment screen across **both platforms** — short Illumina
+MiSeq reads and long PacBio HiFi reads — and the full downstream cascade
+(per-orientation ASVs → merged amplicons → chimera-filtered final table). Started
+from two open questions in issue #15 for long reads — (1) does a larger
+`--kmer-size` mis-handle the screen on ~1.4 kb PacBio HiFi reads, and (2) what is
+the memory cost of large k — and grew to cover ASV-set churn, its mechanism, and
+how far it propagates to the final feature table on each platform.
+
+> This file began PacBio-focused (hence early sections lead with HiFi); later
+> sections add the full-scale Illumina sweep, the churn diagnosis, merge survival,
+> and chimera removal. Renamed from `kmer_size_pacbio_memory.md` once it covered
+> both platforms.
 
 - Date: 2026-05-31
 - Binary: `target/release/dada2-rs` @ 36e0743
