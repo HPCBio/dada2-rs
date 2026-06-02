@@ -215,16 +215,19 @@ fi
 # Step 1: per-k learn-errors (pooled over all samples) + dada / dada-pooled.
 # All samples and parameters are held constant; only --kmer-size changes.
 # ---------------------------------------------------------------------------
-# Wall-time + peak-RSS capture.
+# Wall-time + peak-RSS capture. Three tiers, picked once at startup:
 #
-# Wall time is ALWAYS captured via the bash `time` builtin (SECONDS), which
-# needs no external binary — many clusters ship only the bash `time` keyword
-# and have no /usr/bin/time at all.
-#
-# Peak RSS additionally needs an external timer: GNU coreutils `time -v`
-# (Linux) or BSD `time -l` (macOS). We probe for one; if absent, RSS stays
-# blank (a WARNING is printed) but wall time is unaffected. The Step-2 parser
-# understands both timer formats and the "WALL_S=" line emitted below.
+#   Wall time  — ALWAYS captured via the bash clock (date +%s.%N / SECONDS); no
+#                external binary needed (many clusters have only the bash `time`
+#                keyword and no /usr/bin/time).
+#   Peak RSS   — in priority order:
+#                1. External timer: GNU `time -v` (its own pkg, NOT coreutils) or
+#                   BSD `time -l` (macOS). Most accurate when present.
+#                2. Linux /proc/<pid>/status VmHWM polling — no external binary,
+#                   works on any Linux. VmHWM is the kernel's monotonic peak-RSS
+#                   high-water mark, so polling and keeping the max catches it.
+#                3. None (e.g. macOS without an external timer): RSS stays blank.
+# The Step-2 parser understands all of these plus the WALL_S= line below.
 EXT_TIME_BIN=""
 EXT_TIME_FLAG=""
 for cand in /usr/bin/time /opt/homebrew/bin/gtime /usr/local/bin/gtime "$(command -v gtime 2>/dev/null)"; do
@@ -232,9 +235,17 @@ for cand in /usr/bin/time /opt/homebrew/bin/gtime /usr/local/bin/gtime "$(comman
     if "$cand" -v true >/dev/null 2>&1; then EXT_TIME_BIN="$cand"; EXT_TIME_FLAG="-v"; break; fi
     if "$cand" -l true >/dev/null 2>&1; then EXT_TIME_BIN="$cand"; EXT_TIME_FLAG="-l"; break; fi
 done
-if [[ -z "$EXT_TIME_BIN" ]]; then
-    echo "NOTE: no external timer (/usr/bin/time -v/-l or gtime) found;" >&2
-    echo "      wall_s will still be captured, but maxrss_kb will be blank." >&2
+# /proc VmHWM availability (Linux). Used only when no external timer was found.
+HAVE_PROC_RSS=0
+if [[ -z "$EXT_TIME_BIN" && -r /proc/self/status ]] && grep -q '^VmHWM:' /proc/self/status 2>/dev/null; then
+    HAVE_PROC_RSS=1
+fi
+if [[ -n "$EXT_TIME_BIN" ]]; then
+    : # external timer gives RSS
+elif [[ $HAVE_PROC_RSS -eq 1 ]]; then
+    echo "NOTE: no external timer; using /proc VmHWM polling for peak RSS." >&2
+else
+    echo "NOTE: no external timer and no /proc VmHWM; wall_s captured, maxrss_kb blank." >&2
 fi
 
 # High-resolution-ish wall clock: GNU `date +%s.%N` where available, else the
@@ -247,18 +258,28 @@ _now() {
 }
 
 # Run "$@", capturing the command's stderr AND a wall-time line into $1.
-# If an external timer exists, its report (incl. peak RSS) is appended too.
+# An external timer's report (incl. peak RSS) is appended when available;
+# otherwise on Linux a PROC_MAXRSS_KB= line is appended via VmHWM polling.
 # Usage: run_timed <logfile> <cmd...>
 run_timed() {
     local tf="$1"; shift
     local start end rc
     start=$(_now)
     if [[ -n "$EXT_TIME_BIN" ]]; then
-        "$EXT_TIME_BIN" "$EXT_TIME_FLAG" "$@" >/dev/null 2>"$tf"
+        rc=0; "$EXT_TIME_BIN" "$EXT_TIME_FLAG" "$@" >/dev/null 2>"$tf" || rc=$?
+    elif [[ $HAVE_PROC_RSS -eq 1 ]]; then
+        "$@" >/dev/null 2>"$tf" &
+        local pid=$! peak=0 cur
+        while kill -0 "$pid" 2>/dev/null; do
+            cur=$(awk '/^VmHWM:/{print $2}' "/proc/$pid/status" 2>/dev/null || true)
+            [[ -n "$cur" && "$cur" -gt "$peak" ]] && peak=$cur
+            sleep 0.2
+        done
+        rc=0; wait "$pid" || rc=$?
+        echo "PROC_MAXRSS_KB=$peak" >> "$tf"
     else
-        "$@" >/dev/null 2>"$tf"
+        rc=0; "$@" >/dev/null 2>"$tf" || rc=$?
     fi
-    rc=$?
     end=$(_now)
     # Append a parser-friendly wall-time line. awk handles float subtraction
     # portably (bash can't do float arithmetic).
@@ -397,12 +418,19 @@ def parse_time(tf):
                 for p in m.group(1).split(":"):   # h:m:s or m:s or s
                     secs = secs * 60 + float(p)
                 wall = f"{secs:g}"
-    # Peak RSS: external timer only (no portable shell equivalent).
+    # Peak RSS (kB), in priority order: BSD time (bytes), GNU time (kB), or the
+    # Linux /proc VmHWM polling line appended by run_timed (kB).
     m = re.search(r"(\d+)\s+maximum resident set size", txt)   # BSD: bytes
-    if m: rss = str(round(int(m.group(1))/1024))
+    if m:
+        rss = str(round(int(m.group(1))/1024))
     else:
         m = re.search(r"Maximum resident set size \(kbytes\):\s*(\d+)", txt)  # GNU: kB
-        if m: rss = m.group(1)
+        if m:
+            rss = m.group(1)
+        else:
+            m = re.search(r"^PROC_MAXRSS_KB=(\d+)", txt, re.M)               # /proc VmHWM: kB
+            if m and int(m.group(1)) > 0:
+                rss = m.group(1)
     return (wall, rss)
 
 asv_sets = {}; rows = []
