@@ -279,9 +279,11 @@ uniques via the inverted dada `map`. Result:
   from their k5 parent: an ab=215 ASV split from a 488-read k5 parent, and ab=155
   from a 278-read parent. `only_k5` is the mirror image (uniques re-merge/re-split
   at k7), **not** reads dropping below `omega_c`.
-- **Benign — never touches dominant biology.** Churned ASVs are low-to-moderate
-  abundance (max 215 reads; **no singletons**) sitting alongside shared ASVs of
-  700–1150+ reads. ~1–2 % set churn.
+- **Benign — does not touch *dominant* biology.** Churned ASVs are low-to-moderate
+  abundance (max 215 reads) sitting alongside shared ASVs of 700–1150+ reads.
+  ~1–2 % set churn. (Note: "low-to-moderate", not "rare only" — the merge-level
+  trace below found surviving churn up to ~107 reads from parents of 61–161 reads,
+  so it reaches *moderate* abundance, not just the noise floor.)
 - **Convergence ruled out.** R1's error model converged in 5 iterations at *both*
   k5 and k7 yet R1 still churned — so the screen, not the error-model fit, drives
   it. (R2 took 7 iters at k7 vs 5 at k5, but the churn doesn't track that.)
@@ -290,18 +292,44 @@ Verdict: the ~1–2 % churn is real but cosmetic — k-mer-screen fragmentation 
 rare variants, not movement of abundant biology. This is consistent on both
 platforms (PacBio's +9 and Illumina's churn are the same phenomenon).
 
+### Merge survival — ANSWERED (2026-06-02, 362-sample full-pooling sweep)
+
+`data/illumina/illumina_sweep` (362 samples, merged_pairs.k{5,6,7,8}.json +
+per-k R1/R2 dada). Merged-amplicon ASV-set diff vs k5, alongside the
+per-orientation churn for the *same* run:
+
+| k | R1 churn | R2 churn | R1+R2 | merged churn | survival |
+|---|----------|----------|-------|--------------|----------|
+| 6 | 39 | 45 | 84  | 41 | ~49 % |
+| 7 | 49 | 70 | 119 | 50 | ~42 % |
+| 8 | 62 | 83 | 145 | 67 | ~46 % |
+
+Merged sets: k5=2836 ASVs; k8=2833 (only_k5=35, only_k8=32). Merge rate flat
+across k (0.936 → 0.932).
+
+- **Merging roughly HALVES the churn but does NOT erase it** (~45–50 % survives
+  into final amplicons, monotone in k). The earlier 2-sample k5/k6 "IDENTICAL"
+  result was misleadingly clean — too small to see the tail.
+- **Surviving churn is real per-orientation fragmentation propagating into the
+  consensus**, not a merge artifact: every traced only_k8 amplicon's fwd/rev
+  parents are `birth_type=Abundance` and trace to a low-Hamming k5 dada parent.
+- **Hypothesis that did NOT hold:** I expected survival to be explained by the
+  fragmenting base landing *inside the overlap region*. Trace **refuted** this —
+  both surviving and collapsed fragments have diffs inside and outside the
+  overlap. At ~250 bp amplicons the overlap covers ~62 % of the read, so the
+  window heuristic can't discriminate. Whether a fragment collapses vs survives
+  depends on finer consensus details the JSONs don't cleanly expose; left as a
+  honest "not pinned down."
+- **Abundance:** only_k8 merged churn is 11/32 below 10 reads, median 13, **max
+  107**; two cases derive from genuinely abundant k5 parents (61, 161 reads). So
+  it is low-abundance-*dominated* but reaches moderate abundance — not pure
+  noise-floor.
+
 ### Open items (remaining)
 
-1. **Does the per-orientation churn survive merging?** The 2-sample k5/k6 merge
-   test came out IDENTICAL, but that was tiny and only k5/k6. With this larger
-   churn (esp. R2 k7/k8) the merge-level question is live — run the documented
-   merge across the full set and diff merged ASVs across k. (The fragmentation
-   diagnosis suggests it likely collapses at merge, since the fragments are
-   Hamming-1 neighbors that overlap-merge to the same or adjacent amplicons — but
-   unverified.)
-2. **PacBio set-diff + abundance stratification** — PacBio only had a count check
+1. **PacBio set-diff + abundance stratification** — PacBio only had a count check
    (+9); apply the same trace to confirm its churn is the same benign
-   fragmentation.
+   fragmentation. (Data available: PacBio k-mer sweeps.)
 
 ### Conclusion — REVISED (still: k=5 default, now better justified for Illumina)
 
