@@ -325,22 +325,58 @@ across k (0.936 → 0.932).
   it is low-abundance-*dominated* but reaches moderate abundance — not pure
   noise-floor.
 
+### Chimera removal — the churn collapses at the FINAL table (2026-06-02)
+
+The merged churn is measured one step too early: `remove-bimera-denovo`
+(`seqtab.nonchim.k{5,6,7,8}.json`, same 362-sample run) is the last filter, and
+the surviving churn is exactly what it targets. Chimera removal cuts ~75 % of
+merged amplicons (2836 → 725) at every k, and **removes 60 of the 67 churned
+amplicons (90 %) as chimeric** (only_k5: 32/35 removed; only_k8: 28/32 removed).
+
+Post-chimera across-k diff (vs k5 = 725 ASVs):
+
+| k | nonchim ASVs | shared | only_k5 | only_kN | churn |
+|---|--------------|--------|---------|---------|-------|
+| 6 | 728 | 721 | 4 | 7  | 11 |
+| 7 | 730 | 722 | 3 | 8  | 11 |
+| 8 | 733 | 722 | 3 | 11 | 14 |
+
+**The final feature tables are ~98 % identical across k=5→k8** (residual ≈12 of
+733). The churn cascade washes out at each downstream step:
+
+| stage (k8 vs k5) | churn |
+|------------------|-------|
+| per-orientation (R1+R2) | 145 |
+| after merging | 67 (~46 % survives) |
+| **after chimera removal** | **14 (~10 % of merged; the table that goes to taxonomy)** |
+
+This is the decisive endpoint: k-mer screen size has **essentially no effect on
+the final Illumina feature table**. (Minor caveat: bimera detection is
+abundance/co-occurrence-driven *within each table*, so the ~12 residual mixes
+"churn removed" with "slightly different ASVs flagged chimeric per k" — but at
+12/733 it is noise.)
+
 ### Open items (remaining)
 
 1. **PacBio set-diff + abundance stratification** — PacBio only had a count check
    (+9); apply the same trace to confirm its churn is the same benign
    fragmentation. (Data available: PacBio k-mer sweeps.)
 
-### Conclusion — REVISED (still: k=5 default, now better justified for Illumina)
+### Conclusion — REVISED (k=5 default; k has ~no effect on the final Illumina table)
 
-For **Illumina**, raising k above 5 now has **three** documented costs and no
-benefit: (a) ASV-set churn that fragments rare variants (~0.5–1.4 %, growing with
-k), (b) steep memory (16 GB at k7, ~55 GB at k8 on a 61-sample pool), and (c) the
-screen already works fine at k5 (43 % shroud). **Keep k=5 for short reads** — the
-case is now *stronger*, not "no downside" as previously written. The k=6/k=7
-speed advantage is real but does not justify the churn + memory on short reads
-where k=5 is already fast enough. (This is the opposite tradeoff from PacBio,
-where k=5 is a no-op and raising k is necessary — see the scale section below.)
+The decisive finding: **k-mer screen size has essentially no effect on the final,
+chimera-filtered Illumina feature table** (~98 % identical k5→k8; ~12 of 733
+residual). The intermediate ASV churn (145 per-orientation → 67 merged → ~12
+post-chimera) cascades away at each downstream step, and chimera removal absorbs
+90 % of what survived merging.
+
+So for **Illumina** there is no accuracy reason to raise k, and three costs if you
+do: (a) intermediate ASV-set churn (mostly benign fragmentation, washed out by the
+final table anyway), (b) steep memory (16 GB at k7, ~55 GB at k8 on the 61-sample
+pool), (c) the screen already works fine at k5 (43 % shroud). **Keep k=5 for short
+reads.** The k=6/k=7 speed edge does not justify the memory on short reads where
+k=5 is already fast enough. (Opposite tradeoff from PacBio, where k=5 is a no-op
+and raising k is necessary for speed — see the scale section.)
 
 ---
 
