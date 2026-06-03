@@ -23,7 +23,9 @@ fn manifest_dir() -> PathBuf {
 }
 
 fn fixture(name: &str) -> PathBuf {
-    manifest_dir().join("data/dada2").join(name)
+    // Fixtures live under tests/ (tracked); the repo's /data dir is gitignored
+    // and so is absent on CI.
+    manifest_dir().join("tests/fixtures").join(name)
 }
 
 /// Per-test scratch dir under the target tmp area; cleaned and recreated.
