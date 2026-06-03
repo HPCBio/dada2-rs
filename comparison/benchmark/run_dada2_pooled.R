@@ -54,7 +54,12 @@ if (is.null(platform) || is.null(input) || is.null(outdir))
 threads <- getn("threads", 1)
 nbases  <- getn("nbases", 1e8)
 multithread <- if (threads > 1) threads else FALSE
-pool_flag <- !identical(getv("pool", "true"), "false")   # TRUE pooled, FALSE per-sample
+# pool: "true" -> TRUE (pooled), "false" -> FALSE (per-sample), "pseudo" -> "pseudo"
+pool_in   <- getv("pool", "true")
+pool_flag <- if (pool_in == "pseudo") "pseudo" else !identical(pool_in, "false")
+pseudo_prev  <- getn("pseudo_prevalence", 2)
+pseudo_abund <- getn("pseudo_min_abundance", NA)
+pseudo_abund <- if (is.na(pseudo_abund)) Inf else pseudo_abund   # R PSEUDO_ABUNDANCE default Inf
 
 filt_dir <- file.path(outdir, "filtered_R")
 dir.create(filt_dir, showWarnings = FALSE, recursive = TRUE)
@@ -63,7 +68,9 @@ dir.create(filt_dir, showWarnings = FALSE, recursive = TRUE)
 # Runs expr, prints BENCH_STEP line, returns expr's value.
 timed <- function(name, expr) {
   t <- system.time(val <- force(expr))
-  cat(sprintf("BENCH_STEP\t%s\t%.2f\n", name, t[["elapsed"]]))
+  # Leading \n: dada(pool="pseudo") prints progress without a trailing newline,
+  # which would otherwise prepend onto this line and defeat the ^-anchored parser.
+  cat(sprintf("\nBENCH_STEP\t%s\t%.2f\n", name, t[["elapsed"]]))
   flush(stdout())
   val
 }
@@ -97,8 +104,12 @@ if (platform == "illumina") {
   errF <- timed("learn_fwd", learnErrors(filtFs, nbases = nbases, multithread = multithread))
   errR <- timed("learn_rev", learnErrors(filtRs, nbases = nbases, multithread = multithread))
 
-  ddF <- timed("dada_fwd", dada(filtFs, err = errF, pool = pool_flag, multithread = multithread))
-  ddR <- timed("dada_rev", dada(filtRs, err = errR, pool = pool_flag, multithread = multithread))
+  ddF <- timed("dada_fwd", dada(filtFs, err = errF, pool = pool_flag,
+                                PSEUDO_PREVALENCE = pseudo_prev, PSEUDO_ABUNDANCE = pseudo_abund,
+                                multithread = multithread))
+  ddR <- timed("dada_rev", dada(filtRs, err = errR, pool = pool_flag,
+                                PSEUDO_PREVALENCE = pseudo_prev, PSEUDO_ABUNDANCE = pseudo_abund,
+                                multithread = multithread))
 
   mergers <- timed("merge", mergePairs(ddF, filtFs, ddR, filtRs))
   seqtab  <- timed("make_table", makeSequenceTable(mergers))
@@ -141,7 +152,9 @@ if (platform == "illumina") {
                                     BAND_SIZE = band, multithread = multithread))
 
   dd <- timed("dada", dada(filts, err = err, pool = pool_flag, BAND_SIZE = band,
-                           HOMOPOLYMER_GAP_PENALTY = homo, multithread = multithread))
+                           HOMOPOLYMER_GAP_PENALTY = homo,
+                           PSEUDO_PREVALENCE = pseudo_prev, PSEUDO_ABUNDANCE = pseudo_abund,
+                           multithread = multithread))
 
   seqtab <- timed("make_table", makeSequenceTable(dd))
 
@@ -157,4 +170,4 @@ seqtab.nochim <- timed("remove_bimera",
 cat(sprintf("R pipeline done: %d samples x %d ASVs (%d after chimera removal)\n",
             nrow(seqtab.nochim), ncol(seqtab), ncol(seqtab.nochim)))
 saveRDS(seqtab.nochim, file.path(outdir, "seqtab_nochim_R.rds"))
-cat(sprintf("BENCH_RESULT\tn_asv\t%d\n", ncol(seqtab.nochim)))
+cat(sprintf("\nBENCH_RESULT\tn_asv\t%d\n", ncol(seqtab.nochim)))

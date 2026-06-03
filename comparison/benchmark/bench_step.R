@@ -51,13 +51,20 @@ dir.create(statedir, showWarnings = FALSE, recursive = TRUE)
 threads     <- getn("threads", 1)
 nbases      <- getn("nbases", 1e8)
 multithread <- if (threads > 1) threads else FALSE
-pool_flag   <- !identical(getv("pool", "true"), "false")   # TRUE pooled, FALSE per-sample
+# pool: "true" -> TRUE (pooled), "false" -> FALSE (per-sample), "pseudo" -> "pseudo"
+pool_in     <- getv("pool", "true")
+pool_flag   <- if (pool_in == "pseudo") "pseudo" else !identical(pool_in, "false")
+pseudo_prev <- getn("pseudo_prevalence", 2)
+pseudo_abund <- getn("pseudo_min_abundance", NA)
+pseudo_abund <- if (is.na(pseudo_abund)) Inf else pseudo_abund   # R PSEUDO_ABUNDANCE default Inf
 
 sp <- function(name) file.path(statedir, name)   # state path helper
 
 timed <- function(name, expr) {
   t <- system.time(val <- force(expr))
-  cat(sprintf("BENCH_STEP\t%s\t%.2f\n", name, t[["elapsed"]]))
+  # Leading \n: dada(pool="pseudo") prints progress without a trailing newline,
+  # which would otherwise prepend onto this line and defeat the ^-anchored parser.
+  cat(sprintf("\nBENCH_STEP\t%s\t%.2f\n", name, t[["elapsed"]]))
   flush(stdout())
   val
 }
@@ -101,12 +108,16 @@ if (platform == "illumina") {
 
   } else if (step == "dada_fwd") {
     m <- readRDS(sp("manifest.rds")); errF <- readRDS(sp("errF.rds"))
-    ddF <- timed("dada_fwd", dada(m$filtFs, err = errF, pool = pool_flag, multithread = multithread))
+    ddF <- timed("dada_fwd", dada(m$filtFs, err = errF, pool = pool_flag,
+                                  PSEUDO_PREVALENCE = pseudo_prev, PSEUDO_ABUNDANCE = pseudo_abund,
+                                  multithread = multithread))
     saveRDS(ddF, sp("ddF.rds"))
 
   } else if (step == "dada_rev") {
     m <- readRDS(sp("manifest.rds")); errR <- readRDS(sp("errR.rds"))
-    ddR <- timed("dada_rev", dada(m$filtRs, err = errR, pool = pool_flag, multithread = multithread))
+    ddR <- timed("dada_rev", dada(m$filtRs, err = errR, pool = pool_flag,
+                                  PSEUDO_PREVALENCE = pseudo_prev, PSEUDO_ABUNDANCE = pseudo_abund,
+                                  multithread = multithread))
     saveRDS(ddR, sp("ddR.rds"))
 
   } else if (step == "merge") {
@@ -124,7 +135,7 @@ if (platform == "illumina") {
     nochim <- timed("remove_bimera", removeBimeraDenovo(seqtab, method = "consensus",
                                                         multithread = multithread, verbose = TRUE))
     saveRDS(nochim, sp("seqtab_nochim.rds"))
-    cat(sprintf("BENCH_RESULT\tn_asv\t%d\n", ncol(nochim)))
+    cat(sprintf("\nBENCH_RESULT\tn_asv\t%d\n", ncol(nochim)))
 
   } else stop(sprintf("unknown illumina step: %s", step))
 
@@ -175,7 +186,9 @@ if (platform == "illumina") {
   } else if (step == "dada") {
     m <- readRDS(sp("manifest.rds")); err <- readRDS(sp("err.rds"))
     dd <- timed("dada", dada(m$filts, err = err, pool = pool_flag, BAND_SIZE = band,
-                             HOMOPOLYMER_GAP_PENALTY = homo, multithread = multithread))
+                             HOMOPOLYMER_GAP_PENALTY = homo,
+                             PSEUDO_PREVALENCE = pseudo_prev, PSEUDO_ABUNDANCE = pseudo_abund,
+                             multithread = multithread))
     saveRDS(dd, sp("dd.rds"))
 
   } else if (step == "make_table") {
@@ -188,7 +201,7 @@ if (platform == "illumina") {
     nochim <- timed("remove_bimera", removeBimeraDenovo(seqtab, method = "consensus",
                                                         multithread = multithread, verbose = TRUE))
     saveRDS(nochim, sp("seqtab_nochim.rds"))
-    cat(sprintf("BENCH_RESULT\tn_asv\t%d\n", ncol(nochim)))
+    cat(sprintf("\nBENCH_RESULT\tn_asv\t%d\n", ncol(nochim)))
 
   } else stop(sprintf("unknown pacbio step: %s", step))
 

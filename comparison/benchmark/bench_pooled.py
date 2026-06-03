@@ -10,6 +10,12 @@ Two denoising modes via --pool:
   false          : PER-SAMPLE — R `pool=FALSE` (multithread across samples) /
                    dada2-rs per-sample `dada` fanned across workers. The regime
                    where independent small inferences favor dada2-rs most.
+  pseudo         : PSEUDO-POOLING — R `dada(pool="pseudo")` vs dada2-rs
+                   `dada-pseudo` (one call each). dada-pseudo runs samples
+                   serially while R parallelizes across them, so pseudo
+                   wall-time favors R at high thread counts; dada2-rs's edge
+                   here is per-sample memory. Thresholds: --pseudo-prevalence
+                   / --pseudo-min-abundance (R PSEUDO_PREVALENCE/ABUNDANCE).
 
 Two platforms:
   illumina : paired-end. filter -> learn(F,R) -> dada-pooled(F,R) ->
@@ -141,6 +147,14 @@ def rust_dada_step(args, bin_, step, filts, names, errmodel, ddir, outdir, resul
         run_step(step, [bin_, "dada-pooled", *map(str, filts),
                  "--error-model", errmodel, "--output-dir", ddir, *extra,
                  "--threads", str(args.threads)], outdir / f"{step}.log", results)
+    elif args.pool == "pseudo":
+        cmd = [bin_, "dada-pseudo", *map(str, filts),
+               "--error-model", errmodel, "--output-dir", ddir, *extra,
+               "--pseudo-prevalence", str(args.pseudo_prevalence),
+               "--threads", str(args.threads)]
+        if args.pseudo_min_abundance is not None:
+            cmd += ["--pseudo-min-abundance", str(args.pseudo_min_abundance)]
+        run_step(step, cmd, outdir / f"{step}.log", results)
     else:
         jobs = []
         for fp, name in zip(filts, names):
@@ -268,7 +282,9 @@ def r_common_args(args, statedir):
     a = [f"platform={args.platform}", f"statedir={statedir}",
          f"threads={args.threads}", f"nbases={args.nbases}", f"input={args.input}",
          f"max_ee={mee}", f"trunc_q={args.trunc_q}", f"max_n={args.max_n}",
-         f"pool={args.pool}"]
+         f"pool={args.pool}", f"pseudo_prevalence={args.pseudo_prevalence}"]
+    if args.pseudo_min_abundance is not None:
+        a.append(f"pseudo_min_abundance={args.pseudo_min_abundance}")
     if args.platform == "illumina":
         a += [f"fwd_pattern={args.fwd_pattern}", f"rev_pattern={args.rev_pattern}",
               f"trunc_len={args.trunc_len}"]
@@ -293,7 +309,7 @@ def run_r_split(args, outdir, results):
         if rc != 0:
             break
     text = log.read_text(errors="replace")
-    m = re.search(r"^BENCH_RESULT\tn_asv\t(\d+)", text, re.M)
+    m = re.search(r"BENCH_RESULT\tn_asv\t(\d+)", text, re.M)
     if m:
         n_asv = int(m.group(1))
     return n_asv
@@ -313,7 +329,9 @@ def run_r_single(args, outdir):
     a = [f"platform={args.platform}", f"input={args.input}", f"outdir={rdir}",
          f"threads={args.threads}", f"nbases={args.nbases}",
          f"max_ee={mee}", f"trunc_q={args.trunc_q}", f"max_n={args.max_n}",
-         f"pool={args.pool}"]
+         f"pool={args.pool}", f"pseudo_prevalence={args.pseudo_prevalence}"]
+    if args.pseudo_min_abundance is not None:
+        a.append(f"pseudo_min_abundance={args.pseudo_min_abundance}")
     if args.platform == "illumina":
         a += [f"fwd_pattern={args.fwd_pattern}", f"rev_pattern={args.rev_pattern}",
               f"trunc_len={args.trunc_len}"]
@@ -330,8 +348,8 @@ def run_r_single(args, outdir):
              [rscript, str(HERE / "run_dada2_pooled.R"), *a], log, tmp, append_log=True)
     text = log.read_text(errors="replace")
     steps = [{"step": m.group(1), "wall_s": float(m.group(2))}
-             for m in re.finditer(r"^BENCH_STEP\t(\S+)\t([\d.]+)", text, re.M)]
-    m = re.search(r"^BENCH_RESULT\tn_asv\t(\d+)", text, re.M)
+             for m in re.finditer(r"BENCH_STEP\t(\S+)\t([\d.]+)", text, re.M)]
+    m = re.search(r"BENCH_RESULT\tn_asv\t(\d+)", text, re.M)
     return {"total_w": tmp[0]["wall_s"], "peak": tmp[0]["maxrss_kb"],
             "steps": steps, "n_asv": int(m.group(1)) if m else None}
 
@@ -383,10 +401,20 @@ def main():
     p.add_argument("--outdir", default="bench_pooled_out")
     p.add_argument("--threads", type=int, default=1)
     p.add_argument("--nbases", type=float, default=1e8)
-    p.add_argument("--pool", choices=["true", "false"], default="true",
+    p.add_argument("--pool", choices=["true", "false", "pseudo"], default="true",
                    help="denoising mode: 'true' = pooled (R pool=TRUE / dada-pooled, "
                         "the worst case); 'false' = per-sample (R pool=FALSE / "
-                        "per-sample dada run concurrently). Default true")
+                        "per-sample dada run concurrently); 'pseudo' = pseudo-pooling "
+                        "(R dada(pool=\"pseudo\") vs dada2-rs dada-pseudo, one call each). "
+                        "Default true. Note: dada-pseudo runs samples serially while R "
+                        "parallelizes across them, so pseudo wall-time favors R at high "
+                        "thread counts; dada2-rs's win there is per-sample memory.")
+    p.add_argument("--pseudo-prevalence", type=int, default=2,
+                   help="pseudo: min samples a sequence must appear in to seed round-2 "
+                        "priors (R PSEUDO_PREVALENCE). Default 2")
+    p.add_argument("--pseudo-min-abundance", type=int, default=None,
+                   help="pseudo: min total abundance to seed a prior (R PSEUDO_ABUNDANCE). "
+                        "Default off (R's Inf)")
     p.add_argument("--dada2rs", help="path to dada2-rs binary (REQUIRED; e.g. "
                    "target/release/dada2-rs or target/release-native/dada2-rs)")
     p.add_argument("--rscript", help="path to Rscript (default: Rscript on PATH)")
@@ -453,7 +481,7 @@ def main():
 
     # ---- report ----
     print("\n" + "=" * 56)
-    mode = "pooled" if args.pool == "true" else "per-sample"
+    mode = {"true": "pooled", "false": "per-sample", "pseudo": "pseudo"}[args.pool]
     print(f"BENCHMARK SUMMARY — {args.platform}, {mode} denoise, {args.threads} thread(s)")
     print("=" * 56)
     csv_path = outdir / "summary.csv"
@@ -495,7 +523,8 @@ def main():
             elif rr_split:
                 r_dada = rr_split["dada_w"]
             if rs["dada_w"] > 0 and r_dada:
-                dlabel = "pooled denoise" if args.pool == "true" else "per-sample dada"
+                dlabel = {"true": "pooled denoise", "false": "per-sample dada",
+                          "pseudo": "pseudo denoise"}[args.pool]
                 print(f"  {dlabel:<14} : R {r_dada:.1f}s vs dada2-rs "
                       f"{rs['dada_w']:.1f}s  →  {r_dada/rs['dada_w']:.1f}× faster")
             print(f"  end-to-end     : R {rr['total_w']:.1f}s vs dada2-rs "
