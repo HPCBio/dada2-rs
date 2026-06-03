@@ -1,6 +1,6 @@
 # dada2-rs
 
-An experimental implementation of DADA2 in Rust, using Claude Code (specically Sonnet 4.6 and Opus 4.6/4.7) for the bulk of the work. 
+An experimental implementation of DADA2 in Rust, using Claude Code (specically Sonnet 4.6 and Opus 4.6/4.7/4.8) for the bulk of the work. 
 
 ## Implementations
 
@@ -10,9 +10,9 @@ An experimental implementation of DADA2 in Rust, using Claude Code (specically S
   - [x] Error model (`learnErrors`)
   - [x] Denoising (`dada`)
   - [x] Merging (`mergePairs`)
-  - [x] Current error models (`loessErrfun`, `PacBioErrfun`, `noqualErrfun`, `makeBinnedErrfun`) - *only `loessErrfun` and `PacBioErrfun` have been tested*
-  - [x] Chimera removal (`removeBimeraDenovo`) - *needs testing and optimization*
-  - [x] RDP taxonomic classifier (`assignTaxonomy`) + (`assignSpecies`) - *needs testing and optimization*
+  - [x] Current error models (`loessErrfun`, `PacBioErrfun`, `noqualErrfun`, `makeBinnedErrfun`) - *only `loessErrfun`, `PacBioErrfun`, and `noqualErrfun` have been tested*
+  - [x] Chimera removal (`removeBimeraDenovo`)
+  - [x] RDP taxonomic classifier (`assignTaxonomy`) + (`assignSpecies`)
   - [x] Other intermediate functions (`mergeTables`)
 - Other functionality:
   - [x] Intermediate outputs (in JSON) - can be evaluated for debugging purposes or for plotting in R, Python, etc.
@@ -182,6 +182,18 @@ This tool was written with the assistance of AI coding agents, specificall Claud
 
 Correctness is validated by comparing output against DADA2 v1.36 on a suite of real sequencing datasets - not by manual code review alone. 
 AI generated the implementation; humans defined the validation criteria, made some key coding updates, and verified results.
+
+## Citation
+
+`dada2-rs` is a reimplementation; if you use it, please cite the original work that
+describes the algorithm (see [`CITATION.cff`](CITATION.cff)):
+
+* Callahan BJ, McMurdie PJ, Rosen MJ, Han AW, Johnson AJA, Holmes SP. DADA2:
+  High-resolution sample inference from Illumina amplicon data. *Nature Methods*.
+  2016;13:581-583. doi:[10.1038/nmeth.3869](https://doi.org/10.1038/nmeth.3869)
+* Rosen MJ, Callahan BJ, Fisher DS, Holmes SP. Denoising PCR-amplified metagenome
+  data. *BMC Bioinformatics*. 2012;13:283.
+  doi:[10.1186/1471-2105-13-283](https://doi.org/10.1186/1471-2105-13-283)
 
 ## Project background
 

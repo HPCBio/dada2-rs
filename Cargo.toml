@@ -2,7 +2,15 @@
 name = "dada2-rs"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.87"
 license = "LGPL-3.0-only"
+description = "An experimental Rust implementation of the DADA2 amplicon denoising algorithm"
+repository = "https://github.com/HPCBio/dada2-rs"
+readme = "README.md"
+authors = ["Chris Fields <cjfields@illinois.edu>"]
+keywords = ["bioinformatics", "amplicon", "dada2", "metagenomics", "asv"]
+categories = ["science", "command-line-utilities"]
+exclude = ["**/__pycache__/", "*.pyc"]
 
 [dependencies]
 noodles = { version = "0.91", features = ["fastq", "fasta", "bgzf"] }

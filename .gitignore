@@ -4,3 +4,7 @@
 notes/Chat*
 .DS_Store
 /tmp
+
+# Python bytecode
+__pycache__/
+*.pyc

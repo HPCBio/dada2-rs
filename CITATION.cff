@@ -28,3 +28,20 @@ references:
     pages: 581-583
     doi: 10.1038/nmeth.3869
     pmid: 27214047
+  - type: article
+    title: "Denoising PCR-amplified metagenome data"
+    authors:
+      - family-names: Rosen
+        given-names: Michael J.
+      - family-names: Callahan
+        given-names: Benjamin J.
+      - family-names: Fisher
+        given-names: Daniel S.
+      - family-names: Holmes
+        given-names: Susan P.
+    journal: BMC Bioinformatics
+    year: 2012
+    volume: 13
+    article: 283
+    doi: 10.1186/1471-2105-13-283
+    pmid: 23113967
