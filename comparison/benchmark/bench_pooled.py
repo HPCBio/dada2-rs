@@ -174,7 +174,8 @@ def rust_pacbio(args, bin_, outdir, results):
     err = outdir / "errors_pacbio.json"
     run_step("learn", [bin_, "learn-errors", *map(str, filts),
              "--nbases", str(int(args.nbases)), "--errfun", "pacbio",
-             "--band", str(args.band), "--threads", str(args.threads), "-o", err],
+             "--band", str(args.band), "--kmer-size", str(args.kmer_size),
+             "--threads", str(args.threads), "-o", err],
              outdir / "learn.log", results)
 
     dd = outdir / "dada"; dd.mkdir(exist_ok=True)
