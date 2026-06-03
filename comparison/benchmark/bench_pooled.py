@@ -43,6 +43,7 @@ Usage:
 Run `python3 bench_pooled.py --help` for all options.
 """
 import argparse
+import concurrent.futures
 import glob
 import os
 import re
@@ -93,6 +94,36 @@ def run_step(name, cmd, logf, results, append_log=False):
     return rc
 
 
+def run_phase_concurrent(name, jobs, results, max_workers):
+    """Run per-sample subprocesses CONCURRENTLY (up to max_workers at once),
+    mirroring R's filterAndTrim/removePrimers multithread=N (one core per sample).
+
+    Records ONE row for the phase: wall_s = wall-clock of the whole batch (not
+    the sum of per-sample times), maxrss_kb = max peak RSS of any single child.
+    jobs = list of (cmd, logf). Returns the worst rc."""
+    print(f"  ==> {name}: {len(jobs)} samples, up to {max_workers} concurrent", flush=True)
+
+    def one(cmd, logf):
+        with open(logf, "wb") as lf:
+            proc = subprocess.Popen([str(c) for c in cmd],
+                                    stdout=subprocess.DEVNULL, stderr=lf)
+            _pid, status, rusage = os.wait4(proc.pid, 0)
+        rc = os.waitstatus_to_exitcode(status)
+        rss = rusage.ru_maxrss / 1024 if sys.platform == "darwin" else rusage.ru_maxrss
+        return rc, rss
+
+    start = time.time()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, max_workers)) as ex:
+        res = list(ex.map(lambda j: one(*j), jobs))
+    wall = time.time() - start
+    rc = max((r[0] for r in res), default=0)
+    peak = max((r[1] for r in res), default=0)
+    results.append({"step": name, "wall_s": wall, "maxrss_kb": peak, "rc": rc})
+    if rc != 0:
+        print(f"      FAILED ({name}); check logs", file=sys.stderr)
+    return rc
+
+
 # --------------------------------------------------------------------------
 # dada2-rs pipelines
 # --------------------------------------------------------------------------
@@ -103,7 +134,7 @@ def rust_illumina(args, bin_, outdir, results):
                  if re.search(r"\.f(ast)?q(\.gz)?$", f))
     if not fwd:
         sys.exit(f"no forward reads matching *{args.fwd_pattern}* in {args.input}")
-    filtFs, filtRs = [], []
+    filtFs, filtRs, jobs = [], [], []
     tl = args.trunc_len.split(",")
     ee = args.max_ee.split(",")
     for f in fwd:
@@ -114,11 +145,14 @@ def rust_illumina(args, bin_, outdir, results):
         ff = filt / f"{name}_F_filt.fastq.gz"
         fr = filt / f"{name}_R_filt.fastq.gz"
         filtFs.append(ff); filtRs.append(fr)
-        run_step(f"filter:{name}", [bin_, "filter-and-trim",
-                 "--fwd", f, "--filt", ff, "--rev", r, "--filt-rev", fr,
-                 "--trunc-len", *tl, "--max-n", str(args.max_n),
-                 "--max-ee", *ee, "--trunc-q", str(args.trunc_q),
-                 "--compress"], outdir / f"filter_{name}.log", results)
+        # filter-and-trim is single-core per sample (--threads only affects bgzf),
+        # so we fan samples across workers to match R's filterAndTrim(multithread).
+        jobs.append(([bin_, "filter-and-trim",
+                      "--fwd", f, "--filt", ff, "--rev", r, "--filt-rev", fr,
+                      "--trunc-len", *tl, "--max-n", str(args.max_n),
+                      "--max-ee", *ee, "--trunc-q", str(args.trunc_q),
+                      "--compress"], outdir / f"filter_{name}.log"))
+    run_phase_concurrent("filter", jobs, results, args.threads)
 
     errF = outdir / "errors_fwd.json"; errR = outdir / "errors_rev.json"
     run_step("learn_fwd", [bin_, "learn-errors", *map(str, filtFs),
@@ -145,13 +179,15 @@ def rust_illumina(args, bin_, outdir, results):
              "--rev-dada", *sorted(map(str, ddR.glob("*.json"))),
              "--fwd-fastq", *sorted(map(str, filtFs)),
              "--rev-fastq", *sorted(map(str, filtRs)),
+             "--threads", str(args.threads),
              "-o", merged], outdir / "merge.log", results)
 
     seqtab = outdir / "seqtab.json"
     run_step("make_table", [bin_, "make-sequence-table", merged, "-o", seqtab],
              outdir / "make_table.log", results)
     run_step("remove_bimera", [bin_, "remove-bimera-denovo", seqtab,
-             "--method", "consensus", "-o", outdir / "seqtab_nochim.json"],
+             "--method", "consensus", "--threads", str(args.threads),
+             "-o", outdir / "seqtab_nochim.json"],
              outdir / "bimera.log", results)
 
 
@@ -165,20 +201,22 @@ def rust_pacbio(args, bin_, outdir, results):
     # Consolidated remove-primers: trims primers, orients, AND applies the same
     # length/quality filters as filter-and-trim, in one pass. This mirrors R's
     # removePrimers() + filterAndTrim() (two functions) as a single dada2-rs step.
-    filts = []
+    filts, jobs = [], []
     for f in reads:
         name = re.sub(r"\.(fastq|fq)(\.gz)?$", "", os.path.basename(f))
         ff = filt / f"{name}_filt.fastq.gz"
         filts.append(ff)
-        run_step(f"remove_primers:{name}", [bin_, "remove-primers", f,
-                 "--fout", ff, "--primer-fwd", args.primer_fwd,
-                 "--primer-rev", args.primer_rev, "--max-mismatch", str(args.max_mismatch),
-                 "--trim-fwd", "--trim-rev", "--orient",
-                 "--min-len", str(int(args.min_len)), "--max-len", str(int(args.max_len)),
-                 "--max-n", str(args.max_n), "--max-ee", str(args.max_ee.split(",")[0]),
-                 "--trunc-q", str(args.trunc_q), "--compress",
-                 "-o", outdir / f"primers_{name}.json"],
-                 outdir / f"primers_{name}.log", results)
+        # one sample per worker, mirroring R's removePrimers/filterAndTrim threading
+        jobs.append(([bin_, "remove-primers", f,
+                      "--fout", ff, "--primer-fwd", args.primer_fwd,
+                      "--primer-rev", args.primer_rev, "--max-mismatch", str(args.max_mismatch),
+                      "--trim-fwd", "--trim-rev", "--orient",
+                      "--min-len", str(int(args.min_len)), "--max-len", str(int(args.max_len)),
+                      "--max-n", str(args.max_n), "--max-ee", str(args.max_ee.split(",")[0]),
+                      "--trunc-q", str(args.trunc_q), "--compress",
+                      "-o", outdir / f"primers_{name}.json"],
+                     outdir / f"primers_{name}.log"))
+    run_phase_concurrent("remove_primers", jobs, results, args.threads)
 
     err = outdir / "errors_pacbio.json"
     run_step("learn", [bin_, "learn-errors", *map(str, filts),
@@ -199,7 +237,8 @@ def rust_pacbio(args, bin_, outdir, results):
              *sorted(map(str, dd.glob("*.json"))), "-o", seqtab],
              outdir / "make_table.log", results)
     run_step("remove_bimera", [bin_, "remove-bimera-denovo", seqtab,
-             "--method", "consensus", "-o", outdir / "seqtab_nochim.json"],
+             "--method", "consensus", "--threads", str(args.threads),
+             "-o", outdir / "seqtab_nochim.json"],
              outdir / "bimera.log", results)
 
 
