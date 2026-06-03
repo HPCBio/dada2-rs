@@ -51,6 +51,7 @@ dir.create(statedir, showWarnings = FALSE, recursive = TRUE)
 threads     <- getn("threads", 1)
 nbases      <- getn("nbases", 1e8)
 multithread <- if (threads > 1) threads else FALSE
+pool_flag   <- !identical(getv("pool", "true"), "false")   # TRUE pooled, FALSE per-sample
 
 sp <- function(name) file.path(statedir, name)   # state path helper
 
@@ -100,12 +101,12 @@ if (platform == "illumina") {
 
   } else if (step == "dada_fwd") {
     m <- readRDS(sp("manifest.rds")); errF <- readRDS(sp("errF.rds"))
-    ddF <- timed("dada_fwd", dada(m$filtFs, err = errF, pool = TRUE, multithread = multithread))
+    ddF <- timed("dada_fwd", dada(m$filtFs, err = errF, pool = pool_flag, multithread = multithread))
     saveRDS(ddF, sp("ddF.rds"))
 
   } else if (step == "dada_rev") {
     m <- readRDS(sp("manifest.rds")); errR <- readRDS(sp("errR.rds"))
-    ddR <- timed("dada_rev", dada(m$filtRs, err = errR, pool = TRUE, multithread = multithread))
+    ddR <- timed("dada_rev", dada(m$filtRs, err = errR, pool = pool_flag, multithread = multithread))
     saveRDS(ddR, sp("ddR.rds"))
 
   } else if (step == "merge") {
@@ -173,7 +174,7 @@ if (platform == "illumina") {
 
   } else if (step == "dada") {
     m <- readRDS(sp("manifest.rds")); err <- readRDS(sp("err.rds"))
-    dd <- timed("dada", dada(m$filts, err = err, pool = TRUE, BAND_SIZE = band,
+    dd <- timed("dada", dada(m$filts, err = err, pool = pool_flag, BAND_SIZE = band,
                              HOMOPOLYMER_GAP_PENALTY = homo, multithread = multithread))
     saveRDS(dd, sp("dd.rds"))
 

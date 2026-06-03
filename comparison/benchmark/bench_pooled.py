@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""bench_pooled.py — head-to-head pooled-denoising benchmark: R DADA2 vs dada2-rs.
+"""bench_pooled.py — head-to-head denoising benchmark: R DADA2 vs dada2-rs.
 
-Focuses on POOLED denoising (R `pool=TRUE` / dada2-rs `dada-pooled`), the
-worst case for runtime and memory, on real data. Runs the full pipeline for
-each stack, timing every step and capturing per-process peak RSS, then prints a
-symmetric side-by-side table.
+Runs the full pipeline for each stack, timing every step and capturing
+per-process peak RSS, then prints a symmetric side-by-side table.
+
+Two denoising modes via --pool:
+  true  (default): POOLED — R `pool=TRUE` / dada2-rs `dada-pooled`. One giant
+                   inference over all samples; the worst case for runtime/memory.
+  false          : PER-SAMPLE — R `pool=FALSE` (multithread across samples) /
+                   dada2-rs per-sample `dada` fanned across workers. The regime
+                   where independent small inferences favor dada2-rs most.
 
 Two platforms:
   illumina : paired-end. filter -> learn(F,R) -> dada-pooled(F,R) ->
@@ -127,6 +132,24 @@ def run_phase_concurrent(name, jobs, results, max_workers):
 # --------------------------------------------------------------------------
 # dada2-rs pipelines
 # --------------------------------------------------------------------------
+def rust_dada_step(args, bin_, step, filts, names, errmodel, ddir, outdir, results,
+                   extra=()):
+    """Denoise. pool=true -> one dada-pooled call; pool=false -> per-sample dada
+    fanned across workers (mirrors R dada(pool=FALSE, multithread=N)). Either way
+    ddir ends up with one JSON per sample and the phase records a single row."""
+    if args.pool == "true":
+        run_step(step, [bin_, "dada-pooled", *map(str, filts),
+                 "--error-model", errmodel, "--output-dir", ddir, *extra,
+                 "--threads", str(args.threads)], outdir / f"{step}.log", results)
+    else:
+        jobs = []
+        for fp, name in zip(filts, names):
+            jobs.append(([bin_, "dada", str(fp), "--error-model", str(errmodel),
+                          *extra, "-o", ddir / f"{name}.json"],
+                         outdir / f"{step}_{name}.log"))
+        run_phase_concurrent(step, jobs, results, args.threads)
+
+
 def rust_illumina(args, bin_, outdir, results):
     filt = outdir / "filtered"
     filt.mkdir(parents=True, exist_ok=True)
@@ -134,7 +157,7 @@ def rust_illumina(args, bin_, outdir, results):
                  if re.search(r"\.f(ast)?q(\.gz)?$", f))
     if not fwd:
         sys.exit(f"no forward reads matching *{args.fwd_pattern}* in {args.input}")
-    filtFs, filtRs, jobs = [], [], []
+    filtFs, filtRs, names, jobs = [], [], [], []
     tl = args.trunc_len.split(",")
     ee = args.max_ee.split(",")
     for f in fwd:
@@ -144,7 +167,7 @@ def rust_illumina(args, bin_, outdir, results):
         name = os.path.basename(f).split(args.fwd_pattern)[0]
         ff = filt / f"{name}_F_filt.fastq.gz"
         fr = filt / f"{name}_R_filt.fastq.gz"
-        filtFs.append(ff); filtRs.append(fr)
+        filtFs.append(ff); filtRs.append(fr); names.append(name)
         # filter-and-trim is single-core per sample (--threads only affects bgzf),
         # so we fan samples across workers to match R's filterAndTrim(multithread).
         jobs.append(([bin_, "filter-and-trim",
@@ -166,12 +189,8 @@ def rust_illumina(args, bin_, outdir, results):
 
     ddF = outdir / "dada_fwd"; ddR = outdir / "dada_rev"
     ddF.mkdir(exist_ok=True); ddR.mkdir(exist_ok=True)
-    run_step("dada_fwd", [bin_, "dada-pooled", *map(str, filtFs),
-             "--error-model", errF, "--output-dir", ddF,
-             "--threads", str(args.threads)], outdir / "dada_fwd.log", results)
-    run_step("dada_rev", [bin_, "dada-pooled", *map(str, filtRs),
-             "--error-model", errR, "--output-dir", ddR,
-             "--threads", str(args.threads)], outdir / "dada_rev.log", results)
+    rust_dada_step(args, bin_, "dada_fwd", filtFs, names, errF, ddF, outdir, results)
+    rust_dada_step(args, bin_, "dada_rev", filtRs, names, errR, ddR, outdir, results)
 
     merged = outdir / "merged.json"
     run_step("merge", [bin_, "merge-pairs",
@@ -201,11 +220,11 @@ def rust_pacbio(args, bin_, outdir, results):
     # Consolidated remove-primers: trims primers, orients, AND applies the same
     # length/quality filters as filter-and-trim, in one pass. This mirrors R's
     # removePrimers() + filterAndTrim() (two functions) as a single dada2-rs step.
-    filts, jobs = [], []
+    filts, names, jobs = [], [], []
     for f in reads:
         name = re.sub(r"\.(fastq|fq)(\.gz)?$", "", os.path.basename(f))
         ff = filt / f"{name}_filt.fastq.gz"
-        filts.append(ff)
+        filts.append(ff); names.append(name)
         # one sample per worker, mirroring R's removePrimers/filterAndTrim threading
         jobs.append(([bin_, "remove-primers", f,
                       "--fout", ff, "--primer-fwd", args.primer_fwd,
@@ -226,11 +245,9 @@ def rust_pacbio(args, bin_, outdir, results):
              outdir / "learn.log", results)
 
     dd = outdir / "dada"; dd.mkdir(exist_ok=True)
-    run_step("dada", [bin_, "dada-pooled", *map(str, filts),
-             "--error-model", err, "--output-dir", dd,
-             "--band", str(args.band), "--homo-gap-p", str(args.homo_gap),
-             "--kmer-size", str(args.kmer_size),
-             "--threads", str(args.threads)], outdir / "dada.log", results)
+    rust_dada_step(args, bin_, "dada", filts, names, err, dd, outdir, results,
+                   extra=["--band", str(args.band), "--homo-gap-p", str(args.homo_gap),
+                          "--kmer-size", str(args.kmer_size)])
 
     seqtab = outdir / "seqtab.json"
     run_step("make_table", [bin_, "make-sequence-table",
@@ -250,7 +267,8 @@ def r_common_args(args, statedir):
     mee = args.max_ee if args.platform == "illumina" else args.max_ee.split(",")[0]
     a = [f"platform={args.platform}", f"statedir={statedir}",
          f"threads={args.threads}", f"nbases={args.nbases}", f"input={args.input}",
-         f"max_ee={mee}", f"trunc_q={args.trunc_q}", f"max_n={args.max_n}"]
+         f"max_ee={mee}", f"trunc_q={args.trunc_q}", f"max_n={args.max_n}",
+         f"pool={args.pool}"]
     if args.platform == "illumina":
         a += [f"fwd_pattern={args.fwd_pattern}", f"rev_pattern={args.rev_pattern}",
               f"trunc_len={args.trunc_len}"]
@@ -294,7 +312,8 @@ def run_r_single(args, outdir):
     mee = args.max_ee if args.platform == "illumina" else args.max_ee.split(",")[0]
     a = [f"platform={args.platform}", f"input={args.input}", f"outdir={rdir}",
          f"threads={args.threads}", f"nbases={args.nbases}",
-         f"max_ee={mee}", f"trunc_q={args.trunc_q}", f"max_n={args.max_n}"]
+         f"max_ee={mee}", f"trunc_q={args.trunc_q}", f"max_n={args.max_n}",
+         f"pool={args.pool}"]
     if args.platform == "illumina":
         a += [f"fwd_pattern={args.fwd_pattern}", f"rev_pattern={args.rev_pattern}",
               f"trunc_len={args.trunc_len}"]
@@ -364,6 +383,10 @@ def main():
     p.add_argument("--outdir", default="bench_pooled_out")
     p.add_argument("--threads", type=int, default=1)
     p.add_argument("--nbases", type=float, default=1e8)
+    p.add_argument("--pool", choices=["true", "false"], default="true",
+                   help="denoising mode: 'true' = pooled (R pool=TRUE / dada-pooled, "
+                        "the worst case); 'false' = per-sample (R pool=FALSE / "
+                        "per-sample dada run concurrently). Default true")
     p.add_argument("--dada2rs", help="path to dada2-rs binary (REQUIRED; e.g. "
                    "target/release/dada2-rs or target/release-native/dada2-rs)")
     p.add_argument("--rscript", help="path to Rscript (default: Rscript on PATH)")
@@ -430,7 +453,8 @@ def main():
 
     # ---- report ----
     print("\n" + "=" * 56)
-    print(f"POOLED BENCHMARK SUMMARY — {args.platform}, {args.threads} thread(s)")
+    mode = "pooled" if args.pool == "true" else "per-sample"
+    print(f"BENCHMARK SUMMARY — {args.platform}, {mode} denoise, {args.threads} thread(s)")
     print("=" * 56)
     csv_path = outdir / "summary.csv"
     with open(csv_path, "w") as cf:
@@ -471,7 +495,8 @@ def main():
             elif rr_split:
                 r_dada = rr_split["dada_w"]
             if rs["dada_w"] > 0 and r_dada:
-                print(f"  pooled denoise : R {r_dada:.1f}s vs dada2-rs "
+                dlabel = "pooled denoise" if args.pool == "true" else "per-sample dada"
+                print(f"  {dlabel:<14} : R {r_dada:.1f}s vs dada2-rs "
                       f"{rs['dada_w']:.1f}s  →  {r_dada/rs['dada_w']:.1f}× faster")
             print(f"  end-to-end     : R {rr['total_w']:.1f}s vs dada2-rs "
                   f"{rs['total_w']:.1f}s  →  {rr['total_w']/rs['total_w']:.1f}× faster")

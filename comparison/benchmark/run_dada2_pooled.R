@@ -54,6 +54,7 @@ if (is.null(platform) || is.null(input) || is.null(outdir))
 threads <- getn("threads", 1)
 nbases  <- getn("nbases", 1e8)
 multithread <- if (threads > 1) threads else FALSE
+pool_flag <- !identical(getv("pool", "true"), "false")   # TRUE pooled, FALSE per-sample
 
 filt_dir <- file.path(outdir, "filtered_R")
 dir.create(filt_dir, showWarnings = FALSE, recursive = TRUE)
@@ -96,8 +97,8 @@ if (platform == "illumina") {
   errF <- timed("learn_fwd", learnErrors(filtFs, nbases = nbases, multithread = multithread))
   errR <- timed("learn_rev", learnErrors(filtRs, nbases = nbases, multithread = multithread))
 
-  ddF <- timed("dada_fwd", dada(filtFs, err = errF, pool = TRUE, multithread = multithread))
-  ddR <- timed("dada_rev", dada(filtRs, err = errR, pool = TRUE, multithread = multithread))
+  ddF <- timed("dada_fwd", dada(filtFs, err = errF, pool = pool_flag, multithread = multithread))
+  ddR <- timed("dada_rev", dada(filtRs, err = errR, pool = pool_flag, multithread = multithread))
 
   mergers <- timed("merge", mergePairs(ddF, filtFs, ddR, filtRs))
   seqtab  <- timed("make_table", makeSequenceTable(mergers))
@@ -139,7 +140,7 @@ if (platform == "illumina") {
                                     errorEstimationFunction = PacBioErrfun,
                                     BAND_SIZE = band, multithread = multithread))
 
-  dd <- timed("dada", dada(filts, err = err, pool = TRUE, BAND_SIZE = band,
+  dd <- timed("dada", dada(filts, err = err, pool = pool_flag, BAND_SIZE = band,
                            HOMOPOLYMER_GAP_PENALTY = homo, multithread = multithread))
 
   seqtab <- timed("make_table", makeSequenceTable(dd))
