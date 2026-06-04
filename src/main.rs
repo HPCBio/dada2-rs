@@ -4,6 +4,7 @@ use std::{fs::File, io, path::Path};
 use clap::Parser;
 use flate2::read::MultiGzDecoder;
 use rand::seq::SliceRandom as _;
+use rayon::prelude::*;
 
 mod chimera;
 mod cli;
@@ -1468,32 +1469,37 @@ fn main() -> io::Result<()> {
                 verbose,
             };
 
-            let mut results: Vec<merge_pairs::SampleMergeResult> = Vec::with_capacity(n);
-
-            for i in 0..n {
-                if verbose {
-                    eprintln!("[merge-pairs] sample '{}' ({}/{})", names[i], i + 1, n);
-                }
-
-                let result = merge_pairs::merge_sample(
-                    &names[i],
-                    &fwd_dada[i],
-                    &rev_dada[i],
-                    &fwd_fastq[i],
-                    &rev_fastq[i],
-                    &params,
-                    &pool,
-                )?;
-
-                if verbose {
-                    eprintln!(
-                        "[merge-pairs] '{}': {}/{} read-pairs accepted → {} merged sequence(s)",
-                        names[i], result.accepted_pairs, result.total_pairs, result.num_merged,
-                    );
-                }
-
-                results.push(result);
-            }
+            // Samples are independent, so merge them in parallel across the pool
+            // (each sample is mostly serial internally, so across-sample fan-out
+            // is what saturates cores). `collect` preserves input order, so the
+            // output is identical to a serial run. Nested rayon (merge_sample ->
+            // dereplicate also installs on this pool) runs inline + work-steals.
+            let results: Vec<merge_pairs::SampleMergeResult> = pool.install(|| {
+                (0..n)
+                    .into_par_iter()
+                    .map(|i| {
+                        if verbose {
+                            eprintln!("[merge-pairs] sample '{}' ({}/{})", names[i], i + 1, n);
+                        }
+                        let result = merge_pairs::merge_sample(
+                            &names[i],
+                            &fwd_dada[i],
+                            &rev_dada[i],
+                            &fwd_fastq[i],
+                            &rev_fastq[i],
+                            &params,
+                            &pool,
+                        )?;
+                        if verbose {
+                            eprintln!(
+                                "[merge-pairs] '{}': {}/{} read-pairs accepted → {} merged sequence(s)",
+                                names[i], result.accepted_pairs, result.total_pairs, result.num_merged,
+                            );
+                        }
+                        Ok(result)
+                    })
+                    .collect::<io::Result<Vec<_>>>()
+            })?;
 
             #[derive(Serialize)]
             struct MergePairsOutput {

@@ -270,6 +270,68 @@ fn dada_pseudo_output_feeds_downstream_steps() {
     ]);
 }
 
+/// merge-pairs parallelizes across samples; `collect` preserves input order, so
+/// the output must be byte-identical regardless of thread count. (Same error
+/// model is reused for both directions — this checks determinism, not biology.)
+#[test]
+fn merge_pairs_is_deterministic_across_threads() {
+    let dir = scratch("merge_det");
+    let err = shared_err_model();
+    let f1 = fixture("sam1F.fastq.gz");
+    let f2 = fixture("sam2F.fastq.gz");
+    let r1 = fixture("sam1R.fastq.gz");
+    let r2 = fixture("sam2R.fastq.gz");
+
+    let dada = |inp: &Path, out: &Path| {
+        run(&[
+            "dada",
+            inp.to_str().unwrap(),
+            "--error-model",
+            err.to_str().unwrap(),
+            "--threads",
+            "1",
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+    };
+    let (f1j, f2j) = (dir.join("f1.json"), dir.join("f2.json"));
+    let (r1j, r2j) = (dir.join("r1.json"), dir.join("r2.json"));
+    dada(&f1, &f1j);
+    dada(&f2, &f2j);
+    dada(&r1, &r1j);
+    dada(&r2, &r2j);
+
+    let merge_at = |t: &str, out: &Path| {
+        run(&[
+            "merge-pairs",
+            "--fwd-dada",
+            f1j.to_str().unwrap(),
+            f2j.to_str().unwrap(),
+            "--rev-dada",
+            r1j.to_str().unwrap(),
+            r2j.to_str().unwrap(),
+            "--fwd-fastq",
+            f1.to_str().unwrap(),
+            f2.to_str().unwrap(),
+            "--rev-fastq",
+            r1.to_str().unwrap(),
+            r2.to_str().unwrap(),
+            "--threads",
+            t,
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+    };
+    let (m1, m4) = (dir.join("merged_t1.json"), dir.join("merged_t4.json"));
+    merge_at("1", &m1);
+    merge_at("4", &m4);
+    assert_eq!(
+        std::fs::read(&m1).unwrap(),
+        std::fs::read(&m4).unwrap(),
+        "merge-pairs output differs between --threads 1 and --threads 4",
+    );
+}
+
 #[test]
 fn dada_multi_input_matches_per_file_runs() {
     let dir = scratch("multi");
