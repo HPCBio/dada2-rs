@@ -26,11 +26,17 @@ Two platforms:
              removal and filtering as two steps: removePrimers -> filterAndTrim.)
              Input is RAW, primered reads; pass --primer-fwd/--primer-rev.
 
-PER-STEP timing AND peak RSS for BOTH stacks. Every step runs as its own
-process and is wrapped with os.wait4(): ru_maxrss is the kernel's peak
-resident-set high-water mark for that child. No /usr/bin/time, no /proc
-polling — portable to the cluster and macOS. (Linux reports ru_maxrss in kB;
-macOS in bytes; we normalize to kB.)
+PER-STEP timing, peak RSS, AND effective-core usage for BOTH stacks. Every step
+runs as its own process and is wrapped with os.wait4(): ru_maxrss is the
+kernel's peak resident-set high-water mark, and ru_utime+ru_stime is CPU time.
+The `cores` column = CPU/wall (effective cores used; ideal ≈ threads for an
+in-process step), which quantifies thread under-utilization. No /usr/bin/time,
+no /proc polling — portable to the cluster and macOS. (Linux reports ru_maxrss
+in kB; macOS in bytes; we normalize to kB.)
+
+For a focused scaling study, --thread-sweep N,N,... prepares inputs once
+(filter+learn) then runs ONLY the denoise step at each thread count, reporting
+wall / cores / speedup / parallel efficiency (dada2-rs only; skips R).
 
 The R side is run step-by-step (each its own `Rscript bench_step.R` process,
 state passed via .rds files) precisely so its per-step RSS is comparable to the
@@ -99,7 +105,9 @@ def run_step(name, cmd, logf, results, append_log=False):
     rc = os.waitstatus_to_exitcode(status)
     maxrss = rusage.ru_maxrss
     maxrss_kb = maxrss / 1024 if sys.platform == "darwin" else maxrss
-    results.append({"step": name, "wall_s": wall, "maxrss_kb": maxrss_kb, "rc": rc})
+    cpu_s = rusage.ru_utime + rusage.ru_stime
+    results.append({"step": name, "wall_s": wall, "maxrss_kb": maxrss_kb,
+                    "cpu_s": cpu_s, "rc": rc})
     if rc != 0:
         print(f"      FAILED (rc={rc}); see {logf}", file=sys.stderr)
     return rc
@@ -121,7 +129,7 @@ def run_phase_concurrent(name, jobs, results, max_workers):
             _pid, status, rusage = os.wait4(proc.pid, 0)
         rc = os.waitstatus_to_exitcode(status)
         rss = rusage.ru_maxrss / 1024 if sys.platform == "darwin" else rusage.ru_maxrss
-        return rc, rss
+        return rc, rss, rusage.ru_utime + rusage.ru_stime
 
     start = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, max_workers)) as ex:
@@ -129,7 +137,10 @@ def run_phase_concurrent(name, jobs, results, max_workers):
     wall = time.time() - start
     rc = max((r[0] for r in res), default=0)
     peak = max((r[1] for r in res), default=0)
-    results.append({"step": name, "wall_s": wall, "maxrss_kb": peak, "rc": rc})
+    # CPU across all concurrent children / phase wall = effective cores used.
+    cpu_s = sum(r[2] for r in res)
+    results.append({"step": name, "wall_s": wall, "maxrss_kb": peak,
+                    "cpu_s": cpu_s, "rc": rc})
     if rc != 0:
         print(f"      FAILED ({name}); check logs", file=sys.stderr)
     return rc
@@ -139,19 +150,22 @@ def run_phase_concurrent(name, jobs, results, max_workers):
 # dada2-rs pipelines
 # --------------------------------------------------------------------------
 def rust_dada_step(args, bin_, step, filts, names, errmodel, ddir, outdir, results,
-                   extra=()):
-    """Denoise. pool=true -> one dada-pooled call; pool=false -> per-sample dada
-    fanned across workers (mirrors R dada(pool=FALSE, multithread=N)). Either way
-    ddir ends up with one JSON per sample and the phase records a single row."""
+                   extra=(), threads=None):
+    """Denoise. pool=true -> one dada-pooled call; pool=pseudo -> one dada-pseudo
+    call; pool=false -> per-sample dada fanned across workers (mirrors R
+    dada(pool=FALSE, multithread=N)). Either way ddir ends up with one JSON per
+    sample and the phase records a single row. `threads` overrides args.threads
+    (used by the thread-sweep)."""
+    t = args.threads if threads is None else threads
     if args.pool == "true":
         run_step(step, [bin_, "dada-pooled", *map(str, filts),
                  "--error-model", errmodel, "--output-dir", ddir, *extra,
-                 "--threads", str(args.threads)], outdir / f"{step}.log", results)
+                 "--threads", str(t)], outdir / f"{step}.log", results)
     elif args.pool == "pseudo":
         cmd = [bin_, "dada-pseudo", *map(str, filts),
                "--error-model", errmodel, "--output-dir", ddir, *extra,
                "--pseudo-prevalence", str(args.pseudo_prevalence),
-               "--threads", str(args.threads)]
+               "--threads", str(t)]
         if args.pseudo_min_abundance is not None:
             cmd += ["--pseudo-min-abundance", str(args.pseudo_min_abundance)]
         run_step(step, cmd, outdir / f"{step}.log", results)
@@ -161,10 +175,11 @@ def rust_dada_step(args, bin_, step, filts, names, errmodel, ddir, outdir, resul
             jobs.append(([bin_, "dada", str(fp), "--error-model", str(errmodel),
                           *extra, "-o", ddir / f"{name}.json"],
                          outdir / f"{step}_{name}.log"))
-        run_phase_concurrent(step, jobs, results, args.threads)
+        run_phase_concurrent(step, jobs, results, t)
 
 
-def rust_illumina(args, bin_, outdir, results):
+def prepare_illumina(args, bin_, outdir, results):
+    """Filter + learn errors. Returns the inputs the denoise step needs."""
     filt = outdir / "filtered"
     filt.mkdir(parents=True, exist_ok=True)
     fwd = sorted(f for f in glob.glob(str(Path(args.input) / f"*{args.fwd_pattern}*"))
@@ -200,11 +215,18 @@ def rust_illumina(args, bin_, outdir, results):
              "--nbases", str(int(args.nbases)), "--errfun", "loess",
              "--threads", str(args.threads), "-o", errR],
              outdir / "learn_rev.log", results)
+    return {"filtFs": filtFs, "filtRs": filtRs, "names": names,
+            "errF": errF, "errR": errR}
+
+
+def rust_illumina(args, bin_, outdir, results):
+    prep = prepare_illumina(args, bin_, outdir, results)
+    filtFs, filtRs, names = prep["filtFs"], prep["filtRs"], prep["names"]
 
     ddF = outdir / "dada_fwd"; ddR = outdir / "dada_rev"
     ddF.mkdir(exist_ok=True); ddR.mkdir(exist_ok=True)
-    rust_dada_step(args, bin_, "dada_fwd", filtFs, names, errF, ddF, outdir, results)
-    rust_dada_step(args, bin_, "dada_rev", filtRs, names, errR, ddR, outdir, results)
+    rust_dada_step(args, bin_, "dada_fwd", filtFs, names, prep["errF"], ddF, outdir, results)
+    rust_dada_step(args, bin_, "dada_rev", filtRs, names, prep["errR"], ddR, outdir, results)
 
     merged = outdir / "merged.json"
     run_step("merge", [bin_, "merge-pairs",
@@ -224,7 +246,13 @@ def rust_illumina(args, bin_, outdir, results):
              outdir / "bimera.log", results)
 
 
-def rust_pacbio(args, bin_, outdir, results):
+def pacbio_dada_extra(args):
+    return ["--band", str(args.band), "--homo-gap-p", str(args.homo_gap),
+            "--kmer-size", str(args.kmer_size)]
+
+
+def prepare_pacbio(args, bin_, outdir, results):
+    """Remove-primers (+orient+filter) + learn errors. Returns denoise inputs."""
     filt = outdir / "filtered"
     filt.mkdir(parents=True, exist_ok=True)
     reads = sorted(f for f in glob.glob(str(Path(args.input) / "*"))
@@ -257,11 +285,14 @@ def rust_pacbio(args, bin_, outdir, results):
              "--band", str(args.band), "--kmer-size", str(args.kmer_size),
              "--threads", str(args.threads), "-o", err],
              outdir / "learn.log", results)
+    return {"filts": filts, "names": names, "err": err}
 
+
+def rust_pacbio(args, bin_, outdir, results):
+    prep = prepare_pacbio(args, bin_, outdir, results)
     dd = outdir / "dada"; dd.mkdir(exist_ok=True)
-    rust_dada_step(args, bin_, "dada", filts, names, err, dd, outdir, results,
-                   extra=["--band", str(args.band), "--homo-gap-p", str(args.homo_gap),
-                          "--kmer-size", str(args.kmer_size)])
+    rust_dada_step(args, bin_, "dada", prep["filts"], prep["names"], prep["err"],
+                   dd, outdir, results, extra=pacbio_dada_extra(args))
 
     seqtab = outdir / "seqtab.json"
     run_step("make_table", [bin_, "make-sequence-table",
@@ -271,6 +302,64 @@ def rust_pacbio(args, bin_, outdir, results):
              "--method", "consensus", "--threads", str(args.threads),
              "-o", outdir / "seqtab_nochim.json"],
              outdir / "bimera.log", results)
+
+
+# --------------------------------------------------------------------------
+# Thread-scaling sweep (dada2-rs only)
+# --------------------------------------------------------------------------
+def thread_sweep(args, bin_, outdir):
+    """Prepare inputs ONCE (filter + learn), then run only the DENOISE step at
+    each thread count to characterize in-process scaling. dada2-rs only — no R,
+    no downstream merge/table/bimera. `cores` = CPU/wall (effective cores)."""
+    sweep = [int(t) for t in args.thread_sweep.split(",")]
+    prep_results, prep_dir = [], outdir / "prep"
+    prep_dir.mkdir(parents=True, exist_ok=True)
+    print(f"=== prepare (filter+learn) once at {args.threads} threads ===", flush=True)
+    prep = (prepare_illumina if args.platform == "illumina" else prepare_pacbio)(
+        args, bin_, prep_dir, prep_results)
+
+    rows = []
+    for t in sweep:
+        print(f"\n=== denoise @ {t} thread(s) ===", flush=True)
+        tdir = outdir / f"t{t}"
+        tdir.mkdir(exist_ok=True)
+        res = []
+        if args.platform == "illumina":
+            ddF, ddR = tdir / "dada_fwd", tdir / "dada_rev"
+            ddF.mkdir(exist_ok=True); ddR.mkdir(exist_ok=True)
+            rust_dada_step(args, bin_, "dada_fwd", prep["filtFs"], prep["names"],
+                           prep["errF"], ddF, tdir, res, threads=t)
+            rust_dada_step(args, bin_, "dada_rev", prep["filtRs"], prep["names"],
+                           prep["errR"], ddR, tdir, res, threads=t)
+        else:
+            dd = tdir / "dada"
+            dd.mkdir(exist_ok=True)
+            rust_dada_step(args, bin_, "dada", prep["filts"], prep["names"],
+                           prep["err"], dd, tdir, res, threads=t,
+                           extra=pacbio_dada_extra(args))
+        wall = sum(r["wall_s"] for r in res)
+        cpu = sum(r.get("cpu_s", 0.0) for r in res)
+        rows.append({"threads": t, "wall_s": wall, "cpu_s": cpu,
+                     "cores": cpu / wall if wall > 0 else 0.0})
+
+    base_t, base_w = rows[0]["threads"], rows[0]["wall_s"]
+    print("\n" + "=" * 60)
+    print(f"THREAD SWEEP — {args.platform}, {args.pool} denoise (speedup/eff vs {base_t}t)")
+    print("=" * 60)
+    print(f"  {'threads':>8}{'wall_s':>10}{'cores':>8}{'speedup':>9}{'efficiency':>12}")
+    csv_path = outdir / "sweep.csv"
+    with open(csv_path, "w") as cf:
+        cf.write("threads,wall_s,cpu_s,cores,speedup,efficiency\n")
+        for r in rows:
+            speedup = base_w / r["wall_s"] if r["wall_s"] > 0 else 0.0
+            ideal = r["threads"] / base_t
+            eff = speedup / ideal if ideal > 0 else 0.0
+            print(f"  {r['threads']:>8}{r['wall_s']:>10.2f}{r['cores']:>8.1f}"
+                  f"{speedup:>8.2f}×{eff*100:>11.0f}%")
+            cf.write(f"{r['threads']},{r['wall_s']:.2f},{r['cpu_s']:.2f},"
+                     f"{r['cores']:.2f},{speedup:.3f},{eff:.3f}\n")
+    print(f"\n  cores = CPU/wall (ideal ≈ threads for in-process pooled/pseudo).")
+    print(f"  Wrote {csv_path}")
 
 
 # --------------------------------------------------------------------------
@@ -351,6 +440,7 @@ def run_r_single(args, outdir):
              for m in re.finditer(r"BENCH_STEP\t(\S+)\t([\d.]+)", text, re.M)]
     m = re.search(r"BENCH_RESULT\tn_asv\t(\d+)", text, re.M)
     return {"total_w": tmp[0]["wall_s"], "peak": tmp[0]["maxrss_kb"],
+            "total_cpu": tmp[0].get("cpu_s", 0.0),
             "steps": steps, "n_asv": int(m.group(1)) if m else None}
 
 
@@ -361,17 +451,23 @@ def fmt_rss(kb):
     return f"{kb/1024:.0f} MB" if kb else "—"
 
 
+def cores(r):
+    """Effective cores used = CPU time / wall time (1.0 ≈ one core saturated)."""
+    return (r.get("cpu_s", 0.0) / r["wall_s"]) if r.get("wall_s", 0) > 0 else 0.0
+
+
 def collapse(results):
-    """Collapse per-sample 'name:sample' rows into one 'name' row (sum wall, max
-    RSS), preserving first-seen order. Non-namespaced steps pass through."""
+    """Collapse per-sample 'name:sample' rows into one 'name' row (sum wall, sum
+    CPU, max RSS), preserving first-seen order. Non-namespaced steps pass through."""
     grouped, out = {}, []
     for r in results:
         if ":" in r["step"]:
             key = r["step"].split(":", 1)[0]
             if key not in grouped:
-                grouped[key] = {"step": key, "wall_s": 0.0, "maxrss_kb": 0.0}
+                grouped[key] = {"step": key, "wall_s": 0.0, "maxrss_kb": 0.0, "cpu_s": 0.0}
                 out.append(grouped[key])
             grouped[key]["wall_s"] += r["wall_s"]
+            grouped[key]["cpu_s"] += r.get("cpu_s", 0.0)
             grouped[key]["maxrss_kb"] = max(grouped[key]["maxrss_kb"], r["maxrss_kb"])
         else:
             out.append(r)
@@ -381,16 +477,20 @@ def collapse(results):
 def print_stack(label, results, cf):
     rows = collapse(results)
     total_w = sum(r["wall_s"] for r in rows)
+    total_cpu = sum(r.get("cpu_s", 0.0) for r in rows)
     peak = max((r["maxrss_kb"] for r in rows), default=0)
     print(f"\n{label} (per step):")
-    print(f"  {'step':<18}{'wall_s':>10}{'peak_rss':>12}")
+    print(f"  {'step':<18}{'wall_s':>10}{'cores':>8}{'peak_rss':>12}")
     for r in rows:
-        print(f"  {r['step']:<18}{r['wall_s']:>10.2f}{fmt_rss(r['maxrss_kb']):>12}")
-        cf.write(f"{label},{r['step']},{r['wall_s']:.2f},{r['maxrss_kb']:.0f}\n")
-    print(f"  {'TOTAL':<18}{total_w:>10.2f}{fmt_rss(peak):>12}")
-    cf.write(f"{label},TOTAL,{total_w:.2f},{peak:.0f}\n")
+        print(f"  {r['step']:<18}{r['wall_s']:>10.2f}{cores(r):>8.1f}{fmt_rss(r['maxrss_kb']):>12}")
+        cf.write(f"{label},{r['step']},{r['wall_s']:.2f},{r.get('cpu_s', 0.0):.2f},"
+                 f"{cores(r):.2f},{r['maxrss_kb']:.0f}\n")
+    tot_cores = total_cpu / total_w if total_w > 0 else 0.0
+    print(f"  {'TOTAL':<18}{total_w:>10.2f}{tot_cores:>8.1f}{fmt_rss(peak):>12}")
+    cf.write(f"{label},TOTAL,{total_w:.2f},{total_cpu:.2f},{tot_cores:.2f},{peak:.0f}\n")
     dada_w = sum(r["wall_s"] for r in rows if r["step"].startswith("dada"))
-    return {"total_w": total_w, "peak": peak, "dada_w": dada_w}
+    dada_cpu = sum(r.get("cpu_s", 0.0) for r in rows if r["step"].startswith("dada"))
+    return {"total_w": total_w, "peak": peak, "dada_w": dada_w, "dada_cpu": dada_cpu}
 
 
 def main():
@@ -415,6 +515,11 @@ def main():
     p.add_argument("--pseudo-min-abundance", type=int, default=None,
                    help="pseudo: min total abundance to seed a prior (R PSEUDO_ABUNDANCE). "
                         "Default off (R's Inf)")
+    p.add_argument("--thread-sweep", default=None, metavar="N,N,...",
+                   help="dada2-rs-only scaling study: prepare inputs once (filter+learn), "
+                        "then run only the denoise step at each comma-separated thread "
+                        "count, reporting wall/cores/speedup/efficiency. Skips R and "
+                        "downstream steps. e.g. --thread-sweep 1,2,4,8,16,24")
     p.add_argument("--dada2rs", help="path to dada2-rs binary (REQUIRED; e.g. "
                    "target/release/dada2-rs or target/release-native/dada2-rs)")
     p.add_argument("--rscript", help="path to Rscript (default: Rscript on PATH)")
@@ -460,6 +565,13 @@ def main():
     outdir = Path(args.outdir).resolve()
     outdir.mkdir(parents=True, exist_ok=True)
 
+    if args.thread_sweep:
+        bin_ = find_binary(args.dada2rs)
+        print(f"=== thread sweep: dada2-rs ({args.platform}, {args.pool}) — {bin_} ===",
+              flush=True)
+        thread_sweep(args, bin_, outdir)
+        return
+
     rust_results, r_split_results, r_split_nasv, r_single = [], [], None, None
     do_split = args.r_mode in ("split", "both")
     do_single = args.r_mode in ("single", "both")
@@ -484,23 +596,30 @@ def main():
     mode = {"true": "pooled", "false": "per-sample", "pseudo": "pseudo"}[args.pool]
     print(f"BENCHMARK SUMMARY — {args.platform}, {mode} denoise, {args.threads} thread(s)")
     print("=" * 56)
+    print(f"  cores = CPU/wall (effective cores; ideal ≈ {args.threads} for an "
+          "in-process step, ≈ min(#samples, threads) for fanned steps)")
     csv_path = outdir / "summary.csv"
     with open(csv_path, "w") as cf:
-        cf.write("stack,step,wall_s,maxrss_kb\n")
+        cf.write("stack,step,wall_s,cpu_s,cores,maxrss_kb\n")
         rs = print_stack("dada2-rs", rust_results, cf) if rust_results else None
         rr_split = print_stack("R-split", r_split_results, cf) if r_split_results else None
 
         rr_single = None
         if r_single:
             rr_single = {"total_w": r_single["total_w"], "peak": r_single["peak"]}
+            tot_cores = (r_single["total_cpu"] / r_single["total_w"]
+                         if r_single["total_w"] > 0 else 0.0)
             print("\nR-single (whole pipeline in one process):")
-            print(f"  {'step':<18}{'wall_s':>10}{'peak_rss':>12}")
+            print(f"  {'step':<18}{'wall_s':>10}{'cores':>8}{'peak_rss':>12}")
             for s in r_single["steps"]:
-                print(f"  {s['step']:<18}{s['wall_s']:>10.2f}{'—':>12}")
-                cf.write(f"R-single,{s['step']},{s['wall_s']:.2f},\n")
-            print(f"  {'TOTAL':<18}{r_single['total_w']:>10.2f}{fmt_rss(r_single['peak']):>12}")
-            cf.write(f"R-single,TOTAL,{r_single['total_w']:.2f},{r_single['peak']:.0f}\n")
-            print("  (per-step RSS unavailable: one accumulating process spans all steps)")
+                # per-step wall from system.time(); cores/RSS only available process-wide
+                print(f"  {s['step']:<18}{s['wall_s']:>10.2f}{'—':>8}{'—':>12}")
+                cf.write(f"R-single,{s['step']},{s['wall_s']:.2f},,,\n")
+            print(f"  {'TOTAL':<18}{r_single['total_w']:>10.2f}{tot_cores:>8.1f}"
+                  f"{fmt_rss(r_single['peak']):>12}")
+            cf.write(f"R-single,TOTAL,{r_single['total_w']:.2f},{r_single['total_cpu']:.2f},"
+                     f"{tot_cores:.2f},{r_single['peak']:.0f}\n")
+            print("  (per-step cores/RSS unavailable: one accumulating process spans all steps)")
 
         nasv = r_split_nasv if r_split_nasv is not None else (r_single or {}).get("n_asv")
         if nasv is not None:
