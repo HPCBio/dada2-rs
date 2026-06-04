@@ -178,6 +178,8 @@ def rust_dada_step(args, bin_, step, filts, names, errmodel, ddir, outdir, resul
             cmd += ["--pseudo-min-abundance", str(args.pseudo_min_abundance)]
         if sj is not None:
             cmd += ["--sample-jobs", str(sj)]
+        if args.low_memory:
+            cmd += ["--low-memory"]
         run_step(step, cmd, outdir / f"{step}.log", results)
     else:
         # Multi-input dada: one process, per-sample (R pool=FALSE), fanning
@@ -591,6 +593,10 @@ def main():
                    help="pseudo/false: samples denoised concurrently (passed to "
                         "dada-pseudo / multi-input dada --sample-jobs). Default: let "
                         "the command decide (round(threads/4))")
+    p.add_argument("--low-memory", action="store_true",
+                   help="pseudo: pass --low-memory to dada-pseudo (stream samples, "
+                        "re-reading per round; caps peak memory at --sample-jobs samples "
+                        "in flight at the cost of round-2 re-dereplication)")
     p.add_argument("--thread-sweep", default=None, metavar="N,N,...",
                    help="dada2-rs-only scaling study: prepare inputs once (filter+learn), "
                         "then run only the denoise step at each comma-separated thread "
@@ -682,6 +688,8 @@ def main():
     # ---- report ----
     print("\n" + "=" * 56)
     mode = {"true": "pooled", "false": "per-sample", "pseudo": "pseudo"}[args.pool]
+    if args.low_memory and args.pool == "pseudo":
+        mode += " low-mem"
     print(f"BENCHMARK SUMMARY — {args.platform}, {mode} denoise, {args.threads} thread(s)")
     print("=" * 56)
     print(f"  cores = CPU/wall (effective cores; ideal ≈ {args.threads} for an "
