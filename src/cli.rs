@@ -153,6 +153,16 @@ pub enum Commands {
         #[arg(long, default_value_t = 1)]
         threads: usize,
 
+        /// (Multi-input only) Number of samples to denoise concurrently, each on
+        /// its own `threads / sample-jobs` sub-pool. A single sample's comparison
+        /// map is often too small to feed many threads, so fanning samples across
+        /// smaller sub-pools keeps every core fed (~4 threads/sample is the sweet
+        /// spot) and bounds memory to this many samples in flight. Defaults to
+        /// round(threads / 4) (1 at <=4 threads = serial). Ignored for a single
+        /// input. Dial it down for very large/complex samples if memory is tight.
+        #[arg(long)]
+        sample_jobs: Option<usize>,
+
         /// Significance threshold for abundance-based cluster splitting (omega_a)
         #[arg(long)]
         omega_a: Option<f64>,

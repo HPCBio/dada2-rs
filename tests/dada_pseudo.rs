@@ -379,7 +379,10 @@ fn dada_multi_input_matches_per_file_runs() {
     let s1 = fixture("sam1F.fastq.gz");
     let s2 = fixture("sam2F.fastq.gz");
 
-    // Multi-input run -> per-sample files in a directory.
+    // Multi-input run (with across-sample concurrency) -> per-sample files in a
+    // directory. Asserting this equals the per-file single runs covers both that
+    // multi-input matches single-input AND that --sample-jobs concurrency is
+    // deterministic/correct.
     let multi = dir.join("multi");
     run(&[
         "dada",
@@ -390,7 +393,9 @@ fn dada_multi_input_matches_per_file_runs() {
         "--output-dir",
         multi.to_str().unwrap(),
         "--threads",
-        "1",
+        "4",
+        "--sample-jobs",
+        "2",
     ]);
 
     // Single-input runs, one per file.

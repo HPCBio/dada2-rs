@@ -336,6 +336,7 @@ fn main() -> io::Result<()> {
             inherit_err_params,
             phred_offset,
             threads,
+            sample_jobs,
             omega_a,
             omega_c,
             omega_p,
@@ -439,9 +440,24 @@ fn main() -> io::Result<()> {
                     no_kmer_screen,
                 )?;
 
-                for path in &input {
+                // Samples are independent and single-pass (load -> denoise ->
+                // write), so fan them across J sub-pools of ~threads/J each. This
+                // keeps every core fed AND bounds memory to J samples in flight
+                // (no all-samples cache). Default round(threads/4); 1 at <=4
+                // threads = the prior serial behavior.
+                let jobs = sample_jobs
+                    .unwrap_or_else(|| ((threads as f64 / 4.0).round() as usize).max(1))
+                    .clamp(1, input.len().max(1));
+                if verbose {
+                    eprintln!(
+                        "[dada] denoising {} sample(s), {jobs} concurrent",
+                        input.len()
+                    );
+                }
+                for_each_sample_concurrent(input.len(), jobs, threads, |i, sub_pool| {
+                    let path = &input[i];
                     let (derep, json_sample) =
-                        load_derep_for_dada(path, phred_offset, &pool, verbose)?;
+                        load_derep_for_dada(path, phred_offset, sub_pool, verbose)?;
                     let mut raw_inputs: Vec<dada::RawInput> = derep
                         .uniques
                         .into_iter()
@@ -482,7 +498,7 @@ fn main() -> io::Result<()> {
                         &raw_inputs,
                         &resolved.params,
                         &resolved.run,
-                        &pool,
+                        sub_pool,
                         compact,
                         verbose,
                     )?;
@@ -491,7 +507,8 @@ fn main() -> io::Result<()> {
                     if verbose {
                         eprintln!("[dada] wrote {}", out_path.display());
                     }
-                }
+                    Ok(())
+                })?;
                 return Ok(());
             }
 
