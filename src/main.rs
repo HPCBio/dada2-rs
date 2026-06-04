@@ -841,6 +841,7 @@ fn main() -> io::Result<()> {
             verbose,
         } => {
             use std::collections::{HashMap, HashSet};
+            use std::sync::Mutex;
 
             let n_samples = input.len();
             if let Some(ref names) = sample_names
@@ -867,14 +868,26 @@ fn main() -> io::Result<()> {
             // Phase timers (printed under --verbose): derep and merge are
             // serial, so their share quantifies the single-threaded front of a
             // pooled run vs the parallel `run_dada`.
+            // Load + dereplicate each sample concurrently. This is the serial
+            // single-threaded front of a pooled run; with many samples it adds
+            // up. A single sample's derep doesn't saturate many threads, so fan
+            // samples across the pool (up to `threads` at once, ~1 thread each)
+            // — across-sample concurrency fills cores best for this I/O+hash work.
             let t_derep = std::time::Instant::now();
-            let mut dereps: Vec<derep::Derep> = Vec::with_capacity(n_samples);
-            let mut json_samples: Vec<Option<String>> = Vec::with_capacity(n_samples);
-            for path in &input {
-                let (d, name) = load_derep_for_dada(path, phred_offset, &pool, verbose)?;
-                dereps.push(d);
-                json_samples.push(name);
+            let load_jobs = threads.min(n_samples).max(1);
+            let loaded: Mutex<LoadedDereps> = Mutex::new(Vec::with_capacity(n_samples));
+            for_each_sample_concurrent(n_samples, load_jobs, threads, |i, sub_pool| {
+                let (d, name) = load_derep_for_dada(&input[i], phred_offset, sub_pool, verbose)?;
+                loaded.lock().unwrap().push((i, d, name));
+                Ok(())
+            })?;
+            let mut dereps: Vec<Option<derep::Derep>> = (0..n_samples).map(|_| None).collect();
+            let mut json_samples: Vec<Option<String>> = vec![None; n_samples];
+            for (i, d, name) in loaded.into_inner().unwrap() {
+                dereps[i] = Some(d);
+                json_samples[i] = name;
             }
+            let dereps: Vec<derep::Derep> = dereps.into_iter().map(|d| d.unwrap()).collect();
             let t_derep = t_derep.elapsed();
 
             // Resolve sample names: CLI override > JSON-embedded > filename stem.
@@ -3474,6 +3487,10 @@ type IndexedAsvs = Vec<(usize, Vec<(String, u32)>)>;
 /// Like [`IndexedAsvs`] but also carrying the resolved sample name — used by the
 /// streaming dada-pseudo round 1, which loads names on the fly (no pre-load).
 type IndexedNamedAsvs = Vec<(usize, String, Vec<(String, u32)>)>;
+
+/// Per-sample dereplications tagged with their input index + JSON sample name,
+/// collected unordered from a concurrent load, then reassembled by index.
+type LoadedDereps = Vec<(usize, derep::Derep, Option<String>)>;
 
 /// Run `f` over samples `0..n` with bounded across-sample concurrency: spawn
 /// `jobs` workers, each owning a rayon sub-pool of ~`threads / jobs` threads,

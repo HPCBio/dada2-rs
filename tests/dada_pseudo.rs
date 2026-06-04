@@ -351,6 +351,41 @@ fn dada_pseudo_low_memory_matches_cached() {
     }
 }
 
+/// dada-pooled loads/dereplicates samples concurrently (reassembled by input
+/// index) and pools them into one inference; output must be byte-identical
+/// regardless of thread count.
+#[test]
+fn dada_pooled_is_deterministic_across_threads() {
+    let dir = scratch("pooled_det");
+    let err = shared_err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+    let s2 = fixture("sam2F.fastq.gz");
+
+    let run_at = |t: &str, out: &Path| {
+        run(&[
+            "dada-pooled",
+            s1.to_str().unwrap(),
+            s2.to_str().unwrap(),
+            "--error-model",
+            err.to_str().unwrap(),
+            "--output-dir",
+            out.to_str().unwrap(),
+            "--threads",
+            t,
+        ]);
+    };
+    let (t1, t8) = (dir.join("t1"), dir.join("t8"));
+    run_at("1", &t1);
+    run_at("8", &t8);
+    for sample in ["sam1F.json", "sam2F.json"] {
+        assert_eq!(
+            std::fs::read(t1.join(sample)).unwrap(),
+            std::fs::read(t8.join(sample)).unwrap(),
+            "dada-pooled output for {sample} differs between --threads 1 and 8",
+        );
+    }
+}
+
 /// merge-pairs parallelizes across samples; `collect` preserves input order, so
 /// the output must be byte-identical regardless of thread count. (Same error
 /// model is reused for both directions — this checks determinism, not biology.)
