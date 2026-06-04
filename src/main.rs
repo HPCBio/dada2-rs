@@ -1160,6 +1160,7 @@ fn main() -> io::Result<()> {
             phred_offset,
             threads,
             sample_jobs,
+            low_memory,
             omega_a,
             omega_c,
             omega_p,
@@ -1208,46 +1209,6 @@ fn main() -> io::Result<()> {
                 .build()
                 .map_err(io::Error::other)?;
 
-            // ---- Load + cache each sample's uniques once ----
-            let mut sample_raws: Vec<Vec<dada::RawInput>> = Vec::with_capacity(n_samples);
-            let mut json_samples: Vec<Option<String>> = Vec::with_capacity(n_samples);
-            for path in &input {
-                let (derep, json_sample) = load_derep_for_dada(path, phred_offset, &pool, verbose)?;
-                let raws: Vec<dada::RawInput> = derep
-                    .uniques
-                    .into_iter()
-                    .zip(derep.quals)
-                    .map(|((seq, count), quals)| {
-                        let sequence = String::from_utf8(seq)
-                            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-                        dada::RawInput {
-                            seq: sequence,
-                            abundance: count as u32,
-                            prior: false,
-                            quals: Some(quals),
-                        }
-                    })
-                    .collect();
-                if raws.is_empty() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("{}: no uniques found", path.display()),
-                    ));
-                }
-                sample_raws.push(raws);
-                json_samples.push(json_sample);
-            }
-
-            // Resolve sample names: CLI override > JSON-embedded > filename stem.
-            let sample_names: Vec<String> = match sample_names {
-                Some(names) => names,
-                None => input
-                    .iter()
-                    .zip(json_samples)
-                    .map(|(p, js)| js.unwrap_or_else(|| fastq_stem(p)))
-                    .collect(),
-            };
-
             // Resolve parameters once (shared across both rounds and all samples).
             let resolved = resolve_dada_params(
                 &error_model,
@@ -1272,45 +1233,86 @@ fn main() -> io::Result<()> {
             )?;
 
             // ---- Round 1: denoise each sample independently (no priors) ----
+            // Produces sample_names + per-sample round-1 ASVs. Default (cached)
+            // keeps every sample's uniques for round 2; --low-memory drops them
+            // after denoising and re-reads in round 2, capping peak memory at
+            // `jobs` samples in flight instead of all of them.
             if verbose {
                 eprintln!(
-                    "[dada-pseudo] round 1: {n_samples} sample(s), no priors ({jobs} concurrent)"
+                    "[dada-pseudo] round 1: {n_samples} sample(s), no priors ({jobs} concurrent{})",
+                    if low_memory { ", streaming" } else { "" },
                 );
             }
-            // Denoise samples with bounded concurrency; collect (index, ASVs)
-            // unordered, then reassemble by sample (order is irrelevant to the
-            // prior-selection union but counts must stay attributed per sample).
-            let collected: Mutex<IndexedAsvs> = Mutex::new(Vec::with_capacity(n_samples));
-            for_each_sample_concurrent(n_samples, jobs, threads, |s, sub_pool| {
-                let result = sub_pool
-                    .install(|| dada::dada_uniques(&sample_raws[s], &resolved.params))
-                    .map_err(io::Error::other)?;
-                let asvs: Vec<(String, u32)> = result
-                    .clusters
-                    .iter()
-                    .map(|c| {
-                        let sequence: String = c
-                            .sequence
-                            .iter()
-                            .map(|&b| misc::nt_decode(b) as char)
-                            .collect();
-                        (sequence, c.reads)
-                    })
-                    .collect();
-                if verbose {
-                    eprintln!(
-                        "[dada-pseudo]   round 1 {}: {} ASV(s)",
-                        sample_names[s],
-                        asvs.len()
-                    );
+            type R1 = (
+                Vec<String>,
+                Vec<Vec<(String, u32)>>,
+                Option<Vec<Vec<dada::RawInput>>>,
+            );
+            let (sample_names, round1_asvs, mut sample_raws_opt): R1 = if !low_memory {
+                // Cached: pre-load all uniques, then denoise from the cache.
+                let mut sample_raws: Vec<Vec<dada::RawInput>> = Vec::with_capacity(n_samples);
+                let mut json_samples: Vec<Option<String>> = Vec::with_capacity(n_samples);
+                for path in &input {
+                    let (raws, js) = load_sample_raws(path, phred_offset, &pool, verbose)?;
+                    sample_raws.push(raws);
+                    json_samples.push(js);
                 }
-                collected.lock().unwrap().push((s, asvs));
-                Ok(())
-            })?;
-            let mut round1_asvs: Vec<Vec<(String, u32)>> = vec![Vec::new(); n_samples];
-            for (s, asvs) in collected.into_inner().unwrap() {
-                round1_asvs[s] = asvs;
-            }
+                let names: Vec<String> = match &sample_names {
+                    Some(n) => n.clone(),
+                    None => input
+                        .iter()
+                        .zip(&json_samples)
+                        .map(|(p, js)| js.clone().unwrap_or_else(|| fastq_stem(p)))
+                        .collect(),
+                };
+                let collected: Mutex<IndexedAsvs> = Mutex::new(Vec::with_capacity(n_samples));
+                for_each_sample_concurrent(n_samples, jobs, threads, |s, sub_pool| {
+                    let result = sub_pool
+                        .install(|| dada::dada_uniques(&sample_raws[s], &resolved.params))
+                        .map_err(io::Error::other)?;
+                    let asvs = result_to_asvs(&result);
+                    if verbose {
+                        eprintln!(
+                            "[dada-pseudo]   round 1 {}: {} ASV(s)",
+                            names[s],
+                            asvs.len()
+                        );
+                    }
+                    collected.lock().unwrap().push((s, asvs));
+                    Ok(())
+                })?;
+                let mut r1: Vec<Vec<(String, u32)>> = vec![Vec::new(); n_samples];
+                for (s, asvs) in collected.into_inner().unwrap() {
+                    r1[s] = asvs;
+                }
+                (names, r1, Some(sample_raws))
+            } else {
+                // Streaming: load + denoise + drop per sample; capture name + ASVs.
+                let collected: Mutex<IndexedNamedAsvs> = Mutex::new(Vec::with_capacity(n_samples));
+                for_each_sample_concurrent(n_samples, jobs, threads, |s, sub_pool| {
+                    let (raws, js) = load_sample_raws(&input[s], phred_offset, sub_pool, verbose)?;
+                    let result = sub_pool
+                        .install(|| dada::dada_uniques(&raws, &resolved.params))
+                        .map_err(io::Error::other)?;
+                    let asvs = result_to_asvs(&result);
+                    let name = match &sample_names {
+                        Some(n) => n[s].clone(),
+                        None => js.unwrap_or_else(|| fastq_stem(&input[s])),
+                    };
+                    if verbose {
+                        eprintln!("[dada-pseudo]   round 1 {}: {} ASV(s)", name, asvs.len());
+                    }
+                    collected.lock().unwrap().push((s, name, asvs));
+                    Ok(())
+                })?;
+                let mut names = vec![String::new(); n_samples];
+                let mut r1: Vec<Vec<(String, u32)>> = vec![Vec::new(); n_samples];
+                for (s, name, asvs) in collected.into_inner().unwrap() {
+                    names[s] = name;
+                    r1[s] = asvs;
+                }
+                (names, r1, None)
+            };
 
             // ---- Build a sequence table from round-1 ASVs (samples × sequences) ----
             let mut seq_index: HashMap<String, usize> = HashMap::new();
@@ -1387,39 +1389,79 @@ fn main() -> io::Result<()> {
             }
 
             // ---- Round 2: re-denoise each sample with the priors flagged ----
-            // Mark priors serially first (cheap) so the concurrent denoise only
-            // needs shared immutable access to `sample_raws`.
-            for (s, sample_name) in sample_names.iter().enumerate() {
-                let n_marked = mark_priors(&mut sample_raws[s], &prior_set);
-                if verbose {
-                    eprintln!(
-                        "[dada-pseudo]   round 2 {sample_name}: {n_marked} of {} unique(s) flagged as prior",
-                        sample_raws[s].len(),
-                    );
-                }
-            }
             if verbose {
-                eprintln!("[dada-pseudo] round 2: denoising with priors ({jobs} concurrent)");
+                eprintln!(
+                    "[dada-pseudo] round 2: denoising with priors ({jobs} concurrent{})",
+                    if low_memory { ", streaming" } else { "" },
+                );
             }
-            for_each_sample_concurrent(n_samples, jobs, threads, |s, sub_pool| {
-                let sample_name = &sample_names[s];
-                let json = denoise_and_serialize(
-                    "dada-pseudo",
-                    sample_name,
-                    &sample_raws[s],
-                    &resolved.params,
-                    &resolved.run,
-                    sub_pool,
-                    compact,
-                    verbose,
-                )?;
-                let out_path = output_dir.join(format!("{sample_name}.json"));
-                std::fs::write(&out_path, &json)?;
-                if verbose {
-                    eprintln!("[dada-pseudo] wrote {}", out_path.display());
+            if !low_memory {
+                // Cached: mark priors serially (cheap; scoped so the &mut borrow
+                // is released), then denoise concurrently with shared read access.
+                {
+                    let sample_raws = sample_raws_opt.as_mut().unwrap();
+                    for (s, sample_name) in sample_names.iter().enumerate() {
+                        let n_marked = mark_priors(&mut sample_raws[s], &prior_set);
+                        if verbose {
+                            eprintln!(
+                                "[dada-pseudo]   round 2 {sample_name}: {n_marked} of {} unique(s) flagged as prior",
+                                sample_raws[s].len(),
+                            );
+                        }
+                    }
                 }
-                Ok(())
-            })?;
+                let sample_raws = sample_raws_opt.as_ref().unwrap();
+                for_each_sample_concurrent(n_samples, jobs, threads, |s, sub_pool| {
+                    let sample_name = &sample_names[s];
+                    let json = denoise_and_serialize(
+                        "dada-pseudo",
+                        sample_name,
+                        &sample_raws[s],
+                        &resolved.params,
+                        &resolved.run,
+                        sub_pool,
+                        compact,
+                        verbose,
+                    )?;
+                    let out_path = output_dir.join(format!("{sample_name}.json"));
+                    std::fs::write(&out_path, &json)?;
+                    if verbose {
+                        eprintln!("[dada-pseudo] wrote {}", out_path.display());
+                    }
+                    Ok(())
+                })?;
+            } else {
+                // Streaming: re-load each sample, mark priors on the owned copy,
+                // denoise, write. Peak memory stays bounded by `jobs` samples.
+                for_each_sample_concurrent(n_samples, jobs, threads, |s, sub_pool| {
+                    let sample_name = &sample_names[s];
+                    let (mut raws, _js) =
+                        load_sample_raws(&input[s], phred_offset, sub_pool, verbose)?;
+                    let n_marked = mark_priors(&mut raws, &prior_set);
+                    if verbose {
+                        eprintln!(
+                            "[dada-pseudo]   round 2 {sample_name}: {n_marked} of {} unique(s) flagged as prior",
+                            raws.len(),
+                        );
+                    }
+                    let json = denoise_and_serialize(
+                        "dada-pseudo",
+                        sample_name,
+                        &raws,
+                        &resolved.params,
+                        &resolved.run,
+                        sub_pool,
+                        compact,
+                        verbose,
+                    )?;
+                    let out_path = output_dir.join(format!("{sample_name}.json"));
+                    std::fs::write(&out_path, &json)?;
+                    if verbose {
+                        eprintln!("[dada-pseudo] wrote {}", out_path.display());
+                    }
+                    Ok(())
+                })?;
+            }
         }
 
         Commands::MergePairs {
@@ -3429,6 +3471,10 @@ fn resolve_dada_params(
 /// from the concurrent round-1 denoise, then reassembled by index).
 type IndexedAsvs = Vec<(usize, Vec<(String, u32)>)>;
 
+/// Like [`IndexedAsvs`] but also carrying the resolved sample name — used by the
+/// streaming dada-pseudo round 1, which loads names on the fly (no pre-load).
+type IndexedNamedAsvs = Vec<(usize, String, Vec<(String, u32)>)>;
+
 /// Run `f` over samples `0..n` with bounded across-sample concurrency: spawn
 /// `jobs` workers, each owning a rayon sub-pool of ~`threads / jobs` threads,
 /// pulling sample indices from a shared counter. `f` gets the worker's sub-pool
@@ -3482,6 +3528,56 @@ fn for_each_sample_concurrent(
         Some(e) => Err(e),
         None => Ok(()),
     }
+}
+
+/// Load one sample's dereplicated uniques as `RawInput`s (FASTQ or derep/sample
+/// JSON), returning them alongside any JSON-embedded sample name. Errors if the
+/// sample has no uniques. Used by the multi-sample `dada`/`dada-pseudo` paths.
+fn load_sample_raws(
+    path: &Path,
+    phred_offset: u8,
+    pool: &rayon::ThreadPool,
+    verbose: bool,
+) -> io::Result<(Vec<dada::RawInput>, Option<String>)> {
+    let (derep, json_sample) = load_derep_for_dada(path, phred_offset, pool, verbose)?;
+    let raws: Vec<dada::RawInput> = derep
+        .uniques
+        .into_iter()
+        .zip(derep.quals)
+        .map(|((seq, count), quals)| {
+            let sequence = String::from_utf8(seq)
+                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+            dada::RawInput {
+                seq: sequence,
+                abundance: count as u32,
+                prior: false,
+                quals: Some(quals),
+            }
+        })
+        .collect();
+    if raws.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: no uniques found", path.display()),
+        ));
+    }
+    Ok((raws, json_sample))
+}
+
+/// Map a DADA result's clusters to (decoded sequence, reads) ASV pairs.
+fn result_to_asvs(result: &dada::DadaResult) -> Vec<(String, u32)> {
+    result
+        .clusters
+        .iter()
+        .map(|c| {
+            let sequence: String = c
+                .sequence
+                .iter()
+                .map(|&b| misc::nt_decode(b) as char)
+                .collect();
+            (sequence, c.reads)
+        })
+        .collect()
 }
 
 /// Mark each RawInput whose (uppercased) sequence is in `prior_set` as a prior.

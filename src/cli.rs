@@ -453,6 +453,15 @@ pub enum Commands {
         #[arg(long)]
         sample_jobs: Option<usize>,
 
+        /// Stream samples instead of caching all uniques in memory. Each of the
+        /// two rounds re-reads (and re-dereplicates) its inputs, so peak memory
+        /// is bounded by `--sample-jobs` samples in flight rather than all
+        /// samples at once — useful for many or large/complex samples. Output is
+        /// identical; the cost is the extra round-2 dereplication. Default off
+        /// (cache; faster).
+        #[arg(long)]
+        low_memory: bool,
+
         /// Significance threshold for abundance-based cluster splitting (omega_a)
         #[arg(long)]
         omega_a: Option<f64>,

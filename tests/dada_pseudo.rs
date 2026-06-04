@@ -310,6 +310,47 @@ fn dada_pseudo_is_deterministic_across_sample_jobs() {
     }
 }
 
+/// `--low-memory` streams samples (re-reading inputs per round) instead of
+/// caching all uniques; it must produce byte-identical output to the cached
+/// default — streaming changes only *when* uniques are materialized.
+#[test]
+fn dada_pseudo_low_memory_matches_cached() {
+    let dir = scratch("pseudo_lowmem");
+    let err = shared_err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+    let s2 = fixture("sam2F.fastq.gz");
+
+    let run_mode = |out: &Path, low_memory: bool| {
+        let mut args = vec![
+            "dada-pseudo",
+            s1.to_str().unwrap(),
+            s2.to_str().unwrap(),
+            "--error-model",
+            err.to_str().unwrap(),
+            "--output-dir",
+            out.to_str().unwrap(),
+            "--pseudo-prevalence",
+            "2",
+            "--threads",
+            "4",
+        ];
+        if low_memory {
+            args.push("--low-memory");
+        }
+        run(&args);
+    };
+    let (cache, stream) = (dir.join("cache"), dir.join("stream"));
+    run_mode(&cache, false);
+    run_mode(&stream, true);
+    for sample in ["sam1F.json", "sam2F.json"] {
+        assert_eq!(
+            std::fs::read(cache.join(sample)).unwrap(),
+            std::fs::read(stream.join(sample)).unwrap(),
+            "dada-pseudo --low-memory output for {sample} differs from the cached run",
+        );
+    }
+}
+
 /// merge-pairs parallelizes across samples; `collect` preserves input order, so
 /// the output must be byte-identical regardless of thread count. (Same error
 /// model is reused for both directions — this checks determinism, not biology.)
