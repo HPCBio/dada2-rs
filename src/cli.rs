@@ -1030,6 +1030,19 @@ pub enum Commands {
         #[arg(long, default_value_t = 16)]
         max_shift: i32,
 
+        /// Match score for the parent alignment (mirrors R's `MATCH`)
+        #[arg(long = "match", default_value_t = 5)]
+        match_score: i16,
+
+        /// Mismatch penalty for the parent alignment (mirrors R's `MISMATCH`)
+        #[arg(long, allow_hyphen_values = true, default_value_t = -4)]
+        mismatch: i16,
+
+        /// Gap penalty for the parent alignment (mirrors R's `GAP_PENALTY`).
+        /// R's `removeBimeraDenovo` honors the global setDadaOpt gap penalty.
+        #[arg(long, allow_hyphen_values = true, default_value_t = -8)]
+        gap_p: i16,
+
         /// (consensus) Fraction of samples a sequence must be flagged in
         #[arg(long, default_value_t = 0.9)]
         min_sample_fraction: f64,

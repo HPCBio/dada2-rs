@@ -2034,6 +2034,9 @@ fn main() -> io::Result<()> {
             allow_one_off,
             min_one_off_parent_distance,
             max_shift,
+            match_score,
+            mismatch,
+            gap_p,
             min_sample_fraction,
             ignore_n_negatives,
             threads,
@@ -2058,9 +2061,9 @@ fn main() -> io::Result<()> {
                 max_shift,
                 min_sample_fraction,
                 ignore_n_negatives,
-                match_score: 5,
-                mismatch: -4,
-                gap_p: -8,
+                match_score,
+                mismatch,
+                gap_p,
             };
 
             let pool = rayon::ThreadPoolBuilder::new()
