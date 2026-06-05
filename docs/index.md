@@ -50,14 +50,19 @@ Run `dada2-rs <subcommand> --help` for full parameter documentation.
 
 ## Where to go next
 
+- **[Installation](installation.md)** — build from source (standard and native
+  release) or use a container image.
+- **[Illumina MiSeq walkthrough](walkthrough-illumina.md)** — paired-end,
+  end-to-end.
+- **[PacBio HiFi walkthrough](walkthrough-pacbio.md)** — single-end, with primer
+  removal and PacBio-tuned parameters.
 - **[Performance & Benchmarking](benchmarking.md)** — the tooling, log output,
   and metrics for evaluating performance and running head-to-head comparisons
   against R DADA2.
-- **Walkthroughs & subcommand reference** — see the
-  [project README](https://github.com/HPCBio/dada2-rs#readme) for the Illumina
-  MiSeq and PacBio HiFi end-to-end examples.
+- **[Citation](citation.md)** — how to cite the original DADA2 work.
 
 !!! info "Documentation status"
-    This site is being built out incrementally. The benchmarking reference is
-    the first fully ported page; usage walkthroughs currently live in the repo
-    README and will migrate here over time.
+    This site is being built out incrementally. Some background and reference
+    material still lives in the
+    [project README](https://github.com/HPCBio/dada2-rs#readme) and will migrate
+    here over time.

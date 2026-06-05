@@ -39,4 +39,9 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Installation: installation.md
+  - Walkthroughs:
+    - Illumina MiSeq: walkthrough-illumina.md
+    - PacBio HiFi: walkthrough-pacbio.md
   - Performance & Benchmarking: benchmarking.md
+  - Citation: citation.md
