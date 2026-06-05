@@ -43,5 +43,7 @@ nav:
   - Walkthroughs:
     - Illumina MiSeq: walkthrough-illumina.md
     - PacBio HiFi: walkthrough-pacbio.md
-  - Performance & Benchmarking: benchmarking.md
+  - Performance:
+    - Tooling & metrics: benchmarking.md
+    - Results: results.md
   - Citation: citation.md

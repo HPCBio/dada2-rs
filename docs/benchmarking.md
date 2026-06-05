@@ -144,6 +144,26 @@ python3 comparison/benchmark/bench_pooled.py illumina /data/MiSeqSOP \
     --dada2rs target/release-native/dada2-rs --threads 24 --pool pseudo --low-memory
 ```
 
+### 1.7 Distilling results to Markdown
+
+`bench_table.py` turns one or more `summary.csv` files into a Markdown table —
+useful since the large-dataset runs happen on the cluster and the tables are
+pasted into the docs (see [Benchmark results](results.md)).
+
+```bash
+# Scorecard — one row per run, end-to-end head-to-head:
+python3 comparison/benchmark/bench_table.py \
+    "pooled=bench_true/summary.csv" \
+    "per-sample=bench_false/summary.csv" \
+    "pseudo=bench_pseudo/summary.csv"
+
+# Per-step breakdown for a single run:
+python3 comparison/benchmark/bench_table.py --per-step bench_pseudo/summary.csv
+```
+
+`LABEL=path` names each run; R columns compare against the `R-single` rows (fair
+end-to-end wall + overall RSS), and rust-only runs simply omit them.
+
 ---
 
 ## 2. Scaling studies (dada2-rs only; skip R)
