@@ -61,6 +61,14 @@ fn run_expect_err(args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
+/// An integer field from a dada output JSON's `params` block.
+fn param_i64(path: &Path, key: &str) -> i64 {
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    v["params"][key]
+        .as_i64()
+        .unwrap_or_else(|| panic!("no integer params.{key} in {}", path.display()))
+}
+
 /// Sorted set of (sequence, abundance) from a `dada`/`dada-pseudo` output JSON.
 fn asv_set(path: &Path) -> BTreeSet<(String, i64)> {
     let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
@@ -493,6 +501,47 @@ fn dada_multi_input_matches_per_file_runs() {
             "multi-input output for {name} differs from the single-input run",
         );
     }
+}
+
+/// `--homo-gap-p`, when unset, must default to `--gap-p` (R's
+/// `HOMOPOLYMER_GAP_PENALTY = NULL` semantics); both are recorded in the output
+/// `params` block. With neither flag the defaults are -8/-8 (unchanged).
+#[test]
+fn dada_homo_gap_defaults_to_gap_penalty() {
+    let dir = scratch("gap_penalty");
+    let err = shared_err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+
+    let run_dada = |out: &Path, extra: &[&str]| {
+        let mut args = vec![
+            "dada",
+            s1.to_str().unwrap(),
+            "--error-model",
+            err.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        run(&args);
+    };
+
+    // Default: both -8.
+    let def = dir.join("def.json");
+    run_dada(&def, &[]);
+    assert_eq!(param_i64(&def, "gap_p"), -8);
+    assert_eq!(param_i64(&def, "homo_gap_p"), -8);
+
+    // --gap-p set, --homo-gap-p unset: homo falls back to gap.
+    let g = dir.join("g.json");
+    run_dada(&g, &["--gap-p", "-4"]);
+    assert_eq!(param_i64(&g, "gap_p"), -4);
+    assert_eq!(param_i64(&g, "homo_gap_p"), -4);
+
+    // Both set: independent.
+    let gh = dir.join("gh.json");
+    run_dada(&gh, &["--gap-p", "-4", "--homo-gap-p", "-1"]);
+    assert_eq!(param_i64(&gh, "gap_p"), -4);
+    assert_eq!(param_i64(&gh, "homo_gap_p"), -1);
 }
 
 #[test]

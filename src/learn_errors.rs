@@ -176,6 +176,8 @@ pub struct LearnedErrParams {
     pub use_quals: bool,
     #[serde(default)]
     pub greedy: bool,
+    #[serde(default)]
+    pub max_clust: usize,
 
     // ---- AlignParams ----
     #[serde(default)]

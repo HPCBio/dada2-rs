@@ -311,7 +311,12 @@ For a head-to-head where R's C was compiled with the cluster's native gcc, prefe
   `--primer-rev` (5'→3'; the reverse primer is reverse-complemented internally).
 - **Alignment params must be consistent.** Pass `--band`, `--homo-gap-p`, and
   `--kmer-size` to **both** `learn-errors` and the denoise step (the harness does
-  this). Mismatches trigger the §4 warning and subtly change results.
+  this). Mismatches trigger the §4 warning and subtly change results. The gap
+  penalty is also exposed as `--gap-p` (default `-8`); `--homo-gap-p`, when
+  unset, **defaults to `--gap-p`** — mirroring R's `HOMOPOLYMER_GAP_PENALTY =
+  NULL` (homopolymer gaps treated as normal gaps). The other result-affecting
+  `setDadaOpt()` knobs are also available: `--match`, `--mismatch`,
+  `--max-clust`, `--greedy`, `--use-quals`.
 - **k-mer size.** On ~1.5 kb HiFi reads `k=5` makes the pre-screen a no-op (≈
   every pair is fully aligned → slower); `k=7` is the dada2-rs default. R fixes
   `KMER_SIZE = 5`, so a matched-`k` (k=5) run isolates kernel+threading speed,

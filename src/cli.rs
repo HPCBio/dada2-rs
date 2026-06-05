@@ -200,9 +200,36 @@ pub enum Commands {
 
         /// Homopolymer-run gap penalty. Matches R's `HOMOPOLYMER_GAP_PENALTY`;
         /// PacBio pipelines typically set this closer to 0 (e.g. `-1`) because
-        /// homopolymer indels are the dominant error mode.
+        /// homopolymer indels are the dominant error mode. Defaults to --gap-p
+        /// when unset (R's HOMOPOLYMER_GAP_PENALTY = NULL).
         #[arg(long, allow_hyphen_values = true)]
         homo_gap_p: Option<i32>,
+
+        /// Gap penalty for the Needleman-Wunsch alignment (R's GAP_PENALTY).
+        #[arg(long, allow_hyphen_values = true)]
+        gap_p: Option<i32>,
+
+        /// Match score for the Needleman-Wunsch alignment (R's MATCH).
+        #[arg(long = "match", allow_hyphen_values = true)]
+        match_score: Option<i32>,
+
+        /// Mismatch score for the Needleman-Wunsch alignment (R's MISMATCH).
+        #[arg(long, allow_hyphen_values = true)]
+        mismatch: Option<i32>,
+
+        /// Maximum number of clusters to infer (R's MAX_CLUST). 0 = unlimited.
+        #[arg(long)]
+        max_clust: Option<usize>,
+
+        /// Use greedy clustering (R's GREEDY). Tri-state: omit to inherit / use
+        /// default.
+        #[arg(long)]
+        greedy: Option<bool>,
+
+        /// Use quality scores in the error model (R's USE_QUALS). Tri-state:
+        /// omit to inherit / use default.
+        #[arg(long)]
+        use_quals: Option<bool>,
 
         /// K-mer distance cutoff for the pre-alignment screen. Pairs with
         /// k-mer distance above this threshold are not aligned (matches R's
@@ -359,8 +386,35 @@ pub enum Commands {
         band: Option<i32>,
 
         /// Homopolymer-run gap penalty (matches R's `HOMOPOLYMER_GAP_PENALTY`).
+        /// Defaults to --gap-p when unset (R's HOMOPOLYMER_GAP_PENALTY = NULL).
         #[arg(long, allow_hyphen_values = true)]
         homo_gap_p: Option<i32>,
+
+        /// Gap penalty for the Needleman-Wunsch alignment (R's GAP_PENALTY).
+        #[arg(long, allow_hyphen_values = true)]
+        gap_p: Option<i32>,
+
+        /// Match score for the Needleman-Wunsch alignment (R's MATCH).
+        #[arg(long = "match", allow_hyphen_values = true)]
+        match_score: Option<i32>,
+
+        /// Mismatch score for the Needleman-Wunsch alignment (R's MISMATCH).
+        #[arg(long, allow_hyphen_values = true)]
+        mismatch: Option<i32>,
+
+        /// Maximum number of clusters to infer (R's MAX_CLUST). 0 = unlimited.
+        #[arg(long)]
+        max_clust: Option<usize>,
+
+        /// Use greedy clustering (R's GREEDY). Tri-state: omit to inherit / use
+        /// default.
+        #[arg(long)]
+        greedy: Option<bool>,
+
+        /// Use quality scores in the error model (R's USE_QUALS). Tri-state:
+        /// omit to inherit / use default.
+        #[arg(long)]
+        use_quals: Option<bool>,
 
         /// K-mer distance cutoff for the pre-alignment screen.
         #[arg(long)]
@@ -495,8 +549,35 @@ pub enum Commands {
         band: Option<i32>,
 
         /// Homopolymer-run gap penalty (matches R's `HOMOPOLYMER_GAP_PENALTY`).
+        /// Defaults to --gap-p when unset (R's HOMOPOLYMER_GAP_PENALTY = NULL).
         #[arg(long, allow_hyphen_values = true)]
         homo_gap_p: Option<i32>,
+
+        /// Gap penalty for the Needleman-Wunsch alignment (R's GAP_PENALTY).
+        #[arg(long, allow_hyphen_values = true)]
+        gap_p: Option<i32>,
+
+        /// Match score for the Needleman-Wunsch alignment (R's MATCH).
+        #[arg(long = "match", allow_hyphen_values = true)]
+        match_score: Option<i32>,
+
+        /// Mismatch score for the Needleman-Wunsch alignment (R's MISMATCH).
+        #[arg(long, allow_hyphen_values = true)]
+        mismatch: Option<i32>,
+
+        /// Maximum number of clusters to infer (R's MAX_CLUST). 0 = unlimited.
+        #[arg(long)]
+        max_clust: Option<usize>,
+
+        /// Use greedy clustering (R's GREEDY). Tri-state: omit to inherit / use
+        /// default.
+        #[arg(long)]
+        greedy: Option<bool>,
+
+        /// Use quality scores in the error model (R's USE_QUALS). Tri-state:
+        /// omit to inherit / use default.
+        #[arg(long)]
+        use_quals: Option<bool>,
 
         /// K-mer distance cutoff for the pre-alignment screen.
         #[arg(long)]
@@ -1361,11 +1442,39 @@ pub enum Commands {
         band: i32,
 
         /// Homopolymer-run gap penalty, matching R's `HOMOPOLYMER_GAP_PENALTY`.
-        /// -8 = default for both Illumina and PacBio HiFi. Lower values (closer
-        /// to 0) can help with older CLR or Nanopore data where homopolymer
-        /// indels dominate.
-        #[arg(long, default_value_t = -8, allow_hyphen_values = true)]
-        homo_gap_p: i32,
+        /// Defaults to --gap-p when unset (R's HOMOPOLYMER_GAP_PENALTY = NULL),
+        /// i.e. -8 for both Illumina and PacBio HiFi. Lower values (closer to 0)
+        /// can help with older CLR or Nanopore data where homopolymer indels
+        /// dominate.
+        #[arg(long, allow_hyphen_values = true)]
+        homo_gap_p: Option<i32>,
+
+        /// Gap penalty for the Needleman-Wunsch alignment (R's GAP_PENALTY).
+        /// Defaults to -8 when unset.
+        #[arg(long, allow_hyphen_values = true)]
+        gap_p: Option<i32>,
+
+        /// Match score for the Needleman-Wunsch alignment (R's MATCH).
+        #[arg(long = "match", default_value_t = 5, allow_hyphen_values = true)]
+        match_score: i32,
+
+        /// Mismatch score for the Needleman-Wunsch alignment (R's MISMATCH).
+        #[arg(long, default_value_t = -4, allow_hyphen_values = true)]
+        mismatch: i32,
+
+        /// Maximum number of clusters to infer (R's MAX_CLUST). 0 = unlimited.
+        #[arg(long, default_value_t = 0)]
+        max_clust: usize,
+
+        /// Use greedy clustering (R's GREEDY). Tri-state: omit for default
+        /// (true), or set explicitly.
+        #[arg(long)]
+        greedy: Option<bool>,
+
+        /// Use quality scores in the error model (R's USE_QUALS). Tri-state:
+        /// omit for default (true), or set explicitly.
+        #[arg(long)]
+        use_quals: Option<bool>,
 
         /// K-mer distance cutoff for the pre-alignment screen. Pairs with
         /// k-mer distance above this threshold are not aligned (matches R's
@@ -1602,11 +1711,39 @@ pub enum Commands {
         band: i32,
 
         /// Homopolymer-run gap penalty, matching R's `HOMOPOLYMER_GAP_PENALTY`.
-        /// -8 = default for both Illumina and PacBio HiFi. Lower values (closer
-        /// to 0) can help with older CLR or Nanopore data where homopolymer
-        /// indels dominate.
-        #[arg(long, default_value_t = -8, allow_hyphen_values = true)]
-        homo_gap_p: i32,
+        /// Defaults to --gap-p when unset (R's HOMOPOLYMER_GAP_PENALTY = NULL),
+        /// i.e. -8 for both Illumina and PacBio HiFi. Lower values (closer to 0)
+        /// can help with older CLR or Nanopore data where homopolymer indels
+        /// dominate.
+        #[arg(long, allow_hyphen_values = true)]
+        homo_gap_p: Option<i32>,
+
+        /// Gap penalty for the Needleman-Wunsch alignment (R's GAP_PENALTY).
+        /// Defaults to -8 when unset.
+        #[arg(long, allow_hyphen_values = true)]
+        gap_p: Option<i32>,
+
+        /// Match score for the Needleman-Wunsch alignment (R's MATCH).
+        #[arg(long = "match", default_value_t = 5, allow_hyphen_values = true)]
+        match_score: i32,
+
+        /// Mismatch score for the Needleman-Wunsch alignment (R's MISMATCH).
+        #[arg(long, default_value_t = -4, allow_hyphen_values = true)]
+        mismatch: i32,
+
+        /// Maximum number of clusters to infer (R's MAX_CLUST). 0 = unlimited.
+        #[arg(long, default_value_t = 0)]
+        max_clust: usize,
+
+        /// Use greedy clustering (R's GREEDY). Tri-state: omit for default
+        /// (true), or set explicitly.
+        #[arg(long)]
+        greedy: Option<bool>,
+
+        /// Use quality scores in the error model (R's USE_QUALS). Tri-state:
+        /// omit for default (true), or set explicitly.
+        #[arg(long)]
+        use_quals: Option<bool>,
 
         /// K-mer distance cutoff for the pre-alignment screen. Pairs with
         /// k-mer distance above this threshold are not aligned (matches R's

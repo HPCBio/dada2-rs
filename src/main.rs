@@ -133,6 +133,7 @@ fn build_learned_err_params(
         detect_singletons: dp.detect_singletons,
         use_quals: dp.use_quals,
         greedy: dp.greedy,
+        max_clust: dp.max_clust,
         match_score: ap.match_score,
         mismatch: ap.mismatch,
         gap_p: ap.gap_p,
@@ -157,6 +158,12 @@ struct DadaRunParams {
     detect_singletons: bool,
     band: i32,
     homo_gap_p: i32,
+    gap_p: i32,
+    match_score: i32,
+    mismatch: i32,
+    max_clust: usize,
+    greedy: bool,
+    use_quals: bool,
     kdist_cutoff: f64,
     kmer_size: usize,
     use_kmers: bool,
@@ -346,6 +353,12 @@ fn main() -> io::Result<()> {
             detect_singletons,
             band,
             homo_gap_p,
+            gap_p,
+            match_score,
+            mismatch,
+            max_clust,
+            greedy,
+            use_quals,
             kdist_cutoff,
             kmer_size,
             no_kmer_screen,
@@ -435,6 +448,12 @@ fn main() -> io::Result<()> {
                     detect_singletons,
                     band,
                     homo_gap_p,
+                    gap_p,
+                    match_score,
+                    mismatch,
+                    max_clust,
+                    greedy,
+                    use_quals,
                     kdist_cutoff,
                     kmer_size,
                     no_kmer_screen,
@@ -582,6 +601,12 @@ fn main() -> io::Result<()> {
                 detect_singletons,
                 band,
                 homo_gap_p,
+                gap_p,
+                match_score,
+                mismatch,
+                max_clust,
+                greedy,
+                use_quals,
                 kdist_cutoff,
                 kmer_size,
                 no_kmer_screen,
@@ -834,6 +859,12 @@ fn main() -> io::Result<()> {
             detect_singletons,
             band,
             homo_gap_p,
+            gap_p,
+            match_score,
+            mismatch,
+            max_clust,
+            greedy,
+            use_quals,
             kdist_cutoff,
             kmer_size,
             no_kmer_screen,
@@ -1005,6 +1036,12 @@ fn main() -> io::Result<()> {
                 detect_singletons,
                 band,
                 homo_gap_p,
+                gap_p,
+                match_score,
+                mismatch,
+                max_clust,
+                greedy,
+                use_quals,
                 kdist_cutoff,
                 kmer_size,
                 no_kmer_screen,
@@ -1183,6 +1220,12 @@ fn main() -> io::Result<()> {
             detect_singletons,
             band,
             homo_gap_p,
+            gap_p,
+            match_score,
+            mismatch,
+            max_clust,
+            greedy,
+            use_quals,
             kdist_cutoff,
             kmer_size,
             no_kmer_screen,
@@ -1240,6 +1283,12 @@ fn main() -> io::Result<()> {
                 detect_singletons,
                 band,
                 homo_gap_p,
+                gap_p,
+                match_score,
+                mismatch,
+                max_clust,
+                greedy,
+                use_quals,
                 kdist_cutoff,
                 kmer_size,
                 no_kmer_screen,
@@ -2330,6 +2379,12 @@ fn main() -> io::Result<()> {
             detect_singletons,
             band,
             homo_gap_p,
+            gap_p,
+            match_score,
+            mismatch,
+            max_clust,
+            greedy,
+            use_quals,
             kdist_cutoff,
             kmer_size,
             no_kmer_screen,
@@ -2342,6 +2397,11 @@ fn main() -> io::Result<()> {
             trace_min_abund,
             verbose,
         } => {
+            // R's HOMOPOLYMER_GAP_PENALTY = NULL tracks GAP_PENALTY.
+            let gap_p = gap_p.unwrap_or(-8);
+            let homo_gap_p = homo_gap_p.unwrap_or(gap_p);
+            let greedy = greedy.unwrap_or(true);
+            let use_quals = use_quals.unwrap_or(true);
             let loess_config = resolve_loess_config(
                 &loess_preset,
                 loess_surface.as_deref(),
@@ -2398,9 +2458,9 @@ fn main() -> io::Result<()> {
             };
 
             let align_params = AlignParams {
-                match_score: 5,
-                mismatch: -4,
-                gap_p: -8,
+                match_score,
+                mismatch,
+                gap_p,
                 homo_gap_p,
                 use_kmers: !no_kmer_screen,
                 kdist_cutoff,
@@ -2418,15 +2478,15 @@ fn main() -> io::Result<()> {
                 omega_c,
                 omega_p,
                 detect_singletons,
-                max_clust: 0,
+                max_clust,
                 min_fold,
                 min_hamming,
                 min_abund,
-                use_quals: true,
+                use_quals,
                 final_consensus: false,
                 multithread: threads > 1,
                 verbose,
-                greedy: true,
+                greedy,
                 aux_outputs: false,
             };
 
@@ -2984,6 +3044,12 @@ fn main() -> io::Result<()> {
             detect_singletons,
             band,
             homo_gap_p,
+            gap_p,
+            match_score,
+            mismatch,
+            max_clust,
+            greedy,
+            use_quals,
             kdist_cutoff,
             kmer_size,
             no_kmer_screen,
@@ -2996,6 +3062,11 @@ fn main() -> io::Result<()> {
             trace_min_abund,
             verbose,
         } => {
+            // R's HOMOPOLYMER_GAP_PENALTY = NULL tracks GAP_PENALTY.
+            let gap_p = gap_p.unwrap_or(-8);
+            let homo_gap_p = homo_gap_p.unwrap_or(gap_p);
+            let greedy = greedy.unwrap_or(true);
+            let use_quals = use_quals.unwrap_or(true);
             let loess_config = resolve_loess_config(
                 &loess_preset,
                 loess_surface.as_deref(),
@@ -3052,9 +3123,9 @@ fn main() -> io::Result<()> {
             };
 
             let align_params = AlignParams {
-                match_score: 5,
-                mismatch: -4,
-                gap_p: -8,
+                match_score,
+                mismatch,
+                gap_p,
                 homo_gap_p,
                 use_kmers: !no_kmer_screen,
                 kdist_cutoff,
@@ -3072,15 +3143,15 @@ fn main() -> io::Result<()> {
                 omega_c,
                 omega_p,
                 detect_singletons,
-                max_clust: 0,
+                max_clust,
                 min_fold,
                 min_hamming,
                 min_abund,
-                use_quals: true,
+                use_quals,
                 final_consensus: false,
                 multithread: threads > 1,
                 verbose,
-                greedy: true,
+                greedy,
                 aux_outputs: false,
             };
 
@@ -3332,6 +3403,12 @@ fn resolve_dada_params(
     detect_singletons: Option<bool>,
     band: Option<i32>,
     homo_gap_p: Option<i32>,
+    gap_p: Option<i32>,
+    match_score: Option<i32>,
+    mismatch: Option<i32>,
+    max_clust: Option<usize>,
+    greedy: Option<bool>,
+    use_quals: Option<bool>,
     kdist_cutoff: Option<f64>,
     kmer_size: Option<usize>,
     no_kmer_screen: Option<bool>,
@@ -3378,7 +3455,15 @@ fn resolve_dada_params(
     let min_abund = resolve!(min_abund, min_abund, 1);
     let detect_singletons = resolve!(detect_singletons, detect_singletons, false);
     let band = resolve!(band, band, 16);
-    let homo_gap_p = resolve!(homo_gap_p, homo_gap_p, -8);
+    let gap_p = resolve!(gap_p, gap_p, -8);
+    let match_score = resolve!(match_score, match_score, 5);
+    let mismatch = resolve!(mismatch, mismatch, -4);
+    // R's HOMOPOLYMER_GAP_PENALTY = NULL tracks GAP_PENALTY: default tier is
+    // the resolved gap_p, not a literal -8.
+    let homo_gap_p = resolve!(homo_gap_p, homo_gap_p, gap_p);
+    let max_clust = resolve!(max_clust, max_clust, 0);
+    let greedy = resolve!(greedy, greedy, true);
+    let use_quals = resolve!(use_quals, use_quals, true);
     let kdist_cutoff = resolve!(kdist_cutoff, kdist_cutoff, 0.42);
     let kmer_size = resolve!(kmer_size, kmer_size, 5);
     let use_kmers = match (no_kmer_screen, inherit_err_params, p) {
@@ -3411,6 +3496,7 @@ fn resolve_dada_params(
             em_params.detect_singletons
         );
         check!("band", band, em_params.band);
+        check!("gap_p", gap_p, em_params.gap_p);
         check!("homo_gap_p", homo_gap_p, em_params.homo_gap_p);
         check!("kdist_cutoff", kdist_cutoff, em_params.kdist_cutoff);
         check!("kmer_size", kmer_size, em_params.kmer_size);
@@ -3428,9 +3514,9 @@ fn resolve_dada_params(
     }
 
     let align_params = AlignParams {
-        match_score: 5,
-        mismatch: -4,
-        gap_p: -8,
+        match_score,
+        mismatch,
+        gap_p,
         homo_gap_p,
         use_kmers,
         kdist_cutoff,
@@ -3448,15 +3534,15 @@ fn resolve_dada_params(
         omega_c,
         omega_p,
         detect_singletons,
-        max_clust: 0,
+        max_clust,
         min_fold,
         min_hamming,
         min_abund,
-        use_quals: true,
+        use_quals,
         final_consensus: false,
         multithread: threads > 1,
         verbose,
-        greedy: true,
+        greedy,
         aux_outputs,
     };
 
@@ -3470,6 +3556,12 @@ fn resolve_dada_params(
         detect_singletons,
         band,
         homo_gap_p,
+        gap_p,
+        match_score,
+        mismatch,
+        max_clust,
+        greedy,
+        use_quals,
         kdist_cutoff,
         kmer_size,
         use_kmers,
