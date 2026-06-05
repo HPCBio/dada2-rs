@@ -1,0 +1,3 @@
+# Documentation build dependencies (MkDocs + Material theme).
+# Used by ReadTheDocs (.readthedocs.yaml) and for local `mkdocs serve`.
+mkdocs-material>=9.5

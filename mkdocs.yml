@@ -1,0 +1,42 @@
+site_name: dada2-rs
+site_description: An experimental Rust implementation of DADA2
+site_author: HPCBio
+repo_url: https://github.com/HPCBio/dada2-rs
+repo_name: HPCBio/dada2-rs
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - search.suggest
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - tables
+  - attr_list
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Performance & Benchmarking: benchmarking.md
