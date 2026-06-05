@@ -74,6 +74,28 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent   # R helper scripts live alongside this file
 
+# Set from --verbose in main(). When true, dada2-rs steps get --verbose so their
+# progress is captured in that step's OWN per-step log (each run_step writes its
+# own logf; we do not merge into one big log).
+VERBOSE = False
+
+# dada2-rs subcommands that accept --verbose (make-sequence-table does not). The
+# benchmark auto-injects --verbose into these when --verbose is given, keyed on
+# the subcommand token (cmd[1]); R steps never match, so they're left alone.
+RS_VERBOSE_SUBCMDS = {
+    "filter-and-trim", "remove-primers", "learn-errors", "dada", "dada-pooled",
+    "dada-pseudo", "merge-pairs", "remove-bimera-denovo",
+}
+
+
+def maybe_verbose(cmd):
+    """Append --verbose to a dada2-rs subcommand (keyed on cmd[1]) when the global
+    --verbose is set, so its progress is written to that step's own log. Leaves R
+    commands and make-sequence-table untouched."""
+    if VERBOSE and len(cmd) > 1 and str(cmd[1]) in RS_VERBOSE_SUBCMDS:
+        return [*cmd, "--verbose"]
+    return cmd
+
 R_STEPS = {
     "illumina": ["filter", "learn_fwd", "learn_rev", "dada_fwd", "dada_rev",
                  "merge", "make_table", "remove_bimera"],
@@ -97,6 +119,7 @@ def find_binary(explicit):
 
 def run_step(name, cmd, logf, results, append_log=False):
     """Run cmd as one process; record (name, wall_s, maxrss_kb, rc). Returns rc."""
+    cmd = maybe_verbose(cmd)
     print(f"  ==> {name}: {' '.join(str(c) for c in cmd)}", flush=True)
     start = time.time()
     with open(logf, "ab" if append_log else "wb") as lf:
@@ -126,6 +149,7 @@ def run_phase_concurrent(name, jobs, results, max_workers):
     print(f"  ==> {name}: {len(jobs)} samples, up to {max_workers} concurrent", flush=True)
 
     def one(cmd, logf):
+        cmd = maybe_verbose(cmd)
         with open(logf, "wb") as lf:
             proc = subprocess.Popen([str(c) for c in cmd],
                                     stdout=subprocess.DEVNULL, stderr=lf)
@@ -623,6 +647,12 @@ def main():
                         "overall RSS, per-step wall from system.time, no per-step RSS); "
                         "'both' (default) runs each and reports side by side")
     p.add_argument("--no-run-rust", action="store_true", help="skip the dada2-rs pipeline")
+    p.add_argument("--verbose", action="store_true",
+                   help="pass --verbose to each dada2-rs step (filter/remove-primers/"
+                        "learn-errors/dada*/merge-pairs/remove-bimera-denovo) so its "
+                        "progress is captured in that step's own per-step log "
+                        "(e.g. learn_fwd.log, dada.log). Does not merge logs and does "
+                        "not affect R steps; timing impact is negligible.")
     # Illumina filter params
     p.add_argument("--fwd-pattern", default="_R1")
     p.add_argument("--rev-pattern", default="_R2")
@@ -648,6 +678,9 @@ def main():
                    help="default: 2 for illumina, 0 for pacbio")
     p.add_argument("--max-n", type=int, default=0)
     args = p.parse_args()
+
+    global VERBOSE
+    VERBOSE = args.verbose
 
     if args.trunc_q is None:
         args.trunc_q = 2 if args.platform == "illumina" else 0
