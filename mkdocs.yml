@@ -39,6 +39,7 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - About: about.md
   - Installation: installation.md
   - Walkthroughs:
     - Illumina MiSeq: walkthrough-illumina.md

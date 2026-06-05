@@ -86,13 +86,14 @@ Performance is benchmarked head-to-head against R DADA2 with the harness in
 - **[Benchmark results](docs/results.md)** (head-to-head scorecards by platform
   and pooling mode)
 
-
 ## AI Assistance Disclosure
 
-This tool was written with the assistance of AI coding agents, specificall Claude Code, using Sonnet 4.6. All commits using AI are noted.
+See **[the project overview](docs/about.md)** for the project's origins and goals, which are directly relevant here.
+
+This tool was written with the assistance of AI coding agents, specifically Claude Code, using Sonnet and Opus LLMs. All commits using AI assistance are openly noted.
 
 Correctness is validated by comparing output against DADA2 v1.36 on a suite of real sequencing datasets - not by manual code review alone. 
-AI generated the implementation; humans defined the validation criteria, made some key coding updates, and verified results.
+AI generated the implementation; humans defined the validation criteria, made some key coding updates, and verified results. 
 
 ## Citation
 
@@ -137,6 +138,6 @@ Thankfully, within the bioinformatics community these are starting to coalesce, 
 
 #### Caveat
 
-One point where this implementation will vary from the rewrites.bio standards: due to some key implementation details (conversion of R/C++ to Rust including error models), results will vary slightly. However we will strive to reproduce results as closely as possible. We have added the ability to use R and Python for custom error model analysis to more closely emulate what we see from the original implementation.
+One point where this implementation will vary from the rewrites.bio standards: due to some key implementation details (conversion of R/C++ to Rust including error models), results will vary slightly. However we strive to reproduce results as closely as possible, within reason. We have added the ability to use R and Python for custom error model analysis to more closely emulate what we see from the original implementation.
 
-We also do not want to prevent additional outcomes or functionality that may come from the work in this project by being constrained to emulating the original code. For example, one interesting side benefit for PacBio HiFi reads has come from exposing the k-mer size as an option: alternative k-mer lengths appear to improve performance for PacBio denoising; this is something that needs to be explored more but could result in a substantial improvement in processing. 
+We also do not want to prevent additional outcomes or functionality that may come from the work in this project by being constrained to emulating the original code. For example, one interesting side benefit for PacBio HiFi reads has come from exposing the k-mer size as an option: alternative, longer k-mer lengths improve performance for PacBio denoising; this is something that needs to be explored more but results in a substantial improvement in processing with no apparent difference in ASV results.
