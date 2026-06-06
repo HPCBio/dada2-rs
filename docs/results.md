@@ -54,8 +54,6 @@ Moderate k-mer difference in pooled runs only; we only recommend k=5 or for pool
 
 ### Per step comparisons
 
-### Per step comparison at k=5, full pooling:
-
 **MiSeqSOP pooled, k=5** — dada2-rs vs R (R-single end-to-end wall)
 
 | Step | dada2-rs wall (s) | dada2-rs cores | dada2-rs peak (MB) | R wall (s) | Speedup |
