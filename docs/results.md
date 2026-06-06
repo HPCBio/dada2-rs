@@ -48,25 +48,13 @@ Run using 24 threads using release-native `dada2-rs`, `v0.1.1-a20fee47`.
 | MiSeqSOP_nopool_k6 | 151.1 | 778.7* | 5.2x | 1542 | 1659* | 1.1x |
 | MiSeqSOP_nopool_k7 | 151.7 | 778.7* | 5.2x | 1469 | 1659* | 1.1x |
 
-* - values from k=5 run
+`*` - values from k=5 run
 
 Moderate k-mer difference in pooled runs only; we only recommend k=5 or for pooled runs k=6.
 
-### Per step comparison at k=5, full pooling:
-
-| Step | dada2-rs wall (s) | dada2-rs cores | dada2-rs peak (MB) | R wall (s) | Speedup |
-|---|---:|---:|---:|---:|---:|
-| filter | 13.7 | 20.9 | 23 | 40.9 | 3.0× |
-| learn_fwd | 38.3 | 22.3 | 718 | 89.6 | 2.3× |
-| learn_rev | 38.8 | 22.0 | 852 | 111.9 | 2.9× |
-| dada_fwd | 251.2 | 15.8 | 4535 | 467.7 | 1.9× |
-| dada_rev | 187.9 | 12.3 | 3622 | 368.3 | 2.0× |
-| merge | 8.6 | 18.7 | 1569 | 256.3 | 29.7× |
-| make_table | 0.5 | 1.0 | 329 | 0.3 | 0.6× |
-| remove_bimera | 5.5 | 21.9 | 47 | 4.2 | 0.8× |
-| TOTAL | 544.5 | 15.7 | 4535 | 1361.4 | 2.5× |
-
 ### Per step comparisons
+
+### Per step comparison at k=5, full pooling:
 
 **MiSeqSOP pooled, k=5** — dada2-rs vs R (R-single end-to-end wall)
 
