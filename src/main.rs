@@ -2411,6 +2411,7 @@ fn main() -> io::Result<()> {
             } else {
                 homo_gap_p
             };
+            note_homopolymer_gapping(verbose, gap_p, homo_gap_p);
             let greedy = greedy.unwrap_or(true);
             let use_quals = use_quals.unwrap_or(true);
             let loess_config = resolve_loess_config(
@@ -3084,6 +3085,7 @@ fn main() -> io::Result<()> {
             } else {
                 homo_gap_p
             };
+            note_homopolymer_gapping(verbose, gap_p, homo_gap_p);
             let greedy = greedy.unwrap_or(true);
             let use_quals = use_quals.unwrap_or(true);
             let loess_config = resolve_loess_config(
@@ -3397,6 +3399,20 @@ struct ResolvedDada {
     run: DadaRunParams,
 }
 
+/// Emit a one-line note when homopolymer gapping is active. Because
+/// `homo_gap_p != gap_p` forces the slow scalar aligner — the vectorized SIMD
+/// path can't do homopolymer gaps, exactly why R sets `VECTORIZED_ALIGNMENT
+/// <- FALSE` (dada.R:229-230) — this is an easy performance gotcha to miss
+/// (e.g. a stray `--homo-gap-p -1` on HiFi). Surfaced under --verbose.
+fn note_homopolymer_gapping(verbose: bool, gap_p: i32, homo_gap_p: i32) {
+    if verbose && homo_gap_p != gap_p {
+        eprintln!(
+            "[align] note: homopolymer gapping active (homo_gap_p={homo_gap_p} != \
+             gap_p={gap_p}) — vectorized aligner disabled; alignments use the slower scalar DP."
+        );
+    }
+}
+
 /// Load the error model and resolve every DADA parameter via the three-tier
 /// precedence (CLI explicit > inherited from err-model `params` > built-in
 /// default). Emits the same warnings the inline handlers used to.
@@ -3489,6 +3505,7 @@ fn resolve_dada_params(
     } else {
         homo_gap_p
     };
+    note_homopolymer_gapping(verbose, gap_p, homo_gap_p);
     let max_clust = resolve!(max_clust, max_clust, 0);
     let greedy = resolve!(greedy, greedy, true);
     let use_quals = resolve!(use_quals, use_quals, true);
