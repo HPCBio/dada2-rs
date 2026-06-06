@@ -34,9 +34,15 @@ are regenerated from each run's `summary.csv` with
 
 | Run | dada2-rs wall (s) | R wall (s) | Speedup | dada2-rs peak (MB) | R peak (MB) | Peak RSS (R÷rs) |
 |---|---:|---:|---:|---:|---:|---:|
-| pooled | | | | | | |
-| per-sample | | | | | | |
-| pseudo | | | | | | |
+| MiSeqSOP_pooled_k5 | 544.5 | 1361.4 | 2.5× | 4535 | 6082 | 1.3× |
+| MiSeqSOP_pooled_k6 | 488.9 | — | — | 4529 | — | — |
+| MiSeqSOP_pooled_k7 | 487.0 | — | — | 4521 | — | — |
+| MiSeqSOP_pseudo_k5 | 245.2 | 1158.1 | 4.7× | 2208 | 1841 | 0.8× |
+| MiSeqSOP_pseudo_k6 | 246.5 | — | — | 2229 | — | — |
+| MiSeqSOP_pseudo_k7 | 244.8 | — | — | 2242 | — | — |
+| MiSeqSOP_nopool_k5 | 132.3 | 778.7 | 5.9× | 1457 | 1659 | 1.1× |
+| MiSeqSOP_nopool_k6 | 151.1 | — | — | 1542 | — | — |
+| MiSeqSOP_nopool_k7 | 151.7 | — | — | 1469 | — | — |
 
 ## PacBio HiFi
 
