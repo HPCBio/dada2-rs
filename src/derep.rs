@@ -6,8 +6,10 @@ use rayon::prelude::*;
 
 /// Mirrors the R dada2 `derep` class.
 ///
-/// - `uniques`: unique sequences sorted by read count descending (stable;
-///   ties preserve first-seen order). Matches R `derepFastq` ordering.
+/// - `uniques`: unique sequences sorted by read count descending, ties broken
+///   by sequence (lexical, ascending). Matches R `derepFastq` ordering, where
+///   `qtables2` builds uniques in lexical order and the final stable
+///   `order(decreasing=TRUE)` leaves equal-count uniques in that lexical order.
 /// - `quals`:   mean Phred quality score per position for each unique sequence;
 ///              `quals[i][j]` is the mean score at position `j` for unique `i`.
 /// - `map`:     for each input read (in order), the index into `uniques` of the
@@ -126,15 +128,23 @@ impl PartialDerep {
 
         let n = self.seq_order.len();
 
-        // Sort uniques by abundance descending (stable: first-seen order
-        // within count ties).  Matches R `derepFastq` ordering, which the
-        // downstream DADA2 algorithm assumes when traversing raws — the
-        // most-abundant raw lands at index 0 so the cluster-0 center is
-        // both the most abundant and the lowest-indexed eligible raw.
-        // Issue #4 traced part of the over-budding to our previous
-        // first-seen ordering disagreeing with R.
+        // Sort uniques by abundance descending, ties broken by sequence
+        // (lexical, ascending) to match R `derepFastq`: its `qtables2` builds
+        // uniques in lexical order, then a stable `order(decreasing=TRUE)`
+        // leaves equal-count uniques in that lexical order. The downstream
+        // DADA2 algorithm assumes this ordering when traversing raws — the
+        // most-abundant raw lands at index 0 so the cluster-0 center is both
+        // the most abundant and the lowest-indexed eligible raw. Issue #4
+        // traced part of the over-budding to our previous first-seen ordering
+        // disagreeing with R; the lexical tie-break closes the remaining gap
+        // for equal-abundance uniques. (Total order on distinct sequences, so
+        // sort stability is irrelevant.)
         let mut order: Vec<usize> = (0..n).collect();
-        order.sort_by(|&a, &b| self.counts[b].cmp(&self.counts[a]));
+        order.sort_by(|&a, &b| {
+            self.counts[b]
+                .cmp(&self.counts[a])
+                .then_with(|| self.seq_order[a].cmp(&self.seq_order[b]))
+        });
 
         // Apply the permutation to uniques and quals; remap each `map`
         // entry from old → new index.

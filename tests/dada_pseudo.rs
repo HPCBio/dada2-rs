@@ -591,3 +591,106 @@ fn dada_input_output_guards() {
     ]);
     assert!(e.contains("--output-dir"), "unexpected error: {e}");
 }
+
+/// Dereplication orders uniques by abundance descending, ties broken lexically
+/// by sequence — matching R `derepFastq` (its `qtables2` builds uniques in
+/// lexical order, then a stable abundance sort preserves it among ties). This
+/// is the order the DADA traversal assumes, so it must be reproduced exactly.
+#[test]
+fn derep_orders_by_abundance_then_lexical() {
+    let dir = scratch("derep_order");
+    // Two equal-abundance uniques (AAAA=2, CCCC=2) emitted in NON-lexical
+    // first-seen order (CCCC before AAAA); GGGG=3 is the unique max. Expect
+    // abundance-desc then lexical: GGGG, AAAA, CCCC — NOT the old first-seen
+    // tie-break (which would give GGGG, CCCC, AAAA).
+    let read = |id: &str, seq: &str| format!("@{id}\n{seq}\n+\n{}\n", "I".repeat(seq.len()));
+    let mut fq = String::new();
+    for id in ["c1", "c2"] {
+        fq += &read(id, "CCCCCCCCCC");
+    }
+    for id in ["a1", "a2"] {
+        fq += &read(id, "AAAAAAAAAA");
+    }
+    for id in ["g1", "g2", "g3"] {
+        fq += &read(id, "GGGGGGGGGG");
+    }
+    let fq_path = dir.join("tie.fastq");
+    std::fs::write(&fq_path, fq).unwrap();
+
+    let out = dir.join("derep.json");
+    run(&[
+        "derep",
+        fq_path.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+    let order: Vec<(String, i64)> = v["uniques"]
+        .as_array()
+        .expect("uniques array")
+        .iter()
+        .map(|u| {
+            (
+                u["sequence"].as_str().unwrap().to_string(),
+                u["count"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            ("GGGGGGGGGG".to_string(), 3),
+            ("AAAAAAAAAA".to_string(), 2),
+            ("CCCCCCCCCC".to_string(), 2),
+        ],
+        "derep uniques must be abundance-desc then lexical (R derepFastq order)",
+    );
+}
+
+/// Denoising a FASTQ directly must produce byte-identical output to denoising
+/// its pre-dereplicated JSON. This is the invariant that lets `dada*` consume a
+/// derep JSON interchangeably with raw FASTQ — reading the JSON reconstructs
+/// exactly the same uniques/counts/quals AND order as in-line dereplication
+/// (e.g. streaming `dada-pseudo` round 2 re-reads derep JSON, not FASTQ).
+#[test]
+fn dada_from_fastq_matches_dada_from_derep_json() {
+    let dir = scratch("derep_equiv");
+    let err = shared_err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+
+    // dada directly from FASTQ
+    let from_fastq = dir.join("from_fastq.json");
+    run(&[
+        "dada",
+        s1.to_str().unwrap(),
+        "--error-model",
+        err.to_str().unwrap(),
+        "-o",
+        from_fastq.to_str().unwrap(),
+    ]);
+
+    // derep -> JSON, then dada from that JSON
+    let derep_json = dir.join("derep.json");
+    run(&[
+        "derep",
+        s1.to_str().unwrap(),
+        "-o",
+        derep_json.to_str().unwrap(),
+    ]);
+    let from_json = dir.join("from_json.json");
+    run(&[
+        "dada",
+        derep_json.to_str().unwrap(),
+        "--error-model",
+        err.to_str().unwrap(),
+        "-o",
+        from_json.to_str().unwrap(),
+    ]);
+
+    assert_eq!(
+        std::fs::read(&from_fastq).unwrap(),
+        std::fs::read(&from_json).unwrap(),
+        "dada output from derep JSON differs from dada output from FASTQ",
+    );
+}
