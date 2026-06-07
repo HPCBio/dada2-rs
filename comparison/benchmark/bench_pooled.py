@@ -814,6 +814,8 @@ def main():
             print("\n  (note: each R split step reloads R + dada2 (~150-200 MB baseline);"
                   " small R steps floor there. Use --r-mode both for a fair wall.)")
     print(f"\nWrote {csv_path}")
+    print("  Compare runs (peak RSS / wall / cores) with compare_bench.py:")
+    print(f"    compare_bench.py --baseline a={csv_path.parent} --compare b=OTHER_OUTDIR")
 
 
 if __name__ == "__main__":
