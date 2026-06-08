@@ -255,7 +255,7 @@ fn main() -> io::Result<()> {
             threads,
             output,
             show_map,
-            compact,
+            pretty,
             verbose,
         } => {
             let pool = rayon::ThreadPoolBuilder::new()
@@ -322,15 +322,15 @@ fn main() -> io::Result<()> {
             };
 
             let tagged = Tagged::new("derep", derep_out);
-            let json = if compact {
-                serde_json::to_string(&tagged)
-            } else {
+            let json = if pretty {
                 serde_json::to_string_pretty(&tagged)
+            } else {
+                serde_json::to_string(&tagged)
             }
             .map_err(io::Error::other)?;
 
             match output {
-                Some(path) => std::fs::write(&path, &json)?,
+                Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
                 None => println!("{json}"),
             }
         }
@@ -2214,7 +2214,8 @@ fn main() -> io::Result<()> {
             seed,
             phred_offset,
             threads,
-            compact,
+            pretty,
+            gzip,
             verbose,
         } => {
             std::fs::create_dir_all(&output_dir)?;
@@ -2302,7 +2303,8 @@ fn main() -> io::Result<()> {
                         s1.to_string_lossy().into_owned()
                     }
                 };
-                let out_path = output_dir.join(format!("{stem}.json"));
+                let ext = if gzip { "json.gz" } else { "json" };
+                let out_path = output_dir.join(format!("{stem}.{ext}"));
 
                 let mut uniq_entries = Vec::with_capacity(derep.uniques.len());
                 for (i, (seq, count)) in derep.uniques.iter().enumerate() {
@@ -2324,14 +2326,14 @@ fn main() -> io::Result<()> {
 
                 let unique_count = sample_out.unique_sequences;
                 let tagged = Tagged::new("sample", sample_out);
-                let json = if compact {
-                    serde_json::to_string(&tagged)
-                } else {
+                let json = if pretty {
                     serde_json::to_string_pretty(&tagged)
+                } else {
+                    serde_json::to_string(&tagged)
                 }
                 .map_err(io::Error::other)?;
 
-                std::fs::write(&out_path, &json)?;
+                misc::write_maybe_gz(&out_path, json.as_bytes())?;
                 output_files.push(out_path.display().to_string());
                 total_bases += file_bases;
                 total_reads += file_reads;
@@ -2364,10 +2366,10 @@ fn main() -> io::Result<()> {
                 output_files,
             };
             let tagged = Tagged::new("sample", summary);
-            let summary_json = if compact {
-                serde_json::to_string(&tagged)
-            } else {
+            let summary_json = if pretty {
                 serde_json::to_string_pretty(&tagged)
+            } else {
+                serde_json::to_string(&tagged)
             }
             .map_err(io::Error::other)?;
             println!("{summary_json}");
