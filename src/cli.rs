@@ -57,8 +57,8 @@ pub enum Commands {
     /// Dereplicate sequences from a FASTQ file
     ///
     /// Produces the equivalent of the R dada2 `derep` class: a set of unique
-    /// sequences with read counts, per-unique mean quality profiles, and a
-    /// read-to-unique mapping.
+    /// sequences with read counts, per-unique integer Phred quality sums
+    /// (`qual_sum`; mean = sum / count), and a read-to-unique mapping.
     #[command(display_order = 4)]
     Derep {
         /// Input FASTQ file (uncompressed or gzipped)
@@ -83,13 +83,15 @@ pub enum Commands {
         #[arg(long)]
         show_map: bool,
 
-        /// Write JSON output to this file instead of stdout
+        /// Write JSON output to this file instead of stdout. When the path ends
+        /// in `.gz` the output is gzip-compressed (read back transparently).
         #[arg(long, short = 'o')]
         output: Option<PathBuf>,
 
-        /// Output compact (minified) JSON instead of pretty-printed
+        /// Pretty-print the JSON. Default output is compact (minified), which is
+        /// ~34% smaller on disk; pass this for human-readable output.
         #[arg(long)]
-        compact: bool,
+        pretty: bool,
 
         /// Print progress information to stderr
         #[arg(long)]
@@ -1304,9 +1306,15 @@ pub enum Commands {
         #[arg(long, default_value_t = 1)]
         threads: usize,
 
-        /// Output compact (minified) JSON instead of pretty-printed
+        /// Pretty-print the JSON. Default output is compact (minified), which is
+        /// ~34% smaller on disk; pass this for human-readable output.
         #[arg(long)]
-        compact: bool,
+        pretty: bool,
+
+        /// Gzip each per-sample JSON (writes `{sample}.json.gz`). Read back
+        /// transparently by downstream subcommands.
+        #[arg(long)]
+        gzip: bool,
 
         /// Print progress to stderr
         #[arg(long)]

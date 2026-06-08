@@ -1,10 +1,39 @@
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
+use flate2::Compression;
 use flate2::read::MultiGzDecoder;
+use flate2::write::GzEncoder;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+
+/// Write `bytes` to `path`, gzip-compressing when the path ends in `.gz`
+/// (otherwise written verbatim). Parent directories are created as needed.
+///
+/// Plain gzip (not bgzf): these JSON artifacts are read back whole via
+/// [`read_all_maybe_gz`], so bgzf's blocked/seekable layout and multithreaded
+/// compression buy nothing here — plain gzip is smaller and simpler, and the
+/// output is read transparently by the existing `.gz`-sniffing reader.
+pub fn write_maybe_gz(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = File::create(path)?;
+    let is_gz = path.extension().and_then(|e| e.to_str()) == Some("gz");
+    if is_gz {
+        let mut w = GzEncoder::new(file, Compression::default());
+        w.write_all(bytes)?;
+        w.finish()?;
+    } else {
+        let mut w = BufWriter::new(file);
+        w.write_all(bytes)?;
+        w.flush()?;
+    }
+    Ok(())
+}
 
 /// Returns `true` when `path` is the stdin sentinel `-`.
 fn is_stdin(path: &Path) -> bool {
