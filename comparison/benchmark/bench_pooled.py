@@ -485,7 +485,8 @@ def r_common_args(args, statedir):
     a = [f"platform={args.platform}", f"statedir={statedir}",
          f"threads={args.threads}", f"nbases={args.nbases}", f"input={args.input}",
          f"max_ee={mee}", f"trunc_q={args.trunc_q}", f"max_n={args.max_n}",
-         f"pool={args.pool}", f"pseudo_prevalence={args.pseudo_prevalence}"]
+         f"pool={args.pool}", f"pseudo_prevalence={args.pseudo_prevalence}",
+         f"r_derep_mode={args.r_derep_mode}"]
     if args.pseudo_min_abundance is not None:
         a.append(f"pseudo_min_abundance={args.pseudo_min_abundance}")
     if args.platform == "illumina":
@@ -536,7 +537,8 @@ def run_r_single(args, outdir):
     a = [f"platform={args.platform}", f"input={args.input}", f"outdir={rdir}",
          f"threads={args.threads}", f"nbases={args.nbases}",
          f"max_ee={mee}", f"trunc_q={args.trunc_q}", f"max_n={args.max_n}",
-         f"pool={args.pool}", f"pseudo_prevalence={args.pseudo_prevalence}"]
+         f"pool={args.pool}", f"pseudo_prevalence={args.pseudo_prevalence}",
+         f"r_derep_mode={args.r_derep_mode}"]
     if args.pseudo_min_abundance is not None:
         a.append(f"pseudo_min_abundance={args.pseudo_min_abundance}")
     if args.platform == "illumina":
@@ -666,6 +668,14 @@ def main():
                         "one process for the whole pipeline (fair end-to-end wall + one "
                         "overall RSS, per-step wall from system.time, no per-step RSS); "
                         "'both' (default) runs each and reports side by side")
+    p.add_argument("--r-derep-mode", choices=["filenames", "objects"], default="filenames",
+                   help="how R's dada() receives its input. 'filenames' (default): pass "
+                        "file paths so dada() dereplicates on the fly, one sample resident "
+                        "at a time (streamed; ~ dada2-rs streaming). 'objects': derepFastq() "
+                        "all samples up front and pass the list so dada() holds ALL derep "
+                        "objects resident (~ dada2-rs --cache-samples). Use 'objects' for a "
+                        "like-for-like preloaded-RSS comparison against --cache-samples; the "
+                        "derepFastq cost is counted inside the dada step.")
     p.add_argument("--no-run-rust", action="store_true", help="skip the dada2-rs pipeline")
     p.add_argument("--verbose", action="store_true",
                    help="pass --verbose to each dada2-rs step (filter/remove-primers/"
@@ -753,7 +763,8 @@ def main():
     mode = {"true": "pooled", "false": "per-sample", "pseudo": "pseudo"}[args.pool]
     if args.pool == "pseudo":
         mode += " cached" if args.cache_samples else " streaming"
-    print(f"BENCHMARK SUMMARY — {args.platform}, {mode} denoise, {args.threads} thread(s)")
+    rmode = f", R derep={args.r_derep_mode}" if args.run_r else ""
+    print(f"BENCHMARK SUMMARY — {args.platform}, {mode} denoise, {args.threads} thread(s){rmode}")
     print("=" * 56)
     print(f"  cores = CPU/wall (effective cores; ideal ≈ {args.threads} for an "
           "in-process step, ≈ min(#samples, threads) for fanned steps)")

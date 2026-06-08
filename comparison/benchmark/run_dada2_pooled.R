@@ -61,6 +61,15 @@ pseudo_prev  <- getn("pseudo_prevalence", 2)
 pseudo_abund <- getn("pseudo_min_abundance", NA)
 pseudo_abund <- if (is.na(pseudo_abund)) Inf else pseudo_abund   # R PSEUDO_ABUNDANCE default Inf
 
+# R derep input mode: "filenames" (default) -> dada() dereps on the fly (one
+# sample resident; streamed). "objects" -> derepFastq() up front and pass the
+# list so dada() holds ALL derep objects resident (~ dada2-rs --cache-samples).
+# See bench_step.R for the full rationale.
+r_derep_mode <- getv("r_derep_mode", "filenames")
+dada_input <- function(filts) {
+  if (identical(r_derep_mode, "objects")) derepFastq(filts) else filts
+}
+
 filt_dir <- file.path(outdir, "filtered_R")
 dir.create(filt_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -104,10 +113,10 @@ if (platform == "illumina") {
   errF <- timed("learn_fwd", learnErrors(filtFs, nbases = nbases, multithread = multithread))
   errR <- timed("learn_rev", learnErrors(filtRs, nbases = nbases, multithread = multithread))
 
-  ddF <- timed("dada_fwd", dada(filtFs, err = errF, pool = pool_flag,
+  ddF <- timed("dada_fwd", dada(dada_input(filtFs), err = errF, pool = pool_flag,
                                 PSEUDO_PREVALENCE = pseudo_prev, PSEUDO_ABUNDANCE = pseudo_abund,
                                 multithread = multithread))
-  ddR <- timed("dada_rev", dada(filtRs, err = errR, pool = pool_flag,
+  ddR <- timed("dada_rev", dada(dada_input(filtRs), err = errR, pool = pool_flag,
                                 PSEUDO_PREVALENCE = pseudo_prev, PSEUDO_ABUNDANCE = pseudo_abund,
                                 multithread = multithread))
 
@@ -153,7 +162,7 @@ if (platform == "illumina") {
                                     BAND_SIZE = band, HOMOPOLYMER_GAP_PENALTY = homo,
                                     multithread = multithread))
 
-  dd <- timed("dada", dada(filts, err = err, pool = pool_flag, BAND_SIZE = band,
+  dd <- timed("dada", dada(dada_input(filts), err = err, pool = pool_flag, BAND_SIZE = band,
                            HOMOPOLYMER_GAP_PENALTY = homo,
                            PSEUDO_PREVALENCE = pseudo_prev, PSEUDO_ABUNDANCE = pseudo_abund,
                            multithread = multithread))

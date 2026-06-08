@@ -58,6 +58,20 @@ pseudo_prev <- getn("pseudo_prevalence", 2)
 pseudo_abund <- getn("pseudo_min_abundance", NA)
 pseudo_abund <- if (is.na(pseudo_abund)) Inf else pseudo_abund   # R PSEUDO_ABUNDANCE default Inf
 
+# R derep input mode (mirrors how getDerep() behaves on the dada() input):
+#   "filenames" (default) -> pass file paths; dada() dereplicates on the fly,
+#       holding ONE sample resident at a time (streamed). ~ dada2-rs streaming.
+#   "objects"             -> derepFastq() all filts up front and pass the LIST;
+#       dada() then holds ALL derep objects resident. ~ dada2-rs --cache-samples.
+# The derepFastq() cost stays inside the timed dada() call so its wall AND peak
+# RSS are counted, matching dada2-rs where the cached load happens in the dada
+# step. (R's derep$quals is a matrix of doubles, so mode "objects" is the like-
+# for-like resident comparison against our u32 sums.)
+r_derep_mode <- getv("r_derep_mode", "filenames")
+dada_input <- function(filts) {
+  if (identical(r_derep_mode, "objects")) derepFastq(filts) else filts
+}
+
 sp <- function(name) file.path(statedir, name)   # state path helper
 
 timed <- function(name, expr) {
@@ -108,14 +122,14 @@ if (platform == "illumina") {
 
   } else if (step == "dada_fwd") {
     m <- readRDS(sp("manifest.rds")); errF <- readRDS(sp("errF.rds"))
-    ddF <- timed("dada_fwd", dada(m$filtFs, err = errF, pool = pool_flag,
+    ddF <- timed("dada_fwd", dada(dada_input(m$filtFs), err = errF, pool = pool_flag,
                                   PSEUDO_PREVALENCE = pseudo_prev, PSEUDO_ABUNDANCE = pseudo_abund,
                                   multithread = multithread))
     saveRDS(ddF, sp("ddF.rds"))
 
   } else if (step == "dada_rev") {
     m <- readRDS(sp("manifest.rds")); errR <- readRDS(sp("errR.rds"))
-    ddR <- timed("dada_rev", dada(m$filtRs, err = errR, pool = pool_flag,
+    ddR <- timed("dada_rev", dada(dada_input(m$filtRs), err = errR, pool = pool_flag,
                                   PSEUDO_PREVALENCE = pseudo_prev, PSEUDO_ABUNDANCE = pseudo_abund,
                                   multithread = multithread))
     saveRDS(ddR, sp("ddR.rds"))
@@ -187,7 +201,7 @@ if (platform == "illumina") {
 
   } else if (step == "dada") {
     m <- readRDS(sp("manifest.rds")); err <- readRDS(sp("err.rds"))
-    dd <- timed("dada", dada(m$filts, err = err, pool = pool_flag, BAND_SIZE = band,
+    dd <- timed("dada", dada(dada_input(m$filts), err = err, pool = pool_flag, BAND_SIZE = band,
                              HOMOPOLYMER_GAP_PENALTY = homo,
                              PSEUDO_PREVALENCE = pseudo_prev, PSEUDO_ABUNDANCE = pseudo_abund,
                              multithread = multithread))
