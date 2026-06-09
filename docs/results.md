@@ -105,6 +105,37 @@ We are also evaluating the general effect that increasing k-mer size has on clus
 
 Note that most of the walltime improvement is actually dominated by the `remove-primers` step (which combines two steps from DADA2: `removePrimers` and filterAndTrim). However significant improvements are also apparent for both the `learn-errors` and `dada` steps for each pooling mode.
 
+### Streaming vs cached (`--cache-samples`)
+
+`dada-pseudo` streams samples by default (re-reading each sample per round) rather
+than holding every sample's dereplicated state resident. `--cache-samples` opts
+into the old all-in-memory behavior. This characterizes that tradeoff on PacBio
+(k=5, node-exclusive single rep), comparing streaming (default) as baseline
+against cached. Numbers are filtered per stack with
+`compare_bench.py --stack <stack>`; only the `dada` step moves materially (other
+steps run on identical inputs).
+
+| Stack | mode | dada wall (s) | dada peak | Δ wall | Δ peak |
+|---|---|---:|---:|---:|---:|
+| dada2-rs | streaming (default) | 2092.4 | 2.34 GB | — | — |
+| dada2-rs | cached | 2033.5 | 8.18 GB | **−2.8%** | **+249%** |
+| R-split | streaming (default) | 3737.8 | 2.86 GB | — | — |
+| R-split | cached | 3454.6 | 14.86 GB | **−7.6%** | **+420%** |
+| R-single | streaming (default) | 3735.1 | 3.02 GB† | — | — |
+| R-single | cached | 3400.4 | 15.69 GB† | **−9.0%** | **+420%** |
+
+`†` R-single runs the whole pipeline as one process, so peak RSS is only resolvable
+process-wide (not per step); it reflects the `dada` phase, which dominates.
+
+**Verdict:** caching buys a small walltime gain on the `dada` step at a large peak-memory
+cost, and the pattern holds across all three stacks. Streaming is the right
+default; `--cache-samples` stays an opt-in for the walltime-bound, memory-rich case.
+Two cross-stack notes: streaming-vs-streaming, dada2-rs is both leaner and faster on
+`dada` (2.34 GB / 2092 s vs 2.86 GB / 3738 s); cached-vs-cached, dada2-rs is ~1.8×
+leaner (8.18 GB vs 14.86 GB) — R's resident-derep cache is not magically compact.
+See [issue #22](https://github.com/HPCBio/dada2-rs/issues/22) for the keep-but-default-off
+decision.
+
 ## Illumina MiSeq (F1000, 384 samples)
 
 Run using 24 threads using release-native `dada2-rs`, `v0.1.1-a20fee47`.
