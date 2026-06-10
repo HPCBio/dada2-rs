@@ -33,83 +33,101 @@ are regenerated from each run's `summary.csv` with
 
 ## PacBio HiFi
 
-Data is from Hergenrother 2024, 93 total samples, PacBio Sequel IIe.
+* `dada2-rs v0.1.1-9a0c5da3` (v0.1.1 prerelease)
+* Data is from Hergenrother 2024, 93 total samples, PacBio Sequel IIe.
+* Default settings using FASTQ input for `dada` in both tools
+
+### Overall workflow
 
 PacBio is benchmarked from `--kmer-size 5` (matched to R's fixed
 `KMER_SIZE = 5` — isolates kernel + threading speed) to `--kmer-size 7`
 (dada2-rs recommended default for PacBio — adds the k-mer screen-effectiveness gain). See the [PacBio notes](benchmarking.md#7-pacbio-vs-illumina-specifics).
 
-| Run | dada2-rs wall (s) | R wall (s) | Speedup | dada2-rs peak (MB) | R peak (MB) | Peak RSS (R÷rs) |
-|---|---:|---:|---:|---:|---:|---:|
-| PacBio_pooled_k5 | 6549.1 | 15162.8 | **2.3×** | 36931 | 40024 | **1.1×** |
-| PacBio_pooled_k6 | 1442.8 | 15162.8* | **10.5x** | 42067 | 40024* | **1.0x** |
-| PacBio_pooled_k7 | 1065.0 | 15162.8* | **14.2x** | 61082 | 40024* | **0.7x** |
-| PacBio_pseudo_k5 | 3466.6 | 10880.4 | **3.1×** | 13842 | 3069 | **0.2×** |
-| PacBio_pseudo_k6 | 784.5 | 10880.4* | **13.9x** | 15110 | 3069* | **0.2x** |
-| PacBio_pseudo_k7 | 609.8 | 10880.4* | **17.8x** | 19219 | 3069* | **0.2x** |
-| PacBio_nopool_k5 | 1535.8 | 8129.6 | **5.3×** | 5838 | 2808 | **0.5×** |
-| PacBio_nopool_k6 | 378.1 | 8129.6* | **21.5x** | 6356 | 2808* | **0.4x** |
-| PacBio_nopool_k7 | 283.7 | 8129.6* | **28.7x** | 8873 | 2808* | **0.3x** |
+** Results in progress, more to be added **
 
-`*` - values from k=5 run
+| Run | Pooling mode | k-mer | sample jobs | dada2-rs wall (s) | R wall (s) | Speedup (rs vs R) | dada2-rs peak (MB) | R peak (MB) | Peak RSS (rs vs R) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| PacBio_pooled_k5    | full | 5 | NA | 4336.8 | 11885.4 | **2.7×** | 29469 | 40062 | **0.7×** |
+| PacBio_pooled_k6    | full | 6 | NA | 1052.0 | 11885.4* | **11.3x** | 34365 | 40062* | **0.9x** |
+| PacBio_pooled_k7    | full | 7 | NA | 761.1 | 11885.4* | **15.6x** | 53781 | 40062* | *1.3x* |
+| PacBio_pseudo_k5    | pseudo | 5 | 6 | 2080.3 | 9299.1 | **4.5×** | 6173 | 3081 | *2.0×* |
+| PacBio_pseudo_k6    | pseudo | 6 | 6 | 496.5 | 9299.1* | **18.7x** | 6877 | 3081* | *2.2x* |
+| PacBio_pseudo_k7    | pseudo | 7 | 6 | 381.2 | 9299.1* | **24.4x** | 10907 | 3081* | *3.5x* |
+| PacBio_nopool_k5    | none | 5 | 6 | 859.0 | 7219.1 | **8.4×** | 5873 | 2783 | *2.1×* |
+| PacBio_nopool_k6    | none | 6 | 6 | 223.1 | 7219.1* | **32.4x** | 6206 | 2783* | *2.2x* |
+| PacBio_nopool_k7    | none | 7 | 6 | 180.3 | 7219.1* | **40.0x**| 8640 | 2783* | *3.1x* |
+| PacBio_pseudo_k5_j1 | pseudo | 5 | 1 | 2207.9 | 9299.1* | **4.2x** | 2880 | 3081* | **0.9x** |
+| PacBio_pseudo_k6_j1 | pseudo | 6 | 1 | 642.0 | 9299.1* | **14.5x** | 2801 | 3081* | **0.9x** |
+| PacBio_pseudo_k7_j1 | pseudo | 7 | 1 | 555.0 | 9299.1* | **16.8x** | 3717 | 3081* | *1.2x* |
+| PacBio_nopool_k5_j1 | none | 5 | 1 | 914.5 | 7219.1* | **7.9x** | 2280 | 2783* | **0.8x** |
+| PacBio_nopool_k6_j1 | none | 6 | 1 | 288.4 | 7219.1* | **25.0x** | 2158 | 2783* | **0.8x** |
+| PacBio_nopool_k7_j1 | none | 7 | 1 | 262.7 | 7219.1* | **27.5x** | 2733 | 2783* | *1.0x* |
 
-Note that R DADA2 currently has a fixed (hard-coded) k-mer size of 5 for screening. This seems to have the effect of reducing k-mer screening efficiency almost to a no-op, with almost every unique sequence proceeding to NW alignment.
-
-Our current implementation currently uses more memory (last column), an issue we are chasing down. Two of the pooling modes have a low memory setting which we are also benchmarking which should alleviate this with some performance tradeoff.
+`*` - values from k=5 run. 
 
 ### Preliminary observation and results
 
-**Recommendation:** use `--kmer-size 7` for PacBio runs, especially if your compute has a decent memory footprint. 
+**Recommendation:** use `--kmer-size 7` for PacBio runs, especially if your compute has a decent memory footprint. If you need to reduce memory and try to retain throughput, use `--kmer-size 7` and `--sample-jobs 1` for PacBio runs
 
-- Increasing the k-mer length marginally has a significant effect, reducing walltime dramatically. 
-- Preliminary followup (to be added) indicates this has essentially **no impact** on the ASVs derived post-chimera removal as well as their counts (to be added below), and may actually increase sensitivity slightly, with a few more ASVs recovered in the `dada2-rs` runs
+#### k-mer size
+
+- R DADA2 *currently* has a fixed (hard-coded) k-mer size of 5 for screening. This appears to have the effect of reducing k-mer screening efficiency almost to zero (a no-op), with almost every unique sequence proceeding to NW alignment. 
+- Increasing the k-mer length marginally has a significant effect, dramatically reducing walltime. 
+- Preliminary followup (to be added) indicates this has essentially **no impact** on the ASVs derived post-chimera removal as well as their counts, and may actually increase sensitivity slightly with a few more ASVs recovered in the `dada2-rs` runs.
+- We are also evaluating the overall effect increasing k-mer sizes have on clustering with the different pooling results. Initial k=8 results confirms this increases memory usage dramatically (>100GB), so we don't anticipate this to have much practical use. 
+
+#### ASVs
+
 - Pre-chimera results differ slightly from R DADA2 (with some ASVs found unique to both runs). However as noted above these are essentially removed with chimera removal, suggesting their lower abundance
-- `dada2-rs` utilizes more memory than expected for these steps, which we are in the process of evaluating
 
-We are also evaluating the general effect that increasing k-mer size has on clustering with the different pooling results, including basic exploratory testing using higher k-mers. Initial k=8 results confirms this increases memory usage dramatically (>100GB), so we don't anticipate this will have practical use.
+#### Memory vs walltime
+
+- `dada2-rs` currently uses more memory by default (last column) under default settings, particular with higher k-mer settings. This is at the `dada-pooled`/`dada-pseudo`/`dada` stage (see below)
+- `dada-pseudo` and `dada` (per-sample) memory overhead can be alleviated to run each sample serially by setting the number of concurrent jobs to one (`--sample-jobs 1`), with a small walltime penalty. 
+- We're looking into potential paths to further reduce this footprint
 
 ### Per step comparisons
 
-**PacBio pooled, k=7** — dada2-rs vs R (R-single end-to-end wall)
+**PacBio pooled, k=7**  — dada2-rs vs R (R-single end-to-end wall)
 
 | Step | dada2-rs wall (s) | dada2-rs cores | dada2-rs peak (MB) | R wall (s) | Speedup |
 |---|---:|---:|---:|---:|---:|
-| remove_primers | 23.0 | 20.8 | 31 | 5356.4 | **232.6×** |
-| learn | 29.4 | 20.4 | 2850 | 205.9 | **7.0×** |
-| dada | 984.4 | 20.1 | 61082 | 9494.9 | **9.6×** |
-| make_table | 0.3 | 1.0 | 111 | 0.1 | 0.3× |
-| remove_bimera | 27.8 | 23.7 | 73 | 30.5 | 1.1× |
-| TOTAL | 1065.0 | 20.2 | 61082 | 15162.8 | **14.2×** |
+| remove_primers | 19.0 | 20.9 | 31 | 5410.2 | **284.3×** |
+| learn | 25.2 | 20.6 | 2791 | 159.7 | **6.3×** |
+| dada | 698.8 | 18.8 | 53781 | 6226.2 | **8.9×** |
+| make_table | 0.3 | 1.0 | 111 | 0.1 | 0.2× |
+| remove_bimera | 17.8 | 23.6 | 103 | 19.8 | 1.1× |
+| TOTAL | 761.1 | 19.0 | 53781 | 11885.4 | **15.6×** |
 
-**PacBio pseudo, k=7** — dada2-rs vs R (R-single end-to-end wall)
+**PacBio pseudo, k=7**  — dada2-rs vs R (R-single end-to-end wall)
 
 | Step | dada2-rs wall (s) | dada2-rs cores | dada2-rs peak (MB) | R wall (s) | Speedup |
 |---|---:|---:|---:|---:|---:|
-| remove_primers | 23.5 | 20.0 | 29 | 5434.3 | **230.9×** |
-| learn | 29.7 | 20.2 | 2873 | 215.2 | **7.2×** |
-| dada | 542.2 | 21.3 | 19219 | 5135.7 | **9.5×** |
-| make_table | 0.2 | 1.0 | 70 | 0.1 | 0.3× |
-| remove_bimera | 14.0 | 22.6 | 86 | 12.7 | 0.9× |
-| TOTAL | 609.8 | 21.2 | 19219 | 10880.4 | **17.8×** |
+| remove_primers | 19.0 | 20.8 | 29 | 5380.1 | **283.6×** |
+| learn | 25.1 | 20.6 | 2809 | 155.2 | **6.2×** |
+| dada | 329.5 | 21.7 | 10907 | 3688.6 | **11.2×** |
+| make_table | 0.2 | 1.0 | 75 | 0.1 | 0.3× |
+| remove_bimera | 7.4 | 23.5 | 85 | 8.3 | 1.1× |
+| TOTAL | 381.2 | 21.6 | 10907 | 9299.1 | **24.4×** |
 
 **PacBio, no pooling, k=7** — dada2-rs vs R (R-single end-to-end wall)
 
 | Step | dada2-rs wall (s) | dada2-rs cores | dada2-rs peak (MB) | R wall (s) | Speedup |
 |---|---:|---:|---:|---:|---:|
-| remove_primers | 27.6 | 20.4 | 29 | 5373.3 | **195.0×** |
-| learn | 33.9 | 20.7 | 2902 | 239.4 | **7.1×** |
-| dada | 214.4 | 21.6 | 8873 | 2426.9 | **11.3×** |
-| make_table | 0.1 | 1.0 | 53 | 0.0 | 0.3× |
-| remove_bimera | 7.7 | 22.0 | 70 | 8.1 | 1.1× |
-| TOTAL | 283.7 | 21.4 | 8873 | 8129.6 | **28.7×** |
+| remove_primers | 19.1 | 20.8 | 29 | 5445.1 | **285.7×** |
+| learn | 25.1 | 20.5 | 2717 | 159.9 | **6.4×** |
+| dada | 131.9 | 21.0 | 8640 | 1542.7 | **11.7×** |
+| make_table | 0.1 | 1.0 | 54 | 0.0 | 0.3× |
+| remove_bimera | 4.0 | 23.3 | 69 | 4.5 | 1.1× |
+| TOTAL | 180.3 | 21.0 | 8640 | 7219.1 | **40.0×** |
 
-Note that most of the walltime improvement is actually dominated by the `remove-primers` step (which combines two steps from DADA2: `removePrimers` and filterAndTrim). However significant improvements are also apparent for both the `learn-errors` and `dada` steps for each pooling mode.
+Note that most of the walltime improvement is actually dominated by the `remove-primers` step (which combines two steps from DADA2: `removePrimers` and `filterAndTrim`, and parallelizes both steps; R `removePrimers` processes data serially). In many cases alternative tools like `cutadapt` can help close this gap and may prove more flexible for others. However significant improvements are also apparent for both the `learn-errors` and `dada` steps for each pooling mode.
 
 ### Streaming vs cached (`--cache-samples`)
 
 `dada-pseudo` streams samples by default (re-reading each sample per round) rather
 than holding every sample's dereplicated state resident. `--cache-samples` opts
-into the old all-in-memory behavior. This characterizes that tradeoff on PacBio
+into the older all-in-memory behavior. This characterizes that tradeoff on PacBio
 (k=5, node-exclusive single rep), comparing streaming (default) as baseline
 against cached. Numbers are filtered per stack with
 `compare_bench.py --stack <stack>`; only the `dada` step moves materially (other
@@ -130,22 +148,25 @@ process-wide (not per step); it reflects the `dada` phase, which dominates.
 **Verdict:** caching buys a small walltime gain on the `dada` step at a large peak-memory
 cost, and the pattern holds across all three stacks. Streaming is the right
 default; `--cache-samples` stays an opt-in for the walltime-bound, memory-rich case.
-Two cross-stack notes: streaming-vs-streaming, dada2-rs is both leaner and faster on
-`dada` (2.34 GB / 2092 s vs 2.86 GB / 3738 s); cached-vs-cached, dada2-rs is ~1.8×
-leaner (8.18 GB vs 14.86 GB) — R's resident-derep cache is not magically compact.
+
+Two cross-stack notes: 
+- streaming-vs-streaming: `dada2-rs` is leaner and faster on `dada` (2.34 GB / 2092 s vs 2.86 GB / 3738 s)
+- cached-vs-cached, dada2-rs is ~1.8× leaner (8.18 GB vs 14.86 GB) — R's resident-derep cache is not magically compact.
+
 See [issue #22](https://github.com/HPCBio/dada2-rs/issues/22) for the keep-but-default-off
 decision.
 
 ### Pre/post-update A/B (memory + speed work)
 
-A dada2-rs-vs-itself regression check (PacBio, node-exclusive, no cache flag):
-**`pre`** is `main` before the memory/speed work, **`post`** is current `main`. This
-spans the whole update window — it is a *composite* of the memory-representation change
+A dada2-rs-vs-itself regression check (PacBio, node-exclusive, no cache flag).
+
+**`pre`** is `main` before recent memory/speed improvements, **`post`** is current `main`. This
+spans the whole update window — a *composite* of the memory-representation change
 (#23, `qual_sum:[u32]` deferred division) and the `learn-errors`/`dada` speedups (issue
 #3 checklist: skip per-iteration setup, parallel `build_trans_mat`, SIMD `kmer_dist8`),
-not an isolated change. R is not a variable here, so no R numbers apply. All rows are the
-same PacBio dataset, varying mode and k. `learn` wall falls ~−13 to −15% in every row
-below; the `dada` step is broken out:
+not an isolated change. **R is not a variable here, so no R numbers apply.** 
+
+All rows are the same PacBio dataset, varying mode and k. `learn` wall falls ~−13 to −15% in every row below; the `dada` step is broken out:
 
 | mode | k | dada wall Δ | dada CPU Δ | dada peak (pre → post) | peak Δ |
 |---|---|---:|---:|---:|---:|
@@ -154,20 +175,20 @@ below; the `dada` step is broken out:
 | pseudo (streaming default) | 5 | **−14.9%** | −15.1% | 6.00 → 6.30 GB | +4.9% |
 | pseudo (cached, `--cache-samples`) | 7 | **−16.8%** | −17.4% | 18.27 → 13.12 GB | **−28.2%** |
 
-**Verdict:** the **speed win is mode-independent** — `dada` wall and CPU fall together
-(~−15 to −17%) at flat cores (−0.3 to −1.0%) in every mode, i.e. genuinely less work, not
-better parallel packing. The **memory win is resident-bound**: the modes that hold all
-samples resident shed a large fraction of the high-water mark (pooled −20%, ~7.5 GB;
-cached −28%, ~5.2 GB), while the streaming pseudo path keeps only a small working set, so
-there is no RSS reduction to capture (a small ~300 MB uptick, single rep — read as flat,
-not a regression). The peak ordering tracks residency exactly — pooled 36 GB > cached
-18 GB > streaming 6 GB. Pooled `dada` peak is ~36 GB at both k values: at that scale the
-resident all-samples data dominates RSS, the 4^k screen array is washed out, and the
-memory delta is representation-driven, not k-related.
+**Verdict:** the **speed win is mode-independent**
+— `dada` wall and CPU fall together (~−15 to −17%) at flat cores (−0.3 to −1.0%) in every mode, i.e. genuinely less work, not better parallel packing. 
+- The **memory win is resident-bound**: the modes that hold all samples resident shed a large fraction of the high-water mark (pooled −20%, ~7.5 GB; cached −28%, ~5.2 GB), while the streaming pseudo path keeps only a small working set, so there is no RSS reduction to capture (a small ~300 MB uptick, single rep — read as flat, not a regression). 
+- The peak ordering tracks residency exactly — pooled 36 GB > cached 18 GB > streaming 6 GB. Pooled `dada` peak is ~36 GB at both k values: at that scale the resident all-samples data dominates RSS, the 4^k screen array is washed out, and the memory delta is representation-driven, not k-related.
 
 ## Illumina MiSeq (F1000, 384 samples)
 
-Run using 24 threads using release-native `dada2-rs`, `v0.1.1-a20fee47`.
+The majority of recent memory work focused on PacBio data. How does this affect Illumina data processing? 
+
+* `dada2-rs v0.1.1-9a0c5da3` (v0.1.1 prerelease)
+* Data is the F1000 'MiSeqSOP' full data set: 384 samples, MiSeq v2 run.
+* Default settings using FASTQ input for `dada` in both tools
+
+* 24 threads using release-native `dada2-rs`, `v0.1.1-a20fee47`.
 
 *Overall workflow (filter and trim FASTQ -> removing chimeras)*
 
