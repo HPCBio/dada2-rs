@@ -12,7 +12,7 @@
 //! Traceback pointer values: `1` = diagonal, `2` = left (gap in s1), `3` = up (gap in s2).
 
 use crate::containers::{Raw, Sub};
-use crate::kmers::{kmer_dist, kmer_dist8, kord_dist};
+use crate::kmers::{assign_kmer, kmer_dist, kmer_dist8, kord_dist};
 
 /// Sentinel used in `Sub::map` to indicate that a reference position aligns
 /// to a gap in the query.  Matches C++ `GAP_GLYPH = 9999`.
@@ -1126,19 +1126,21 @@ pub fn raw_align_with_buf(
             (Some(k1), Some(k2)) => {
                 let d8 = kmer_dist8(k1, raw1.len(), k2, raw2.len(), k);
                 if d8 < 0.0 {
-                    // Overflow: use 16-bit vectors.
-                    match (&raw1.kmer, &raw2.kmer) {
-                        (Some(k1), Some(k2)) => kmer_dist(k1, raw1.len(), k2, raw2.len(), k),
-                        _ => 0.0,
-                    }
+                    // Overflow (a k-mer occurs ≥255× in both seqs): fall back to
+                    // the exact 16-bit distance. The u16 vectors are not kept
+                    // resident (issue #32), so recompute them from sequence here
+                    // — this path is essentially never hit for amplicon data.
+                    let v1 = assign_kmer(&raw1.seq, k);
+                    let v2 = assign_kmer(&raw2.seq, k);
+                    kmer_dist(&v1, raw1.len(), &v2, raw2.len(), k)
                 } else {
                     d8
                 }
             }
-            _ => match (&raw1.kmer, &raw2.kmer) {
-                (Some(k1), Some(k2)) => kmer_dist(k1, raw1.len(), k2, raw2.len(), k),
-                _ => 0.0,
-            },
+            // No 8-bit vectors built (e.g. cluster-center raws): no k-mer screen,
+            // exactly as before — previously both kmer8 and the u16 kmer were
+            // absent together, yielding kdist = 0.0.
+            _ => 0.0,
         };
 
         if p.gapless

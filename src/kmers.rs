@@ -96,9 +96,12 @@ pub fn assign_kmer_order(seq: &[u8], k: usize) -> Vec<u16> {
         .collect()
 }
 
-/// Populate all k-mer fields (`kmer`, `kmer8`, `kord`) on a `Raw`.
+/// Populate the resident k-mer screen fields (`kmer8`, `kord`) on a `Raw`.
+///
+/// The exact 16-bit frequency vector is intentionally NOT stored (issue #32):
+/// it dominated pooled RSS at k7 and is only consulted on the `kmer_dist8`
+/// overflow fallback, where it is recomputed from `seq` via [`assign_kmer`].
 pub fn raw_assign_kmers(raw: &mut Raw, k: usize) {
-    raw.kmer = Some(assign_kmer(&raw.seq, k));
     raw.kmer8 = Some(assign_kmer8(&raw.seq, k));
     raw.kord = Some(assign_kmer_order(&raw.seq, k));
 }

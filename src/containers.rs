@@ -81,9 +81,12 @@ pub struct Raw {
     pub qual: Option<Vec<u8>>,
     /// Prior reasons to expect this sequence to be genuine.
     pub prior: bool,
-    /// 16-bit k-mer frequency vector; populated by kmers module.
-    pub kmer: Option<Vec<u16>>,
-    /// 8-bit compressed k-mer frequency vector; populated by kmers module.
+    /// 8-bit compressed k-mer frequency vector; populated by kmers module. This
+    /// is the resident k-mer screen. The exact 16-bit frequency vector is NOT
+    /// stored (issue #32: it dominated pooled RSS at k7, ~4^k × 2 bytes/unique,
+    /// and is only needed when `kmer_dist8` overflows — a k-mer occurring ≥255×
+    /// in both sequences, essentially never for amplicons); on that path it is
+    /// recomputed from `seq` in `raw_align_with_buf`.
     pub kmer8: Option<Vec<u8>>,
     /// K-mers in the order they appear along the sequence; populated by kmers module.
     pub kord: Option<Vec<u16>>,
@@ -137,7 +140,6 @@ impl Raw {
             qual,
             seq,
             prior,
-            kmer: None,
             kmer8: None,
             kord: None,
             reads,
@@ -156,7 +158,7 @@ impl Raw {
 
     /// Reset per-iteration mutable state so this Raw can be fed back into a
     /// fresh DADA run without re-encoding the sequence or recomputing k-mer
-    /// vectors. Leaves `seq`, `qual`, `kmer*`, `kord`, `reads`, `prior`
+    /// vectors. Leaves `seq`, `qual`, `kmer8`, `kord`, `reads`, `prior`
     /// intact — those are fixed for the life of the input. `index` is
     /// reassigned by `B::new`.
     pub fn reset_for_iteration(&mut self) {
