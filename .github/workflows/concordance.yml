@@ -4,9 +4,10 @@ name: Concordance (vs R DADA2)
 # the post-chimera ASVs + per-ASV counts against a STATIC R DADA2 reference CSV
 # (committed under comparison/concordance/reference/; CI never runs R).
 #
-# Currently WARN-ONLY: metrics are reported (and surfaced in the job summary) but
-# do not fail the build. Flip to gating by adding `--gate` to the compare steps
-# once thresholds are calibrated against a few real runs.
+# GATING: the compare steps run with --gate, so a metric below its threshold
+# fails the build. Thresholds are deliberately generous (the calibrated baseline
+# is recall/precision = 1.000, count_corr ~0.994 on both platforms) so the gate
+# catches real regressions without flaking on cross-implementation noise.
 #
 # Triggers: pull requests, pushes to non-main branches, and manual dispatch
 # (the intended way to run it against main).
@@ -23,7 +24,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Advisory thresholds (shown in the report; not gating until --gate is added).
+  # Gating thresholds (generous vs the 1.000/1.000/~0.994 baseline → catch real
+  # regressions, not cross-implementation noise). Tune here.
   MIN_RECALL: "0.85"
   MIN_PRECISION: "0.80"
   MIN_COUNT_CORR: "0.95"
@@ -72,7 +74,7 @@ jobs:
               --rs work/illumina/seqtab.nochim.json --reference "$ref" \
               --label illumina --min-abundance "$MIN_ABUNDANCE" \
               --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
-              --min-count-corr "$MIN_COUNT_CORR" \
+              --min-count-corr "$MIN_COUNT_CORR" --gate \
               --summary "$GITHUB_STEP_SUMMARY" --json work/illumina_report.json
 
       # ---------------- PacBio (committed subsampled fixture) -----------------
@@ -86,8 +88,15 @@ jobs:
             echo "PacBio fixture not yet committed — skipped." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          # k=5 matches R's fixed KMER_SIZE (apples-to-apples vs the reference).
           bash comparison/concordance/run_pacbio.sh \
               ./target/release/dada2-rs "$data" work/pacbio \
+              AGRGTTYGATYMTGGCTCAG RGYTACCTTGTTACGACTT 2
+          # k=7 is the recommended PacBio setting; the k-mer screen is a prefilter,
+          # so it should match the same R(k=5) reference. Asserts the production
+          # config stays concordant.
+          PACBIO_KMER=7 bash comparison/concordance/run_pacbio.sh \
+              ./target/release/dada2-rs "$data" work/pacbio_k7 \
               AGRGTTYGATYMTGGCTCAG RGYTACCTTGTTACGACTT 2
           if [ ! -f "$ref" ]; then
             echo "::notice::PacBio reference CSV not committed yet ($ref); pipeline ran, no comparison."
@@ -96,10 +105,16 @@ jobs:
           fi
           python3 comparison/concordance/compare_to_reference.py \
               --rs work/pacbio/seqtab.nochim.json --reference "$ref" \
-              --label pacbio --min-abundance "$MIN_ABUNDANCE" \
+              --label pacbio-k5 --min-abundance "$MIN_ABUNDANCE" \
               --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
-              --min-count-corr "$MIN_COUNT_CORR" \
-              --summary "$GITHUB_STEP_SUMMARY" --json work/pacbio_report.json
+              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --summary "$GITHUB_STEP_SUMMARY" --json work/pacbio_k5_report.json
+          python3 comparison/concordance/compare_to_reference.py \
+              --rs work/pacbio_k7/seqtab.nochim.json --reference "$ref" \
+              --label pacbio-k7 --min-abundance "$MIN_ABUNDANCE" \
+              --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
+              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --summary "$GITHUB_STEP_SUMMARY" --json work/pacbio_k7_report.json
 
       - name: Upload reports
         if: always()
