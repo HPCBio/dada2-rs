@@ -6,7 +6,7 @@ small fixtures. It compares the **post-chimera ASVs and their counts** against a
 
 This is a *guardrail*, not an exact-match test: different alignment kernels,
 tie-breaks, and floating point mean the two will never be bit-identical. The
-comparison is threshold-based and meant to catch **regressions / divergence**.
+comparison is threshold-based and meant to catch **regressions or divergence**.
 
 ## Pieces
 
@@ -32,10 +32,10 @@ fixtures live here):
   downsampled Sequel IIe 16S set (see `data/pacbio/README.md`). Denoises to ~55
   ASVs in seconds.
 
-Both run in CI today; they need only their R reference CSVs generated to enable
+Both run in CI today, and only their R reference CSVs generated to enable
 the comparison.
 
-## Reference CSV schema (the contract)
+## Simple reference CSV schema
 
 Long format, one row per (ASV, sample) with count > 0, from `seqtab.nochim`:
 
@@ -70,7 +70,7 @@ the reference CSVs (and the PacBio fixture) are committed. To enable it:
 > the same truncation/filter/error settings and `pool=FALSE`. If you change one,
 > change both and regenerate the reference.
 
-## Tuning and turning on the gate
+## Tuning and turning on the gatekeeper
 
 The workflow is **warn-only**: it prints metrics (and a job summary) but stays
 green. Once a few runs show stable numbers, edit the thresholds in
