@@ -931,6 +931,17 @@ fn main() -> io::Result<()> {
                 local_to_merged.push(local_map);
             }
 
+            // The per-sample output below needs only each sample's unique read
+            // COUNTS (not its quals or seqs), so extract those into a tiny vec
+            // and drop the full per-sample dereps now — they are dead for the
+            // rest of the run (merge is done) and otherwise stay resident through
+            // the dada call, inflating peak RSS (issue #39).
+            let sample_unique_counts: Vec<Vec<u32>> = dereps
+                .iter()
+                .map(|d| d.uniques.iter().map(|(_, c)| *c as u32).collect())
+                .collect();
+            drop(dereps);
+
             let n_merged = merged_seqs.len();
             if verbose {
                 eprintln!(
@@ -966,6 +977,14 @@ fn main() -> io::Result<()> {
                     "All input FASTQ files contain no reads",
                 ));
             }
+
+            // Merge intermediates are now fully captured in `raw_inputs`; drop
+            // them before denoising so they don't sit resident through the dada
+            // call (issue #39). `merged_qual_sum` (f64) is the largest.
+            drop(merged_qual_sum);
+            drop(merged_seqs);
+            drop(seq_to_merged);
+            drop(merged_total);
 
             // ---- Mark prior sequences ----
             if let Some(ref prior_path) = prior {
@@ -1065,7 +1084,7 @@ fn main() -> io::Result<()> {
                 let mut cluster_reads: Vec<u32> = vec![0u32; result.clusters.len()];
                 for (lu, &mu) in local_to_merged[s].iter().enumerate() {
                     if let Some(c) = result.map[mu] {
-                        cluster_reads[c] += dereps[s].uniques[lu].1 as u32;
+                        cluster_reads[c] += sample_unique_counts[s][lu];
                     }
                 }
 
@@ -1083,7 +1102,7 @@ fn main() -> io::Result<()> {
                 let total_reads: u32 = cluster_reads.iter().sum();
 
                 // Per-sample local-unique → local-cluster map (mirrors single-sample dada).
-                let map: Vec<Option<usize>> = (0..dereps[s].uniques.len())
+                let map: Vec<Option<usize>> = (0..sample_unique_counts[s].len())
                     .map(|lu| {
                         let mu = local_to_merged[s][lu];
                         result.map[mu].and_then(|c| global_to_local[c])
