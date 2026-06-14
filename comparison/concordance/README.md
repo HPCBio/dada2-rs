@@ -20,7 +20,20 @@ comparison is threshold-based and meant to catch **regressions / divergence**.
 | `data/pacbio/` | Committed subsampled PacBio fixture (you add this). |
 | `../../.github/workflows/concordance.yml` | The workflow: PRs + branch pushes + manual on main. |
 
-The Illumina fixture is the in-repo MiSeq tutorial pair (`data/dada2/sam{1,2}{F,R}.fastq.gz`).
+Both toy fixtures are committed under `comparison/concordance/data/` (the repo-root
+`data/` is gitignored — it holds the large local-only benchmark datasets — so CI
+fixtures live here):
+
+- **Illumina** (`data/illumina/`, ~0.9 MB): 2 samples of the MiSeq SOP tutorial
+  data — the exact dataset used in the standard DADA2 tutorial (full set:
+  <https://mothur.s3.us-east-2.amazonaws.com/wiki/miseqsopdata.zip>). The 2-sample
+  subset here ships with the dada2 R package as its built-in test data.
+- **PacBio** (`data/pacbio/`, ~2 MB): 2 samples × 1500 reads subsampled from a
+  downsampled Sequel IIe 16S set (see `data/pacbio/README.md`). Denoises to ~55
+  ASVs in seconds.
+
+Both run in CI today; they need only their R reference CSVs generated to enable
+the comparison.
 
 ## Reference CSV schema (the contract)
 
@@ -40,21 +53,18 @@ ASV** (summed across samples), which is robust to per-sample assignment noise.
 The workflow runs the dada2-rs pipelines today but **skips the comparison** until
 the reference CSVs (and the PacBio fixture) are committed. To enable it:
 
-1. **Illumina reference** — on a machine with R + dada2:
+1. **Illumina reference** — on a machine with R + dada2 (fixture already committed):
    ```bash
-   mkdir ill_data && cp ../../data/dada2/sam{1,2}{F,R}.fastq.gz ill_data/
-   Rscript write_reference.R illumina ill_data reference/illumina_seqtab_nochim.csv
+   Rscript write_reference.R illumina data/illumina reference/illumina_seqtab_nochim.csv
    ```
    Commit `reference/illumina_seqtab_nochim.csv`.
 
-2. **PacBio fixture + reference** — subsample a few PacBio samples small enough to
-   commit (CI runs in minutes), place them in `data/pacbio/<sample>.fastq.gz`,
-   then:
+2. **PacBio reference** — fixture already committed under `data/pacbio/`:
    ```bash
    Rscript write_reference.R pacbio data/pacbio reference/pacbio_seqtab_nochim.csv \
        AGRGTTYGATYMTGGCTCAG RGYTACCTTGTTACGACTT
    ```
-   Commit both `data/pacbio/*.fastq.gz` and `reference/pacbio_seqtab_nochim.csv`.
+   Commit `reference/pacbio_seqtab_nochim.csv`.
 
 > **Parameters must match.** `write_reference.R` and the `run_*.sh` scripts use
 > the same truncation/filter/error settings and `pool=FALSE`. If you change one,
@@ -71,8 +81,8 @@ green. Once a few runs show stable numbers, edit the thresholds in
 
 ```bash
 cargo build --release
-mkdir ill && cp data/dada2/sam{1,2}{F,R}.fastq.gz ill/
-comparison/concordance/run_illumina.sh ./target/release/dada2-rs ill /tmp/ill 4
+comparison/concordance/run_illumina.sh \
+    ./target/release/dada2-rs comparison/concordance/data/illumina /tmp/ill 4
 comparison/concordance/compare_to_reference.py \
     --rs /tmp/ill/seqtab.nochim.json \
     --reference comparison/concordance/reference/illumina_seqtab_nochim.csv \

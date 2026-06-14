@@ -56,11 +56,9 @@ jobs:
       # ---------------- Illumina (in-repo MiSeq tutorial pair) ----------------
       - name: Illumina — run dada2-rs pipeline
         run: |
-          mkdir -p work/illumina_data
-          cp data/dada2/sam1F.fastq.gz data/dada2/sam1R.fastq.gz \
-             data/dada2/sam2F.fastq.gz data/dada2/sam2R.fastq.gz work/illumina_data/
           bash comparison/concordance/run_illumina.sh \
-              ./target/release/dada2-rs work/illumina_data work/illumina 2
+              ./target/release/dada2-rs \
+              comparison/concordance/data/illumina work/illumina 2
 
       - name: Illumina — compare to R reference
         run: |
