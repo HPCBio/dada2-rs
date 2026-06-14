@@ -1,0 +1,125 @@
+name: Concordance (vs R DADA2)
+
+# Sanity guardrail: run short dada2-rs pipelines on small fixtures and compare
+# the post-chimera ASVs + per-ASV counts against a STATIC R DADA2 reference CSV
+# (committed under comparison/concordance/reference/; CI never runs R).
+#
+# GATING: the compare steps run with --gate, so a metric below its threshold
+# fails the build. Thresholds are deliberately generous (the calibrated baseline
+# is recall/precision = 1.000, count_corr ~0.994 on both platforms) so the gate
+# catches real regressions without flaking on cross-implementation noise.
+#
+# Triggers: pull requests, pushes to non-main branches, and manual dispatch
+# (the intended way to run it against main).
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: concordance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Gating thresholds (generous vs the 1.000/1.000/~0.994 baseline → catch real
+  # regressions, not cross-implementation noise). Tune here.
+  MIN_RECALL: "0.85"
+  MIN_PRECISION: "0.80"
+  MIN_COUNT_CORR: "0.95"
+  MIN_ABUNDANCE: "2"
+
+jobs:
+  concordance:
+    name: Concordance vs R reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-concordance-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build (release)
+        run: cargo build --release
+
+      # ---------------- Illumina (in-repo MiSeq tutorial pair) ----------------
+      - name: Illumina — run dada2-rs pipeline
+        run: |
+          bash comparison/concordance/run_illumina.sh \
+              ./target/release/dada2-rs \
+              comparison/concordance/data/illumina work/illumina 2
+
+      - name: Illumina — compare to R reference
+        run: |
+          ref=comparison/concordance/reference/illumina_seqtab_nochim.csv
+          if [ ! -f "$ref" ]; then
+            echo "::notice::Illumina reference CSV not committed yet ($ref); skipping comparison. Generate with write_reference.R."
+            echo "Illumina reference not yet committed — pipeline ran but no comparison." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 comparison/concordance/compare_to_reference.py \
+              --rs work/illumina/seqtab.nochim.json --reference "$ref" \
+              --label illumina --min-abundance "$MIN_ABUNDANCE" \
+              --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
+              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --summary "$GITHUB_STEP_SUMMARY" --json work/illumina_report.json
+
+      # ---------------- PacBio (committed subsampled fixture) -----------------
+      # Skipped until both the fixture and the reference CSV are committed.
+      - name: PacBio — run + compare (if fixture present)
+        run: |
+          data=comparison/concordance/data/pacbio
+          ref=comparison/concordance/reference/pacbio_seqtab_nochim.csv
+          if [ ! -d "$data" ] || [ -z "$(ls -A "$data"/*.fastq.gz 2>/dev/null)" ]; then
+            echo "::notice::PacBio fixture not committed yet ($data); skipping."
+            echo "PacBio fixture not yet committed — skipped." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # k=5 matches R's fixed KMER_SIZE (apples-to-apples vs the reference).
+          bash comparison/concordance/run_pacbio.sh \
+              ./target/release/dada2-rs "$data" work/pacbio \
+              AGRGTTYGATYMTGGCTCAG RGYTACCTTGTTACGACTT 2
+          # k=7 is the recommended PacBio setting; the k-mer screen is a prefilter,
+          # so it should match the same R(k=5) reference. Asserts the production
+          # config stays concordant.
+          PACBIO_KMER=7 bash comparison/concordance/run_pacbio.sh \
+              ./target/release/dada2-rs "$data" work/pacbio_k7 \
+              AGRGTTYGATYMTGGCTCAG RGYTACCTTGTTACGACTT 2
+          if [ ! -f "$ref" ]; then
+            echo "::notice::PacBio reference CSV not committed yet ($ref); pipeline ran, no comparison."
+            echo "PacBio reference not yet committed — pipeline ran but no comparison." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 comparison/concordance/compare_to_reference.py \
+              --rs work/pacbio/seqtab.nochim.json --reference "$ref" \
+              --label pacbio-k5 --min-abundance "$MIN_ABUNDANCE" \
+              --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
+              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --summary "$GITHUB_STEP_SUMMARY" --json work/pacbio_k5_report.json
+          python3 comparison/concordance/compare_to_reference.py \
+              --rs work/pacbio_k7/seqtab.nochim.json --reference "$ref" \
+              --label pacbio-k7 --min-abundance "$MIN_ABUNDANCE" \
+              --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
+              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --summary "$GITHUB_STEP_SUMMARY" --json work/pacbio_k7_report.json
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: concordance-reports
+          path: work/*_report.json
+          if-no-files-found: ignore
