@@ -121,6 +121,64 @@ def pearson(xs, ys):
     return sxy / math.sqrt(sxx * syy)
 
 
+def hamming(a, b):
+    """Hamming distance for equal-length strings; None if lengths differ."""
+    if len(a) != len(b):
+        return None
+    return sum(1 for x, y in zip(a, b) if x != y)
+
+
+def nearest_hamming(seq, target_by_len):
+    """Min Hamming distance from `seq` to any same-length sequence in
+    `target_by_len` ({length: [seqs]}); None if no same-length target exists."""
+    cands = target_by_len.get(len(seq))
+    if not cands:
+        return None
+    best = None
+    for t in cands:
+        d = sum(1 for x, y in zip(seq, t) if x != y)
+        if best is None or d < best:
+            best = d
+            if best == 0:
+                break
+    return best
+
+
+def explain_set(only_seqs, own_map, other_seqs, n_examples=8):
+    """Characterize a set of ASVs unique to one side: abundance strata + how close
+    each is to the *other* side's ASVs (Hamming-1 from an ASV the other tool DID
+    call => benign cluster fragmentation, not novel divergence)."""
+    abunds = sorted((own_map[s] for s in only_seqs), reverse=True)
+    n = len(abunds)
+    target_by_len = {}
+    for t in other_seqs:
+        target_by_len.setdefault(len(t), []).append(t)
+    dists = [nearest_hamming(s, target_by_len) for s in only_seqs]
+    comparable = [d for d in dists if d is not None]
+    examples = []
+    for s in sorted(only_seqs, key=lambda s: -own_map[s])[:n_examples]:
+        examples.append({
+            "abundance": own_map[s],
+            "min_hamming_to_other": nearest_hamming(s, target_by_len),
+            "len": len(s),
+        })
+    return {
+        "n": n,
+        "abundance": {
+            "max": abunds[0] if abunds else 0,
+            "median": abunds[n // 2] if abunds else 0,
+            "lt10": sum(1 for a in abunds if a < 10),
+            "ge10": sum(1 for a in abunds if a >= 10),
+        },
+        "hamming_to_other": {
+            "comparable": len(comparable),  # equal-length pairs only
+            "eq1": sum(1 for d in comparable if d == 1),
+            "le2": sum(1 for d in comparable if d <= 2),
+        },
+        "examples": examples,
+    }
+
+
 def compare(rs, ref):
     rs_set, ref_set = set(rs), set(ref)
     shared = rs_set & ref_set
@@ -157,6 +215,11 @@ def compare(rs, ref):
         "rs_total_reads": rs_reads,
         "ref_total_reads": ref_reads,
         "reads_ratio_rs_over_ref": (rs_reads / ref_reads) if ref_reads else None,
+        "explain": {
+            # only-rs ASVs measured against R's set; only-R against dada2-rs's set.
+            "only_rs": explain_set(only_rs, rs, ref_set),
+            "only_ref": explain_set(only_ref, ref, rs_set),
+        },
     }
 
 
@@ -186,6 +249,21 @@ def render(c, thresholds, gate):
         lines.append(f"  {label}: {fmt(val)}  (>= {thr:.2f})  [{mark}]")
     lines.append(f"  within-2x count agreement: {fmt(c['within_2x_frac'])}  (advisory)")
     lines.append(f"  jaccard: {fmt(c['jaccard'])}  (advisory)")
+
+    # Explainability: characterize the differing ASVs so a difference is
+    # self-documenting as benign (low-abundance / Hamming-1 from a shared ASV)
+    # vs genuine divergence (high-abundance / no near neighbor).
+    for side, title in (("only_rs", "only in dada2-rs"), ("only_ref", "only in R")):
+        e = c["explain"][side]
+        if e["n"] == 0:
+            continue
+        ab, hm = e["abundance"], e["hamming_to_other"]
+        lines.append(
+            f"  {title} ({e['n']}): abundance max={ab['max']} median={ab['median']} "
+            f"(<10: {ab['lt10']}, >=10: {ab['ge10']}); "
+            f"Hamming-1 from other side: {hm['eq1']}/{hm['comparable']} comparable "
+            f"(<=2: {hm['le2']})"
+        )
     status = "PASS" if ok else ("FAIL" if gate else "FAIL (advisory — not gating)")
     lines.append(f"==> {status}")
     return "\n".join(lines), ok

@@ -28,7 +28,11 @@ MAX_EE=2
 TRUNC_Q=0
 MAX_N=0
 BAND=32
-KMER=5            # match R's fixed KMER_SIZE=5
+# Default k=5 matches R's fixed KMER_SIZE (apples-to-apples vs the reference).
+# Override with PACBIO_KMER=7 to spot-check dada2-rs's recommended PacBio setting
+# against the same R(k=5) reference — the k-mer screen is a prefilter, so this
+# should give the same ASVs (see issue #15).
+KMER="${PACBIO_KMER:-5}"
 MAX_MISMATCH=2
 NBASES=200000000
 
