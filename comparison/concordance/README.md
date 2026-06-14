@@ -8,6 +8,14 @@ This is a *guardrail*, not an exact-match test: different alignment kernels,
 tie-breaks, and floating point mean the two will never be bit-identical. The
 comparison is threshold-based and meant to catch **regressions or divergence**.
 
+It checks **consistency**, not correctness: on small toy data neither dada2-rs nor
+R DADA2 is ground truth, especially at denoising boundaries (Hamming-1/2 variants
+near the abundance threshold), where the call is genuinely ambiguous and depth-
+sensitive. The fixtures are sized so those boundary calls are reasonably stable
+(see the depth note in `data/pacbio/README.md`); a handful of low-abundance,
+near-neighbor differences is expected and benign — the `compare_to_reference.py`
+breakdown labels them so.
+
 ## Pieces
 
 | File | Role |
@@ -28,9 +36,9 @@ fixtures live here):
   data — the exact dataset used in the standard DADA2 tutorial (full set:
   <https://mothur.s3.us-east-2.amazonaws.com/wiki/miseqsopdata.zip>). The 2-sample
   subset here ships with the dada2 R package as its built-in test data.
-- **PacBio** (`data/pacbio/`, ~2 MB): 2 samples × 1500 reads subsampled from a
-  downsampled Sequel IIe 16S set (see `data/pacbio/README.md`). Denoises to ~55
-  ASVs in seconds.
+- **PacBio** (`data/pacbio/`, ~7.5 MB): 2 samples × 5000 reads subsampled from a
+  downsampled Sequel IIe 16S set (see `data/pacbio/README.md`). Denoises to ~93
+  ASVs in ~20-30s.
 
 Both run in CI today, and only their R reference CSVs generated to enable
 the comparison.
