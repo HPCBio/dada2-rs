@@ -267,6 +267,7 @@ fn main() -> io::Result<()> {
                 dereplicate(
                     MultiGzDecoder::new(File::open(&input).with_path(&input)?),
                     phred_offset,
+                    show_map, // per-read map only needed for --show-map output (#36)
                     &pool,
                     verbose,
                 )?
@@ -274,6 +275,7 @@ fn main() -> io::Result<()> {
                 dereplicate(
                     File::open(&input).with_path(&input)?,
                     phred_offset,
+                    show_map,
                     &pool,
                     verbose,
                 )?
@@ -314,7 +316,7 @@ fn main() -> io::Result<()> {
             let sample = sample_name.unwrap_or_else(|| fastq_stem(&input));
             let derep_out = DerepOutput {
                 sample: &sample,
-                total_reads: derep.map.len(),
+                total_reads: derep.n_reads as usize,
                 unique_sequences: derep.uniques.len(),
                 sort_order: "abundance_desc",
                 uniques: uniq_entries,
@@ -2205,6 +2207,7 @@ fn main() -> io::Result<()> {
                     dereplicate(
                         MultiGzDecoder::new(File::open(path).with_path(path)?),
                         phred_offset,
+                        false, // sample output uses read counts (n_reads), not the map (#36)
                         &pool,
                         verbose,
                     )?
@@ -2212,6 +2215,7 @@ fn main() -> io::Result<()> {
                     dereplicate(
                         File::open(path).with_path(path)?,
                         phred_offset,
+                        false,
                         &pool,
                         verbose,
                     )?
@@ -2222,7 +2226,7 @@ fn main() -> io::Result<()> {
                     .iter()
                     .map(|(seq, count)| seq.len() as u64 * count)
                     .sum();
-                let file_reads: u64 = derep.map.len() as u64;
+                let file_reads: u64 = derep.n_reads;
 
                 // Build a stem for the output filename, stripping up to two extensions.
                 let stem = {
@@ -2254,7 +2258,7 @@ fn main() -> io::Result<()> {
                 }
                 let sample_out = DerepOutput {
                     sample: &stem,
-                    total_reads: derep.map.len(),
+                    total_reads: derep.n_reads as usize,
                     unique_sequences: uniq_entries.len(),
                     sort_order: "abundance_desc",
                     uniques: uniq_entries,
@@ -3880,11 +3884,13 @@ fn load_derep_for_dada(
             uniques.push((u.sequence.into_bytes(), u.count));
             quals.push(u.qual_sum);
         }
+        let n_reads: u64 = uniques.iter().map(|(_, c)| c).sum();
         Ok((
             derep::Derep {
                 uniques,
                 quals,
                 map: Vec::new(),
+                n_reads,
             },
             sample_name,
         ))
@@ -3892,6 +3898,7 @@ fn load_derep_for_dada(
         let derep = dereplicate(
             MultiGzDecoder::new(File::open(path).with_path(path)?),
             phred_offset,
+            false, // dada consumes uniques only; per-read map not needed (#36)
             pool,
             verbose,
         )?;
@@ -3900,6 +3907,7 @@ fn load_derep_for_dada(
         let derep = dereplicate(
             File::open(path).with_path(path)?,
             phred_offset,
+            false,
             pool,
             verbose,
         )?;

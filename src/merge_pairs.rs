@@ -402,6 +402,7 @@ pub fn merge_sample(
         dereplicate(
             MultiGzDecoder::new(File::open(fwd_fastq_path)?),
             params.phred_offset,
+            true, // merge-pairs pairs reads via this map (#36)
             pool,
             params.verbose,
         )?
@@ -409,6 +410,7 @@ pub fn merge_sample(
         dereplicate(
             File::open(fwd_fastq_path)?,
             params.phred_offset,
+            true,
             pool,
             params.verbose,
         )?
@@ -418,6 +420,7 @@ pub fn merge_sample(
         dereplicate(
             MultiGzDecoder::new(File::open(rev_fastq_path)?),
             params.phred_offset,
+            true, // merge-pairs pairs reads via this map (#36)
             pool,
             params.verbose,
         )?
@@ -425,6 +428,7 @@ pub fn merge_sample(
         dereplicate(
             File::open(rev_fastq_path)?,
             params.phred_offset,
+            true,
             pool,
             params.verbose,
         )?

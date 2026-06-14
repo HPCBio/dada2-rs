@@ -293,11 +293,12 @@ pub fn load_fastq_samples(
             dereplicate(
                 MultiGzDecoder::new(File::open(path)?),
                 phred_offset,
+                false, // learn-errors uses uniques+quals only, not the per-read map (#36)
                 pool,
                 verbose,
             )?
         } else {
-            dereplicate(File::open(path)?, phred_offset, pool, verbose)?
+            dereplicate(File::open(path)?, phred_offset, false, pool, verbose)?
         };
 
         let file_bases: u64 = derep

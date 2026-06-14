@@ -53,11 +53,18 @@ pub fn checked_qual_sum(sum: f64) -> u32 {
 ///              read covers every position. Storing the sum is bit-identical to
 ///              the old f64 mean while using 4 bytes/position instead of 8.
 /// - `map`:     for each input read (in order), the index into `uniques` of the
-///              unique sequence it maps to.
+///              unique sequence it maps to. **Built only when requested** (see
+///              `build_map` in [`dereplicate`]); empty otherwise. It scales with
+///              the number of *reads* (8 bytes each), so it dominates resident
+///              memory for deep samples and is opt-in (issue #36). The read count
+///              is always available via `n_reads` regardless.
+/// - `n_reads`: total input reads (= Σ unique counts). Always populated, so read
+///              counts don't require the per-read `map`.
 pub struct Derep {
     pub uniques: Vec<(Vec<u8>, u64)>,
     pub quals: Vec<Vec<u32>>,
     pub map: Vec<usize>,
+    pub n_reads: u64,
 }
 
 /// Per-thread accumulator.  Can be merged in order to preserve read ordering.
@@ -68,10 +75,13 @@ struct PartialDerep {
     qual_sums: Vec<Vec<f64>>,
     qual_cnts: Vec<Vec<u64>>,
     map: Vec<usize>,
+    /// When false, the per-read `map` is not accumulated (issue #36) — uniques,
+    /// quals, and counts are unaffected.
+    build_map: bool,
 }
 
 impl PartialDerep {
-    fn new() -> Self {
+    fn new(build_map: bool) -> Self {
         Self {
             seq_order: Vec::new(),
             seq_to_idx: HashMap::new(),
@@ -79,6 +89,7 @@ impl PartialDerep {
             qual_sums: Vec::new(),
             qual_cnts: Vec::new(),
             map: Vec::new(),
+            build_map,
         }
     }
 
@@ -97,7 +108,9 @@ impl PartialDerep {
         };
 
         self.counts[idx] += 1;
-        self.map.push(idx);
+        if self.build_map {
+            self.map.push(idx);
+        }
 
         let sums = &mut self.qual_sums[idx];
         let cnts = &mut self.qual_cnts[idx];
@@ -146,8 +159,10 @@ impl PartialDerep {
             remap[i] = idx;
         }
 
-        for &local_idx in &other.map {
-            self.map.push(remap[local_idx]);
+        if self.build_map {
+            for &local_idx in &other.map {
+                self.map.push(remap[local_idx]);
+            }
         }
 
         self
@@ -199,7 +214,14 @@ impl PartialDerep {
             new_counts.push(self.counts[old_idx]);
             new_quals.push(quals_iter[old_idx].take().unwrap());
         }
-        let map: Vec<usize> = self.map.into_iter().map(|i| old_to_new[i]).collect();
+        // Read count is the sum of per-unique counts — always exact, and
+        // independent of whether the per-read map was built (issue #36).
+        let n_reads: u64 = new_counts.iter().sum();
+        let map: Vec<usize> = if self.build_map {
+            self.map.into_iter().map(|i| old_to_new[i]).collect()
+        } else {
+            Vec::new()
+        };
 
         let uniques = new_seq_order.into_iter().zip(new_counts).collect();
 
@@ -207,6 +229,7 @@ impl PartialDerep {
             uniques,
             quals: new_quals,
             map,
+            n_reads,
         }
     }
 }
@@ -214,16 +237,26 @@ impl PartialDerep {
 /// Records assigned to each thread per chunk — total chunk size scales with thread count.
 const RECORDS_PER_THREAD: usize = 10_000;
 
+/// Dereplicate a FASTQ stream into unique sequences with per-position quality
+/// sums and read counts.
+///
+/// `build_map`: when `true`, also record the per-read → unique-index `map`
+/// (needed only for read-level traceback, e.g. the `derep --show-map` output;
+/// `merge-pairs` builds its own internally). When `false`, the `map` is skipped
+/// entirely — it scales with read count (8 bytes/read) and dominates resident
+/// memory for deep pooled runs (issue #36). Uniques/quals/counts are identical
+/// either way; the read count is always available via `Derep::n_reads`.
 pub fn dereplicate<R: io::Read>(
     reader: R,
     phred_offset: u8,
+    build_map: bool,
     pool: &rayon::ThreadPool,
     verbose: bool,
 ) -> io::Result<Derep> {
     let chunk_size = RECORDS_PER_THREAD * pool.current_num_threads();
     let buf = BufReader::new(reader);
     let mut fastq_reader = fastq::io::Reader::new(buf);
-    let mut overall = PartialDerep::new();
+    let mut overall = PartialDerep::new(build_map);
 
     loop {
         // Read a chunk sequentially — the reader is a stream and cannot be shared.
@@ -255,11 +288,14 @@ pub fn dereplicate<R: io::Read>(
         let partial = pool.install(|| {
             chunk
                 .par_iter()
-                .fold(PartialDerep::new, |mut acc, (seq, qual)| {
-                    acc.add_record(seq.clone(), qual, phred_offset);
-                    acc
-                })
-                .reduce(PartialDerep::new, PartialDerep::merge)
+                .fold(
+                    || PartialDerep::new(build_map),
+                    |mut acc, (seq, qual)| {
+                        acc.add_record(seq.clone(), qual, phred_offset);
+                        acc
+                    },
+                )
+                .reduce(|| PartialDerep::new(build_map), PartialDerep::merge)
         });
 
         overall = overall.merge(partial);
@@ -273,7 +309,7 @@ pub fn dereplicate<R: io::Read>(
     if verbose {
         eprintln!(
             "[derep] {} raw sequences -> {} unique sequences",
-            derep.map.len(),
+            derep.n_reads,
             derep.uniques.len()
         );
     }
