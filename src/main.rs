@@ -830,7 +830,6 @@ fn main() -> io::Result<()> {
             verbose,
         } => {
             use std::collections::{HashMap, HashSet};
-            use std::sync::Mutex;
 
             let n_samples = input.len();
             if let Some(ref names) = sample_names
@@ -862,41 +861,20 @@ fn main() -> io::Result<()> {
             // up. A single sample's derep doesn't saturate many threads, so fan
             // samples across the pool (up to `threads` at once, ~1 thread each)
             // — across-sample concurrency fills cores best for this I/O+hash work.
+            // ---- Streaming per-sample dereplication + merge (issue #41) ----
+            // Load one sample's derep, fold it into the merged accumulator, then
+            // drop it — so all per-sample dereps are never resident at once. The
+            // previous path loaded every sample's derep up front (parallel) and
+            // held them all through the merge loop, which was the pooled peak
+            // (~all dereps + the accumulator coexisting). Folding into the shared
+            // accumulator must be serial anyway, and the load (derep) is a tiny
+            // fraction of pooled wall, so serializing the load is cheap. Fold
+            // order is sample index order (0..n) — identical to the old loop — so
+            // the merged table, and therefore every byte of output, is unchanged.
             let t_derep = std::time::Instant::now();
-            let load_jobs = threads.min(n_samples).max(1);
-            let loaded: Mutex<LoadedDereps> = Mutex::new(Vec::with_capacity(n_samples));
-            for_each_sample_concurrent(n_samples, load_jobs, threads, |i, sub_pool| {
-                let (d, name) = load_derep_for_dada(&input[i], phred_offset, sub_pool, verbose)?;
-                loaded.lock().unwrap().push((i, d, name));
-                Ok(())
-            })?;
-            let mut dereps: Vec<Option<derep::Derep>> = (0..n_samples).map(|_| None).collect();
+            let mut t_merge_acc = std::time::Duration::ZERO;
+
             let mut json_samples: Vec<Option<String>> = vec![None; n_samples];
-            for (i, d, name) in loaded.into_inner().unwrap() {
-                dereps[i] = Some(d);
-                json_samples[i] = name;
-            }
-            let dereps: Vec<derep::Derep> = dereps.into_iter().map(|d| d.unwrap()).collect();
-            let t_derep = t_derep.elapsed();
-            if verbose {
-                eprintln!(
-                    "[dada-pooled] peak RSS after derep: {} MB",
-                    misc::peak_rss_kb() / 1024
-                );
-            }
-
-            // Resolve sample names: CLI override > JSON-embedded > filename stem.
-            let sample_names: Vec<String> = match sample_names {
-                Some(names) => names,
-                None => input
-                    .iter()
-                    .zip(json_samples)
-                    .map(|(p, js)| js.unwrap_or_else(|| fastq_stem(p)))
-                    .collect(),
-            };
-
-            // ---- Merge across samples (abundance-weighted quality average) ----
-            let t_merge = std::time::Instant::now();
             let mut seq_to_merged: HashMap<Vec<u8>, usize> = HashMap::new();
             let mut merged_seqs: Vec<Vec<u8>> = Vec::new();
             // Per-position Phred SUM across samples, kept as integers (issue #39):
@@ -907,50 +885,73 @@ fn main() -> io::Result<()> {
             let mut merged_qual_sum: Vec<Vec<u32>> = Vec::new();
             let mut merged_total: Vec<u32> = Vec::new();
             let mut local_to_merged: Vec<Vec<usize>> = Vec::with_capacity(n_samples);
+            // Per-sample local-unique read COUNTS — the only per-sample state the
+            // output phase needs (not quals/seqs). Building these here lets each
+            // full `derep` drop at the end of its loop iteration (issue #39/#41).
+            let mut sample_unique_counts: Vec<Vec<u32>> = Vec::with_capacity(n_samples);
 
-            for derep in &dereps {
+            for i in 0..n_samples {
+                let (derep, name) = load_derep_for_dada(&input[i], phred_offset, &pool, verbose)?;
+                json_samples[i] = name;
+
+                let t_m = std::time::Instant::now();
                 let mut local_map: Vec<usize> = Vec::with_capacity(derep.uniques.len());
+                let mut counts: Vec<u32> = Vec::with_capacity(derep.uniques.len());
                 for ((seq, count), qual) in derep.uniques.iter().zip(derep.quals.iter()) {
                     let count_u32 = *count as u32;
                     let mu = match seq_to_merged.get(seq) {
-                        Some(&i) => {
-                            merged_total[i] += count_u32;
+                        Some(&j) => {
+                            merged_total[j] += count_u32;
                             // `qual` is already this unique's per-position Phred
                             // sum; accumulate sums across samples.
                             for (p, &q) in qual.iter().enumerate() {
-                                merged_qual_sum[i][p] =
-                                    merged_qual_sum[i][p].checked_add(q).expect(
+                                merged_qual_sum[j][p] =
+                                    merged_qual_sum[j][p].checked_add(q).expect(
                                         "merged per-position Phred sum overflows u32 \
                                              (pooled depth extreme); widen merged_qual_sum to u64",
                                     );
                             }
-                            i
+                            j
                         }
                         None => {
-                            let i = merged_seqs.len();
-                            seq_to_merged.insert(seq.clone(), i);
+                            let j = merged_seqs.len();
+                            seq_to_merged.insert(seq.clone(), j);
                             merged_seqs.push(seq.clone());
                             merged_qual_sum.push(qual.clone());
                             merged_total.push(count_u32);
-                            i
+                            j
                         }
                     };
                     local_map.push(mu);
+                    counts.push(count_u32);
                 }
                 local_to_merged.push(local_map);
+                sample_unique_counts.push(counts);
+                t_merge_acc += t_m.elapsed();
+                // `derep` (this sample's full quals + seqs) drops here.
             }
 
-            // The per-sample output below needs only each sample's unique read
-            // COUNTS (not its quals or seqs), so extract those into a tiny vec
-            // and drop the full per-sample dereps now — they are dead for the
-            // rest of the run (merge is done) and otherwise stay resident through
-            // the dada call, inflating peak RSS (issue #39).
-            let sample_unique_counts: Vec<Vec<u32>> = dereps
-                .iter()
-                .map(|d| d.uniques.iter().map(|(_, c)| *c as u32).collect())
-                .collect();
-            drop(dereps);
+            // Split the interleaved wall into load vs fold for the phase report:
+            // total loop time minus folding ≈ the serial derep/load front.
+            let t_merge = t_merge_acc;
+            let t_derep = t_derep.elapsed().saturating_sub(t_merge);
+            if verbose {
+                eprintln!(
+                    "[dada-pooled] peak RSS after derep+merge: {} MB",
+                    misc::peak_rss_kb() / 1024
+                );
+            }
             drop(seq_to_merged); // only used inside the merge loop; dead now
+
+            // Resolve sample names: CLI override > JSON-embedded > filename stem.
+            let sample_names: Vec<String> = match sample_names {
+                Some(names) => names,
+                None => input
+                    .iter()
+                    .zip(json_samples)
+                    .map(|(p, js)| js.unwrap_or_else(|| fastq_stem(p)))
+                    .collect(),
+            };
 
             let n_merged = merged_seqs.len();
             if verbose {
@@ -1042,7 +1043,6 @@ fn main() -> io::Result<()> {
             run_params.n_prior = raw_inputs.iter().filter(|r| r.prior).count();
 
             // ---- Run DADA once on the merged table ----
-            let t_merge = t_merge.elapsed();
             if verbose {
                 eprintln!(
                     "[dada-pooled] peak RSS after merge: {} MB",
@@ -3598,10 +3598,6 @@ type IndexedAsvs = Vec<(usize, Vec<(String, u32)>)>;
 /// Like [`IndexedAsvs`] but also carrying the resolved sample name — used by the
 /// streaming dada-pseudo round 1, which loads names on the fly (no pre-load).
 type IndexedNamedAsvs = Vec<(usize, String, Vec<(String, u32)>)>;
-
-/// Per-sample dereplications tagged with their input index + JSON sample name,
-/// collected unordered from a concurrent load, then reassembled by index.
-type LoadedDereps = Vec<(usize, derep::Derep, Option<String>)>;
 
 /// Run `f` over samples `0..n` with bounded across-sample concurrency: spawn
 /// `jobs` workers, each owning a rayon sub-pool of ~`threads / jobs` threads,
