@@ -318,14 +318,19 @@ pub fn dada_uniques_cached(
                 let nr = raws.len();
                 let (mut kmer_b, mut seq_b) = (0usize, 0usize);
                 for r in &raws {
-                    kmer_b += r.kmer8.as_ref().map_or(0, |v| v.len())
+                    kmer_b += r.kmer8.as_ref().map_or(0, |v| v.resident_bytes())
                         + r.kord.as_ref().map_or(0, |v| v.len() * 2);
                     seq_b += r.seq.len() + r.qual.as_ref().map_or(0, |q| q.len());
                 }
                 let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
+                let screen_repr = if k >= crate::kmers::SPARSE_KMER_MIN {
+                    "sparse #43"
+                } else {
+                    "dense"
+                };
                 eprintln!(
                     "[dada] resident Raw footprint: {nr} raws, seq+qual {:.1} MB, \
-                     k-mer vectors {:.1} MB ({:.0} B/raw) [k={k}; u16 k-mer freq not stored, #32]",
+                     k-mer vectors {:.1} MB ({:.0} B/raw) [k={k}; kmer8 {screen_repr}; u16 k-mer freq not stored, #32]",
                     mb(seq_b),
                     mb(kmer_b),
                     if nr > 0 {
