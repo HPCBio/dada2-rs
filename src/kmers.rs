@@ -163,6 +163,37 @@ impl KmerScreen {
             KmerScreen::Sparse(v) => v.len() * std::mem::size_of::<(u16, u8)>(),
         }
     }
+
+    /// Number of *distinct* k-mers present in this sequence (sparse entries, or
+    /// dense nonzero buckets). Bounded by `len - k + 1`; below that signals
+    /// low-complexity/repetitive content. For `--verbose` diagnostics (#43).
+    #[inline]
+    pub fn distinct_kmers(&self) -> usize {
+        match self {
+            KmerScreen::Dense(v) => v.iter().filter(|&&c| c > 0).count(),
+            KmerScreen::Sparse(v) => v.len(),
+        }
+    }
+
+    /// Invoke `f` with each present k-mer index, for tallying the pooled union
+    /// of distinct k-mers across all uniques (`--verbose` diagnostics, #43).
+    #[inline]
+    pub fn for_each_present_index<F: FnMut(usize)>(&self, mut f: F) {
+        match self {
+            KmerScreen::Dense(v) => {
+                for (i, &c) in v.iter().enumerate() {
+                    if c > 0 {
+                        f(i);
+                    }
+                }
+            }
+            KmerScreen::Sparse(v) => {
+                for &(idx, _) in v {
+                    f(idx as usize);
+                }
+            }
+        }
+    }
 }
 
 /// Populate the resident k-mer screen fields (`kmer8`, `kord`) on a `Raw`.
