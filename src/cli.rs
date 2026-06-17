@@ -52,6 +52,22 @@ pub enum Commands {
         /// Output compact (minified) JSON instead of pretty-printed
         #[arg(long)]
         compact: bool,
+
+        /// Also compute a per-read sequence-complexity histogram (DADA2's
+        /// `seqComplexity`/`plotComplexity`): the effective number of k-mers
+        /// per read, `exp(Shannon entropy)` over its k-mer counts.
+        #[arg(long)]
+        complexity: bool,
+
+        /// K-mer size for the complexity calculation (DADA2 default 2). Only
+        /// used when `--complexity` is set.
+        #[arg(long, default_value_t = 2)]
+        complexity_kmer_size: u8,
+
+        /// Number of histogram bins for complexity, spanning `[0, 4^kmer_size]`
+        /// (DADA2 `plotComplexity` default 100). Only used with `--complexity`.
+        #[arg(long, default_value_t = 100)]
+        complexity_bins: usize,
     },
 
     /// Dereplicate sequences from a FASTQ file

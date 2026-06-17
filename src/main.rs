@@ -47,7 +47,7 @@ use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
 use remove_primers::{RemovePrimersParams, iupac_reverse_complement, remove_primers};
 use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
 use serde::Serialize;
-use summary::process;
+use summary::{ComplexityConfig, process};
 use taxonomy::{
     SpeciesHit, SpeciesOptions, SpeciesRef, TaxonomyOptions, TaxonomyRef, assign_species,
     assign_taxonomy,
@@ -195,21 +195,45 @@ fn main() -> io::Result<()> {
             threads,
             output,
             compact,
+            complexity,
+            complexity_kmer_size,
+            complexity_bins,
         } => {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .map_err(io::Error::other)?;
 
+            let complexity_cfg = complexity.then_some(ComplexityConfig {
+                kmer_size: complexity_kmer_size,
+                bins: complexity_bins,
+            });
+
             let summary = if input.extension().and_then(|e| e.to_str()) == Some("gz") {
                 process(
                     MultiGzDecoder::new(File::open(&input).with_path(&input)?),
                     phred_offset,
                     &pool,
+                    complexity_cfg,
                 )?
             } else {
-                process(File::open(&input).with_path(&input)?, phred_offset, &pool)?
+                process(
+                    File::open(&input).with_path(&input)?,
+                    phred_offset,
+                    &pool,
+                    complexity_cfg,
+                )?
             };
+
+            /// `complexity_histogram[bin]` = number of reads whose effective
+            /// k-mer count (`exp(Shannon entropy)`, range `[1, 4^kmer_size]`)
+            /// falls in equal-width `bin` over `[0, 4^kmer_size]`.
+            #[derive(Serialize)]
+            struct ComplexityOutput {
+                kmer_size: u8,
+                bins: usize,
+                histogram: Vec<u64>,
+            }
 
             #[derive(Serialize)]
             struct SummaryOutput {
@@ -221,10 +245,21 @@ fn main() -> io::Result<()> {
                 /// `quality_histogram[pos][q]` = count of reads with quality `q`
                 /// at zero-based cycle `pos`. Inner length is `max_quality + 1`.
                 quality_histogram: Vec<Vec<u64>>,
+                /// Per-read sequence-complexity histogram; present only when
+                /// `--complexity` was requested.
+                #[serde(skip_serializing_if = "Option::is_none")]
+                complexity: Option<ComplexityOutput>,
             }
 
             let sample = sample_name.unwrap_or_else(|| fastq_stem(&input));
             let (max_quality, quality_histogram) = summary.quality_histogram();
+            let complexity_out = summary
+                .complexity_histogram()
+                .map(|(kmer_size, bins, hist)| ComplexityOutput {
+                    kmer_size,
+                    bins,
+                    histogram: hist.to_vec(),
+                });
             let out = SummaryOutput {
                 sample,
                 total_reads: summary.total_reads,
@@ -232,6 +267,7 @@ fn main() -> io::Result<()> {
                 reads_per_position: summary.reads_per_position().to_vec(),
                 max_quality,
                 quality_histogram,
+                complexity: complexity_out,
             };
 
             let tagged = Tagged::new("summary", out);
