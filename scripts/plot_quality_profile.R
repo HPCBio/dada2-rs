@@ -1,9 +1,14 @@
 #!/usr/bin/env Rscript
 #
 # Reproduce DADA2's plotQualityProfile() figure from one or more `summary`
-# JSON outputs produced by dada2-rs. Mirrors the styling of
+# JSON outputs produced by dada2-rs. Mirrors the statistics and styling of
 # dada2::plotQualityProfile (heatmap of cycle x quality, plus per-cycle
 # mean / Q25 / median / Q75 / cumulative-reads lines).
+#
+# The per-cycle statistics here are a direct port of plotQualityProfile() from
+# the DADA2 R package by Benjamin Callahan (original author); see
+# dada2/R/plot-methods.R. Validated to match R's per-cycle Mean/Q50 to within
+# 0 (exact) on the fixtures. All credit for the method is his.
 #
 # Usage:
 #   Rscript plot_quality_profile.R [--aggregate] [--out=plot.pdf] \
@@ -62,9 +67,18 @@ read_summary <- function(path) {
       path
     ))
   }
-  # quality_histogram is a list of length n_cycles, each element a numeric
-  # vector of length max_quality + 1 (counts at qualities 0..max_quality).
-  hist_mat <- do.call(rbind, lapply(hist, as.numeric))
+  # quality_histogram is n_cycles arrays, each of length max_quality + 1
+  # (counts at qualities 0..max_quality). Under simplifyVector = TRUE jsonlite
+  # already collapses the equal-length arrays into an n_cycles x (max_quality+1)
+  # matrix; use it directly. Only rbind the per-cycle vectors if it came back as
+  # a list (e.g. ragged inner lengths or simplifyVector = FALSE) — flattening a
+  # matrix with lapply() would iterate element-wise and mangle the dimensions.
+  if (is.matrix(hist)) {
+    hist_mat <- hist
+    storage.mode(hist_mat) <- "double"
+  } else {
+    hist_mat <- do.call(rbind, lapply(hist, as.numeric))
+  }
   list(
     total_reads = as.numeric(doc$total_reads),
     reads_per_position = as.numeric(doc$reads_per_position),
