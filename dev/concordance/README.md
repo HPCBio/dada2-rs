@@ -28,7 +28,7 @@ breakdown labels them so.
 | `data/pacbio/` | Committed subsampled PacBio fixture (you add this). |
 | `../../.github/workflows/concordance.yml` | The workflow: PRs + branch pushes + manual on main. |
 
-Both toy fixtures are committed under `comparison/concordance/data/` (the repo-root
+Both toy fixtures are committed under `dev/concordance/data/` (the repo-root
 `data/` is gitignored — it holds the large local-only benchmark datasets — so CI
 fixtures live here):
 
@@ -89,10 +89,10 @@ green. Once a few runs show stable numbers, edit the thresholds in
 
 ```bash
 cargo build --release
-comparison/concordance/run_illumina.sh \
-    ./target/release/dada2-rs comparison/concordance/data/illumina /tmp/ill 4
-comparison/concordance/compare_to_reference.py \
+dev/concordance/run_illumina.sh \
+    ./target/release/dada2-rs dev/concordance/data/illumina /tmp/ill 4
+dev/concordance/compare_to_reference.py \
     --rs /tmp/ill/seqtab.nochim.json \
-    --reference comparison/concordance/reference/illumina_seqtab_nochim.csv \
+    --reference dev/concordance/reference/illumina_seqtab_nochim.csv \
     --min-abundance 2
 ```

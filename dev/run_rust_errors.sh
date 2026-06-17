@@ -86,4 +86,4 @@ echo "    -> $ERRORS_JSON"
 
 echo ""
 echo "Done. Now run the R comparison:"
-echo "  Rscript comparison/compare_errors.R $FILTERED $ERRORS_JSON"
+echo "  Rscript dev/compare_errors.R $FILTERED $ERRORS_JSON"

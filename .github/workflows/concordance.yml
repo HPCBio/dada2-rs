@@ -2,7 +2,7 @@ name: Concordance (vs R DADA2)
 
 # Sanity guardrail: run short dada2-rs pipelines on small fixtures and compare
 # the post-chimera ASVs + per-ASV counts against a STATIC R DADA2 reference CSV
-# (committed under comparison/concordance/reference/; CI never runs R).
+# (committed under dev/concordance/reference/; CI never runs R).
 #
 # GATING: the compare steps run with --gate, so a metric below its threshold
 # fails the build. Thresholds are deliberately generous (the calibrated baseline
@@ -58,19 +58,19 @@ jobs:
       # ---------------- Illumina (in-repo MiSeq tutorial pair) ----------------
       - name: Illumina — run dada2-rs pipeline
         run: |
-          bash comparison/concordance/run_illumina.sh \
+          bash dev/concordance/run_illumina.sh \
               ./target/release/dada2-rs \
-              comparison/concordance/data/illumina work/illumina 2
+              dev/concordance/data/illumina work/illumina 2
 
       - name: Illumina — compare to R reference
         run: |
-          ref=comparison/concordance/reference/illumina_seqtab_nochim.csv
+          ref=dev/concordance/reference/illumina_seqtab_nochim.csv
           if [ ! -f "$ref" ]; then
             echo "::notice::Illumina reference CSV not committed yet ($ref); skipping comparison. Generate with write_reference.R."
             echo "Illumina reference not yet committed — pipeline ran but no comparison." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          python3 comparison/concordance/compare_to_reference.py \
+          python3 dev/concordance/compare_to_reference.py \
               --rs work/illumina/seqtab.nochim.json --reference "$ref" \
               --label illumina --min-abundance "$MIN_ABUNDANCE" \
               --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
@@ -81,21 +81,21 @@ jobs:
       # Skipped until both the fixture and the reference CSV are committed.
       - name: PacBio — run + compare (if fixture present)
         run: |
-          data=comparison/concordance/data/pacbio
-          ref=comparison/concordance/reference/pacbio_seqtab_nochim.csv
+          data=dev/concordance/data/pacbio
+          ref=dev/concordance/reference/pacbio_seqtab_nochim.csv
           if [ ! -d "$data" ] || [ -z "$(ls -A "$data"/*.fastq.gz 2>/dev/null)" ]; then
             echo "::notice::PacBio fixture not committed yet ($data); skipping."
             echo "PacBio fixture not yet committed — skipped." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           # k=5 matches R's fixed KMER_SIZE (apples-to-apples vs the reference).
-          bash comparison/concordance/run_pacbio.sh \
+          bash dev/concordance/run_pacbio.sh \
               ./target/release/dada2-rs "$data" work/pacbio \
               AGRGTTYGATYMTGGCTCAG RGYTACCTTGTTACGACTT 2
           # k=7 is the recommended PacBio setting; the k-mer screen is a prefilter,
           # so it should match the same R(k=5) reference. Asserts the production
           # config stays concordant.
-          PACBIO_KMER=7 bash comparison/concordance/run_pacbio.sh \
+          PACBIO_KMER=7 bash dev/concordance/run_pacbio.sh \
               ./target/release/dada2-rs "$data" work/pacbio_k7 \
               AGRGTTYGATYMTGGCTCAG RGYTACCTTGTTACGACTT 2
           if [ ! -f "$ref" ]; then
@@ -103,13 +103,13 @@ jobs:
             echo "PacBio reference not yet committed — pipeline ran but no comparison." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          python3 comparison/concordance/compare_to_reference.py \
+          python3 dev/concordance/compare_to_reference.py \
               --rs work/pacbio/seqtab.nochim.json --reference "$ref" \
               --label pacbio-k5 --min-abundance "$MIN_ABUNDANCE" \
               --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
               --min-count-corr "$MIN_COUNT_CORR" --gate \
               --summary "$GITHUB_STEP_SUMMARY" --json work/pacbio_k5_report.json
-          python3 comparison/concordance/compare_to_reference.py \
+          python3 dev/concordance/compare_to_reference.py \
               --rs work/pacbio_k7/seqtab.nochim.json --reference "$ref" \
               --label pacbio-k7 --min-abundance "$MIN_ABUNDANCE" \
               --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \

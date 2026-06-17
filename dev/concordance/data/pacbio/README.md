@@ -9,7 +9,7 @@ from the SRA-based PacBio Sequel IIe set. Regenerate with:
 ```bash
 for s in SRR8557463 SRR8557464; do
   gzcat data/pacbio-sqii/Raw_FASTQ/${s}.sample.fastq.gz | head -n 20000 \
-    | gzip -6 > comparison/concordance/data/pacbio/${s}.fastq.gz
+    | gzip -6 > dev/concordance/data/pacbio/${s}.fastq.gz
 done
 ```
 

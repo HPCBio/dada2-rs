@@ -38,13 +38,26 @@ Rust ports of:
 - In progress
   - Summary FASTQ metrics and plots
 
-## Building
+## Building & installing
 
 Requires a recent stable Rust toolchain ([rustup.rs](https://rustup.rs)).
 
 ```bash
 cargo build --release
 # binary at target/release/dada2-rs
+```
+
+Common tasks are wrapped by a `justfile` (canonical) and an equivalent
+portable `Makefile` — use whichever you have; targets/recipes match:
+
+```bash
+just build            # or: make build      → release binary
+just check            # or: make check      → fmt-check + clippy + tests
+
+# install the binary + helper R/Python scripts onto PATH; scripts are
+# namespaced as dada2-rs-<name> (e.g. dada2-rs-plot-errors). Use the
+# env-var form for overrides — it works for both just and make:
+PREFIX=/usr/local make install
 ```
 
 For the native (`-C target-cpu=native`) build and Docker, see
@@ -79,7 +92,7 @@ Run `dada2-rs <subcommand> --help` for the full parameter set of any step.
 ## Benchmarks & comparison with R DADA2
 
 Performance is benchmarked head-to-head against R DADA2 with the harness in
-`comparison/benchmark/`. See the docs for the tooling, metrics, and results:
+`dev/benchmark/`. See the docs for the tooling, metrics, and results:
 
 - **[Performance — tooling & metrics](docs/benchmarking.md)** (the harness,
   `cores`/`cpu_s`/peak-RSS, scaling sweeps, built-in logs, concordance checks)

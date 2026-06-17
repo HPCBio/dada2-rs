@@ -18,14 +18,14 @@ counts between the Rust and R implementations on identical input.
 Usage:
   # dada2-rs (verbose trace goes to stderr)
   dada2-rs learn-errors --verbose ... 2> rs.log
-  python3 scripts/summarize_learn_errors.py rs.log
+  python3 dev/summarize_learn_errors.py rs.log
 
   # R dada2 (capture messages; verbose=2 for the per-cluster trace)
   Rscript -e 'dada2::learnErrors("samp.fastq.gz", verbose=2)' 2> r.log
-  python3 scripts/summarize_learn_errors.py r.log
+  python3 dev/summarize_learn_errors.py r.log
 
   # or pipe directly
-  dada2-rs learn-errors --verbose ... 2>&1 | python3 scripts/summarize_learn_errors.py
+  dada2-rs learn-errors --verbose ... 2>&1 | python3 dev/summarize_learn_errors.py
 """
 
 import argparse

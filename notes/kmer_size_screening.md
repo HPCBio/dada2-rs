@@ -184,7 +184,7 @@ k=5-is-a-no-op-on-long-reads finding are robust (mechanistic + measured).
 
 The caveat above (single Illumina sample) is now addressed: a sweep on the
 **full MiSeq SOP** dataset (61 samples, learn-errors pooled per-sample then
-denoised, R1 and R2 separately) via `comparison/run_kmer_sweep.sh`. Errfun
+denoised, R1 and R2 separately) via `dev/run_kmer_sweep.sh`. Errfun
 loess, band 16, k = 5/6/7/8.
 
 ### R1

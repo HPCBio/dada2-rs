@@ -27,10 +27,10 @@ are regenerated from each run's `summary.csv` with
   [concordance tooling](benchmarking.md#5-concordance-validation-tooling).
 
 !!! note "Populate from a cluster run"
-    We generate the results using `comparison/benchmark/bench_pooled.py` 
+    We generate the results using `dev/benchmark/bench_pooled.py` 
     and summarize with:
     ```bash
-    python3 comparison/benchmark/bench_table.py \
+    python3 dev/benchmark/bench_table.py \
         "pooled=bench_true/summary.csv" \
         "per-sample=bench_false/summary.csv" \
         "pseudo=bench_pseudo/summary.csv"
@@ -279,13 +279,13 @@ After a run, distill its `summary.csv` to Markdown:
 
 ```bash
 # scorecard across modes (one row per run)
-python3 comparison/benchmark/bench_table.py \
+python3 dev/benchmark/bench_table.py \
     "pooled=bench_true/summary.csv" \
     "per-sample=bench_false/summary.csv" \
     "pseudo=bench_pseudo/summary.csv"
 
 # per-step breakdown for one run
-python3 comparison/benchmark/bench_table.py --per-step bench_pseudo/summary.csv
+python3 dev/benchmark/bench_table.py --per-step bench_pseudo/summary.csv
 ```
 
 Paste the output into the tables above.

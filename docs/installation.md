@@ -38,6 +38,42 @@ RUSTFLAGS="-C target-cpu=native" cargo build --profile release-native
     microarchitecture. Build it on (or for) the machine you will run it on. For
     a portable artifact, use the standard `release` build.
 
+## Task runners (`just` / `make`)
+
+Common build, test, and install tasks are wrapped by a `justfile` and an
+equivalent `Makefile`. The `justfile` is the canonical source; the `Makefile`
+is a portable mirror for hosts that have `make` but not `just`. Recipe and
+target names match (a CI check enforces this), so use whichever you have:
+
+```bash
+just build         # or: make build         → release binary
+just build-native  # or: make build-native  → native-CPU build
+just check         # or: make check         → fmt-check + clippy + tests
+just --list        # or: make help          → list available tasks
+```
+
+### Installing onto PATH
+
+`install` copies the binary plus the user-facing helper scripts (the R plotting
+scripts and a couple of Python utilities) into `$PREFIX/bin`. Helper scripts are
+made executable and namespaced as `dada2-rs-<name>` to avoid PATH collisions —
+for example `scripts/plot_errors.R` installs as `dada2-rs-plot-errors`.
+
+```bash
+PREFIX=/usr/local make install        # or: PREFIX=/usr/local just install
+```
+
+Overrides use the **env-var form** (`PREFIX=...`, `DESTDIR=...`), which behaves
+identically for both `just` and `make`. `DESTDIR` supports staged installs for
+packaging:
+
+```bash
+DESTDIR=/tmp/stage PREFIX=/usr make install   # installs into /tmp/stage/usr/bin
+```
+
+Development/benchmarking scripts live under `dev/` and are intentionally **not**
+installed. To remove an installation, use `make uninstall` (same `PREFIX`).
+
 ## Docker
 
 Dedicated container images are published for the project — see the `Dockerfile`

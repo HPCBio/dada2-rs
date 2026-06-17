@@ -5,15 +5,15 @@ This document is the reference for the tooling and log output used to evaluate
 written in plain Markdown so it can be dropped into MkDocs or Sphinx (via
 `myst-parser`) for a ReadTheDocs site with no changes.
 
-- **Where things live:** `comparison/benchmark/` (the head-to-head harness),
-  `comparison/` (validation/error-model scripts), `scripts/` (plotting and
+- **Where things live:** `dev/benchmark/` (the head-to-head harness),
+  `dev/` (validation/error-model scripts), `scripts/` (plotting and
   read-tracking helpers).
 - **What you get:** per-step wall time, CPU time, **effective cores**, and peak
   RSS for both stacks; scaling sweeps; and ASV/error-matrix concordance checks.
 
 ---
 
-## 1. The benchmark harness (`comparison/benchmark/`)
+## 1. The benchmark harness (`dev/benchmark/`)
 
 A single Python driver runs the **full pipeline** for each stack, times every
 step, captures per-process peak memory, and prints a symmetric side-by-side
@@ -86,7 +86,7 @@ batch, `cpu_s` = sum across children, `peak_rss` = max of any single child.
 Platform-specific filter/denoise knobs: `--trunc-len`, `--max-ee`, `--trunc-q`,
 `--max-n` (Illumina); `--min-len`, `--max-len`, `--band`, `--homo-gap`,
 `--kmer-size`, `--primer-fwd`, `--primer-rev`, `--max-mismatch` (PacBio). Run
-`python3 comparison/benchmark/bench_pooled.py --help` for the full list.
+`python3 dev/benchmark/bench_pooled.py --help` for the full list.
 
 ### 1.4 Output
 
@@ -127,20 +127,20 @@ R is captured two ways because they trade off differently:
 
 ```bash
 # dada2-rs only, Illumina, pooled
-python3 comparison/benchmark/bench_pooled.py illumina /data/MiSeqSOP \
+python3 dev/benchmark/bench_pooled.py illumina /data/MiSeqSOP \
     --dada2rs target/release-native/dada2-rs --threads 24 --pool true
 
 # head-to-head vs R, pseudo-pooling
-python3 comparison/benchmark/bench_pooled.py illumina /data/MiSeqSOP \
+python3 dev/benchmark/bench_pooled.py illumina /data/MiSeqSOP \
     --dada2rs target/release-native/dada2-rs --threads 24 --pool pseudo --run-r
 
 # PacBio HiFi (raw, primered reads), supply primers
-python3 comparison/benchmark/bench_pooled.py pacbio /data/HiFi \
+python3 dev/benchmark/bench_pooled.py pacbio /data/HiFi \
     --dada2rs target/release-native/dada2-rs --threads 24 --pool pseudo \
     --primer-fwd AGRGTTYGATYMTGGCTCAG --primer-rev RGYTACCTTGTTACGACTT --run-r
 
 # pseudo in cached mode (default is streaming; --cache-samples opts into all-in-memory)
-python3 comparison/benchmark/bench_pooled.py illumina /data/MiSeqSOP \
+python3 dev/benchmark/bench_pooled.py illumina /data/MiSeqSOP \
     --dada2rs target/release-native/dada2-rs --threads 24 --pool pseudo --cache-samples
 ```
 
@@ -152,13 +152,13 @@ pasted into the docs (see [Benchmark results](results.md)).
 
 ```bash
 # Scorecard — one row per run, end-to-end head-to-head:
-python3 comparison/benchmark/bench_table.py \
+python3 dev/benchmark/bench_table.py \
     "pooled=bench_true/summary.csv" \
     "per-sample=bench_false/summary.csv" \
     "pseudo=bench_pseudo/summary.csv"
 
 # Per-step breakdown for a single run:
-python3 comparison/benchmark/bench_table.py --per-step bench_pseudo/summary.csv
+python3 dev/benchmark/bench_table.py --per-step bench_pseudo/summary.csv
 ```
 
 `LABEL=path` names each run; R columns compare against the `R-single` rows (fair
@@ -268,14 +268,14 @@ against R, independent of timing:
 
 | Tool | What it checks |
 |---|---|
-| `scripts/compare_asvs.py` | ASV table A/B diff (sequences present, per-sample abundances) between two runs |
-| `comparison/run_rust_errors.sh` | runs filter → derep → `learn-errors` on one sample with R-matched params |
-| `comparison/compare_errors.R` | compares the learned error matrices against R's `learnErrors()` |
-| `comparison/run_kmer_sweep.sh` | sweeps `--kmer-size`, reporting shroud %, ASV count, wall, RSS (issue #15) |
-| `comparison/plot_cluster_diag.R` | plots per-iteration cluster diagnostics from `--diag-dir` output |
+| `dev/compare_asvs.py` | ASV table A/B diff (sequences present, per-sample abundances) between two runs |
+| `dev/run_rust_errors.sh` | runs filter → derep → `learn-errors` on one sample with R-matched params |
+| `dev/compare_errors.R` | compares the learned error matrices against R's `learnErrors()` |
+| `dev/run_kmer_sweep.sh` | sweeps `--kmer-size`, reporting shroud %, ASV count, wall, RSS (issue #15) |
+| `dev/plot_cluster_diag.R` | plots per-iteration cluster diagnostics from `--diag-dir` output |
 | `scripts/plot_errors.R` | plots an error-model JSON |
 | `scripts/track_reads.py` | per-stage read-count tracking (the DADA2 "track" table) |
-| `scripts/summarize_learn_errors.py` | summarizes a learned error model |
+| `dev/summarize_learn_errors.py` | summarizes a learned error model |
 
 Typical correctness loop for a benchmark run:
 

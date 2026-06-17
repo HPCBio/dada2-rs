@@ -16,7 +16,7 @@
 # Older JSONs without that field fall back to "direct".
 #
 # Usage:
-#   Rscript scripts/compare_loess.R <learn_errors.json> [more.json ...]
+#   Rscript dev/compare_loess.R <learn_errors.json> [more.json ...]
 #
 # Interpretation:
 #   - If the JSON was produced with native Rust loess (default learn-errors),

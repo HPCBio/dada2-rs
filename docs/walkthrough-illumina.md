@@ -47,7 +47,7 @@ iteration, then plot with the bundled R script:
 dada2-rs errors-from-sample sample_json/*.json \
   --errfun loess --diag-dir diag_fwd/ -o errors_fwd.json --verbose
 
-Rscript comparison/plot_cluster_diag.R diag_fwd/ diag_fwd/cluster_diag.pdf
+Rscript dev/plot_cluster_diag.R diag_fwd/ diag_fwd/cluster_diag.pdf
 ```
 
 The plot shows cluster counts, birth-type breakdown, convergence trace, and
