@@ -318,14 +318,19 @@ pub fn dada_uniques_cached(
                 let nr = raws.len();
                 let (mut kmer_b, mut seq_b) = (0usize, 0usize);
                 for r in &raws {
-                    kmer_b += r.kmer8.as_ref().map_or(0, |v| v.len())
+                    kmer_b += r.kmer8.as_ref().map_or(0, |v| v.resident_bytes())
                         + r.kord.as_ref().map_or(0, |v| v.len() * 2);
                     seq_b += r.seq.len() + r.qual.as_ref().map_or(0, |q| q.len());
                 }
                 let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
+                let screen_repr = if k >= crate::kmers::SPARSE_KMER_MIN {
+                    "sparse #43"
+                } else {
+                    "dense"
+                };
                 eprintln!(
                     "[dada] resident Raw footprint: {nr} raws, seq+qual {:.1} MB, \
-                     k-mer vectors {:.1} MB ({:.0} B/raw) [k={k}; u16 k-mer freq not stored, #32]",
+                     k-mer vectors {:.1} MB ({:.0} B/raw) [k={k}; kmer8 {screen_repr}; u16 k-mer freq not stored, #32]",
                     mb(seq_b),
                     mb(kmer_b),
                     if nr > 0 {
@@ -334,6 +339,48 @@ pub fn dada_uniques_cached(
                         0.0
                     },
                 );
+
+                // K-mer complexity / diversity diagnostics (#43). Two signals:
+                //  - per-Raw FILL = distinct k-mers / positional max (len-k+1).
+                //    ~100% for high-complexity amplicon reads; a low value flags
+                //    low-complexity/repetitive sequence content.
+                //  - pooled DIVERSITY = union of distinct k-mers across all
+                //    uniques vs the 4^k space, plus mean sharing (Σ positional /
+                //    union). High sharing = tight homologous amplicon; low
+                //    sharing + high occupancy flags diverse/contaminated or
+                //    over-amplified data (inflated PCR error/chimera k-mers, not
+                //    biological diversity). Cost: one 4^k-bit presence bitmap
+                //    (≤8 KB through k8) + a single pass over the screens.
+                if nr > 0 && raws.iter().any(|r| r.kmer8.is_some()) {
+                    let nk = crate::kmers::n_kmers(k);
+                    let mut bitmap = vec![0u64; nk.div_ceil(64)];
+                    let mut distinct_sum = 0usize; // Σ per-raw distinct k-mers
+                    let mut positional_sum = 0usize; // Σ (len - k + 1)
+                    for r in &raws {
+                        if let Some(screen) = &r.kmer8 {
+                            distinct_sum += screen.distinct_kmers();
+                            positional_sum += r.len().saturating_sub(k - 1);
+                            screen.for_each_present_index(|idx| {
+                                bitmap[idx >> 6] |= 1u64 << (idx & 63);
+                            });
+                        }
+                    }
+                    let union: usize = bitmap.iter().map(|w| w.count_ones() as usize).sum();
+                    let fill_pct = 100.0 * distinct_sum as f64 / positional_sum.max(1) as f64;
+                    let dense_pct = 100.0 * distinct_sum as f64 / (nr as f64 * nk as f64);
+                    eprintln!(
+                        "[dada] kmer8 fill: mean {:.0} / {:.0} distinct k-mers/raw \
+                         ({fill_pct:.1}% of positional max), {dense_pct:.1}% of dense 4^k [k={k}]",
+                        distinct_sum as f64 / nr as f64,
+                        positional_sum as f64 / nr as f64,
+                    );
+                    eprintln!(
+                        "[dada] kmer8 pooled diversity: {union} distinct k-mers \
+                         ({:.1}% of 4^k space), mean sharing {:.0}× across {nr} uniques",
+                        100.0 * union as f64 / nk as f64,
+                        positional_sum as f64 / union.max(1) as f64,
+                    );
+                }
             }
             raws
         }

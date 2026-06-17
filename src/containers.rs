@@ -1,3 +1,5 @@
+use crate::kmers::KmerScreen;
+
 /// Default initial cluster buffer size (mirrors C++ RAWBUF / CLUSTBUF).
 /// Vec growth is automatic in Rust so this only affects the initial allocation.
 const INIT_RAWS_CAPACITY: usize = 50;
@@ -81,13 +83,14 @@ pub struct Raw {
     pub qual: Option<Vec<u8>>,
     /// Prior reasons to expect this sequence to be genuine.
     pub prior: bool,
-    /// 8-bit compressed k-mer frequency vector; populated by kmers module. This
-    /// is the resident k-mer screen. The exact 16-bit frequency vector is NOT
-    /// stored (issue #32: it dominated pooled RSS at k7, ~4^k × 2 bytes/unique,
-    /// and is only needed when `kmer_dist8` overflows — a k-mer occurring ≥255×
-    /// in both sequences, essentially never for amplicons); on that path it is
-    /// recomputed from `seq` in `raw_align_with_buf`.
-    pub kmer8: Option<Vec<u8>>,
+    /// 8-bit compressed k-mer frequency screen; populated by kmers module. This
+    /// is the resident k-mer screen, stored dense for small k and sparsely for
+    /// k ≥ `SPARSE_KMER_MIN` (issue #43, since the dense `4^k` array dominated
+    /// pooled RSS at k7). The exact 16-bit frequency vector is NOT stored (issue
+    /// #32: it is only needed when `kmer_dist8` overflows — a k-mer occurring
+    /// ≥255× in both sequences, essentially never for amplicons); on that path
+    /// it is recomputed from `seq` in `raw_align_with_buf`.
+    pub kmer8: Option<KmerScreen>,
     /// K-mers in the order they appear along the sequence; populated by kmers module.
     pub kord: Option<Vec<u16>>,
     /// Number of reads of this unique sequence.

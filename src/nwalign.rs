@@ -12,7 +12,7 @@
 //! Traceback pointer values: `1` = diagonal, `2` = left (gap in s1), `3` = up (gap in s2).
 
 use crate::containers::{Raw, Sub};
-use crate::kmers::{assign_kmer, kmer_dist, kmer_dist8, kord_dist};
+use crate::kmers::{assign_kmer, kmer_dist, kord_dist};
 
 /// Sentinel used in `Sub::map` to indicate that a reference position aligns
 /// to a gap in the query.  Matches C++ `GAP_GLYPH = 9999`.
@@ -1124,7 +1124,7 @@ pub fn raw_align_with_buf(
         // Prefer 8-bit kmer distance; fall back to 16-bit on overflow.
         kdist = match (&raw1.kmer8, &raw2.kmer8) {
             (Some(k1), Some(k2)) => {
-                let d8 = kmer_dist8(k1, raw1.len(), k2, raw2.len(), k);
+                let d8 = k1.dist8(k2, raw1.len(), raw2.len(), k);
                 if d8 < 0.0 {
                     // Overflow (a k-mer occurs ≥255× in both seqs): fall back to
                     // the exact 16-bit distance. The u16 vectors are not kept
