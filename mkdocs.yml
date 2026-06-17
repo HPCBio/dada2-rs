@@ -40,7 +40,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - About: about.md
-  - Installation: installation.md
+  - Building & installing: installation.md
   - Walkthroughs:
     - Illumina MiSeq: walkthrough-illumina.md
     - PacBio HiFi: walkthrough-pacbio.md
