@@ -27,14 +27,22 @@ pub const KMER_SIZE_MIN: usize = 3;
 pub const KMER_SIZE_MAX: usize = 8;
 
 /// Smallest k for which the resident 8-bit k-mer screen is stored *sparsely*
-/// (issue #43). Below this, the dense `4^k` array is small (≤1 KB at k5) and
-/// nearly fully populated, so the dense `sum-of-min` loop (which auto-vectorises)
-/// is both smaller and faster. At k≥6 the dense array is ≥4 KB and increasingly
-/// zero-dominated (a ~1.5 kb read has only ~seqlen distinct k-mers), so a sparse
-/// `(index, count)` representation cuts resident RSS sharply — at the cost of a
-/// merge-join distance instead of a dense sweep. Dense ≤ k5 keeps the
-/// Illumina/default path byte-identical and untouched.
-pub const SPARSE_KMER_MIN: usize = 6;
+/// (issue #43). The sparse `(index, count)` representation costs a fixed
+/// ~6 KB/raw (≈seqlen entries), independent of k, whereas the dense `4^k` array
+/// grows as `4^k`. The PacBio 93-sample pooled A/B (dense vs sparse, per k)
+/// pinned the crossover precisely at where `4^k` passes ~6 KB:
+///   - k5 (1 KB) / k6 (4 KB): dense is *smaller* than sparse, and its contiguous
+///     `sum-of-min` sweep is cache-resident + auto-vectorised, so dense wins both
+///     memory and wall (k6 sparse regressed +20.8% RSS *and* +20.1% dada wall).
+///   - k7 (16 KB): sparse wins RSS (−22.6%) but 16 KB still fits cache, so the
+///     dense sweep beats the branchy merge-join → +25.7% dada wall. A tradeoff,
+///     and k7 is the production default — so we keep it dense.
+///   - k8 (64 KB): dense spills cache; merge-join wins *both* (−68.3% RSS,
+///     −17.3% wall) and makes k8 feasible at all (42.8 GB dense → 13.6 GB).
+///
+/// So sparse is gated to k≥8, where it is a pure win with no regression at any
+/// smaller k; k≤7 keeps the byte-identical dense path.
+pub const SPARSE_KMER_MIN: usize = 8;
 
 /// Number of possible k-mers for a given k: 4^k = 1 << (2*k).
 #[inline]
