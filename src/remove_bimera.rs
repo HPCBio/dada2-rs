@@ -8,7 +8,7 @@
 use rayon::prelude::*;
 
 use crate::chimera::{BimeraAlignParams, is_bimera_with_buf, table_bimera2};
-use crate::nwalign::AlignBuffers;
+use crate::nwalign::{AlignBackend, AlignBuffers};
 use crate::sequence_table::SequenceTable;
 
 // ---------------------------------------------------------------------------
@@ -34,6 +34,8 @@ pub struct BimeraParams {
     pub match_score: i16,
     pub mismatch: i16,
     pub gap_p: i16,
+    /// Pairwise-alignment backend (issue #49).
+    pub backend: AlignBackend,
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +132,7 @@ fn consensus_flags(
         mismatch: p.mismatch,
         gap_p: p.gap_p,
         max_shift: p.max_shift,
+        backend: p.backend,
     };
     let flags = table_bimera2(
         mat,
@@ -173,6 +176,7 @@ fn pooled_flags(
         mismatch: p.mismatch,
         gap_p: p.gap_p,
         max_shift: p.max_shift,
+        backend: p.backend,
     };
 
     (0..ncol)
@@ -215,6 +219,7 @@ fn per_sample_cell_flags(
         mismatch: p.mismatch,
         gap_p: p.gap_p,
         max_shift: p.max_shift,
+        backend: p.backend,
     };
     let mut buf = AlignBuffers::new();
     (0..nrow)

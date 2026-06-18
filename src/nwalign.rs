@@ -25,9 +25,37 @@ const BAND_SENTINEL: i32 = -9999;
 // AlignParams
 // ---------------------------------------------------------------------------
 
+/// Pairwise-alignment backend (issue #49).
+///
+/// `Nw` is the default scalar/vectorized Needleman-Wunsch path. `Wfa2` routes
+/// the ends-free path through the experimental WFA backend (wfa2lib-rs). WFA is
+/// ASV-equivalent to NW on tested Illumina and PacBio HiFi data but its
+/// alignments are not byte-identical (see `sweep_wfa_parity`).
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum AlignBackend {
+    /// Needleman-Wunsch (scalar/vectorized), the default.
+    #[default]
+    Nw,
+    /// Experimental wavefront alignment via wfa2lib-rs.
+    Wfa2,
+}
+
 /// Parameters controlling alignment method selection in `raw_align`.
 #[derive(Clone, Copy)]
 pub struct AlignParams {
+    /// Which pairwise-alignment backend to use for the ends-free path.
+    pub backend: AlignBackend,
     pub match_score: i32,
     pub mismatch: i32,
     pub gap_p: i32,
@@ -1276,13 +1304,13 @@ pub fn raw_align_with_buf(
     // Without this, a `--homo-gap-p` setting would be silently ignored by the
     // vectorized path and diverge from R.
     let use_homo = p.homo_gap_p != p.gap_p && p.homo_gap_p <= 0;
-    // Experimental WFA backend (issue #49), opt-in via DADA2RS_ALIGN_BACKEND=wfa.
-    // Replaces only the vectorized/ends-free scalar path; the gapless fast-path
-    // (above) and the homopolymer-aware path (below) are left untouched so an A/B
-    // run isolates the WFA aligner. NOTE: WFA ends-free is not yet byte-identical
-    // to align_endsfree (see sweep_wfa_parity); this flag exists to measure
-    // end-to-end ASV impact on real data, not for production use.
-    if *USE_WFA_BACKEND && !use_homo {
+    // Experimental WFA backend (issue #49), selected via `p.backend` (CLI
+    // `--align-backend wfa2`) or the undocumented `DADA2RS_ALIGN_BACKEND=wfa`
+    // override (handy for sweeps). Replaces only the vectorized/ends-free path;
+    // the gapless fast-path (above) and the homopolymer-aware path (below) are
+    // left untouched. NOTE: WFA ends-free is not byte-identical to align_endsfree
+    // (see sweep_wfa_parity), though it is ASV-equivalent on tested data.
+    if (p.backend == AlignBackend::Wfa2 || *USE_WFA_BACKEND) && !use_homo {
         align_wfa_endsfree_with_buf(
             &raw1.seq,
             &raw2.seq,
@@ -1959,6 +1987,7 @@ mod tests {
         let s2 = encode("AAAAAGGGGTTTAAAAAATTTTTCCCC");
 
         let params = AlignParams {
+            backend: AlignBackend::Nw,
             match_score: 5,
             mismatch: -4,
             gap_p: -8,

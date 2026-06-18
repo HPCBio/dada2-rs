@@ -200,6 +200,10 @@ pub struct LearnedErrParams {
     pub vectorized: bool,
     #[serde(default)]
     pub gapless: bool,
+    /// Pairwise-alignment backend the model was learned with (issue #49).
+    /// Defaults to `nw` for JSONs produced before this field existed.
+    #[serde(default)]
+    pub backend: crate::nwalign::AlignBackend,
 
     /// Loess configuration captured from the errfun. Present for errfuns that
     /// use loess fitting (`loess`, `noqual`, `binned-qual`, `pacbio`); absent

@@ -9,7 +9,34 @@
 
 use rayon::prelude::*;
 
-use crate::nwalign::{AlignBuffers, VectorizedAlignScores, align_vectorized_with_buf};
+use crate::nwalign::{
+    AlignBackend, AlignBuffers, VectorizedAlignScores, align_vectorized_with_buf,
+    align_wfa_endsfree_with_buf,
+};
+
+/// Align `sq` against `par` (ends-free) into `buf`, dispatching on `backend`.
+/// `Nw` uses the vectorized NW; `Wfa2` the experimental WFA backend. WFA takes
+/// `i32` scores, so the `i16` `VectorizedAlignScores` are widened.
+#[inline]
+fn bimera_align(
+    sq: &[u8],
+    par: &[u8],
+    scores: &VectorizedAlignScores,
+    backend: AlignBackend,
+    buf: &mut AlignBuffers,
+) {
+    match backend {
+        AlignBackend::Nw => align_vectorized_with_buf(sq, par, scores, buf),
+        AlignBackend::Wfa2 => align_wfa_endsfree_with_buf(
+            sq,
+            par,
+            scores.match_score as i32,
+            scores.mismatch as i32,
+            scores.gap_p as i32,
+            buf,
+        ),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Private alignment helpers
@@ -157,6 +184,9 @@ pub struct BimeraAlignParams {
     pub mismatch: i16,
     pub gap_p: i16,
     pub max_shift: i32,
+    /// Pairwise-alignment backend (issue #49). `Nw` uses the vectorized NW;
+    /// `Wfa2` routes through the experimental WFA backend.
+    pub backend: AlignBackend,
 }
 
 /// Determine whether `sq` is a bimera of any pair from `parents`.
@@ -192,6 +222,7 @@ pub fn is_bimera_with_buf(
         mismatch,
         gap_p,
         max_shift,
+        backend,
     } = *params;
     let align_scores = VectorizedAlignScores {
         match_score,
@@ -209,7 +240,7 @@ pub fn is_bimera_with_buf(
     let mut oo_max_right_oo = 0usize;
 
     for &par in parents {
-        align_vectorized_with_buf(sq, par, &align_scores, buf);
+        bimera_align(sq, par, &align_scores, backend, buf);
         let (al0, al1) = buf.alignment();
         let (left, right, left_oo, right_oo) = get_lr(al0, al1, allow_one_off, max_shift as usize);
 
@@ -291,6 +322,7 @@ pub fn table_bimera2(
         mismatch,
         gap_p,
         max_shift,
+        backend,
     } = *params;
     let align_scores = VectorizedAlignScores {
         match_score,
@@ -337,7 +369,7 @@ pub fn table_bimera2(
 
                     // Compute alignment if not cached for this (j, k) pair.
                     if cache[k].is_none() {
-                        align_vectorized_with_buf(seqs[j], seqs[k], &align_scores, buf);
+                        bimera_align(seqs[j], seqs[k], &align_scores, backend, buf);
                         let (al0, al1) = buf.alignment();
                         let (left, right, left_oo, right_oo) =
                             get_lr(al0, al1, allow_one_off, max_shift as usize);

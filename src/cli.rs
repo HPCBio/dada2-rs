@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{ArgAction, Parser, Subcommand};
 
 use crate::misc::DADA2_RS_VERSION;
+use crate::nwalign::AlignBackend;
 
 #[derive(Parser)]
 #[command(
@@ -247,6 +248,12 @@ pub enum Commands {
         #[arg(long, allow_hyphen_values = true)]
         mismatch: Option<i32>,
 
+        /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
+        /// is the experimental WFA backend (wfa2lib-rs) — ASV-equivalent on tested
+        /// Illumina and PacBio HiFi data, but alignments are not byte-identical.
+        #[arg(long, value_enum)]
+        align_backend: Option<AlignBackend>,
+
         /// Maximum number of clusters to infer (R's MAX_CLUST). 0 = unlimited.
         #[arg(long)]
         max_clust: Option<usize>,
@@ -432,6 +439,12 @@ pub enum Commands {
         #[arg(long, allow_hyphen_values = true)]
         mismatch: Option<i32>,
 
+        /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
+        /// is the experimental WFA backend (wfa2lib-rs) — ASV-equivalent on tested
+        /// Illumina and PacBio HiFi data, but alignments are not byte-identical.
+        #[arg(long, value_enum)]
+        align_backend: Option<AlignBackend>,
+
         /// Maximum number of clusters to infer (R's MAX_CLUST). 0 = unlimited.
         #[arg(long)]
         max_clust: Option<usize>,
@@ -596,6 +609,12 @@ pub enum Commands {
         /// Mismatch score for the Needleman-Wunsch alignment (R's MISMATCH).
         #[arg(long, allow_hyphen_values = true)]
         mismatch: Option<i32>,
+
+        /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
+        /// is the experimental WFA backend (wfa2lib-rs) — ASV-equivalent on tested
+        /// Illumina and PacBio HiFi data, but alignments are not byte-identical.
+        #[arg(long, value_enum)]
+        align_backend: Option<AlignBackend>,
 
         /// Maximum number of clusters to infer (R's MAX_CLUST). 0 = unlimited.
         #[arg(long)]
@@ -1083,6 +1102,12 @@ pub enum Commands {
         #[arg(long, allow_hyphen_values = true, default_value_t = -8)]
         gap_p: i16,
 
+        /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
+        /// is the experimental WFA backend (wfa2lib-rs) — ASV-equivalent on tested
+        /// Illumina and PacBio HiFi data, but alignments are not byte-identical.
+        #[arg(long, value_enum)]
+        align_backend: Option<AlignBackend>,
+
         /// (consensus) Fraction of samples a sequence must be flagged in
         #[arg(long, default_value_t = 0.9)]
         min_sample_fraction: f64,
@@ -1521,6 +1546,12 @@ pub enum Commands {
         #[arg(long, default_value_t = -4, allow_hyphen_values = true)]
         mismatch: i32,
 
+        /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
+        /// is the experimental WFA backend (wfa2lib-rs) — ASV-equivalent on tested
+        /// Illumina and PacBio HiFi data, but alignments are not byte-identical.
+        #[arg(long, value_enum)]
+        align_backend: Option<AlignBackend>,
+
         /// Maximum number of clusters to infer (R's MAX_CLUST). 0 = unlimited.
         #[arg(long, default_value_t = 0)]
         max_clust: usize,
@@ -1789,6 +1820,12 @@ pub enum Commands {
         /// Mismatch score for the Needleman-Wunsch alignment (R's MISMATCH).
         #[arg(long, default_value_t = -4, allow_hyphen_values = true)]
         mismatch: i32,
+
+        /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
+        /// is the experimental WFA backend (wfa2lib-rs) — ASV-equivalent on tested
+        /// Illumina and PacBio HiFi data, but alignments are not byte-identical.
+        #[arg(long, value_enum)]
+        align_backend: Option<AlignBackend>,
 
         /// Maximum number of clusters to infer (R's MAX_CLUST). 0 = unlimited.
         #[arg(long, default_value_t = 0)]
