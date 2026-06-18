@@ -1071,6 +1071,7 @@ pub fn align_vectorized_with_buf(
 // byte equality and its EOS sentinels (`b'!'`=33, `b'?'`=63) never collide with
 // 1..=5, so no ASCII round-trip is needed.
 
+use std::cell::RefCell;
 use std::sync::LazyLock;
 use wfa2lib_rs::aligner::{AffineAligner, AlignmentScope};
 use wfa2lib_rs::penalties::{AffinePenalties, WavefrontPenalties};
@@ -1138,27 +1139,47 @@ pub fn align_wfa_endsfree_with_buf(
     gap_p: i32,
     buf: &mut AlignBuffers,
 ) {
-    let penalties = WavefrontPenalties::new_affine(AffinePenalties {
-        match_: -match_score,
-        mismatch: -mismatch,
-        gap_opening: 0,
-        gap_extension: -gap_p,
+    // Reuse a per-thread aligner so wfa2lib-rs reaches its zero-alloc steady
+    // state instead of allocating a fresh aligner every call — the per-call
+    // allocation was >13× slower than NW on long PacBio reads. A `thread_local`
+    // (rather than a field on `AlignBuffers`) keeps the aligner off any struct
+    // that crosses threads: `WavefrontAligner` holds raw pointers (`!Send`),
+    // and `AlignBuffers` is carried in a rayon `fold` accumulator that must be
+    // `Send`. The aligner never moves between threads, so TLS is the right home.
+    // Rebuilt only when the scoring changes (constant within a run).
+    // (match, mismatch, gap_p) scoring key paired with the aligner built for it.
+    type WfaCache = ((i32, i32, i32), AffineAligner);
+    thread_local! {
+        static WFA: RefCell<Option<WfaCache>> = const { RefCell::new(None) };
+    }
+    WFA.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let key = (match_score, mismatch, gap_p);
+        if slot.as_ref().map(|(k, _)| *k) != Some(key) {
+            let penalties = WavefrontPenalties::new_affine(AffinePenalties {
+                match_: -match_score,
+                mismatch: -mismatch,
+                gap_opening: 0,
+                gap_extension: -gap_p,
+            });
+            let mut aligner = AffineAligner::new(penalties);
+            // Compute the full CIGAR, not just the score (default ComputeScore
+            // leaves the cigar empty).
+            aligner.alignment_scope = AlignmentScope::ComputeAlignment;
+            *slot = Some((key, aligner));
+        }
+        let aligner = &mut slot.as_mut().unwrap().1;
+        // Full ends-free: leading/trailing gaps on either strand are free.
+        aligner.set_alignment_free_ends(
+            s1.len() as i32,
+            s1.len() as i32,
+            s2.len() as i32,
+            s2.len() as i32,
+        );
+        aligner.align_endsfree(s1, s2);
+        let ops = aligner.cigar().operations_slice();
+        cigar_to_alignment_into(ops, s1, s2, &mut buf.al0, &mut buf.al1);
     });
-    let mut aligner = AffineAligner::new(penalties);
-    // Compute the full CIGAR, not just the score (default is ComputeScore, which
-    // leaves the cigar empty). The field is pub; a public setter would be a good
-    // upstream addition.
-    aligner.alignment_scope = AlignmentScope::ComputeAlignment;
-    // Full ends-free: leading/trailing gaps on either strand are free.
-    aligner.set_alignment_free_ends(
-        s1.len() as i32,
-        s1.len() as i32,
-        s2.len() as i32,
-        s2.len() as i32,
-    );
-    aligner.align_endsfree(s1, s2);
-    let cigar = aligner.cigar();
-    cigar_to_alignment_into(cigar.operations_slice(), s1, s2, &mut buf.al0, &mut buf.al1);
 }
 
 // ---------------------------------------------------------------------------
