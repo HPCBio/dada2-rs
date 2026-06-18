@@ -1043,8 +1043,18 @@ pub fn align_vectorized_with_buf(
 // byte equality and its EOS sentinels (`b'!'`=33, `b'?'`=63) never collide with
 // 1..=5, so no ASCII round-trip is needed.
 
+use std::sync::LazyLock;
 use wfa2lib_rs::aligner::{AffineAligner, AlignmentScope};
 use wfa2lib_rs::penalties::{AffinePenalties, WavefrontPenalties};
+
+/// Opt-in switch for the experimental WFA alignment backend (issue #49).
+/// Set `DADA2RS_ALIGN_BACKEND=wfa` to route the ends-free path through WFA.
+/// Read once at first alignment.
+static USE_WFA_BACKEND: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("DADA2RS_ALIGN_BACKEND")
+        .map(|v| v.eq_ignore_ascii_case("wfa"))
+        .unwrap_or(false)
+});
 
 /// Convert a WFA CIGAR (`M`/`X`/`I`/`D` ops, pattern=s1, text=s2) into the
 /// gap-annotated `[al0, al1]` pair the rest of the module consumes.
@@ -1266,6 +1276,23 @@ pub fn raw_align_with_buf(
     // Without this, a `--homo-gap-p` setting would be silently ignored by the
     // vectorized path and diverge from R.
     let use_homo = p.homo_gap_p != p.gap_p && p.homo_gap_p <= 0;
+    // Experimental WFA backend (issue #49), opt-in via DADA2RS_ALIGN_BACKEND=wfa.
+    // Replaces only the vectorized/ends-free scalar path; the gapless fast-path
+    // (above) and the homopolymer-aware path (below) are left untouched so an A/B
+    // run isolates the WFA aligner. NOTE: WFA ends-free is not yet byte-identical
+    // to align_endsfree (see sweep_wfa_parity); this flag exists to measure
+    // end-to-end ASV impact on real data, not for production use.
+    if *USE_WFA_BACKEND && !use_homo {
+        align_wfa_endsfree_with_buf(
+            &raw1.seq,
+            &raw2.seq,
+            p.match_score,
+            p.mismatch,
+            p.gap_p,
+            buf,
+        );
+        return Some(());
+    }
     // Long-read guard: align_vectorized uses i16 DP tables. With the default
     // DADA2 scoring (match=5, mismatch=-4, gap_p=-8) cumulative scores can
     // approach ±8·N, so we must fall back to the i32 path before overflow
