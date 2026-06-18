@@ -1567,6 +1567,82 @@ mod tests {
         compare_wfa(&s1, &s2, "diff-len-short");
     }
 
+    /// Isolation experiment: compare WFA *global* (`align_end2end`) against the
+    /// scalar *global* `align_standard` (both linear gap, penalized ends). If
+    /// these agree where ends-free diverges, the divergence is purely in
+    /// ends-free free-end-gap crediting, not the interior gap model — meaning
+    /// affine gap scoring would not address it.
+    ///   cargo test --release --bins wfa_global_isolation -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn wfa_global_isolation() {
+        use wfa2lib_rs::aligner::{AffineAligner, AlignmentScope};
+        use wfa2lib_rs::penalties::{AffinePenalties, WavefrontPenalties};
+
+        fn wfa_global(s1: &[u8], s2: &[u8]) -> [Vec<u8>; 2] {
+            let penalties = WavefrontPenalties::new_affine(AffinePenalties {
+                match_: -5,
+                mismatch: 4,
+                gap_opening: 0,
+                gap_extension: 8,
+            });
+            let mut a = AffineAligner::new(penalties);
+            a.alignment_scope = AlignmentScope::ComputeAlignment;
+            a.align_end2end(s1, s2);
+            let mut al0 = Vec::new();
+            let mut al1 = Vec::new();
+            cigar_to_alignment_into(a.cigar().operations_slice(), s1, s2, &mut al0, &mut al1);
+            [al0, al1]
+        }
+
+        let nts = [1u8, 2, 3, 4];
+        let mut st: u64 = 0xDEAD_BEEF_0BAD_F00D;
+        let mut rng = |st: &mut u64, m: usize| {
+            *st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((*st >> 33) as usize) % m
+        };
+        let mut global_fails = 0u32;
+        let mut endsfree_fails = 0u32;
+        let n = 10_000;
+        for _ in 0..n {
+            let len = 40 + rng(&mut st, 60);
+            let s1: Vec<u8> = (0..len).map(|_| nts[rng(&mut st, 4)]).collect();
+            let mut s2 = s1.clone();
+            for _ in 0..rng(&mut st, 6) {
+                if s2.is_empty() {
+                    break;
+                }
+                let p = rng(&mut st, s2.len());
+                match rng(&mut st, 3) {
+                    0 => s2[p] = nts[rng(&mut st, 4)],
+                    1 => s2.insert(p, nts[rng(&mut st, 4)]),
+                    _ => {
+                        s2.remove(p);
+                    }
+                }
+            }
+            if s2.len() < 3 {
+                continue;
+            }
+            // Global: WFA end2end vs scalar align_standard (band=-1, unbanded).
+            let g_scalar = align_standard(&s1, &s2, 5, -4, -8, -1);
+            let g_wfa = wfa_global(&s1, &s2);
+            if score_alignment(&g_scalar, 5, -4, -8) != score_alignment(&g_wfa, 5, -4, -8) {
+                global_fails += 1;
+            }
+            // Ends-free: WFA endsfree vs scalar align_endsfree, for comparison.
+            let e_scalar = align_endsfree(&s1, &s2, 5, -4, -8, -1);
+            let mut buf = AlignBuffers::new();
+            align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, &mut buf);
+            let e_wfa = [buf.al0.clone(), buf.al1.clone()];
+            if score_alignment(&e_scalar, 5, -4, -8) != score_alignment(&e_wfa, 5, -4, -8) {
+                endsfree_fails += 1;
+            }
+        }
+        println!("  WFA global   vs align_standard : {global_fails}/{n} disagree");
+        println!("  WFA endsfree vs align_endsfree : {endsfree_fails}/{n} disagree");
+    }
+
     /// Find and print the first few low-edit pairs where WFA disagrees with
     /// `align_endsfree`, with both alignments, to diagnose the cause.
     ///   cargo test --release --bins wfa_diagnose -- --ignored --nocapture
