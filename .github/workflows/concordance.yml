@@ -141,31 +141,11 @@ jobs:
               --min-count-corr "$MIN_COUNT_CORR" --gate \
               --summary "$GITHUB_STEP_SUMMARY" --json work/pacbio_k7_report.json
 
-      # -------- PacBio with the experimental WFA backend (issue #49) ----------
-      # HiFi uses no homopolymer setting, so WFA is a full swap here. k=5 to
-      # match R's fixed KMER_SIZE / the reference. Guarded on the fixture like
-      # the NW PacBio step above.
-      - name: PacBio (WFA) — run + compare (if fixture present)
-        run: |
-          data=dev/concordance/data/pacbio
-          ref=dev/concordance/reference/pacbio_seqtab_nochim.csv
-          if [ ! -d "$data" ] || [ -z "$(ls -A "$data"/*.fastq.gz 2>/dev/null)" ]; then
-            echo "::notice::PacBio fixture not committed yet ($data); skipping WFA run."
-            exit 0
-          fi
-          ALIGN_BACKEND=wfa2 bash dev/concordance/run_pacbio.sh \
-              ./target/release/dada2-rs "$data" work/pacbio_wfa \
-              AGRGTTYGATYMTGGCTCAG RGYTACCTTGTTACGACTT 2
-          if [ ! -f "$ref" ]; then
-            echo "::notice::PacBio reference CSV not committed yet ($ref); WFA pipeline ran, no comparison."
-            exit 0
-          fi
-          python3 dev/concordance/compare_to_reference.py \
-              --rs work/pacbio_wfa/seqtab.nochim.json --reference "$ref" \
-              --label pacbio-wfa --min-abundance "$MIN_ABUNDANCE" \
-              --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
-              --min-count-corr "$MIN_COUNT_CORR" --gate \
-              --summary "$GITHUB_STEP_SUMMARY" --json work/pacbio_wfa_report.json
+      # NOTE: a PacBio WFA-backend concordance step is deliberately NOT added yet.
+      # The WFA adapter allocates a fresh aligner per call, which makes PacBio
+      # learn-errors (many ~1500 bp alignments) >13x slower than the NW path
+      # (>6 min vs ~28s locally) — impractical for CI. Re-add once the aligner is
+      # cached in AlignBuffers (issue #49). WFA stays experimental until then.
 
       - name: Upload reports
         if: always()
