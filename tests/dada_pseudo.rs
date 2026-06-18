@@ -758,9 +758,17 @@ fn dada_from_fastq_matches_dada_from_derep_json() {
         from_json.to_str().unwrap(),
     ]);
 
+    // The `input_file` provenance field intentionally differs (the FASTQ name
+    // vs the derep JSON name); strip it before comparing the denoising result.
+    let strip_input_file = |path: &std::path::Path| {
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("input_file");
+        v
+    };
     assert_eq!(
-        std::fs::read(&from_fastq).unwrap(),
-        std::fs::read(&from_json).unwrap(),
+        strip_input_file(&from_fastq),
+        strip_input_file(&from_json),
         "dada output from derep JSON differs from dada output from FASTQ",
     );
 }

@@ -98,6 +98,9 @@ struct AsvJson {
 struct DadaJsonInput {
     /// Sample identifier; absent in dada JSONs produced before --sample-name.
     sample: Option<String>,
+    /// Original FASTQ file name (no directory) this dada result was computed
+    /// from; absent in dada JSONs produced before provenance was recorded.
+    input_file: Option<String>,
     asvs: Vec<AsvJson>,
     /// unique-index → ASV-index mapping; absent in dada JSONs produced
     /// before the map became part of the default output.
@@ -275,6 +278,32 @@ fn build_merged(
     String::from_utf8_lossy(&result).into_owned()
 }
 
+/// Default-on provenance check: warn (to stderr) when the FASTQ a dada JSON
+/// records having been computed from does not match the FASTQ now being passed
+/// for that orientation. A mismatch usually means the four positional file
+/// lists have drifted out of alignment (e.g. a glob expanded to a different
+/// set), which would silently merge the wrong samples. This only warns —
+/// older dada JSONs without the recorded name are skipped.
+fn warn_on_input_mismatch(
+    label: &str,
+    recorded: Option<&str>,
+    fastq_path: &Path,
+    dada_path: &Path,
+) {
+    let Some(recorded) = recorded else { return };
+    let passed = fastq_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    if recorded != passed {
+        eprintln!(
+            "[merge-pairs] warning: {label} dada '{}' was computed from '{recorded}', \
+             but the {label} FASTQ passed is '{passed}' — check that the file lists line up",
+            dada_path.display(),
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Sample-ID sanity check
 // ---------------------------------------------------------------------------
@@ -355,6 +384,21 @@ pub fn merge_sample(
     let rev_dada: DadaJsonInput =
         crate::misc::read_tagged_json(rev_dada_path, &["dada", "dada-pooled", "dada-pseudo"])
             .with_path(rev_dada_path)?;
+
+    // Provenance warning (always on): does each dada JSON's recorded source
+    // FASTQ match the FASTQ now being passed for that orientation?
+    warn_on_input_mismatch(
+        "forward",
+        fwd_dada.input_file.as_deref(),
+        fwd_fastq_path,
+        fwd_dada_path,
+    );
+    warn_on_input_mismatch(
+        "reverse",
+        rev_dada.input_file.as_deref(),
+        rev_fastq_path,
+        rev_dada_path,
+    );
 
     if params.check_sample_ids {
         check_sample_ids(

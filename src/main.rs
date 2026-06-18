@@ -360,6 +360,8 @@ fn main() -> io::Result<()> {
             #[derive(Serialize)]
             struct DerepOutput<'a> {
                 sample: &'a str,
+                /// Original input file name (no directory) for provenance.
+                input_file: String,
                 total_reads: usize,
                 unique_sequences: usize,
                 /// "abundance_desc" — produced by `dereplicate()`; lets dada /
@@ -384,6 +386,7 @@ fn main() -> io::Result<()> {
             let sample = sample_name.unwrap_or_else(|| fastq_stem(&input));
             let derep_out = DerepOutput {
                 sample: &sample,
+                input_file: file_basename(&input),
                 total_reads: derep.map.len(),
                 unique_sequences: derep.uniques.len(),
                 sort_order: "abundance_desc",
@@ -585,6 +588,7 @@ fn main() -> io::Result<()> {
                     let json = denoise_and_serialize(
                         "dada",
                         &sample,
+                        &file_basename(path),
                         &raw_inputs,
                         &resolved.params,
                         &resolved.run,
@@ -775,6 +779,8 @@ fn main() -> io::Result<()> {
             #[derive(Serialize)]
             struct DadaOutput {
                 sample: String,
+                /// Original input file name (no directory) for provenance.
+                input_file: String,
                 num_asvs: usize,
                 total_reads: u32,
                 asvs: Vec<AsvEntry>,
@@ -845,6 +851,7 @@ fn main() -> io::Result<()> {
 
             let out = DadaOutput {
                 sample,
+                input_file: file_basename(input),
                 num_asvs: asvs.len(),
                 total_reads,
                 asvs,
@@ -1146,6 +1153,8 @@ fn main() -> io::Result<()> {
             #[derive(Serialize)]
             struct DadaOutput {
                 sample: String,
+                /// Original input file name (no directory) for provenance.
+                input_file: String,
                 num_asvs: usize,
                 total_reads: u32,
                 asvs: Vec<AsvEntry>,
@@ -1187,6 +1196,7 @@ fn main() -> io::Result<()> {
                 let n_asvs = asvs.len();
                 let out = DadaOutput {
                     sample: sample_name.clone(),
+                    input_file: file_basename(&input[s]),
                     num_asvs: n_asvs,
                     total_reads,
                     asvs,
@@ -1517,6 +1527,7 @@ fn main() -> io::Result<()> {
                     let json = denoise_and_serialize(
                         "dada-pseudo",
                         sample_name,
+                        &file_basename(&input[s]),
                         &sample_raws[s],
                         &resolved.params,
                         &resolved.run,
@@ -1548,6 +1559,7 @@ fn main() -> io::Result<()> {
                     let json = denoise_and_serialize(
                         "dada-pseudo",
                         sample_name,
+                        &file_basename(&input[s]),
                         &raws,
                         &resolved.params,
                         &resolved.run,
@@ -2276,6 +2288,8 @@ fn main() -> io::Result<()> {
             #[derive(Serialize)]
             struct DerepOutput<'a> {
                 sample: &'a str,
+                /// Original input file name (no directory) for provenance.
+                input_file: String,
                 total_reads: usize,
                 unique_sequences: usize,
                 sort_order: &'static str,
@@ -2348,6 +2362,7 @@ fn main() -> io::Result<()> {
                 }
                 let sample_out = DerepOutput {
                     sample: &stem,
+                    input_file: file_basename(path),
                     total_reads: derep.map.len(),
                     unique_sequences: uniq_entries.len(),
                     sort_order: "abundance_desc",
@@ -3855,6 +3870,7 @@ fn to_json<T: Serialize>(value: &T, compact: bool) -> io::Result<String> {
 fn denoise_and_serialize(
     tag: &'static str,
     sample: &str,
+    input_file: &str,
     raw_inputs: &[dada::RawInput],
     params: &dada::DadaParams,
     run_params: &DadaRunParams,
@@ -3865,6 +3881,8 @@ fn denoise_and_serialize(
     #[derive(Serialize)]
     struct DadaOutput {
         sample: String,
+        /// Original input file name (no directory) for provenance.
+        input_file: String,
         num_asvs: usize,
         total_reads: u32,
         asvs: Vec<AsvEntry>,
@@ -3899,6 +3917,7 @@ fn denoise_and_serialize(
 
     let out = DadaOutput {
         sample: sample.to_string(),
+        input_file: input_file.to_string(),
         num_asvs: asvs.len(),
         total_reads,
         asvs,
@@ -4022,6 +4041,16 @@ fn select_sequences(
             by_prev || by_abund
         })
         .collect()
+}
+
+/// Original file name without the directory path, for provenance. Recorded in
+/// dada/derep JSON so downstream commands (e.g. `merge-pairs`) can verify they
+/// were handed the file the JSON was actually computed from.
+fn file_basename(path: &Path) -> String {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 fn fastq_stem(path: &Path) -> String {
