@@ -17,6 +17,15 @@ DATA="${2:?missing data-dir}"
 OUT="${3:?missing out-dir}"
 THREADS="${4:-2}"
 
+# Optional alignment backend (nw|wfa2). When set, it is threaded through every
+# alignment-using subcommand (learn-errors, dada, remove-bimera-denovo) so the
+# concordance guardrail can run the whole pipeline with WFA. Unset = default
+# (nw), leaving existing behavior unchanged. The `+"${...}"` form keeps the
+# empty-array expansion safe under `set -u`.
+ALIGN_BACKEND="${ALIGN_BACKEND:-}"
+backend_arg=()
+[ -n "$ALIGN_BACKEND" ] && backend_arg=(--align-backend "$ALIGN_BACKEND")
+
 # --- Parameters (keep in sync with write_reference.R) ---
 TRUNC_LEN_F=240
 TRUNC_LEN_R=160
@@ -50,16 +59,16 @@ done
 
 echo "==> learn-errors (fwd, rev)"
 "$BIN" learn-errors "${filtFs[@]}" --nbases "$NBASES" --errfun loess \
-    --threads "$THREADS" -o "$OUT/errF.json"
+    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} -o "$OUT/errF.json"
 "$BIN" learn-errors "${filtRs[@]}" --nbases "$NBASES" --errfun loess \
-    --threads "$THREADS" -o "$OUT/errR.json"
+    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} -o "$OUT/errR.json"
 
 # Per-sample denoising (pool=FALSE analog) — matches R dada() default.
 echo "==> dada (fwd, rev; per-sample)"
 "$BIN" dada "${filtFs[@]}" --error-model "$OUT/errF.json" \
-    --output-dir "$OUT/dada_fwd" --threads "$THREADS"
+    --output-dir "$OUT/dada_fwd" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"}
 "$BIN" dada "${filtRs[@]}" --error-model "$OUT/errR.json" \
-    --output-dir "$OUT/dada_rev" --threads "$THREADS"
+    --output-dir "$OUT/dada_rev" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"}
 
 echo "==> merge-pairs"
 "$BIN" merge-pairs \
@@ -72,6 +81,6 @@ echo "==> make-sequence-table"
 
 echo "==> remove-bimera-denovo"
 "$BIN" remove-bimera-denovo "$OUT/seqtab.json" --method consensus \
-    --threads "$THREADS" -o "$OUT/seqtab.nochim.json"
+    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} -o "$OUT/seqtab.nochim.json"
 
 echo "==> done: $OUT/seqtab.nochim.json"

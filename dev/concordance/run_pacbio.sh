@@ -21,6 +21,14 @@ PRIMER_FWD="${4:?missing primer_fwd}"
 PRIMER_REV="${5:?missing primer_rev}"
 THREADS="${6:-2}"
 
+# Optional alignment backend (nw|wfa2), threaded through the alignment-using
+# subcommands (learn-errors, dada, remove-bimera-denovo) so the concordance
+# guardrail can run the pipeline with WFA. Unset = default (nw). The
+# `+"${...}"` form keeps empty-array expansion safe under `set -u`.
+ALIGN_BACKEND="${ALIGN_BACKEND:-}"
+backend_arg=()
+[ -n "$ALIGN_BACKEND" ] && backend_arg=(--align-backend "$ALIGN_BACKEND")
+
 # --- Parameters (keep in sync with write_reference.R pacbio branch) ---
 MIN_LEN=1000
 MAX_LEN=1600
@@ -60,17 +68,19 @@ done
 
 echo "==> learn-errors (pacbio errfun, k=$KMER)"
 "$BIN" learn-errors "${filts[@]}" --nbases "$NBASES" --errfun pacbio \
-    --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" -o "$OUT/err.json"
+    --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
+    ${backend_arg[@]+"${backend_arg[@]}"} -o "$OUT/err.json"
 
 echo "==> dada (per-sample)"
 "$BIN" dada "${filts[@]}" --error-model "$OUT/err.json" \
-    --output-dir "$OUT/dada" --band "$BAND" --kmer-size "$KMER" --threads "$THREADS"
+    --output-dir "$OUT/dada" --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
+    ${backend_arg[@]+"${backend_arg[@]}"}
 
 echo "==> make-sequence-table"
 "$BIN" make-sequence-table "$OUT"/dada/*.json -o "$OUT/seqtab.json"
 
 echo "==> remove-bimera-denovo"
 "$BIN" remove-bimera-denovo "$OUT/seqtab.json" --method consensus \
-    --threads "$THREADS" -o "$OUT/seqtab.nochim.json"
+    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} -o "$OUT/seqtab.nochim.json"
 
 echo "==> done: $OUT/seqtab.nochim.json"

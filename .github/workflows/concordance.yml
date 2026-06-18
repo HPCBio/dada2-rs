@@ -77,6 +77,31 @@ jobs:
               --min-count-corr "$MIN_COUNT_CORR" --gate \
               --summary "$GITHUB_STEP_SUMMARY" --json work/illumina_report.json
 
+      # -------- Illumina with the experimental WFA backend (issue #49) ---------
+      # Same fixtures + same R reference + same gate, but the whole pipeline
+      # (learn-errors, dada, remove-bimera-denovo) runs with --align-backend
+      # wfa2. WFA is ASV-equivalent to NW on this data, so it must clear the
+      # same thresholds; this guards against the WFA path regressing.
+      - name: Illumina (WFA) — run dada2-rs pipeline
+        run: |
+          ALIGN_BACKEND=wfa2 bash dev/concordance/run_illumina.sh \
+              ./target/release/dada2-rs \
+              dev/concordance/data/illumina work/illumina_wfa 2
+
+      - name: Illumina (WFA) — compare to R reference
+        run: |
+          ref=dev/concordance/reference/illumina_seqtab_nochim.csv
+          if [ ! -f "$ref" ]; then
+            echo "::notice::Illumina reference CSV not committed yet ($ref); skipping WFA comparison."
+            exit 0
+          fi
+          python3 dev/concordance/compare_to_reference.py \
+              --rs work/illumina_wfa/seqtab.nochim.json --reference "$ref" \
+              --label illumina-wfa --min-abundance "$MIN_ABUNDANCE" \
+              --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
+              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --summary "$GITHUB_STEP_SUMMARY" --json work/illumina_wfa_report.json
+
       # ---------------- PacBio (committed subsampled fixture) -----------------
       # Skipped until both the fixture and the reference CSV are committed.
       - name: PacBio — run + compare (if fixture present)
@@ -115,6 +140,32 @@ jobs:
               --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
               --min-count-corr "$MIN_COUNT_CORR" --gate \
               --summary "$GITHUB_STEP_SUMMARY" --json work/pacbio_k7_report.json
+
+      # -------- PacBio with the experimental WFA backend (issue #49) ----------
+      # HiFi uses no homopolymer setting, so WFA is a full swap here. k=5 to
+      # match R's fixed KMER_SIZE / the reference. Guarded on the fixture like
+      # the NW PacBio step above.
+      - name: PacBio (WFA) — run + compare (if fixture present)
+        run: |
+          data=dev/concordance/data/pacbio
+          ref=dev/concordance/reference/pacbio_seqtab_nochim.csv
+          if [ ! -d "$data" ] || [ -z "$(ls -A "$data"/*.fastq.gz 2>/dev/null)" ]; then
+            echo "::notice::PacBio fixture not committed yet ($data); skipping WFA run."
+            exit 0
+          fi
+          ALIGN_BACKEND=wfa2 bash dev/concordance/run_pacbio.sh \
+              ./target/release/dada2-rs "$data" work/pacbio_wfa \
+              AGRGTTYGATYMTGGCTCAG RGYTACCTTGTTACGACTT 2
+          if [ ! -f "$ref" ]; then
+            echo "::notice::PacBio reference CSV not committed yet ($ref); WFA pipeline ran, no comparison."
+            exit 0
+          fi
+          python3 dev/concordance/compare_to_reference.py \
+              --rs work/pacbio_wfa/seqtab.nochim.json --reference "$ref" \
+              --label pacbio-wfa --min-abundance "$MIN_ABUNDANCE" \
+              --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
+              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --summary "$GITHUB_STEP_SUMMARY" --json work/pacbio_wfa_report.json
 
       - name: Upload reports
         if: always()
