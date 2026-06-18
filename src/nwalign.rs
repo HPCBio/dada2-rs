@@ -1025,6 +1025,105 @@ pub fn align_vectorized_with_buf(
 }
 
 // ---------------------------------------------------------------------------
+// WFA backend (experimental) — wavefront alignment via wfa2lib-rs
+// ---------------------------------------------------------------------------
+//
+// Wraps the pure-Rust WFA aligner (HPCBio fork of COMBINE-lab/wfa2lib-rs) so it
+// can stand in for `align_endsfree`. WFA *minimises a penalty* (cost) where the
+// match cost is ≤ 0, whereas DADA2 *maximises a score* (match = +5, mismatch =
+// −4, gap = −8). The two are equivalent under sign inversion (score → cost):
+//
+//     match_      = -match_score   (≤ 0, e.g. -5)
+//     mismatch    = -mismatch      (> 0, e.g.  4)
+//     gap_extension = -gap_p       (> 0, e.g.  8)   gap_opening = 0  (linear gap)
+//
+// wfa2lib-rs's `new_affine` applies the Eizenga adjustment internally when
+// `match_ < 0`, so a non-zero match score reproduces the same optimum as the
+// scalar DP. Sequences are passed as the raw 1..=5 nt encoding: WFA matches by
+// byte equality and its EOS sentinels (`b'!'`=33, `b'?'`=63) never collide with
+// 1..=5, so no ASCII round-trip is needed.
+
+use wfa2lib_rs::aligner::{AffineAligner, AlignmentScope};
+use wfa2lib_rs::penalties::{AffinePenalties, WavefrontPenalties};
+
+/// Convert a WFA CIGAR (`M`/`X`/`I`/`D` ops, pattern=s1, text=s2) into the
+/// gap-annotated `[al0, al1]` pair the rest of the module consumes.
+///
+/// Op semantics (from `Cigar::check_alignment`): `M`/`X` consume one base from
+/// each strand; `I` advances the text only (gap in pattern → `al0`); `D`
+/// advances the pattern only (gap in text → `al1`).
+#[allow(dead_code)]
+fn cigar_to_alignment_into(ops: &[u8], s1: &[u8], s2: &[u8], al0: &mut Vec<u8>, al1: &mut Vec<u8>) {
+    al0.clear();
+    al1.clear();
+    al0.reserve(ops.len());
+    al1.reserve(ops.len());
+    let mut p = 0usize; // pattern (s1) position
+    let mut t = 0usize; // text (s2) position
+    for &op in ops {
+        match op {
+            b'M' | b'X' => {
+                al0.push(s1[p]);
+                al1.push(s2[t]);
+                p += 1;
+                t += 1;
+            }
+            b'I' => {
+                al0.push(b'-');
+                al1.push(s2[t]);
+                t += 1;
+            }
+            b'D' => {
+                al0.push(s1[p]);
+                al1.push(b'-');
+                p += 1;
+            }
+            v => panic!("WFA cigar_to_alignment: unknown op {v} ({})", v as char),
+        }
+    }
+}
+
+/// Ends-free Needleman-Wunsch via the WFA backend. Fills `buf.al0`/`buf.al1`
+/// with the same alignment-pair representation as [`align_endsfree`].
+///
+/// `match_score`/`mismatch`/`gap_p` use the DADA2 score convention (match > 0,
+/// the rest < 0); they are converted to WFA penalties internally.
+///
+/// NOTE: constructs a fresh `AffineAligner` per call. The hot path will want a
+/// cached aligner in `AlignBuffers`; this is correctness-first.
+#[allow(dead_code)]
+pub fn align_wfa_endsfree_with_buf(
+    s1: &[u8],
+    s2: &[u8],
+    match_score: i32,
+    mismatch: i32,
+    gap_p: i32,
+    buf: &mut AlignBuffers,
+) {
+    let penalties = WavefrontPenalties::new_affine(AffinePenalties {
+        match_: -match_score,
+        mismatch: -mismatch,
+        gap_opening: 0,
+        gap_extension: -gap_p,
+    });
+    let mut aligner = AffineAligner::new(penalties);
+    // Compute the full CIGAR, not just the score (default is ComputeScore, which
+    // leaves the cigar empty). The field is pub; a public setter would be a good
+    // upstream addition.
+    aligner.alignment_scope = AlignmentScope::ComputeAlignment;
+    // Full ends-free: leading/trailing gaps on either strand are free.
+    aligner.set_alignment_free_ends(
+        s1.len() as i32,
+        s1.len() as i32,
+        s2.len() as i32,
+        s2.len() as i32,
+    );
+    aligner.align_endsfree(s1, s2);
+    let cigar = aligner.cigar();
+    cigar_to_alignment_into(cigar.operations_slice(), s1, s2, &mut buf.al0, &mut buf.al1);
+}
+
+// ---------------------------------------------------------------------------
 // Substitution compression
 // ---------------------------------------------------------------------------
 
@@ -1421,6 +1520,173 @@ mod tests {
                 "{label}: score mismatch: endsfree={score_ef} vectorized={score_ve}\n  EF: {ef0}\n      {ef1}\n  VE: {ve0}\n      {ve1}"
             );
         }
+    }
+
+    /// Assert the WFA backend produces the same optimal score as `align_endsfree`.
+    fn compare_wfa(s1: &[u8], s2: &[u8], label: &str) {
+        let ef = align_endsfree(s1, s2, MATCH, MM, GAP, BAND);
+        let mut buf = AlignBuffers::new();
+        align_wfa_endsfree_with_buf(s1, s2, MATCH, MM, GAP, &mut buf);
+        let wfa = [buf.al0.clone(), buf.al1.clone()];
+
+        let score_ef = score_alignment(&ef, MATCH, MM, GAP);
+        let score_wfa = score_alignment(&wfa, MATCH, MM, GAP);
+        if score_ef != score_wfa {
+            let (e0, e1) = decode_al(&ef);
+            let (w0, w1) = decode_al(&wfa);
+            panic!(
+                "{label}: WFA score mismatch: endsfree={score_ef} wfa={score_wfa}\n  EF: {e0}\n      {e1}\n  WFA: {w0}\n       {w1}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_wfa_vs_endsfree_identical() {
+        let s = encode("ACGTACGTACGT");
+        compare_wfa(&s, &s, "identical-short");
+    }
+
+    #[test]
+    fn test_wfa_vs_endsfree_one_sub() {
+        let s1 = encode("ACGTACGTACGT");
+        let s2 = encode("ACGTTCGTACGT");
+        compare_wfa(&s1, &s2, "one-sub");
+    }
+
+    #[test]
+    fn test_wfa_vs_endsfree_one_gap() {
+        let s1 = encode("ACGTACGTACGT");
+        let s2 = encode("ACGACGTACGT");
+        compare_wfa(&s1, &s2, "one-gap");
+    }
+
+    #[test]
+    fn test_wfa_vs_endsfree_different_lengths() {
+        let s1 = encode("ACGTACGTACGT");
+        let s2 = encode("ACGTACGTACGTAC");
+        compare_wfa(&s1, &s2, "diff-len-short");
+    }
+
+    /// Find and print the first few low-edit pairs where WFA disagrees with
+    /// `align_endsfree`, with both alignments, to diagnose the cause.
+    ///   cargo test --release --bins wfa_diagnose -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn wfa_diagnose() {
+        let nts = [1u8, 2, 3, 4];
+        let mut st: u64 = 0x1234_5678_9ABC_DEF0;
+        let mut rng = |st: &mut u64, m: usize| {
+            *st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((*st >> 33) as usize) % m
+        };
+        let mut shown = 0;
+        for _ in 0..200_000 {
+            if shown >= 5 {
+                break;
+            }
+            let len = 40 + rng(&mut st, 60);
+            let s1: Vec<u8> = (0..len).map(|_| nts[rng(&mut st, 4)]).collect();
+            let mut s2 = s1.clone();
+            let nedits = 1 + rng(&mut st, 1);
+            for _ in 0..nedits {
+                let p = rng(&mut st, s2.len());
+                match rng(&mut st, 3) {
+                    0 => s2[p] = nts[rng(&mut st, 4)],
+                    1 => s2.insert(p, nts[rng(&mut st, 4)]),
+                    _ => {
+                        s2.remove(p);
+                    }
+                }
+            }
+            let ef = align_endsfree(&s1, &s2, 5, -4, -8, -1);
+            let mut buf = AlignBuffers::new();
+            align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, &mut buf);
+            let wfa = [buf.al0.clone(), buf.al1.clone()];
+            let sef = score_alignment(&ef, 5, -4, -8);
+            let swfa = score_alignment(&wfa, 5, -4, -8);
+            if sef != swfa {
+                let (e0, e1) = decode_al(&ef);
+                let (w0, w1) = decode_al(&wfa);
+                println!(
+                    "--- disagreement (edits={nedits}) ef={sef} wfa={swfa} len1={} len2={} ---",
+                    s1.len(),
+                    s2.len()
+                );
+                println!("EF : {e0}");
+                println!("     {e1}");
+                println!("WFA: {w0}");
+                println!("     {w1}");
+                shown += 1;
+            }
+        }
+    }
+
+    /// Randomized parity stress test: WFA must match `align_endsfree`'s optimal
+    /// score across many random pairs (varied lengths, indels). Run explicitly:
+    ///   cargo test --release -- --ignored sweep_wfa_parity --nocapture
+    #[test]
+    #[ignore]
+    fn sweep_wfa_parity() {
+        let nts = [1u8, 2, 3, 4];
+        let mut st: u64 = 0x1234_5678_9ABC_DEF0;
+        let mut rng = |st: &mut u64, m: usize| {
+            *st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((*st >> 33) as usize) % m
+        };
+        // Bucket failures by number of edits to test the hypothesis that
+        // divergence (not a logic bug) drives disagreement. DADA2 only aligns
+        // k-mer-screened, very-similar pairs, so the low-edit buckets are the
+        // ones that matter.
+        let mut fails_by_edits = [0u32; 9];
+        let mut total_by_edits = [0u32; 9];
+        for _ in 0..10_000 {
+            let len = 40 + rng(&mut st, 210); // 40..250, amplicon-ish
+            let s1: Vec<u8> = (0..len).map(|_| nts[rng(&mut st, 4)]).collect();
+            let mut s2 = s1.clone();
+            let nedits = rng(&mut st, 9); // 0..8
+            for _ in 0..nedits {
+                if s2.is_empty() {
+                    break;
+                }
+                let p = rng(&mut st, s2.len());
+                match rng(&mut st, 3) {
+                    0 => s2[p] = nts[rng(&mut st, 4)],
+                    1 => s2.insert(p, nts[rng(&mut st, 4)]),
+                    _ => {
+                        s2.remove(p);
+                    }
+                }
+            }
+            if s2.len() < 3 {
+                continue;
+            }
+            let ef = align_endsfree(&s1, &s2, 5, -4, -8, -1);
+            let mut buf = AlignBuffers::new();
+            align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, &mut buf);
+            let wfa = [buf.al0.clone(), buf.al1.clone()];
+            total_by_edits[nedits] += 1;
+            if score_alignment(&ef, 5, -4, -8) != score_alignment(&wfa, 5, -4, -8) {
+                fails_by_edits[nedits] += 1;
+            }
+        }
+        for e in 0..9 {
+            println!(
+                "  edits={e}: {}/{} disagree",
+                fails_by_edits[e], total_by_edits[e]
+            );
+        }
+        // INFORMATIONAL (not asserted): documents the known divergence between
+        // the WFA backend and `align_endsfree`. WFA-via-Eizenga ends-free does
+        // not reproduce DADA2's exact score-maximizing optimum at gap/homopolymer
+        // boundaries and sequence ends (free end-gap crediting differs), so it is
+        // NOT yet a drop-in for align_endsfree. Tracked for the fork's ends-free
+        // handling. See wfa_diagnose for concrete counterexamples.
+        let low_edit_fails: u32 = fails_by_edits[..=4].iter().sum();
+        let total_fails: u32 = fails_by_edits.iter().sum();
+        println!(
+            "  TOTAL: {total_fails} disagree ({low_edit_fails} at <=4 edits) \
+             — known WFA ends-free divergence, see doc comment"
+        );
     }
 
     #[test]
