@@ -97,6 +97,29 @@ def maybe_verbose(cmd):
         return [*cmd, "--verbose"]
     return cmd
 
+
+# Set from --align-backend in main(). The dada2-rs alignment backend ("nw" or
+# "wfa2"); injected into every alignment-using subcommand so a whole-pipeline
+# A/B is one flag. R DADA2 has no such switch (always NW), so a wfa2 run is an
+# honest "R-NW vs dada2-rs-WFA" comparison.
+ALIGN_BACKEND = "nw"
+
+# dada2-rs subcommands that actually align (and accept --align-backend). Note the
+# chimera step (remove-bimera-denovo) aligns too, on its own path, so it's here.
+RS_ALIGN_SUBCMDS = {
+    "learn-errors", "dada", "dada-pooled", "dada-pseudo", "remove-bimera-denovo",
+}
+
+
+def maybe_align_backend(cmd):
+    """Append --align-backend to a dada2-rs alignment subcommand (keyed on cmd[1])
+    when a non-default backend is selected. Only injected for wfa2 so default
+    (nw) runs are byte-identical to before and work with any binary; R commands
+    and non-aligning steps (filter, merge, make-table) are left untouched."""
+    if ALIGN_BACKEND != "nw" and len(cmd) > 1 and str(cmd[1]) in RS_ALIGN_SUBCMDS:
+        return [*cmd, "--align-backend", ALIGN_BACKEND]
+    return cmd
+
 R_STEPS = {
     "illumina": ["filter", "learn_fwd", "learn_rev", "dada_fwd", "dada_rev",
                  "merge", "make_table", "remove_bimera"],
@@ -120,7 +143,7 @@ def find_binary(explicit):
 
 def run_step(name, cmd, logf, results, append_log=False):
     """Run cmd as one process; record (name, wall_s, maxrss_kb, rc). Returns rc."""
-    cmd = maybe_verbose(cmd)
+    cmd = maybe_align_backend(maybe_verbose(cmd))
     print(f"  ==> {name}: {' '.join(str(c) for c in cmd)}", flush=True)
     start = time.time()
     with open(logf, "ab" if append_log else "wb") as lf:
@@ -150,7 +173,7 @@ def run_phase_concurrent(name, jobs, results, max_workers):
     print(f"  ==> {name}: {len(jobs)} samples, up to {max_workers} concurrent", flush=True)
 
     def one(cmd, logf):
-        cmd = maybe_verbose(cmd)
+        cmd = maybe_align_backend(maybe_verbose(cmd))
         with open(logf, "wb") as lf:
             proc = subprocess.Popen([str(c) for c in cmd],
                                     stdout=subprocess.DEVNULL, stderr=lf)
@@ -676,6 +699,12 @@ def main():
                         "objects resident (~ dada2-rs --cache-samples). Use 'objects' for a "
                         "like-for-like preloaded-RSS comparison against --cache-samples; the "
                         "derepFastq cost is counted inside the dada step.")
+    p.add_argument("--align-backend", choices=["nw", "wfa2"], default="nw",
+                   help="dada2-rs pairwise-alignment backend, threaded into every "
+                        "alignment-using step (learn-errors, dada*, remove-bimera-denovo). "
+                        "'nw' (default) = Needleman-Wunsch; 'wfa2' = experimental WFA. "
+                        "R DADA2 always uses NW, so --align-backend wfa2 --run-r compares "
+                        "R-NW vs dada2-rs-WFA. Default nw leaves command lines unchanged.")
     p.add_argument("--no-run-rust", action="store_true", help="skip the dada2-rs pipeline")
     p.add_argument("--verbose", action="store_true",
                    help="pass --verbose to each dada2-rs step (filter/remove-primers/"
@@ -714,8 +743,9 @@ def main():
     p.add_argument("--max-n", type=int, default=0)
     args = p.parse_args()
 
-    global VERBOSE
+    global VERBOSE, ALIGN_BACKEND
     VERBOSE = args.verbose
+    ALIGN_BACKEND = args.align_backend
 
     if args.trunc_q is None:
         args.trunc_q = 2 if args.platform == "illumina" else 0
@@ -764,7 +794,9 @@ def main():
     if args.pool == "pseudo":
         mode += " cached" if args.cache_samples else " streaming"
     rmode = f", R derep={args.r_derep_mode}" if args.run_r else ""
-    print(f"BENCHMARK SUMMARY — {args.platform}, {mode} denoise, {args.threads} thread(s){rmode}")
+    bemode = f", dada2-rs align={args.align_backend}" if args.align_backend != "nw" else ""
+    print(f"BENCHMARK SUMMARY — {args.platform}, {mode} denoise, "
+          f"{args.threads} thread(s){bemode}{rmode}")
     print("=" * 56)
     print(f"  cores = CPU/wall (effective cores; ideal ≈ {args.threads} for an "
           "in-process step, ≈ min(#samples, threads) for fanned steps)")
