@@ -845,6 +845,7 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 [[package]]
 name = "wfa2lib-rs"
 version = "0.1.0"
+source = "git+https://github.com/HPCBio/wfa2lib-rs?rev=4cfeda86a3e1#4cfeda86a3e1e14e332c82e80e1dbe103c239b12"
 dependencies = [
  "clap",
  "tracing",
