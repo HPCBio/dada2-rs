@@ -431,3 +431,279 @@ pub fn table_bimera2(
         })
         .collect()
 }
+
+// ---------------------------------------------------------------------------
+// Coverage diagnostics (higher-order chimera screen)
+// ---------------------------------------------------------------------------
+
+/// Per-sequence bimera *coverage* diagnostic.
+///
+/// The boolean `is_bimera` decision collapses the question "does one junction
+/// of two more-abundant parents cover the whole read?" into a yes/no and throws
+/// away the underlying coverage. That coverage is exactly the signal for
+/// higher-order chimeras (trimeras): a read whose best single-junction model
+/// *almost* spans the full length, leaving a small internal gap, is a candidate
+/// chimera of three or more parents.
+///
+/// Coverage here is measured under the **strict** (no one-off) model so the gap
+/// boundaries are not blurred by junction mismatches, and under the **pooled**
+/// abundance model (abundances summed across samples) for parent selection.
+/// All coordinates are in query-base units.
+pub struct BimeraDiagnostic {
+    /// Strict single-junction decision: `max_left + max_right >= sqlen`.
+    pub is_bimera: bool,
+    pub sqlen: usize,
+    /// Longest strict left overlap with any valid parent.
+    pub max_left: usize,
+    /// Longest strict right overlap with any valid parent.
+    pub max_right: usize,
+    /// Parent column index achieving `max_left` (`None` if no valid parent).
+    pub best_left_parent: Option<usize>,
+    /// Parent column index achieving `max_right`.
+    pub best_right_parent: Option<usize>,
+    /// Residual uncovered query interval `[gap_start, gap_end)`. Empty when the
+    /// read is a clean bimera (`gap_start == gap_end == sqlen`).
+    pub gap_start: usize,
+    pub gap_end: usize,
+    /// Third-parent confirmatory test: the parent (other than the two end
+    /// parents) with the fewest mismatches across the residual gap, and that
+    /// mismatch count. `gap_mismatches == 0` with a `third_parent` means three
+    /// parents fully reconstruct the read — a confirmed trimera. `None` /
+    /// large counts suggest the gap is novel biological sequence instead.
+    pub third_parent: Option<usize>,
+    pub gap_mismatches: usize,
+}
+
+/// Count mismatches of parent `al_p` against query `al_q` across the query
+/// interval `[q_start, q_end)`, walking alignment columns and mapping non-gap
+/// query columns to query base indices. Parent gaps (deletions relative to the
+/// query) within the region count as mismatches; parent insertions (query gap)
+/// are ignored as they do not advance the query coordinate.
+fn gap_mismatch_count(al_q: &[u8], al_p: &[u8], q_start: usize, q_end: usize) -> usize {
+    let mut qi = 0usize;
+    let mut mm = 0usize;
+    for c in 0..al_q.len() {
+        if al_q[c] != b'-' {
+            if qi >= q_start && qi < q_end && al_p[c] != al_q[c] {
+                mm += 1;
+            }
+            qi += 1;
+            if qi >= q_end {
+                break;
+            }
+        }
+    }
+    mm
+}
+
+/// Compute [`BimeraDiagnostic`]s for every sequence under the pooled model.
+///
+/// `pooled[j]` is the summed abundance of sequence `j` across all samples.
+/// Parent selection mirrors the pooled `is_bimera` path: a sequence `k` is a
+/// candidate parent of `j` when `pooled[k] > min_fold * pooled[j]` and
+/// `pooled[k] >= min_abund`.
+///
+/// Runs two alignment passes per query: pass 1 finds the best left/right
+/// coverage (and end parents); pass 2 — only when the read is not already a
+/// strict bimera — re-aligns the parents to score the residual gap for a third
+/// parent. Parallel over sequences via Rayon.
+pub fn pooled_diagnostics(
+    pooled: &[u32],
+    seqs: &[&[u8]],
+    min_fold: f64,
+    min_abund: u32,
+    params: &BimeraAlignParams,
+) -> Vec<BimeraDiagnostic> {
+    let BimeraAlignParams {
+        match_score,
+        mismatch,
+        gap_p,
+        max_shift,
+        backend,
+        wfa_max_edits,
+        ..
+    } = *params;
+    let align_scores = VectorizedAlignScores {
+        match_score,
+        mismatch,
+        gap_p,
+        end_gap_p: 0,
+        band: max_shift,
+    };
+    let max_steps = wfa_cost_cap(wfa_max_edits, gap_p as i32);
+    let ncol = seqs.len();
+    assert_eq!(pooled.len(), ncol, "pooled length must equal seqs length");
+
+    (0..ncol)
+        .into_par_iter()
+        .map_init(AlignBuffers::new, |buf, j| {
+            let sq = seqs[j];
+            let sqlen = sq.len();
+            let abund = pooled[j];
+
+            let mut d = BimeraDiagnostic {
+                is_bimera: false,
+                sqlen,
+                max_left: 0,
+                max_right: 0,
+                best_left_parent: None,
+                best_right_parent: None,
+                gap_start: sqlen,
+                gap_end: sqlen,
+                third_parent: None,
+                gap_mismatches: 0,
+            };
+
+            if abund == 0 {
+                return d;
+            }
+            let parents: Vec<usize> = (0..ncol)
+                .filter(|&k| {
+                    k != j && pooled[k] as f64 > min_fold * abund as f64 && pooled[k] >= min_abund
+                })
+                .collect();
+            if parents.len() < 2 {
+                return d;
+            }
+
+            // Pass 1: strict left/right coverage and the parents achieving it.
+            for &k in &parents {
+                bimera_align(sq, seqs[k], &align_scores, backend, max_steps, buf);
+                let (al0, al1) = buf.alignment();
+                let (left, right, _, _) = get_lr(al0, al1, false, max_shift as usize);
+                // Skip identity / pure-shift / internal-indel parents.
+                if left + right >= sqlen {
+                    continue;
+                }
+                if left > d.max_left {
+                    d.max_left = left;
+                    d.best_left_parent = Some(k);
+                }
+                if right > d.max_right {
+                    d.max_right = right;
+                    d.best_right_parent = Some(k);
+                }
+            }
+
+            d.is_bimera = d.max_left + d.max_right >= sqlen;
+            if d.is_bimera {
+                return d;
+            }
+            d.gap_start = d.max_left.min(sqlen);
+            d.gap_end = sqlen.saturating_sub(d.max_right).max(d.gap_start);
+
+            // Pass 2: third-parent fit across the residual gap. Exclude the two
+            // end parents so a hit is a genuinely distinct third source.
+            let mut best_mm = usize::MAX;
+            let mut best_k = None;
+            for &k in &parents {
+                if Some(k) == d.best_left_parent || Some(k) == d.best_right_parent {
+                    continue;
+                }
+                bimera_align(sq, seqs[k], &align_scores, backend, max_steps, buf);
+                let (al0, al1) = buf.alignment();
+                let mm = gap_mismatch_count(al0, al1, d.gap_start, d.gap_end);
+                if mm < best_mm {
+                    best_mm = mm;
+                    best_k = Some(k);
+                }
+            }
+            d.third_parent = best_k;
+            d.gap_mismatches = if best_mm == usize::MAX { 0 } else { best_mm };
+            d
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params() -> BimeraAlignParams {
+        BimeraAlignParams {
+            allow_one_off: false,
+            min_one_off_par_dist: 4,
+            match_score: 5,
+            mismatch: -4,
+            gap_p: -8,
+            max_shift: 16,
+            backend: AlignBackend::Nw,
+            wfa_max_edits: 0,
+        }
+    }
+
+    /// A query built as L+M+R, with one high-abundance parent each contributing
+    /// L (left), R (right), and M (middle), must be flagged as NOT a strict
+    /// bimera but with a residual gap that a distinct third parent fills cleanly.
+    #[test]
+    fn pooled_diagnostics_detects_trimera() {
+        const L: &[u8] = b"ACGTACGTACGTACGTACGT"; // 20
+        const M: &[u8] = b"TTTTGGGGCCCCAAAATTTT"; // 20
+        const R: &[u8] = b"GATTACAGATTACAGATTAC"; // 20
+
+        let query: Vec<u8> = [L, M, R].concat(); // sqlen 60
+        let par_a: Vec<u8> = [
+            L,
+            &b"AAAAAAAAAAAAAAAAAAAA"[..],
+            &b"CCCCCCCCCCCCCCCCCCCC"[..],
+        ]
+        .concat();
+        let par_b: Vec<u8> = [
+            &b"GCGCGCGCGCGCGCGCGCGC"[..],
+            &b"GCGCGCGCGCGCGCGCGCGC"[..],
+            R,
+        ]
+        .concat();
+        let par_c: Vec<u8> = [
+            &b"CACACACACACACACACACA"[..],
+            M,
+            &b"TGTGTGTGTGTGTGTGTGTG"[..],
+        ]
+        .concat();
+
+        let seqs: Vec<&[u8]> = vec![&query, &par_a, &par_b, &par_c];
+        // query low abundance, parents high.
+        let pooled = vec![2u32, 100, 100, 100];
+
+        let d = pooled_diagnostics(&pooled, &seqs, 1.5, 2, &params());
+        let q = &d[0];
+
+        assert!(
+            !q.is_bimera,
+            "single junction should not cover the full read"
+        );
+        assert_eq!(q.max_left, 20, "left parent covers L");
+        assert_eq!(q.max_right, 20, "right parent covers R");
+        assert_eq!(q.best_left_parent, Some(1));
+        assert_eq!(q.best_right_parent, Some(2));
+        assert_eq!((q.gap_start, q.gap_end), (20, 40), "gap is the middle M");
+        assert_eq!(q.third_parent, Some(3), "parent C fills the gap");
+        // C matches the 20-base middle up to minor ends-free boundary slack.
+        assert!(
+            q.gap_mismatches <= 2,
+            "third parent should fill the gap nearly cleanly, got {}",
+            q.gap_mismatches
+        );
+    }
+
+    /// A genuine bimera (L from one parent, R from another) is flagged
+    /// is_bimera with no residual gap.
+    #[test]
+    fn pooled_diagnostics_flags_plain_bimera() {
+        const L: &[u8] = b"ACGTACGTACGTACGTACGT";
+        const R: &[u8] = b"GATTACAGATTACAGATTAC";
+
+        let query: Vec<u8> = [L, R].concat(); // 40
+        let par_a: Vec<u8> = [L, &b"CCCCCCCCCCCCCCCCCCCC"[..]].concat();
+        let par_b: Vec<u8> = [&b"GGGGGGGGGGGGGGGGGGGG"[..], R].concat();
+
+        let seqs: Vec<&[u8]> = vec![&query, &par_a, &par_b];
+        let pooled = vec![2u32, 100, 100];
+
+        let d = pooled_diagnostics(&pooled, &seqs, 1.5, 2, &params());
+        let q = &d[0];
+
+        assert!(q.is_bimera);
+        assert_eq!(q.gap_start, q.gap_end, "no residual gap for a clean bimera");
+    }
+}

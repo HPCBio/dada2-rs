@@ -7,6 +7,7 @@ use rand::seq::SliceRandom as _;
 use rayon::prelude::*;
 
 mod chimera;
+mod chimera_diagnostics;
 mod cli;
 mod cluster;
 mod cluster_trace;
@@ -2161,6 +2162,57 @@ fn main() -> io::Result<()> {
                 Some(path) => std::fs::write(&path, &json)?,
                 None => println!("{json}"),
             }
+        }
+
+        Commands::ChimeraDiagnostics {
+            input,
+            min_fold_parent_over_abundance,
+            min_parent_abundance,
+            max_shift,
+            match_score,
+            mismatch,
+            gap_p,
+            align_backend,
+            wfa_max_edits,
+            trimera_min_cover_frac,
+            threads,
+            output,
+        } => {
+            let table: SequenceTable =
+                read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])
+                    .with_path(&input)?;
+
+            // One-off parameters are unused by the diagnostic (coverage is
+            // measured strictly); fill with the standard defaults.
+            let params = BimeraParams {
+                min_fold_parent_over_abundance,
+                min_parent_abundance,
+                allow_one_off: false,
+                min_one_off_parent_distance: 4,
+                max_shift,
+                min_sample_fraction: 0.9,
+                ignore_n_negatives: 1,
+                match_score,
+                mismatch,
+                gap_p,
+                backend: align_backend.unwrap_or_default(),
+                wfa_max_edits: wfa_max_edits.unwrap_or(WFA_MAX_EDITS_DEFAULT),
+            };
+
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .map_err(io::Error::other)?;
+            let rows = pool.install(|| {
+                chimera_diagnostics::run_diagnostics(&table, &params, trimera_min_cover_frac)
+            });
+
+            let mut out: Box<dyn io::Write> = match output {
+                Some(path) => Box::new(io::BufWriter::new(std::fs::File::create(&path)?)),
+                None => Box::new(io::BufWriter::new(io::stdout())),
+            };
+            chimera_diagnostics::write_tsv(&rows, &mut out)?;
+            out.flush()?;
         }
 
         Commands::SeqTableToTsv {

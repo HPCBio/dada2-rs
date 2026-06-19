@@ -1189,6 +1189,68 @@ pub enum Commands {
         compact: bool,
     },
 
+    /// Screen a sequence table for higher-order chimeras (trimeras)
+    ///
+    /// Reads JSON from `make-sequence-table` or `remove-bimera-denovo` and emits
+    /// a per-sequence TSV of bimera *coverage* metrics. Unlike the boolean
+    /// `remove-bimera-denovo` decision, this retains how much of each read a
+    /// single two-parent junction explains: a read that survives bimera removal
+    /// yet is nearly covered (`cover_frac` high) leaves a small internal gap a
+    /// third parent can fill — a trimera suspect. Useful on long amplicons
+    /// (full-length 16S, nodA) and low-biomass samples where complex chimeras
+    /// are more likely. Coverage uses the pooled (across-sample) abundance model.
+    #[command(display_order = 14)]
+    ChimeraDiagnostics {
+        /// Sequence table JSON produced by `make-sequence-table` or `remove-bimera-denovo`
+        input: PathBuf,
+
+        /// Minimum fold-difference in abundance for a sequence to be a parent
+        #[arg(long, default_value_t = 1.5)]
+        min_fold_parent_over_abundance: f64,
+
+        /// Minimum abundance for a sequence to be a parent
+        #[arg(long, default_value_t = 2)]
+        min_parent_abundance: u32,
+
+        /// Maximum shift in ends-free alignment to potential parents
+        #[arg(long, default_value_t = 16)]
+        max_shift: i32,
+
+        /// Match score for the parent alignment (mirrors R's `MATCH`)
+        #[arg(long = "match", default_value_t = 5)]
+        match_score: i16,
+
+        /// Mismatch penalty for the parent alignment (mirrors R's `MISMATCH`)
+        #[arg(long, allow_hyphen_values = true, default_value_t = -4)]
+        mismatch: i16,
+
+        /// Gap penalty for the parent alignment (mirrors R's `GAP_PENALTY`)
+        #[arg(long, allow_hyphen_values = true, default_value_t = -8)]
+        gap_p: i16,
+
+        /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
+        /// is the experimental WFA backend.
+        #[arg(long, value_enum)]
+        align_backend: Option<AlignBackend>,
+
+        /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
+        /// edit operations. 0 = unbounded. [default: 50]
+        #[arg(long)]
+        wfa_max_edits: Option<i32>,
+
+        /// Minimum single-junction coverage fraction to flag a trimera suspect
+        #[arg(long, default_value_t = 0.9)]
+        trimera_min_cover_frac: f64,
+
+        /// Number of threads for parallel diagnostics
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+
+        /// Write TSV output to this file instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+    },
+
     /// Convert a sequence table JSON to a tab-delimited count table
     ///
     /// Reads JSON produced by `make-sequence-table` or `remove-bimera-denovo`
