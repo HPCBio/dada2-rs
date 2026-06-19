@@ -33,6 +33,7 @@ fn bimera_align(
             scores.match_score as i32,
             scores.mismatch as i32,
             scores.gap_p as i32,
+            scores.band,
             buf,
         ),
     }

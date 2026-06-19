@@ -1074,6 +1074,7 @@ pub fn align_vectorized_with_buf(
 use std::cell::RefCell;
 use std::sync::LazyLock;
 use wfa2lib_rs::aligner::{AffineAligner, AlignmentScope};
+use wfa2lib_rs::heuristic::HeuristicStrategy;
 use wfa2lib_rs::penalties::{AffinePenalties, WavefrontPenalties};
 
 /// Opt-in switch for the experimental WFA alignment backend (issue #49).
@@ -1126,10 +1127,15 @@ fn cigar_to_alignment_into(ops: &[u8], s1: &[u8], s2: &[u8], al0: &mut Vec<u8>, 
 /// with the same alignment-pair representation as [`align_endsfree`].
 ///
 /// `match_score`/`mismatch`/`gap_p` use the DADA2 score convention (match > 0,
-/// the rest < 0); they are converted to WFA penalties internally.
+/// the rest < 0); they are converted to WFA penalties internally. `band` is the
+/// DADA2 banding radius (matches the NW path): a `BandedStatic ±band` heuristic
+/// is applied so WFA explores the same diagonal band NW does, which both matches
+/// NW's band-limited semantics and bounds WFA's O(n·s) cost on divergent pairs
+/// (issue #51). `band < 0` means unbanded.
 ///
-/// NOTE: constructs a fresh `AffineAligner` per call. The hot path will want a
-/// cached aligner in `AlignBuffers`; this is correctness-first.
+/// A per-thread `AffineAligner` is cached and reused across calls so wfa2lib-rs
+/// reaches its zero-alloc steady state; it is rebuilt only when the scoring or
+/// band changes (both constant within a run).
 #[allow(dead_code)]
 pub fn align_wfa_endsfree_with_buf(
     s1: &[u8],
@@ -1137,24 +1143,23 @@ pub fn align_wfa_endsfree_with_buf(
     match_score: i32,
     mismatch: i32,
     gap_p: i32,
+    band: i32,
     buf: &mut AlignBuffers,
 ) {
-    // Reuse a per-thread aligner so wfa2lib-rs reaches its zero-alloc steady
-    // state instead of allocating a fresh aligner every call — the per-call
-    // allocation was >13× slower than NW on long PacBio reads. A `thread_local`
-    // (rather than a field on `AlignBuffers`) keeps the aligner off any struct
-    // that crosses threads: `WavefrontAligner` holds raw pointers (`!Send`),
-    // and `AlignBuffers` is carried in a rayon `fold` accumulator that must be
-    // `Send`. The aligner never moves between threads, so TLS is the right home.
-    // Rebuilt only when the scoring changes (constant within a run).
-    // (match, mismatch, gap_p) scoring key paired with the aligner built for it.
-    type WfaCache = ((i32, i32, i32), AffineAligner);
+    // A `thread_local` (rather than a field on `AlignBuffers`) keeps the aligner
+    // off any struct that crosses threads: `WavefrontAligner` holds raw pointers
+    // (`!Send`), and `AlignBuffers` is carried in a rayon `fold` accumulator that
+    // must be `Send`. The aligner never moves between threads, so TLS is the
+    // right home.
+    //
+    // Cache key is (match, mismatch, gap_p, band) — all constant within a run.
+    type WfaCache = ((i32, i32, i32, i32), AffineAligner);
     thread_local! {
         static WFA: RefCell<Option<WfaCache>> = const { RefCell::new(None) };
     }
     WFA.with(|cell| {
         let mut slot = cell.borrow_mut();
-        let key = (match_score, mismatch, gap_p);
+        let key = (match_score, mismatch, gap_p, band);
         if slot.as_ref().map(|(k, _)| *k) != Some(key) {
             let penalties = WavefrontPenalties::new_affine(AffinePenalties {
                 match_: -match_score,
@@ -1166,6 +1171,14 @@ pub fn align_wfa_endsfree_with_buf(
             // Compute the full CIGAR, not just the score (default ComputeScore
             // leaves the cigar empty).
             aligner.alignment_scope = AlignmentScope::ComputeAlignment;
+            // Match NW's diagonal band so WFA stays band-limited and its O(n·s)
+            // cost can't blow up on divergent-but-screened pairs (issue #51).
+            if band >= 0 {
+                aligner.set_heuristic(HeuristicStrategy::BandedStatic {
+                    min_k: -band,
+                    max_k: band,
+                });
+            }
             *slot = Some((key, aligner));
         }
         let aligner = &mut slot.as_mut().unwrap().1;
@@ -1338,6 +1351,7 @@ pub fn raw_align_with_buf(
             p.match_score,
             p.mismatch,
             p.gap_p,
+            p.band,
             buf,
         );
         return Some(());
@@ -1415,6 +1429,285 @@ pub fn sub_new_with_buf(
 #[cfg(test)]
 mod bench_align {
     use super::*;
+
+    /// Long-read WFA-vs-NW kernel benchmark (issue #51). Times a single fixed
+    /// near-identical ~1.5 kb pair (representative of k-mer-screened
+    /// learn-errors pairs) across alignment configs to localize the PacBio
+    /// slowdown. Run:
+    ///   cargo test --release -- --ignored bench_wfa_long --nocapture
+    #[test]
+    #[ignore]
+    fn bench_wfa_long() {
+        use std::time::Instant;
+        use wfa2lib_rs::aligner::{AffineAligner, AlignmentScope};
+        use wfa2lib_rs::penalties::{AffinePenalties, WavefrontPenalties};
+
+        // Deterministic ~1450 bp pair, near-identical: a handful of subs + indels,
+        // like the similar sequences the aligner actually sees after k-mer screen.
+        let len: usize = 1450;
+        let nts = [1u8, 2, 3, 4];
+        let mut st: u64 = 0x00C0_FFEE_1234_5678;
+        let mut rng = |st: &mut u64, m: usize| {
+            *st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((*st >> 33) as usize) % m
+        };
+        let s1: Vec<u8> = (0..len).map(|_| nts[rng(&mut st, 4)]).collect();
+        let mut s2 = s1.clone();
+        for _ in 0..6 {
+            let p = rng(&mut st, s2.len());
+            s2[p] = nts[rng(&mut st, 4)];
+        }
+        for _ in 0..2 {
+            let p = rng(&mut st, s2.len());
+            s2.remove(p);
+        }
+        let band = 32i32;
+        let iters = 3000usize;
+
+        let bench = |label: &str, mut f: Box<dyn FnMut()>| {
+            for _ in 0..100 {
+                f();
+            } // warmup
+            let t0 = Instant::now();
+            for _ in 0..iters {
+                f();
+            }
+            let us = t0.elapsed().as_secs_f64() * 1e6 / iters as f64;
+            println!("  {label:<34} {us:8.2} us/align");
+            us
+        };
+
+        // Affine penalties matching the NW default scheme (Eizenga-adjusted).
+        let penalties = || {
+            WavefrontPenalties::new_affine(AffinePenalties {
+                match_: -5,
+                mismatch: 4,
+                gap_opening: 0,
+                gap_extension: 8,
+            })
+        };
+
+        println!(
+            "\nlen1={} len2={} band={band} iters={iters}",
+            s1.len(),
+            s2.len()
+        );
+
+        // --- NW baseline (vectorized, ends-free) ---
+        {
+            let scores = VectorizedAlignScores {
+                match_score: 5,
+                mismatch: -4,
+                gap_p: -8,
+                end_gap_p: 0,
+                band,
+            };
+            let mut buf = AlignBuffers::new();
+            let (s1, s2) = (s1.clone(), s2.clone());
+            bench(
+                "NW vectorized (baseline)",
+                Box::new(move || align_vectorized_with_buf(&s1, &s2, &scores, &mut buf)),
+            );
+        }
+
+        // --- WFA, full ends-free, ComputeAlignment (current production path) ---
+        {
+            let mut a = AffineAligner::new(penalties());
+            a.alignment_scope = AlignmentScope::ComputeAlignment;
+            let (s1, s2) = (s1.clone(), s2.clone());
+            bench(
+                "WFA full ends-free + CIGAR",
+                Box::new(move || {
+                    a.set_alignment_free_ends(
+                        s1.len() as i32,
+                        s1.len() as i32,
+                        s2.len() as i32,
+                        s2.len() as i32,
+                    );
+                    a.align_endsfree(&s1, &s2);
+                    std::hint::black_box(a.cigar().operations_slice());
+                }),
+            );
+        }
+
+        // --- WFA, bounded ends-free (~band), ComputeAlignment (hypothesis #1) ---
+        {
+            let mut a = AffineAligner::new(penalties());
+            a.alignment_scope = AlignmentScope::ComputeAlignment;
+            let (s1, s2) = (s1.clone(), s2.clone());
+            bench(
+                "WFA bounded ends-free + CIGAR",
+                Box::new(move || {
+                    a.set_alignment_free_ends(band, band, band, band);
+                    a.align_endsfree(&s1, &s2);
+                    std::hint::black_box(a.cigar().operations_slice());
+                }),
+            );
+        }
+
+        // --- WFA, full ends-free, score-only (isolates traceback cost, #2) ---
+        {
+            let mut a = AffineAligner::new(penalties());
+            a.alignment_scope = AlignmentScope::ComputeScore;
+            let (s1, s2) = (s1.clone(), s2.clone());
+            bench(
+                "WFA full ends-free, score-only",
+                Box::new(move || {
+                    a.set_alignment_free_ends(
+                        s1.len() as i32,
+                        s1.len() as i32,
+                        s2.len() as i32,
+                        s2.len() as i32,
+                    );
+                    std::hint::black_box(a.align_endsfree(&s1, &s2));
+                }),
+            );
+        }
+
+        // --- WFA end2end + CIGAR (no free-ends at all; lower bound on WFA cost) ---
+        {
+            let mut a = AffineAligner::new(penalties());
+            a.alignment_scope = AlignmentScope::ComputeAlignment;
+            let (s1, s2) = (s1.clone(), s2.clone());
+            bench(
+                "WFA end2end + CIGAR",
+                Box::new(move || {
+                    a.align_end2end(&s1, &s2);
+                    std::hint::black_box(a.cigar().operations_slice());
+                }),
+            );
+        }
+
+        // --- BiWFA + CIGAR (O(s) memory, long-read oriented, #3) ---
+        {
+            let mut a = AffineAligner::new(penalties());
+            a.alignment_scope = AlignmentScope::ComputeAlignment;
+            let (s1, s2) = (s1.clone(), s2.clone());
+            bench(
+                "WFA BiWFA + CIGAR",
+                Box::new(move || {
+                    a.align_biwfa(&s1, &s2);
+                    std::hint::black_box(a.cigar().operations_slice());
+                }),
+            );
+        }
+        println!();
+    }
+
+    /// WFA-vs-NW across divergence levels (issue #51). WFA is O(n·s); NW is
+    /// banded O(n·band). This sweeps edit distance on a ~1.5 kb pair to find
+    /// where WFA's cost crosses NW's — the suspected source of the pipeline
+    /// slowdown (divergent-but-k-mer-screened pairs).
+    ///   cargo test --release -- --ignored bench_wfa_divergence --nocapture
+    #[test]
+    #[ignore]
+    fn bench_wfa_divergence() {
+        use std::time::Instant;
+        use wfa2lib_rs::aligner::{AffineAligner, AlignmentScope};
+        use wfa2lib_rs::heuristic::HeuristicStrategy;
+        use wfa2lib_rs::penalties::{AffinePenalties, WavefrontPenalties};
+
+        let len: usize = 1450;
+        let nts = [1u8, 2, 3, 4];
+        let mut st: u64 = 0xABCD_1234;
+        let mut rng = |st: &mut u64, m: usize| {
+            *st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((*st >> 33) as usize) % m
+        };
+        let s1: Vec<u8> = (0..len).map(|_| nts[rng(&mut st, 4)]).collect();
+        let band = 32i32;
+        let iters = 1000usize;
+        let penalties = || {
+            WavefrontPenalties::new_affine(AffinePenalties {
+                match_: -5,
+                mismatch: 4,
+                gap_opening: 0,
+                gap_extension: 8,
+            })
+        };
+
+        println!("\nlen={len} band={band} iters={iters}");
+        println!(
+            "  {:>6}  {:>10}  {:>12}  {:>8}  {:>12}  {:>10}",
+            "edits", "NW us", "WFA us", "WFA/NW", "WFAband us", "band/NW"
+        );
+        for &nedits in &[0usize, 5, 10, 25, 50, 100, 200] {
+            let mut s2 = s1.clone();
+            for _ in 0..nedits {
+                let p = rng(&mut st, s2.len());
+                match rng(&mut st, 3) {
+                    0 => s2[p] = nts[rng(&mut st, 4)],
+                    1 => s2.insert(p, nts[rng(&mut st, 4)]),
+                    _ => {
+                        s2.remove(p);
+                    }
+                }
+            }
+            // NW vectorized
+            let scores = VectorizedAlignScores {
+                match_score: 5,
+                mismatch: -4,
+                gap_p: -8,
+                end_gap_p: 0,
+                band,
+            };
+            let mut buf = AlignBuffers::new();
+            for _ in 0..50 {
+                align_vectorized_with_buf(&s1, &s2, &scores, &mut buf);
+            }
+            let t0 = Instant::now();
+            for _ in 0..iters {
+                align_vectorized_with_buf(&s1, &s2, &scores, &mut buf);
+            }
+            let nw_us = t0.elapsed().as_secs_f64() * 1e6 / iters as f64;
+
+            // WFA full ends-free + CIGAR (current production config)
+            let mut a = AffineAligner::new(penalties());
+            a.alignment_scope = AlignmentScope::ComputeAlignment;
+            let setf = |a: &mut AffineAligner, s1: &[u8], s2: &[u8]| {
+                a.set_alignment_free_ends(
+                    s1.len() as i32,
+                    s1.len() as i32,
+                    s2.len() as i32,
+                    s2.len() as i32,
+                );
+                a.align_endsfree(s1, s2);
+            };
+            for _ in 0..50 {
+                setf(&mut a, &s1, &s2);
+            }
+            let t0 = Instant::now();
+            for _ in 0..iters {
+                setf(&mut a, &s1, &s2);
+                std::hint::black_box(a.cigar().operations_slice());
+            }
+            let wfa_us = t0.elapsed().as_secs_f64() * 1e6 / iters as f64;
+
+            // WFA banded (BandedStatic ±band) + CIGAR — NW-band equivalent (#51).
+            let mut ab = AffineAligner::new(penalties());
+            ab.alignment_scope = AlignmentScope::ComputeAlignment;
+            ab.set_heuristic(HeuristicStrategy::BandedStatic {
+                min_k: -band,
+                max_k: band,
+            });
+            for _ in 0..50 {
+                setf(&mut ab, &s1, &s2);
+            }
+            let t0 = Instant::now();
+            for _ in 0..iters {
+                setf(&mut ab, &s1, &s2);
+                std::hint::black_box(ab.cigar().operations_slice());
+            }
+            let wfab_us = t0.elapsed().as_secs_f64() * 1e6 / iters as f64;
+
+            println!(
+                "  {nedits:>6}  {nw_us:>10.2}  {wfa_us:>12.2}  {:>7.2}x  {wfab_us:>12.2}  {:>9.2}x",
+                wfa_us / nw_us,
+                wfab_us / nw_us
+            );
+        }
+        println!();
+    }
 
     /// Isolated kernel micro-benchmark: time `align_vectorized_with_buf` on one
     /// fixed sequence pair, many iterations, with a reused buffer. Strips away
@@ -1602,7 +1895,7 @@ mod tests {
     fn compare_wfa(s1: &[u8], s2: &[u8], label: &str) {
         let ef = align_endsfree(s1, s2, MATCH, MM, GAP, BAND);
         let mut buf = AlignBuffers::new();
-        align_wfa_endsfree_with_buf(s1, s2, MATCH, MM, GAP, &mut buf);
+        align_wfa_endsfree_with_buf(s1, s2, MATCH, MM, GAP, BAND, &mut buf);
         let wfa = [buf.al0.clone(), buf.al1.clone()];
 
         let score_ef = score_alignment(&ef, MATCH, MM, GAP);
@@ -1709,7 +2002,7 @@ mod tests {
             // Ends-free: WFA endsfree vs scalar align_endsfree, for comparison.
             let e_scalar = align_endsfree(&s1, &s2, 5, -4, -8, -1);
             let mut buf = AlignBuffers::new();
-            align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, &mut buf);
+            align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, -1, &mut buf);
             let e_wfa = [buf.al0.clone(), buf.al1.clone()];
             if score_alignment(&e_scalar, 5, -4, -8) != score_alignment(&e_wfa, 5, -4, -8) {
                 endsfree_fails += 1;
@@ -1752,7 +2045,7 @@ mod tests {
             }
             let ef = align_endsfree(&s1, &s2, 5, -4, -8, -1);
             let mut buf = AlignBuffers::new();
-            align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, &mut buf);
+            align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, -1, &mut buf);
             let wfa = [buf.al0.clone(), buf.al1.clone()];
             let sef = score_alignment(&ef, 5, -4, -8);
             let swfa = score_alignment(&wfa, 5, -4, -8);
@@ -1814,7 +2107,7 @@ mod tests {
             }
             let ef = align_endsfree(&s1, &s2, 5, -4, -8, -1);
             let mut buf = AlignBuffers::new();
-            align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, &mut buf);
+            align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, -1, &mut buf);
             let wfa = [buf.al0.clone(), buf.al1.clone()];
             total_by_edits[nedits] += 1;
             if score_alignment(&ef, 5, -4, -8) != score_alignment(&wfa, 5, -4, -8) {
