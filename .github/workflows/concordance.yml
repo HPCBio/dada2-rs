@@ -82,6 +82,15 @@ jobs:
       # (learn-errors, dada, remove-bimera-denovo) runs with --align-backend
       # wfa2. WFA is ASV-equivalent to NW on this data, so it must clear the
       # same thresholds; this guards against the WFA path regressing.
+      #
+      # CAUTION — this gate is REASSURING BUT NOT SUFFICIENT. WFA's ends-free
+      # alignment is genuinely suboptimal (upstream WFA2-lib #102; see
+      # nwalign.rs::wfa_endsfree_known_divergence). On these small fixtures the
+      # divergence is below the count thresholds so the gate passes, but at
+      # scale WFA over-calls low-abundance ASVs (jaccard ~0.92-0.95 unbounded,
+      # ~0.997-0.999 capped) — see issue #51 scale validation. A green WFA gate
+      # means "did not regress on the fixture", NOT "WFA == NW". WFA stays
+      # EXPERIMENTAL; NW is the default + error-model backend.
       - name: Illumina (WFA) — run dada2-rs pipeline
         run: |
           ALIGN_BACKEND=wfa2 bash dev/concordance/run_illumina.sh \
@@ -95,6 +104,7 @@ jobs:
             echo "::notice::Illumina reference CSV not committed yet ($ref); skipping WFA comparison."
             exit 0
           fi
+          echo "::warning title=WFA gate is fixture-scale only::A green Illumina WFA gate means the experimental WFA backend did not regress on this small fixture, NOT that WFA == NW. WFA ends-free is suboptimal (WFA2-lib #102) and over-calls low-abundance ASVs at scale (issue #51). NW remains the default + error-model backend."
           python3 dev/concordance/compare_to_reference.py \
               --rs work/illumina_wfa/seqtab.nochim.json --reference "$ref" \
               --label illumina-wfa --min-abundance "$MIN_ABUNDANCE" \
@@ -149,6 +159,13 @@ jobs:
       # erases the slowdown (locally faster than NW) while staying ASV-identical
       # to the R reference (93=93). k=5 matches R's KMER_SIZE. WFA is
       # experimental; this gate guards the WFA+cap path against regressing.
+      #
+      # CAUTION — same caveat as the Illumina WFA gate: PASSING HERE IS
+      # FIXTURE-SCALE ONLY. The 93=93 match holds because the committed fixture
+      # is small; at 95-sample scale capped WFA is NW parity-to-slower (NOT the
+      # local speedup) and unbounded WFA is a 3.6x slowdown that over-calls ~160
+      # ASVs (issue #51 scale validation). The cap does not make WFA == NW — it
+      # bounds the divergence. Green = "did not regress on the fixture".
       - name: PacBio (WFA) — run + compare (if fixture present)
         run: |
           data=dev/concordance/data/pacbio
@@ -164,6 +181,7 @@ jobs:
             echo "::notice::PacBio reference CSV not committed yet ($ref); WFA pipeline ran, no comparison."
             exit 0
           fi
+          echo "::warning title=WFA gate is fixture-scale only::A green PacBio WFA gate means the experimental WFA+cap backend did not regress on this small fixture, NOT that WFA == NW. At scale capped WFA is NW parity-to-slower and unbounded WFA over-calls ~160 ASVs (issue #51). NW remains the default + error-model backend."
           python3 dev/concordance/compare_to_reference.py \
               --rs work/pacbio_wfa/seqtab.nochim.json --reference "$ref" \
               --label pacbio-k5-wfa --min-abundance "$MIN_ABUNDANCE" \
