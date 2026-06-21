@@ -2070,4 +2070,75 @@ pub enum Commands {
         #[arg(long)]
         verbose: bool,
     },
+
+    /// (dev) Calibrate the k-mer screen: emit kdist vs true alignment divergence
+    ///
+    /// For sampled pairs of unique sequences, reports the k-mer distance
+    /// (`KDIST_CUTOFF` screen metric) alongside the true UNBANDED ends-free
+    /// alignment divergence, so the 0.42 cutoff (nominally ~10%, calibrated on
+    /// Illumina 16S) can be checked per dataset / platform / k / pooling regime.
+    /// Outputs CSV: sample,kdist,edits,core_len,pct_div,screened_in,ab_i,ab_j.
+    #[command(hide = true)]
+    KdistCalibrate {
+        /// One or more derep JSON files (`.json` / `.json.gz`)
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
+
+        /// k-mer size (DADA2 default 5; PacBio full-length wants 7)
+        #[arg(long, default_value_t = 5)]
+        k: usize,
+
+        /// Screen cutoff used for the `screened_in` flag / leakage summary
+        #[arg(long, default_value_t = 0.42)]
+        cutoff: f64,
+
+        /// Divergence above which a screened-in pair is "leaked" (too far to be
+        /// an error copy). Crude — the true ceiling is abundance-dependent.
+        #[arg(long, default_value_t = 5.0)]
+        leak_pct: f64,
+
+        /// Alignment band radius; negative = unbanded (the correct, default
+        /// choice — a band truncates the divergence of distant pairs).
+        #[arg(long, default_value_t = -1, allow_negative_numbers = true)]
+        band: i32,
+
+        /// Max pairs computed PER population (random-subsample above this to
+        /// bound the O(n^2) cost)
+        #[arg(long, default_value_t = 200_000)]
+        max_pairs: usize,
+
+        /// Randomly subsample each sample to at most this many uniques before
+        /// pairing (0 = keep all)
+        #[arg(long, default_value_t = 0)]
+        max_uniques: usize,
+
+        /// Compute pairs WITHIN each sample (per-sample / independent regime)
+        /// instead of pooling all uniques into one set (full-pool regime)
+        #[arg(long)]
+        per_sample: bool,
+
+        /// Abundance-aware mode: instead of random pairs, link each unique to
+        /// its nearest MORE-abundant neighbour (candidate error-copy parent) and
+        /// report the screen's headroom above the real error-copy distances.
+        /// Output columns change to sample,ab,parent_ab,ab_ratio,kdist,edits,
+        /// core_len,pct_div,screened_in.
+        #[arg(long)]
+        nearest_parent: bool,
+
+        /// Threads for the parallel alignment
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+
+        /// RNG seed for subsampling (reproducible)
+        #[arg(long, default_value_t = 0x9E37_79B9_7F4A_7C15)]
+        seed: u64,
+
+        /// Write CSV here instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+
+        /// Print per-population progress + leakage summary to stderr
+        #[arg(long)]
+        verbose: bool,
+    },
 }
