@@ -19,6 +19,8 @@ mod error_models;
 mod evaluate;
 mod filter;
 mod filter_trim;
+#[cfg(test)]
+mod kdist_calibrate;
 mod kmers;
 mod learn_errors;
 mod merge_pairs;
