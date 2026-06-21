@@ -1,2 +1,5 @@
 /target
 Cargo.lock
+wfa2lib_src/
+oracle
+*.o

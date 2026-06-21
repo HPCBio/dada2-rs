@@ -8,6 +8,42 @@ exists to answer one question:
 > the match score is nonzero (DADA2 uses match = +5), or does it reproduce the
 > same suboptimality we see in the pure-Rust port?
 
+## Results (WFA2-lib `bcf473a`, 2026-06) — #102 is **partially** fixed
+
+Run via `./run.sh` (C harness `oracle.c` linked against the C++ static lib).
+With `match=-5` the WFA penalty score equals the DADA2 score, so any result
+below the known optimum is a genuine optimality miss, not a penalty-space tie:
+
+| case | mode | optimum | C++ | verdict |
+|------|------|---------|-----|---------|
+| leading-gap 52nt | Mode 1 (free end-gap crediting) | 255 | 255 | ✅ fixed |
+| `GCGG`/`CG` (the #102 thread reproducer) | Mode 1 | 10 | 10 | ✅ fixed |
+| leading-gap 55nt | Mode 1 | 275 | 275 | ✅ fixed |
+| trailing interior gap | Mode 2 (mismatch + free-end indel over interior gap) | 272 | **271** | ❌ still off by 1 |
+| near-end interior gap | Mode 2 | 347 | **346** | ❌ still off by 1 |
+
+**3/5.** Current C++ landed the leading/trailing free-end-gap fix (**Mode 1**,
+the common case — including the issue's own `GCGG`/`CG`) but still exhibits
+**Mode 2**: its CIGARs end `…X​M​D` / `…X​M​I`, i.e. it prefers `[mismatch +
+free-end indel]` over the higher-scoring `[interior indel + trailing matches]`.
+
+**Implication.** Porting the C++ ends-free fix into `wfa2lib-rs::termination.rs`
+would remove the *bulk* (Mode 1) of our divergence, but **not** make WFA a clean
+drop-in: Mode 2 survives even upstream, so WFA stays non-identical to NW and can
+still flip the occasional low-abundance ASV. Option (c) stands — NW remains the
+error-model backend; this porting is worthwhile only if WFA's *speed* ever
+justifies it (currently it does not; see `project_wfa_edit_budget_cap_issue51`).
+
+## Two harnesses in this dir
+
+- **`oracle.c` + `run.sh`** — the **working** oracle: links the C++ WFA2-lib
+  static lib directly (simplest path for an FFI oracle). `run.sh` clones+builds
+  WFA2-lib at a pinned commit, compiles, and runs. This produced the results
+  above.
+- **`Cargo.toml` + `src/main.rs`** — an optional pure-Rust-binding stub (its own
+  `[workspace]`, never built by the root). Kept as the skeleton if we later want
+  the oracle as a Rust FFI crate instead of a C harness.
+
 ## Why this is isolated under `dev/` and never ships
 
 - The production aligner is the **pure-Rust** `wfa2lib-rs` (a re-implementation,
