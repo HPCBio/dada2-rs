@@ -48,4 +48,5 @@ nav:
   - Performance:
     - Tooling & metrics: benchmarking.md
     - Results: results.md
+  - Diagnostics: diagnostics.md
   - Citation: citation.md
