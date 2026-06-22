@@ -22,16 +22,16 @@ Currently the k-mer **screen** (`KDIST_CUTOFF`) and the alignment **band size**
 
 ### What it measures
 
-DADA2 avoids most pairwise alignments with a cheap **k-mer distance screen**:
+DADA2 avoids most pairwise alignments with an inexpensive **k-mer distance screen**:
 pairs whose k-mer distance exceeds `KDIST_CUTOFF` (default **0.42**, nominally
 "~10% nucleotide divergence", calibrated on Illumina 16S) are assumed too
 different to be linked by amplicon error and skipped. Surviving pairs are
-aligned within a diagonal **band** (`BAND_SIZE`, default **16**).
+aligned within a diagonal **band** (`BAND_SIZE`, default **16**, with PacBio HiFi data recommendations being **32**).
 
 Both constants raise questions this tool answers empirically:
 
 - **What divergence does `kdist = 0.42` actually correspond to** on *your* data,
-  platform, `k`, and pooling regime? (The original ESPRIT reference
+  platform, `k`, and pooling regime? (as noted, the original ESPRIT reference
   implementation that defined the k-mer distance is no longer available.)
 - **How much headroom does 0.42 have** above the real error-copy distances —
   i.e. how far could it be tightened without dropping true error copies?
@@ -39,7 +39,7 @@ Both constants raise questions this tool answers empirically:
   alignments, and is it over-provisioned for short reads?
 
 It answers these by re-deriving, on real sequences, the relationship between the
-k-mer distance and the **true unbanded alignment divergence**.
+k-mer distance and the **true unbanded NW alignment divergence**.
 
 ---
 
@@ -55,7 +55,7 @@ dada2-rs kdist-calibrate sampleA.derep.json [sampleB.derep.json ...] \
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--k` | `5` | k-mer size (DADA2 default 5; full-length PacBio wants 7). |
+| `--k` | `5` | k-mer size (DADA2 fixed k-mer size is 5; full-length PacBio wants 7). |
 | `--cutoff` | `0.42` | Screen cutoff used for the `screened_in` flag and summaries. |
 | `--band` | `-1` | Alignment band radius; **negative = unbanded** (the correct default — a band would truncate the divergence of distant pairs). |
 | `--max-pairs` | `200000` | Max pairs computed **per population** (random-subsample above this to bound the O(n²) cost). |
@@ -203,8 +203,8 @@ On an Illumina V4 sample (sam1F, 240 bp, k=5):
 | 0.30–0.40 | 10.0% |
 | **0.40–0.42** | **14.2%** |
 
-`kdist = 0.42` corresponds to **~14.6%** divergence here — *not* the nominal
-10% (which sits at kdist ≈ 0.29). The cutoff is safe (every ≤3%-divergent pair
+`kdist = 0.42` corresponds to **~14.6%** divergence in this case — *not* the 
+nominal 10% (which sits at kdist ≈ 0.29). The cutoff is safe (every ≤3%-divergent pair
 is screened in) but **measurably looser** than its documented calibration, and
 ~55% of screened-in pairs are too divergent to be error copies (pure leakage).
 
@@ -220,7 +220,7 @@ cutoff:
 | **k = 5** | 0.339 (never hits 0.42) | **100%** (blind) | unreachable |
 | **k = 7** | 0.688 | 43% (prunes 57%) | **~11% divergence** |
 
-At the stock k=5, the screen on full-length 16S prunes *nothing* — every pair is
+At the stock k=5, the screen on full-length 16S prunes *nothing* in this case — every pair is
 aligned (correctness is unaffected; only compute is wasted). At k=7
 (`4⁷ = 16384 ≫ 1460`) the screen de-saturates **and** the 0.42 cutoff lands back
 near its intended ~10%.
