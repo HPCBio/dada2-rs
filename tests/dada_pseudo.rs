@@ -772,3 +772,49 @@ fn dada_from_fastq_matches_dada_from_derep_json() {
         "dada output from derep JSON differs from dada output from FASTQ",
     );
 }
+
+/// `--failed-uniques` (issue #60) must emit a header plus exactly one row per
+/// `map == null` unique (a unique that failed to denoise), with that unique's
+/// sequence and in-sample abundance. The single-sample dada `map` is the clean
+/// reference signal, so the TSV row count must equal the JSON null count and
+/// every TSV sequence must be a `map == null` input unique.
+#[test]
+fn dada_failed_uniques_matches_map_nulls() {
+    let dir = scratch("failed_uniques");
+    let err = shared_err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+
+    let out_json = dir.join("d.json");
+    let fu_tsv = dir.join("failed.tsv");
+    run(&[
+        "dada",
+        s1.to_str().unwrap(),
+        "--error-model",
+        err.to_str().unwrap(),
+        "-o",
+        out_json.to_str().unwrap(),
+        "--failed-uniques",
+        fu_tsv.to_str().unwrap(),
+    ]);
+
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&out_json).unwrap()).unwrap();
+    let map = v["map"].as_array().unwrap();
+    let null_count = map.iter().filter(|m| m.is_null()).count();
+    assert!(null_count > 0, "fixture should have some failed uniques");
+
+    let tsv = std::fs::read_to_string(&fu_tsv).unwrap();
+    let mut lines = tsv.lines();
+    assert_eq!(
+        lines.next().unwrap(),
+        "sequence\tsample\treads",
+        "TSV must start with the header row",
+    );
+    let rows: Vec<&str> = lines.collect();
+    assert_eq!(rows.len(), null_count, "one TSV row per map==null unique",);
+    for row in rows {
+        let cols: Vec<&str> = row.split('\t').collect();
+        assert_eq!(cols.len(), 3, "row must have sequence/sample/reads");
+        assert_eq!(cols[1], "sam1F", "sample column");
+        assert!(cols[2].parse::<u32>().unwrap() >= 1, "reads >= 1");
+    }
+}

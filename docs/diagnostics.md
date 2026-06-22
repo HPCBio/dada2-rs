@@ -4,6 +4,69 @@ This page documents **experimental diagnostic tooling** built into `dada2-rs`, a
 
 ---
 
+## `--failed-uniques`: which sequences failed to denoise
+
+A recurring question (e.g. [benjjneb/dada2#1899](https://github.com/benjjneb/dada2/issues/1899)) is *which* unique sequences fail to denoise — particularly for high-diversity samples (soil, seawater) that shed substantial reads through denoising. DADA2's answer lives in the per-unique `map`: a unique whose final abundance p-value falls below `OMEGA_C`, and that is not corrected to any cluster center, gets a `null` map entry (R's `$map == NA`). Those nulls are the uniques that failed to denoise, and they can be traced back to the reads they cost.
+
+`dada2-rs` exposes this directly. The `--failed-uniques <FILE>` flag — available on `dada`, `dada-pseudo`, and `dada-pooled` — writes a TSV of the dropped uniques and their abundances, so you don't have to hand-join the `map` to the derep uniques.
+
+### Output
+
+A tidy long-format TSV with a header, one row per failed unique per sample it appears in:
+
+```
+sequence	sample	reads
+TACGAAGG…AACA	soil_A	7
+TACGGAGG…AATC	soil_A	3
+TACGGAGG…AAAC	soil_B	2
+```
+
+| Column | Meaning |
+|---|---|
+| `sequence` | The unique that failed to denoise (`map == null`). |
+| `sample` | Sample the unique (and its reads) belongs to. |
+| `reads` | Reads this unique contributed in that sample (i.e. reads lost to the failure). |
+
+Rows are sorted by `sample`, then descending `reads`, then `sequence`, so output is deterministic regardless of how many samples were denoised concurrently. Sum the `reads` column (optionally per sample) to get the total reads lost to failed denoising.
+
+### Semantics follow the subcommand
+
+The notion of "failed" matches how each subcommand denoises:
+
+| Subcommand | "Failed" decided | `reads` is |
+|---|---|---|
+| `dada`, `dada-pseudo` | **per sample** (`map == null`; for pseudo, in the round-2 pass) | the unique's in-sample abundance |
+| `dada-pooled` | **globally** — pooled denoising runs once on the merged unique table, so failure is a property of the merged index (`result.map == null`) | the failed merged unique's read count *in that sample* (one row per sample it appears in) |
+
+!!! note "Per-sample `null` is unambiguous"
+
+    In the pooled per-sample output JSON, a `map` entry could in principle be
+    `null` either because the unique failed denoising or because its cluster has
+    zero reads in that sample. The latter never actually happens for a unique
+    that is present in the sample (a present unique always carries ≥1 read into
+    its cluster), so a per-sample `map == null` always means a genuine denoising
+    failure. The `--failed-uniques` TSV reports only real failures.
+
+### Invocation
+
+```bash
+# single sample
+dada2-rs dada sampleA.fastq.gz --error-model err.json \
+    -o sampleA.dada.json --failed-uniques sampleA.failed.tsv
+
+# multi-sample (per-sample failures, one combined TSV with a sample column)
+dada2-rs dada *.fastq.gz --error-model err.json \
+    --output-dir dada_out/ --failed-uniques failed.tsv
+
+# pooled (global failures, expanded per sample)
+dada2-rs dada-pooled *.fastq.gz --error-model err.json \
+    -o pooled_out/ --failed-uniques failed.tsv
+```
+
+To trace a failed unique's divergence from the nearest surviving ASV (is it a distant artifact, or a real low-abundance variant the abundance test shed?), feed the same `dada` run to [`kdist-calibrate --from-dada`](#3-post-inference-mode-from-dada), whose `failed` class is exactly this population.
+
+---
+
 ## `kdist-calibrate`: k-mer screen, `KDIST_CUTOFF`, `BAND_SIZE`
 
 Currently the k-mer **screen** (`KDIST_CUTOFF`) and the alignment **band size** 

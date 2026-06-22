@@ -17,6 +17,7 @@ mod derep;
 mod error;
 mod error_models;
 mod evaluate;
+mod failed_uniques;
 mod filter;
 mod filter_trim;
 mod kdist_calibrate;
@@ -453,6 +454,7 @@ fn main() -> io::Result<()> {
             trace_min_abund,
             output,
             output_dir,
+            failed_uniques: failed_uniques_path,
             compact,
             verbose,
         } => {
@@ -560,6 +562,9 @@ fn main() -> io::Result<()> {
                         input.len()
                     );
                 }
+                let collect_failed = failed_uniques_path.is_some();
+                let failed_rows: std::sync::Mutex<Vec<failed_uniques::Row>> =
+                    std::sync::Mutex::new(Vec::new());
                 for_each_sample_concurrent(input.len(), jobs, threads, |i, sub_pool| {
                     let path = &input[i];
                     let (derep, json_sample) =
@@ -598,7 +603,7 @@ fn main() -> io::Result<()> {
                         }
                     }
                     let sample = json_sample.unwrap_or_else(|| fastq_stem(path));
-                    let json = denoise_and_serialize(
+                    let (json, failed) = denoise_and_serialize(
                         "dada",
                         &sample,
                         &file_basename(path),
@@ -607,8 +612,12 @@ fn main() -> io::Result<()> {
                         &resolved.run,
                         sub_pool,
                         compact,
+                        collect_failed,
                         verbose,
                     )?;
+                    if collect_failed {
+                        failed_rows.lock().unwrap().extend(failed);
+                    }
                     let out_path = output_dir.join(format!("{sample}.json"));
                     std::fs::write(&out_path, &json)?;
                     if verbose {
@@ -616,6 +625,16 @@ fn main() -> io::Result<()> {
                     }
                     Ok(())
                 })?;
+                if let Some(ref fu_path) = failed_uniques_path {
+                    let rows = failed_rows.into_inner().unwrap();
+                    let n = failed_uniques::write_tsv(fu_path, rows)?;
+                    if verbose {
+                        eprintln!(
+                            "[dada] wrote {n} failed-unique row(s) to {}",
+                            fu_path.display()
+                        );
+                    }
+                }
                 return Ok(());
             }
 
@@ -809,6 +828,29 @@ fn main() -> io::Result<()> {
             let sample = sample_name
                 .or(json_sample)
                 .unwrap_or_else(|| fastq_stem(input));
+
+            // ---- Optional failed-to-denoise unique diagnostic (issue #60) ----
+            if let Some(ref fu_path) = failed_uniques_path {
+                let rows: Vec<failed_uniques::Row> = result
+                    .map
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| m.is_none())
+                    .map(|(i, _)| failed_uniques::Row {
+                        sequence: raw_inputs[i].seq.clone(),
+                        sample: sample.clone(),
+                        reads: raw_inputs[i].abundance,
+                    })
+                    .collect();
+                let n = failed_uniques::write_tsv(fu_path, rows)?;
+                if verbose {
+                    eprintln!(
+                        "[dada] wrote {n} failed-unique row(s) to {}",
+                        fu_path.display()
+                    );
+                }
+            }
+
             let total_reads: u32 = result.clusters.iter().map(|c| c.reads).sum();
 
             let asvs: Vec<AsvEntry> = result
@@ -920,6 +962,7 @@ fn main() -> io::Result<()> {
             kdist_cutoff,
             kmer_size,
             no_kmer_screen,
+            failed_uniques: failed_uniques_path,
             compact,
             verbose,
         } => {
@@ -1182,12 +1225,25 @@ fn main() -> io::Result<()> {
                 map: Vec<Option<usize>>,
             }
 
+            // Failed-to-denoise uniques (issue #60). Pooled denoising runs once on
+            // the merged unique table, so "failed" is a global property
+            // (`result.map[mu] == None`); rows are collected per sample the failed
+            // merged unique appears in, carrying that sample's read count.
+            let collect_failed = failed_uniques_path.is_some();
+            let mut failed_rows: Vec<failed_uniques::Row> = Vec::new();
+
             for (s, sample_name) in sample_names.iter().enumerate() {
                 // Sum per-cluster reads for this sample by walking its local uniques.
                 let mut cluster_reads: Vec<u32> = vec![0u32; result.clusters.len()];
                 for (lu, &mu) in local_to_merged[s].iter().enumerate() {
                     if let Some(c) = result.map[mu] {
                         cluster_reads[c] += sample_unique_counts[s][lu];
+                    } else if collect_failed {
+                        failed_rows.push(failed_uniques::Row {
+                            sequence: raw_inputs[mu].seq.clone(),
+                            sample: sample_name.clone(),
+                            reads: sample_unique_counts[s][lu],
+                        });
                     }
                 }
 
@@ -1237,6 +1293,16 @@ fn main() -> io::Result<()> {
                         path.display(),
                         n_asvs,
                         total_reads
+                    );
+                }
+            }
+
+            if let Some(ref fu_path) = failed_uniques_path {
+                let n = failed_uniques::write_tsv(fu_path, failed_rows)?;
+                if verbose {
+                    eprintln!(
+                        "[dada-pooled] wrote {n} failed-unique row(s) to {}",
+                        fu_path.display()
                     );
                 }
             }
@@ -1294,6 +1360,7 @@ fn main() -> io::Result<()> {
             kdist_cutoff,
             kmer_size,
             no_kmer_screen,
+            failed_uniques: failed_uniques_path,
             compact,
             verbose,
         } => {
@@ -1529,6 +1596,8 @@ fn main() -> io::Result<()> {
                     if low_memory { ", streaming" } else { "" },
                 );
             }
+            let collect_failed = failed_uniques_path.is_some();
+            let failed_rows: Mutex<Vec<failed_uniques::Row>> = Mutex::new(Vec::new());
             if !low_memory {
                 // Cached: mark priors serially (cheap; scoped so the &mut borrow
                 // is released), then denoise concurrently with shared read access.
@@ -1547,7 +1616,7 @@ fn main() -> io::Result<()> {
                 let sample_raws = sample_raws_opt.as_ref().unwrap();
                 for_each_sample_concurrent(n_samples, jobs, threads, |s, sub_pool| {
                     let sample_name = &sample_names[s];
-                    let json = denoise_and_serialize(
+                    let (json, failed) = denoise_and_serialize(
                         "dada-pseudo",
                         sample_name,
                         &file_basename(&input[s]),
@@ -1556,8 +1625,12 @@ fn main() -> io::Result<()> {
                         &resolved.run,
                         sub_pool,
                         compact,
+                        collect_failed,
                         verbose,
                     )?;
+                    if collect_failed {
+                        failed_rows.lock().unwrap().extend(failed);
+                    }
                     let out_path = output_dir.join(format!("{sample_name}.json"));
                     std::fs::write(&out_path, &json)?;
                     if verbose {
@@ -1579,7 +1652,7 @@ fn main() -> io::Result<()> {
                             raws.len(),
                         );
                     }
-                    let json = denoise_and_serialize(
+                    let (json, failed) = denoise_and_serialize(
                         "dada-pseudo",
                         sample_name,
                         &file_basename(&input[s]),
@@ -1588,8 +1661,12 @@ fn main() -> io::Result<()> {
                         &resolved.run,
                         sub_pool,
                         compact,
+                        collect_failed,
                         verbose,
                     )?;
+                    if collect_failed {
+                        failed_rows.lock().unwrap().extend(failed);
+                    }
                     let out_path = output_dir.join(format!("{sample_name}.json"));
                     std::fs::write(&out_path, &json)?;
                     if verbose {
@@ -1597,6 +1674,16 @@ fn main() -> io::Result<()> {
                     }
                     Ok(())
                 })?;
+            }
+            if let Some(ref fu_path) = failed_uniques_path {
+                let rows = failed_rows.into_inner().unwrap();
+                let n = failed_uniques::write_tsv(fu_path, rows)?;
+                if verbose {
+                    eprintln!(
+                        "[dada-pseudo] wrote {n} failed-unique row(s) to {}",
+                        fu_path.display()
+                    );
+                }
             }
         }
 
@@ -4013,6 +4100,9 @@ fn to_json<T: Serialize>(value: &T, compact: bool) -> io::Result<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Denoise one sample and serialize its dada JSON. When `collect_failed` is set,
+/// also returns the uniques that failed to denoise (`map == null`) as
+/// [`failed_uniques::Row`]s tagged with `sample`; otherwise the row vec is empty.
 fn denoise_and_serialize(
     tag: &'static str,
     sample: &str,
@@ -4022,8 +4112,9 @@ fn denoise_and_serialize(
     run_params: &DadaRunParams,
     pool: &rayon::ThreadPool,
     compact: bool,
+    collect_failed: bool,
     verbose: bool,
-) -> io::Result<String> {
+) -> io::Result<(String, Vec<failed_uniques::Row>)> {
     #[derive(Serialize)]
     struct DadaOutput {
         sample: String,
@@ -4061,6 +4152,22 @@ fn denoise_and_serialize(
     let mut run_params = *run_params;
     run_params.n_prior = raw_inputs.iter().filter(|r| r.prior).count();
 
+    let failed = if collect_failed {
+        result
+            .map
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.is_none())
+            .map(|(i, _)| failed_uniques::Row {
+                sequence: raw_inputs[i].seq.clone(),
+                sample: sample.to_string(),
+                reads: raw_inputs[i].abundance,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     let out = DadaOutput {
         sample: sample.to_string(),
         input_file: input_file.to_string(),
@@ -4075,7 +4182,7 @@ fn denoise_and_serialize(
         map: result.map,
     };
 
-    to_json(&Tagged::new(tag, out), compact)
+    Ok((to_json(&Tagged::new(tag, out), compact)?, failed))
 }
 
 /// Build a [`derep::Derep`] for `dada` / `dada-pooled` from either a FASTQ file

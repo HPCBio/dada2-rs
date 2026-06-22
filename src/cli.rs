@@ -344,6 +344,14 @@ pub enum Commands {
         #[arg(long)]
         output_dir: Option<PathBuf>,
 
+        /// Write a TSV of uniques that failed to denoise (final p-value < omega_c,
+        /// `map == null`) to this file. Tidy long format with a header:
+        /// `sequence<TAB>sample<TAB>reads`, one row per failed unique per sample
+        /// it appears in. Answers "what failed to denoise and how many reads did
+        /// it cost?" without hand-joining the `map` to the derep uniques.
+        #[arg(long)]
+        failed_uniques: Option<PathBuf>,
+
         /// Output compact (minified) JSON instead of pretty-printed
         #[arg(long)]
         compact: bool,
@@ -498,6 +506,15 @@ pub enum Commands {
         /// Disable the k-mer pre-alignment screen.
         #[arg(long)]
         no_kmer_screen: Option<bool>,
+
+        /// Write a TSV of uniques that failed to denoise to this file. Tidy long
+        /// format with a header: `sequence<TAB>sample<TAB>reads`. Because pooled
+        /// denoising runs once on the merged unique table, "failed" is a global
+        /// property (`result.map == null` on the merged index); for each failed
+        /// merged unique a row is emitted per sample it appears in, carrying that
+        /// sample's read count.
+        #[arg(long)]
+        failed_uniques: Option<PathBuf>,
 
         /// Output compact (minified) JSON instead of pretty-printed
         #[arg(long)]
@@ -683,6 +700,14 @@ pub enum Commands {
         /// Disable the k-mer pre-alignment screen.
         #[arg(long)]
         no_kmer_screen: Option<bool>,
+
+        /// Write a TSV of uniques that failed to denoise (per-sample `map == null`)
+        /// to this file. Tidy long format with a header:
+        /// `sequence<TAB>sample<TAB>reads`, one row per failed unique per sample.
+        /// Failures are decided in the per-sample round-2 pass, so this is a
+        /// per-sample signal (same semantics as `dada`).
+        #[arg(long)]
+        failed_uniques: Option<PathBuf>,
 
         /// Output compact (minified) JSON instead of pretty-printed
         #[arg(long)]
