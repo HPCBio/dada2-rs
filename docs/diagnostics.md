@@ -110,7 +110,7 @@ $$
 - **denominator** — total k-mer positions in the shorter sequence,
   $\min(L_1, L_2) - k + 1$.
 
-!!! note "Two kinds of \"abundance\""
+!!! note "Two kinds of "abundance""
 
     The counts $c^{1}_{i}/c^{2}_{i}$ are **within-sequence k-mer
     multiplicities** — a property of the two sequences' composition only. They
