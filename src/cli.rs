@@ -2125,6 +2125,21 @@ pub enum Commands {
         #[arg(long)]
         nearest_parent: bool,
 
+        /// Post-inference mode: treat the positional inputs as `dada` output
+        /// JSONs (not derep JSONs) and label every input unique by what
+        /// denoising did to it — center (survived as an ASV), member (absorbed
+        /// as an error copy), or failed (shed by the abundance test). Requires
+        /// --derep-dir. Output columns change to sample,class,cluster,ab,
+        /// center_ab,ab_ratio,birth_type,birth_pval,kdist,edits,core_len,
+        /// pct_div,band_req,screened_in.
+        #[arg(long)]
+        from_dada: bool,
+
+        /// With --from-dada: directory holding the derep JSONs that fed `dada`
+        /// (matched to each output by `sample` name → `{sample}.json[.gz]`).
+        #[arg(long)]
+        derep_dir: Option<PathBuf>,
+
         /// Threads for the parallel alignment
         #[arg(long, default_value_t = 1)]
         threads: usize,

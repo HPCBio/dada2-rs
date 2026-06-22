@@ -62,6 +62,8 @@ dada2-rs kdist-calibrate sampleA.derep.json [sampleB.derep.json ...] \
 | `--max-uniques` | `0` (all) | Randomly subsample each sample to at most this many uniques before pairing. |
 | `--per-sample` | off | Compute pairs **within** each sample (independent regime) instead of pooling all uniques into one set (full-pool regime). |
 | `--nearest-parent` | off | Abundance-aware mode (see below). |
+| `--from-dada` | off | Post-inference mode (see below); positional inputs are `dada` output JSONs. |
+| `--derep-dir` | — | With `--from-dada`: directory of the derep JSONs that fed `dada` (matched by sample name). |
 | `--threads` | `1` | Threads for the parallel Needleman–Wunsch alignments. |
 | `--seed` | fixed | RNG seed for subsampling (reproducible). |
 | `-o`, `--output` | stdout | Write the CSV here. |
@@ -138,6 +140,56 @@ This mode is also far cheaper — O(n²) *cheap* k-mer comparisons to find each
 parent plus only O(n) alignments (vs O(n²) alignments in all-pairs mode) — so it
 scales to pooled/multisample inputs much better.
 
+#### 3. Post-inference mode (`--from-dada`)
+
+The two modes above operate on **derep** inputs — the screen's view, *before*
+denoising. This mode operates on `dada` **output**, so every comparison is
+labelled by *what inference actually decided*. Each input unique gets one of
+three fates, and is aligned against the relevant cluster center:
+
+| `class` | Compared against | What it is |
+|---|---|---|
+| `member` | its own cluster center | a real error copy denoising **corrected** (the within-cluster cloud). |
+| `failed` | its **nearest** center | a unique the abundance test **shed** (`map == null`) but did not assign. |
+| `center_pair` | another surviving center | two ASVs that both **survived** — the inter-ASV resolution floor. |
+
+Because labels come from dada's actual abundance-p-value partition (not the
+nearest-more-abundant *proxy* of mode 2), this is the ground-truth version of
+the headroom question — and the `failed` class is the population mode 2 can't
+see at all.
+
+Invocation pairs each `dada` output JSON with its derep input (located in
+`--derep-dir` by sample name, so indices line up with dada's `map`):
+
+```bash
+dada2-rs kdist-calibrate --from-dada \
+    dada_out/sampleA.json [dada_out/sampleB.json ...] \
+    --derep-dir derep/ \
+    --k 5 --threads 8 --verbose -o post.csv
+```
+
+CSV columns:
+
+| Column | Meaning |
+|---|---|
+| `sample` | Sample name (from the dada output). |
+| `class` | `member` / `failed` / `center_pair` (above). |
+| `cluster` | Cluster id of the partner center. |
+| `ab` | Abundance of the query unique (or center *a* for `center_pair`). |
+| `center_ab` | Abundance of the partner center. |
+| `ab_ratio` | `center_ab / ab`. |
+| `birth_type` | How the partner ASV was born: `Abundance`, `Prior` (pseudo-pool prior), `Initial`, or `Singleton`. |
+| `birth_pval` | The abundance p-value at that birth — small ⇒ a confident split; near `OMEGA_A` ⇒ a **borderline** ASV. |
+| `kdist`, `edits`, `core_len`, `pct_div`, `band_req`, `screened_in` | As above, for the query↔partner alignment. |
+
+**Tracing priors / pseudo-pooling.** Run `dada-pseudo`, then filter the table on
+`birth_type == Prior`: those ASVs exist *only* because a prior from another
+sample rescued them past `OMEGA_P`. Their `center_pair` rows show how close each
+sits to the nearest abundance-born survivor — small divergence there means the
+prior recovered a real low-abundance variant; large divergence is worth a closer
+look. `birth_pval` lets you sort every ASV by how borderline its split was,
+independent of the prior question.
+
 #### `--verbose` summaries (stderr)
 
 `--verbose` adds per-population summary lines that are usually what you want
@@ -170,6 +222,34 @@ before touching the CSV:
   (≤3% divergent), and how far that sits below the cutoff.
 - **clear-error-copy band-fit** — the band-fit curve restricted to real error
   copies (the safety-relevant question for `BAND_SIZE`).
+
+**Post-inference mode:**
+
+```
+[kdist] sam1F : 896 uniques (9 centers, 828 members, 59 failed), 9 ASVs, 923 jobs (k=5, band=-1, 4 threads)
+[kdist] sam1F : 59 failed | singletons 59 (14 within cutoff) | multi-read 0 (0 within cutoff) — failed singletons are the --detect-singletons tradeoff, not distance
+[kdist] sam1F : 2/9 ASVs born from priors (pseudo); filter the table on class=center_pair,birth_type=Prior to see their nearest survivor
+```
+
+- the fate breakdown (centers / members / failed) per sample, plus the job
+  count actually aligned.
+- the failed class split by abundance. A unique that fails the abundance test
+  for being a **singleton** (the default `≥2 reads` rule, toggled by
+  [`--detect-singletons`](parameters.md)) is a different thing from one that is
+  genuinely distant from every center — so failed singletons are reported
+  separately, with how many sit *within* the screen cutoff (near a center, i.e.
+  plausible error copies / real low-abundance variants that just lacked a second
+  read) vs beyond it (the distant tail).
+- a prior line appears only when some ASV was born from a pseudo-pool prior.
+
+!!! note "`failed` ≠ distant noise"
+
+    Most `failed` uniques are typically **singletons**: under the default a
+    singleton cannot seed a new ASV regardless of distance, so it lands in
+    `failed` for the read-count tradeoff, not because the screen judged it far
+    from everything. Use the singleton split (and re-running `dada` with
+    `--detect-singletons`) to tell the two apart before reading anything into the
+    failed-class divergence.
 
 ---
 
@@ -301,6 +381,9 @@ looks like a single worst-case constant applied uniformly.
       appear scales with the abundance of its parent and sequencing depth; the
       `--nearest-parent` proxy does not run the full abundance p-value, so it
       approximates rather than reproduces DADA2's actual linkage decision.
+      `--from-dada` removes this caveat — its labels *are* dada's decision — but
+      then sees only the comparisons inference reached (it cannot show pairs the
+      screen wrongly merged, since those never became two ASVs).
     - **Long-read saturation confounds k=5.** PacBio k=5 distances are
       compressed by saturation; use k=7 figures for long-read interpretation.
     - **Unbanded by design.** The tool aligns unbanded (`--band -1`) so distant

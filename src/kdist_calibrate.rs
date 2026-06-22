@@ -41,6 +41,13 @@ pub struct Params {
     pub max_uniques: usize,
     pub per_sample: bool,
     pub nearest_parent: bool,
+    /// Post-inference mode: positional inputs are `dada` output JSONs; each is
+    /// paired with its derep JSON (from `derep_dir`) so every input unique can be
+    /// labelled by what denoising did to it (center / member / failed).
+    pub from_dada: bool,
+    /// Directory holding the derep JSONs that fed `dada` (matched by `sample`
+    /// name → `{sample}.json` / `.json.gz`). Required with `from_dada`.
+    pub derep_dir: Option<PathBuf>,
     pub threads: usize,
     pub seed: u64,
     pub output: Option<PathBuf>,
@@ -163,6 +170,161 @@ fn load_derep(path: &Path, k: usize, max_uniques: usize, seed: u64) -> io::Resul
     })
 }
 
+/// A `dada` output paired with its derep input, ready for post-inference
+/// classification. Input uniques are in denoising input order (abundance-desc),
+/// so `map[i]` is the cluster index Raw `i` was corrected to (`None` = failed
+/// the abundance test, i.e. did not survive denoising). Centers are indexed by
+/// cluster id, carrying the birth metadata that lets us trace *why* an ASV
+/// exists (`Prior` = born from a pseudo-pool prior; `birth_pval` = how close
+/// that birth was to OMEGA_A).
+struct DadaSample {
+    name: String,
+    // input uniques (denoising input order, aligned with `map`)
+    enc: Vec<Vec<u8>>,
+    counts: Vec<u64>,
+    kmers: Vec<Vec<u8>>,
+    map: Vec<Option<usize>>,
+    // cluster centers, indexed by cluster id
+    c_enc: Vec<Vec<u8>>,
+    c_kmers: Vec<Vec<u8>>,
+    c_ab: Vec<u64>,
+    c_birth: Vec<String>,
+    c_birth_pval: Vec<f64>,
+}
+
+/// Read a derep JSON's uniques in denoising input order (abundance-descending,
+/// matching `load_derep_for_dada`): no subsample — indices must line up with the
+/// dada `map`. Returns (encoded seqs, counts).
+fn load_derep_aligned(path: &Path) -> io::Result<(Vec<Vec<u8>>, Vec<u64>)> {
+    let f = File::open(path).with_path(path)?;
+    let mut txt = String::new();
+    if path.extension().and_then(|e| e.to_str()) == Some("gz") {
+        MultiGzDecoder::new(f).read_to_string(&mut txt)?;
+    } else {
+        io::BufReader::new(f).read_to_string(&mut txt)?;
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&txt).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let uniques = v.get("uniques").and_then(|u| u.as_array()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: not a derep JSON (no `uniques`)", path.display()),
+        )
+    })?;
+    let mut seqs: Vec<(Vec<u8>, u64)> = uniques
+        .iter()
+        .filter_map(|e| {
+            let s = e.get("sequence")?.as_str()?;
+            let c = e.get("count").and_then(|c| c.as_u64()).unwrap_or(1);
+            Some((encode(s), c))
+        })
+        .collect();
+    // Mirror load_derep_for_dada: only re-sort when the producer didn't declare
+    // abundance_desc; the sort is stable so ties keep file order (= input order).
+    if v.get("sort_order").and_then(|s| s.as_str()) != Some("abundance_desc") {
+        seqs.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+    }
+    Ok(seqs.into_iter().unzip())
+}
+
+/// Load a `dada` output JSON and pair it with its derep input from `derep_dir`.
+fn load_dada(dada_path: &Path, derep_dir: &Path, k: usize) -> io::Result<DadaSample> {
+    let f = File::open(dada_path).with_path(dada_path)?;
+    let v: serde_json::Value = serde_json::from_reader(io::BufReader::new(f))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let name = v
+        .get("sample")
+        .and_then(|s| s.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            dada_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+                .to_string()
+        });
+    let asvs = v.get("asvs").and_then(|a| a.as_array()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{}: not a dada output JSON (no `asvs`)",
+                dada_path.display()
+            ),
+        )
+    })?;
+    let (mut c_enc, mut c_ab, mut c_birth, mut c_birth_pval) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for a in asvs {
+        let seq = a.get("sequence").and_then(|s| s.as_str()).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "asv entry missing `sequence`")
+        })?;
+        c_enc.push(encode(seq));
+        c_ab.push(a.get("abundance").and_then(|x| x.as_u64()).unwrap_or(0));
+        c_birth.push(
+            a.get("birth_type")
+                .and_then(|s| s.as_str())
+                .unwrap_or("?")
+                .to_string(),
+        );
+        c_birth_pval.push(
+            a.get("birth_pval")
+                .and_then(|x| x.as_f64())
+                .unwrap_or(f64::NAN),
+        );
+    }
+    let map: Vec<Option<usize>> = v
+        .get("map")
+        .and_then(|m| m.as_array())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "dada output missing `map`"))?
+        .iter()
+        .map(|e| e.as_u64().map(|u| u as usize))
+        .collect();
+
+    // Locate and load the matching derep input (sample.json[.gz]).
+    let derep_path = [
+        derep_dir.join(format!("{name}.json")),
+        derep_dir.join(format!("{name}.json.gz")),
+    ]
+    .into_iter()
+    .find(|p| p.exists())
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "{}: no derep JSON for sample `{name}` in {}",
+                dada_path.display(),
+                derep_dir.display()
+            ),
+        )
+    })?;
+    let (enc, counts) = load_derep_aligned(&derep_path)?;
+    if enc.len() != map.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{name}: derep has {} uniques but dada map has {} entries — \
+                 mismatched inputs (regenerate from the same derep)",
+                enc.len(),
+                map.len()
+            ),
+        ));
+    }
+    let kmers = enc.iter().map(|e| assign_kmer8(e, k)).collect();
+    let c_kmers = c_enc.iter().map(|e| assign_kmer8(e, k)).collect();
+    Ok(DadaSample {
+        name,
+        enc,
+        counts,
+        kmers,
+        map,
+        c_enc,
+        c_kmers,
+        c_ab,
+        c_birth,
+        c_birth_pval,
+    })
+}
+
 /// Build the (i, j) pair list for a population of `n` uniques: enumerate all if
 /// `n*(n-1)/2 <= max_pairs`, else draw `max_pairs` random pairs (with possible
 /// repeats — fine for a calibration scatter).
@@ -203,6 +365,9 @@ pub fn run(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
             io::ErrorKind::InvalidInput,
             "no input derep JSON(s) given",
         ));
+    }
+    if p.from_dada {
+        return run_from_dada(inputs, p);
     }
     let loaded: Vec<Sample> = inputs
         .iter()
@@ -323,6 +488,211 @@ fn pairs_mode(
         );
         eprintln!("[kdist] {}", band_fit("all pairs", &band_all));
         eprintln!("[kdist] {}", band_fit("screened-in", &band_scr));
+    }
+    Ok(())
+}
+
+/// Post-inference driver: load each (dada output, derep input) pair and emit the
+/// labelled pairwise comparisons.
+fn run_from_dada(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
+    let derep_dir = p.derep_dir.as_deref().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--from-dada requires --derep-dir <DIR> (where the matching derep JSONs live)",
+        )
+    })?;
+    let samples: Vec<DadaSample> = inputs
+        .iter()
+        .map(|path| load_dada(path, derep_dir, p.k))
+        .collect::<io::Result<_>>()?;
+
+    let mut w: Box<dyn Write> = match &p.output {
+        Some(path) => Box::new(BufWriter::new(File::create(path).with_path(path)?)),
+        None => Box::new(BufWriter::new(io::stdout())),
+    };
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(p.threads)
+        .build()
+        .map_err(io::Error::other)?;
+    from_dada_mode(&mut *w, &pool, &samples, p)?;
+    w.flush()?;
+    Ok(())
+}
+
+/// A row of work: align input unique `i` (or center `i` for center pairs) against
+/// a partner center `c`, under a class label.
+enum Job {
+    /// Member `i` absorbed by its own center `c` (an error copy denoising fixed).
+    Member { i: usize, c: usize },
+    /// Failed unique `i` (map==None) vs its nearest center `c` by k-mer distance.
+    Failed { i: usize, c: usize },
+    /// Two surviving ASV centers `a`,`b` (the inter-ASV resolution floor).
+    CenterPair { a: usize, b: usize },
+}
+
+/// Post-inference classification mode. For every input unique, denoising decided
+/// one of three fates; we align it against the relevant center and tag the row so
+/// the divergence/k-mer-distance can be read *conditioned on what dada did*:
+///   - member  → its own center: real error copies, the within-cluster cloud.
+///   - failed  → nearest center: shed by the abundance test but not assigned.
+///   - center  → other centers: survivors vs each other (resolution floor).
+///
+/// `birth_type`/`birth_pval` ride along on the partner center so prior-born ASVs
+/// (pseudo-pool) and births near OMEGA_A are visible in the same table.
+fn from_dada_mode(
+    w: &mut dyn Write,
+    pool: &rayon::ThreadPool,
+    samples: &[DadaSample],
+    p: &Params,
+) -> io::Result<()> {
+    writeln!(
+        w,
+        "sample,class,cluster,ab,center_ab,ab_ratio,birth_type,birth_pval,\
+         kdist,edits,core_len,pct_div,band_req,screened_in"
+    )?;
+    for s in samples {
+        let ncenters = s.c_enc.len();
+        // Build the job list from each unique's fate.
+        let mut jobs: Vec<Job> = Vec::with_capacity(s.enc.len());
+        let (mut n_center, mut n_member, mut n_failed) = (0u64, 0u64, 0u64);
+        for (i, m) in s.map.iter().enumerate() {
+            match m {
+                None => {
+                    // nearest center by k-mer distance (cheap pre-pass, no align)
+                    if ncenters > 0 {
+                        let c = (0..ncenters)
+                            .min_by(|&a, &b| {
+                                let ka = kmer_dist8(
+                                    &s.kmers[i],
+                                    s.enc[i].len(),
+                                    &s.c_kmers[a],
+                                    s.c_enc[a].len(),
+                                    p.k,
+                                );
+                                let kb = kmer_dist8(
+                                    &s.kmers[i],
+                                    s.enc[i].len(),
+                                    &s.c_kmers[b],
+                                    s.c_enc[b].len(),
+                                    p.k,
+                                );
+                                ka.partial_cmp(&kb).unwrap()
+                            })
+                            .unwrap();
+                        jobs.push(Job::Failed { i, c });
+                    }
+                    n_failed += 1;
+                }
+                Some(c) => {
+                    let c = *c;
+                    if s.enc[i] == s.c_enc[c] {
+                        n_center += 1; // the representative itself — no self-align
+                    } else {
+                        jobs.push(Job::Member { i, c });
+                        n_member += 1;
+                    }
+                }
+            }
+        }
+        // Inter-center pairs (resolution floor): enumerate / subsample.
+        let cpairs = pairs_for(ncenters, p.max_pairs, p.seed ^ 0xC0FFEE);
+        for (a, b) in cpairs {
+            jobs.push(Job::CenterPair { a, b });
+        }
+        if p.verbose {
+            eprintln!(
+                "[kdist] {} : {} uniques ({n_center} centers, {n_member} members, {n_failed} failed), \
+                 {ncenters} ASVs, {} jobs (k={}, band={}, {} threads)",
+                s.name,
+                s.enc.len(),
+                jobs.len(),
+                p.k,
+                p.band,
+                p.threads,
+            );
+        }
+        // Align every job in parallel.
+        let rows: Vec<(usize, f64, usize, usize, f64, usize)> = pool.install(|| {
+            jobs.par_iter()
+                .map_init(AlignBuffers::new, |buf, job| {
+                    let (ei, ej, ki, kj, c) = match job {
+                        Job::Member { i, c } => {
+                            (&s.enc[*i], &s.c_enc[*c], &s.kmers[*i], &s.c_kmers[*c], *c)
+                        }
+                        Job::Failed { i, c } => {
+                            (&s.enc[*i], &s.c_enc[*c], &s.kmers[*i], &s.c_kmers[*c], *c)
+                        }
+                        Job::CenterPair { a, b } => (
+                            &s.c_enc[*a],
+                            &s.c_enc[*b],
+                            &s.c_kmers[*a],
+                            &s.c_kmers[*b],
+                            *b,
+                        ),
+                    };
+                    let kd = kmer_dist8(ki, ei.len(), kj, ej.len(), p.k);
+                    align_endsfree_with_buf(ei, ej, 5, -4, -8, p.band, buf);
+                    let (edits, core, band_req) = aln_divergence(&buf.al0, &buf.al1);
+                    let pct = if core > 0 {
+                        100.0 * edits as f64 / core as f64
+                    } else {
+                        0.0
+                    };
+                    (c, kd, edits, core, pct, band_req)
+                })
+                .collect()
+        });
+        // Emit, pairing each row back with its job for labels/abundances.
+        // Track the failed class by abundance: singletons can never seed an ASV
+        // under the default (≥2 reads, unless --detect-singletons), so a failed
+        // singleton fails for that reason, NOT for being distant — split it out.
+        let (mut f_singleton, mut f_singleton_in, mut f_multi, mut f_multi_in) =
+            (0u64, 0u64, 0u64, 0u64);
+        for (job, &(c, kd, edits, core, pct, band_req)) in jobs.iter().zip(&rows) {
+            let (class, ab, center_ab) = match job {
+                Job::Member { i, .. } => ("member", s.counts[*i], s.c_ab[c]),
+                Job::Failed { i, .. } => ("failed", s.counts[*i], s.c_ab[c]),
+                Job::CenterPair { a, .. } => ("center_pair", s.c_ab[*a], s.c_ab[c]),
+            };
+            if let Job::Failed { .. } = job {
+                let within = (kd < p.cutoff) as u64;
+                if ab <= 1 {
+                    f_singleton += 1;
+                    f_singleton_in += within;
+                } else {
+                    f_multi += 1;
+                    f_multi_in += within;
+                }
+            }
+            let ratio = center_ab as f64 / ab.max(1) as f64;
+            writeln!(
+                w,
+                "{},{class},{c},{ab},{center_ab},{ratio:.2},{},{:.3e},{kd:.4},{edits},{core},{pct:.3},{band_req},{}",
+                s.name,
+                s.c_birth[c],
+                s.c_birth_pval[c],
+                (kd < p.cutoff) as u8,
+            )?;
+        }
+        if p.verbose {
+            let f_total = f_singleton + f_multi;
+            if f_total > 0 {
+                eprintln!(
+                    "[kdist] {} : {f_total} failed | singletons {f_singleton} ({f_singleton_in} within cutoff) \
+                     | multi-read {f_multi} ({f_multi_in} within cutoff) — failed singletons are the \
+                     --detect-singletons tradeoff, not distance",
+                    s.name,
+                );
+            }
+            let priors = s.c_birth.iter().filter(|b| b.as_str() == "Prior").count();
+            if priors > 0 {
+                eprintln!(
+                    "[kdist] {} : {priors}/{ncenters} ASVs born from priors (pseudo); \
+                     filter the table on class=center_pair,birth_type=Prior to see their nearest survivor",
+                    s.name,
+                );
+            }
+        }
     }
     Ok(())
 }
