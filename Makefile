@@ -22,7 +22,9 @@ SCRIPTS = $(wildcard scripts/*.R) $(wildcard scripts/*.py)
 
 .PHONY: all build build-native build-arm64 install uninstall \
         check fmt fmt-check clippy test clean docs-serve docs-build \
-        check-build-sync help
+        publish-crate check-build-sync help
+
+PUBLISH_ARGS ?=
 
 all: build
 
@@ -84,6 +86,10 @@ docs-build:
 
 clean:
 	cargo clean
+
+## publish-crate: publish NW-only crate to crates.io (strips WFA git dep; PUBLISH_ARGS=--dry-run to test)
+publish-crate:
+	./scripts/publish-crate.sh $(PUBLISH_ARGS)
 
 ## check-build-sync: fail if justfile recipes and Makefile targets have drifted
 check-build-sync:

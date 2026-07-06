@@ -1,6 +1,6 @@
 [package]
 name = "dada2-rs"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 # Raised from 1.87 to 1.91 by the experimental WFA backend (wfa2lib-rs MSRV).
 # Revisit if the WFA backend is dropped.
@@ -12,7 +12,23 @@ readme = "README.md"
 authors = ["Chris Fields <cjfields@illinois.edu>"]
 keywords = ["bioinformatics", "amplicon", "dada2", "metagenomics", "asv"]
 categories = ["science", "command-line-utilities"]
-exclude = ["**/__pycache__/", "*.pyc"]
+# Keep the published crate lean: development, benchmarking, concordance data
+# (multi-MB PacBio FASTQs), examples, notes, and CI/infra files are not needed by
+# `cargo install` consumers. `data/`, `tmp/` are already gitignored.
+exclude = [
+    "**/__pycache__/",
+    "*.pyc",
+    "/dev",
+    "/examples",
+    "/notes",
+    "/data",
+    "/tmp",
+    "/.github",
+    "/.githooks",
+    "/.readthedocs.yaml",
+    "/AGENTS.md",
+    "/Cross.toml",
+]
 
 [dependencies]
 noodles = { version = "0.91", features = ["fastq", "fasta", "bgzf"] }
@@ -43,6 +59,15 @@ wfa2lib-rs = { git = "https://github.com/HPCBio/wfa2lib-rs", rev = "4cfeda86a3e1
 # WFA code paths in `nwalign.rs`. Without it, `--align-backend wfa2` errors at
 # runtime and the published crate is Needleman-Wunsch only.
 wfa = ["dep:wfa2lib-rs"]
+
+[lints.rust]
+# The publish script (scripts/publish-crate.sh) strips the `wfa` feature from the
+# manifest for the crates.io release, since it depends on a git crate. Declaring
+# `feature="wfa"` as a known cfg value keeps the `#[cfg(feature = "wfa")]` code in
+# nwalign.rs from emitting `unexpected_cfgs` warnings when built without the
+# feature defined (e.g. `cargo install dada2-rs`). Harmless when the feature is
+# present in the manifest.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("wfa"))'] }
 
 [dev-dependencies]
 serde_json = "1"
