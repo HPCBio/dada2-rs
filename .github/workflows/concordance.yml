@@ -52,8 +52,13 @@ jobs:
           key: ${{ runner.os }}-cargo-concordance-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Build (release)
-        run: cargo build --release
+      # Built with `--features wfa` because the WFA concordance steps below drive
+      # the experimental backend via `ALIGN_BACKEND=wfa2`. The feature is
+      # off-by-default (issue #63), so without it those steps would hit the
+      # NW-only stub. The resulting binary still defaults to NW for the plain
+      # concordance runs.
+      - name: Build (release, with WFA backend)
+        run: cargo build --release --features wfa
 
       # ---------------- Illumina (in-repo MiSeq tutorial pair) ----------------
       - name: Illumina — run dada2-rs pipeline
