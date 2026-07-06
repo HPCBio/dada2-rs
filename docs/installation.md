@@ -38,6 +38,29 @@ RUSTFLAGS="-C target-cpu=native" cargo build --profile release-native
     microarchitecture. Build it on (or for) the machine you will run it on. For
     a portable artifact, use the standard `release` build.
 
+### Developer build: experimental WFA backend
+
+The optional [wavefront-alignment (WFA)](parameters.md#experimental-wfa-alignment-backend)
+backend is **not part of the default build or the published crate**. It depends
+on `wfa2lib-rs` via a git dependency, which [crates.io does not accept](https://github.com/HPCBio/dada2-rs/issues/63),
+so it is gated behind an off-by-default `wfa` Cargo feature and is only available
+when building from a source checkout:
+
+```bash
+cargo build --release --features wfa
+```
+
+!!! note "Caveats"
+    - Requires **Rust 1.91+** (the WFA dependency's MSRV); the default build
+      targets a lower MSRV.
+    - Not available via `cargo install` / the crates.io release — it is a
+      source-checkout developer build only.
+    - Without this feature, selecting `--align-backend wfa2` errors at runtime
+      rather than silently falling back to Needleman-Wunsch.
+
+For iterating on a local `wfa2lib-rs` fork, uncomment the `[patch]` override in
+`Cargo.toml` (see [CONTRIBUTING.md](https://github.com/HPCBio/dada2-rs/blob/main/CONTRIBUTING.md)).
+
 ## Task runners (`just` / `make`)
 
 Common build, test, and install tasks are wrapped by a `justfile` and an

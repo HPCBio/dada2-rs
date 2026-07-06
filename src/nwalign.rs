@@ -1079,15 +1079,21 @@ pub fn align_vectorized_with_buf(
 // byte equality and its EOS sentinels (`b'!'`=33, `b'?'`=63) never collide with
 // 1..=5, so no ASCII round-trip is needed.
 
+#[cfg(feature = "wfa")]
 use std::cell::RefCell;
+#[cfg(feature = "wfa")]
 use std::sync::LazyLock;
+#[cfg(feature = "wfa")]
 use wfa2lib_rs::aligner::{AffineAligner, AlignStatus, AlignmentScope};
+#[cfg(feature = "wfa")]
 use wfa2lib_rs::heuristic::HeuristicStrategy;
+#[cfg(feature = "wfa")]
 use wfa2lib_rs::penalties::{AffinePenalties, WavefrontPenalties};
 
 /// Opt-in switch for the experimental WFA alignment backend (issue #49).
 /// Set `DADA2RS_ALIGN_BACKEND=wfa` to route the ends-free path through WFA.
 /// Read once at first alignment.
+#[cfg(feature = "wfa")]
 static USE_WFA_BACKEND: LazyLock<bool> = LazyLock::new(|| {
     std::env::var("DADA2RS_ALIGN_BACKEND")
         .map(|v| v.eq_ignore_ascii_case("wfa"))
@@ -1106,6 +1112,7 @@ static USE_WFA_BACKEND: LazyLock<bool> = LazyLock::new(|| {
 /// `0` / unset disables the cap (`i32::MAX`). The value is a WFA *cost*, not an
 /// edit count: with default scoring an indel costs `-gap_p` (8) and a mismatch
 /// `-mismatch` (4), so e.g. a 40-edit budget ≈ 320.
+#[cfg(feature = "wfa")]
 static WFA_MAX_STEPS: LazyLock<i32> = LazyLock::new(|| {
     std::env::var("DADA2RS_WFA_MAX_STEPS")
         .ok()
@@ -1152,6 +1159,7 @@ pub fn backend_repr(p: &AlignParams) -> String {
 /// Op semantics (from `Cigar::check_alignment`): `M`/`X` consume one base from
 /// each strand; `I` advances the text only (gap in pattern → `al0`); `D`
 /// advances the pattern only (gap in text → `al1`).
+#[cfg(feature = "wfa")]
 #[allow(dead_code)]
 fn cigar_to_alignment_into(ops: &[u8], s1: &[u8], s2: &[u8], al0: &mut Vec<u8>, al1: &mut Vec<u8>) {
     al0.clear();
@@ -1196,6 +1204,7 @@ fn cigar_to_alignment_into(ops: &[u8], s1: &[u8], s2: &[u8], al0: &mut Vec<u8>, 
 /// A per-thread `AffineAligner` is cached and reused across calls so wfa2lib-rs
 /// reaches its zero-alloc steady state; it is rebuilt only when the scoring or
 /// band changes (both constant within a run).
+#[cfg(feature = "wfa")]
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub fn align_wfa_endsfree_with_buf(
@@ -1284,6 +1293,31 @@ pub fn align_wfa_endsfree_with_buf(
         let ops = aligner.cigar().operations_slice();
         cigar_to_alignment_into(ops, s1, s2, &mut buf.al0, &mut buf.al1);
     });
+}
+
+/// NW-only build stub for the WFA backend (issue #63). The experimental WFA
+/// backend is compiled only under `--features wfa` (it pulls in the git
+/// `wfa2lib-rs` dependency, which cannot ship on crates.io). Selecting
+/// `--align-backend wfa2` in a default build reaches this stub and aborts with a
+/// clear message rather than silently falling back to NW.
+#[cfg(not(feature = "wfa"))]
+#[allow(clippy::too_many_arguments)]
+pub fn align_wfa_endsfree_with_buf(
+    _s1: &[u8],
+    _s2: &[u8],
+    _match_score: i32,
+    _mismatch: i32,
+    _gap_p: i32,
+    _band: i32,
+    _max_steps: i32,
+    _buf: &mut AlignBuffers,
+) {
+    panic!(
+        "the WFA alignment backend (--align-backend wfa2) is not available in \
+         this build: dada2-rs was compiled without the experimental `wfa` \
+         feature. Rebuild from source with `cargo build --features wfa` to \
+         enable it (see issue #63)."
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1442,7 +1476,24 @@ pub fn raw_align_with_buf(
     // cap does NOT fix this (these are low-edit pairs that finish under budget);
     // it only bounds the divergent-pair cost. Tracked for the fork's ends-free
     // handling — see project_wfa_dependency_wfa2lib_rs.
+    #[cfg(feature = "wfa")]
     if (p.backend == AlignBackend::Wfa2 || *USE_WFA_BACKEND) && !use_homo {
+        align_wfa_endsfree_with_buf(
+            &raw1.seq,
+            &raw2.seq,
+            p.match_score,
+            p.mismatch,
+            p.gap_p,
+            p.band,
+            wfa_cost_cap(p.wfa_max_edits, p.gap_p),
+            buf,
+        );
+        return Some(());
+    }
+    // NW-only build: WFA code is not compiled (issue #63). Selecting the WFA
+    // backend aborts via the stub rather than silently aligning with NW.
+    #[cfg(not(feature = "wfa"))]
+    if p.backend == AlignBackend::Wfa2 && !use_homo {
         align_wfa_endsfree_with_buf(
             &raw1.seq,
             &raw2.seq,
@@ -1536,6 +1587,7 @@ mod bench_align {
     ///   cargo test --release -- --ignored bench_wfa_long --nocapture
     #[test]
     #[ignore]
+    #[cfg(feature = "wfa")]
     fn bench_wfa_long() {
         use std::time::Instant;
         use wfa2lib_rs::aligner::{AffineAligner, AlignmentScope};
@@ -1700,6 +1752,7 @@ mod bench_align {
     ///   cargo test --release -- --ignored bench_wfa_divergence --nocapture
     #[test]
     #[ignore]
+    #[cfg(feature = "wfa")]
     fn bench_wfa_divergence() {
         use std::time::Instant;
         use wfa2lib_rs::aligner::{AffineAligner, AlignmentScope};
@@ -1991,6 +2044,7 @@ mod tests {
     }
 
     /// Assert the WFA backend produces the same optimal score as `align_endsfree`.
+    #[cfg(feature = "wfa")]
     fn compare_wfa(s1: &[u8], s2: &[u8], label: &str) {
         let ef = align_endsfree(s1, s2, MATCH, MM, GAP, BAND);
         let mut buf = AlignBuffers::new();
@@ -2009,12 +2063,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wfa")]
     fn test_wfa_vs_endsfree_identical() {
         let s = encode("ACGTACGTACGT");
         compare_wfa(&s, &s, "identical-short");
     }
 
     #[test]
+    #[cfg(feature = "wfa")]
     fn test_wfa_vs_endsfree_one_sub() {
         let s1 = encode("ACGTACGTACGT");
         let s2 = encode("ACGTTCGTACGT");
@@ -2022,6 +2078,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wfa")]
     fn test_wfa_vs_endsfree_one_gap() {
         let s1 = encode("ACGTACGTACGT");
         let s2 = encode("ACGACGTACGT");
@@ -2029,6 +2086,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wfa")]
     fn test_wfa_vs_endsfree_different_lengths() {
         let s1 = encode("ACGTACGTACGT");
         let s2 = encode("ACGTACGTACGTAC");
@@ -2041,6 +2099,7 @@ mod tests {
     /// gaps penalised) of an ends-free alignment — the unit `--wfa-max-edits` is
     /// converted into via [`wfa_cost_cap`]. Lets a test assert a pair genuinely
     /// exceeds (or sits under) a cap, so the NW-fallback checks aren't vacuous.
+    #[cfg(feature = "wfa")]
     fn wfa_edit_cost(al: &[Vec<u8>; 2]) -> i32 {
         let (al0, al1) = (&al[0], &al[1]);
         let mut cost = 0;
@@ -2063,6 +2122,7 @@ mod tests {
         cost
     }
 
+    #[cfg(feature = "wfa")]
     fn nw_vectorized(s1: &[u8], s2: &[u8]) -> [Vec<u8>; 2] {
         align_vectorized(
             s1,
@@ -2080,6 +2140,7 @@ mod tests {
     /// When a pair's alignment exceeds the edit budget, WFA aborts and the pair
     /// must fall back to the banded NW path — byte-identical to the NW backend.
     #[test]
+    #[cfg(feature = "wfa")]
     fn wfa_cap_triggers_nw_fallback_byte_identical() {
         // ~6 substitutions over 20 bp: cost 24 > the 2-edit (cost-16) budget.
         let s1 = encode("ACGTACGTACGTACGTACGT");
@@ -2104,6 +2165,7 @@ mod tests {
     /// A pair within budget must be untouched by the cap: a generous cap yields
     /// exactly the uncapped WFA alignment (i.e. the fallback did NOT fire).
     #[test]
+    #[cfg(feature = "wfa")]
     fn wfa_cap_within_budget_matches_uncapped() {
         let s1 = encode("ACGTACGTACGTACGT");
         let s2 = encode("ACGTACGTTCGTACGT"); // 1 substitution
@@ -2152,6 +2214,7 @@ mod tests {
     ///   cargo test --release --bins wfa_global_isolation -- --ignored --nocapture
     #[test]
     #[ignore]
+    #[cfg(feature = "wfa")]
     fn wfa_global_isolation() {
         use wfa2lib_rs::aligner::{AffineAligner, AlignmentScope};
         use wfa2lib_rs::penalties::{AffinePenalties, WavefrontPenalties};
@@ -2225,6 +2288,7 @@ mod tests {
     ///   cargo test --release --bins wfa_diagnose -- --ignored --nocapture
     #[test]
     #[ignore]
+    #[cfg(feature = "wfa")]
     fn wfa_diagnose() {
         let nts = [1u8, 2, 3, 4];
         let mut st: u64 = 0x1234_5678_9ABC_DEF0;
@@ -2292,6 +2356,7 @@ mod tests {
     /// WFA/fork change makes WFA optimal here, this test will fail loudly and
     /// should be updated to assert equality (i.e. the divergence is fixed).
     #[test]
+    #[cfg(feature = "wfa")]
     fn wfa_endsfree_known_divergence() {
         // 52 nt; s2 = s1[1..] (leading base removed) — a single deletion.
         let s1 = encode("AACAGCGCAAACCAACTCGCTAGCTAGCAAAATCTTGTGTTTCTGCCTAGCG");
@@ -2329,6 +2394,7 @@ mod tests {
     ///   cargo test --release -- --ignored sweep_wfa_parity --nocapture
     #[test]
     #[ignore]
+    #[cfg(feature = "wfa")]
     fn sweep_wfa_parity() {
         let nts = [1u8, 2, 3, 4];
         let mut st: u64 = 0x1234_5678_9ABC_DEF0;

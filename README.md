@@ -34,6 +34,7 @@ Rust ports of:
     differences
   - Experimental sub-sampling function for input FASTQ (`sample`) and related error model function (`errors-from-sample`) that mirrors `learn-errors` (can be used for bootstrapping)
   - Intermediate outputs (in JSON) - can be evaluated for debugging purposes or for plotting in R, Python, etc.
+  - Experimental [wavefront-alignment (WFA) backend](docs/parameters.md#experimental-wfa-alignment-backend) (`--align-backend wfa2`), a developer build gated behind `--features wfa` (not in the published crate)
   - Dedicated Docker builds available
 - In progress
   - Summary FASTQ metrics and plots

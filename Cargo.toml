@@ -30,7 +30,19 @@ libc = "0.2"
 # = false avoids its `mimalloc-alloc` default, which would install a global
 # allocator into this crate. Pinned to a SHA on the public HPCBio fork so CI can
 # fetch it; for local fork iteration uncomment the [patch] override below.
-wfa2lib-rs = { git = "https://github.com/HPCBio/wfa2lib-rs", rev = "4cfeda86a3e1", default-features = false }
+#
+# `optional = true` + the `wfa` feature below keep this out of the default build.
+# NOTE: crates.io rejects git dependencies even when optional, so this line must
+# be removed/commented for a `cargo publish` of the NW-only crate; enabling WFA is
+# a source-checkout developer build (`--features wfa`). See issue #63.
+wfa2lib-rs = { git = "https://github.com/HPCBio/wfa2lib-rs", rev = "4cfeda86a3e1", default-features = false, optional = true }
+
+[features]
+# Experimental wavefront-alignment (WFA) backend (issues #49/#51/#63). Off by
+# default; enabling it pulls in the git `wfa2lib-rs` dependency and compiles the
+# WFA code paths in `nwalign.rs`. Without it, `--align-backend wfa2` errors at
+# runtime and the published crate is Needleman-Wunsch only.
+wfa = ["dep:wfa2lib-rs"]
 
 [dev-dependencies]
 serde_json = "1"
@@ -51,3 +63,10 @@ serde_json = "1"
 inherits = "release"
 lto = "thin"
 codegen-units = 1
+
+# Local WFA fork iteration (developer builds only; see CONTRIBUTING.md and issue
+# #63). Uncomment and point `path` at a `wfa2lib-rs` checkout to build the `wfa`
+# feature against local changes instead of the pinned git SHA above.
+#
+# [patch."https://github.com/HPCBio/wfa2lib-rs"]
+# wfa2lib-rs = { path = "../wfa2lib-rs" }
