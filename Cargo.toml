@@ -63,3 +63,10 @@ serde_json = "1"
 inherits = "release"
 lto = "thin"
 codegen-units = 1
+
+# Local WFA fork iteration (developer builds only; see CONTRIBUTING.md and issue
+# #63). Uncomment and point `path` at a `wfa2lib-rs` checkout to build the `wfa`
+# feature against local changes instead of the pinned git SHA above.
+#
+# [patch."https://github.com/HPCBio/wfa2lib-rs"]
+# wfa2lib-rs = { path = "../wfa2lib-rs" }

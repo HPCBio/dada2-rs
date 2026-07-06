@@ -251,6 +251,8 @@ pub enum Commands {
         /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
         /// is the experimental WFA backend (wfa2lib-rs) — ASV-equivalent on tested
         /// Illumina and PacBio HiFi data, but alignments are not byte-identical.
+        /// `wfa2` requires a build with `--features wfa`; a default build (and the
+        /// published crate) errors when it is selected. See issue #63.
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
@@ -464,6 +466,8 @@ pub enum Commands {
         /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
         /// is the experimental WFA backend (wfa2lib-rs) — ASV-equivalent on tested
         /// Illumina and PacBio HiFi data, but alignments are not byte-identical.
+        /// `wfa2` requires a build with `--features wfa`; a default build (and the
+        /// published crate) errors when it is selected. See issue #63.
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
@@ -658,6 +662,8 @@ pub enum Commands {
         /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
         /// is the experimental WFA backend (wfa2lib-rs) — ASV-equivalent on tested
         /// Illumina and PacBio HiFi data, but alignments are not byte-identical.
+        /// `wfa2` requires a build with `--features wfa`; a default build (and the
+        /// published crate) errors when it is selected. See issue #63.
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
@@ -1172,6 +1178,8 @@ pub enum Commands {
         /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
         /// is the experimental WFA backend (wfa2lib-rs) — ASV-equivalent on tested
         /// Illumina and PacBio HiFi data, but alignments are not byte-identical.
+        /// `wfa2` requires a build with `--features wfa`; a default build (and the
+        /// published crate) errors when it is selected. See issue #63.
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
@@ -1708,6 +1716,8 @@ pub enum Commands {
         /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
         /// is the experimental WFA backend (wfa2lib-rs) — ASV-equivalent on tested
         /// Illumina and PacBio HiFi data, but alignments are not byte-identical.
+        /// `wfa2` requires a build with `--features wfa`; a default build (and the
+        /// published crate) errors when it is selected. See issue #63.
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
@@ -1997,6 +2007,8 @@ pub enum Commands {
         /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
         /// is the experimental WFA backend (wfa2lib-rs) — ASV-equivalent on tested
         /// Illumina and PacBio HiFi data, but alignments are not byte-identical.
+        /// `wfa2` requires a build with `--features wfa`; a default build (and the
+        /// published crate) errors when it is selected. See issue #63.
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 

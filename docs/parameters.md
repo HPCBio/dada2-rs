@@ -70,3 +70,29 @@ matching R's `removeBimeraDenovo` (which respects the global `GAP_PENALTY`).
 runs trade memory for speed (e.g. `k = 7`); see the
 [PacBio walkthrough](walkthrough-pacbio.md). This is the one place dada2-rs goes
 *beyond* R's parameter surface.
+
+## Experimental: WFA alignment backend
+
+!!! warning "Experimental — developer build only"
+    These flags require a source build with `--features wfa` (see
+    [Installation](installation.md#developer-build-experimental-wfa-backend)).
+    A default build — and the published crate — is Needleman-Wunsch only and
+    **errors** if `--align-backend wfa2` is selected. Tracked in
+    [issue #63](https://github.com/HPCBio/dada2-rs/issues/63).
+
+dada2-rs can optionally route the ends-free alignment through a
+[wavefront-alignment](https://github.com/smarco/WFA2-lib) (WFA) backend instead
+of Needleman-Wunsch. It is **ASV-equivalent** to NW on the tested Illumina and
+PacBio HiFi datasets, but the per-pair alignments are *not* byte-identical to NW
+(a known upstream ends-free crediting difference).
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--align-backend` | `nw` | Alignment backend: `nw` (Needleman-Wunsch) or `wfa2` (experimental WFA). |
+| `--wfa-max-edits` | `50` | WFA edit-budget cap (issue #51). A pair needing more than this many edits aborts WFA and falls back to the banded NW path (NW-identical for that pair), bounding WFA's cost on divergent pairs that slip past the k-mer screen. `0` = unbounded; ignored for the `nw` backend. |
+
+The edit budget is an absolute edit count, not a fraction of read length:
+denoising only aligns near-identical reads (~99.9% identity), so real
+error-copies stay a few edits apart regardless of read length. See
+[issues #49 and #51](https://github.com/HPCBio/dada2-rs/issues/51) for the
+performance rationale and parity analysis.

@@ -24,6 +24,27 @@ cargo test
 4. Run `cargo test` and `cargo clippy` before submitting.
 5. Open a pull request against `main` with a clear description of what changed and why.
 
+## Experimental WFA backend (developer builds)
+
+The experimental wavefront-alignment backend is gated behind an off-by-default
+`wfa` Cargo feature because it depends on `wfa2lib-rs` via a git dependency,
+which cannot ship on crates.io (see [issue #63](https://github.com/HPCBio/dada2-rs/issues/63)).
+Build and test it from a source checkout with:
+
+```bash
+cargo build --features wfa
+cargo test  --features wfa
+```
+
+The default (feature-off) build is Needleman-Wunsch only and must keep compiling
+and passing its tests; the WFA code paths, statics, and tests in `src/nwalign.rs`
+are all behind `#[cfg(feature = "wfa")]`. When touching alignment code, run the
+test suite **both** with and without `--features wfa`.
+
+To iterate against a local `wfa2lib-rs` fork rather than the pinned git SHA,
+uncomment the `[patch]` override noted in `Cargo.toml` and point it at your
+checkout.
+
 ## Algorithmic fidelity
 
 The primary goal of this project is a faithful port of R DADA2. When in doubt, behaviour should match the R reference implementation. If you find a divergence, please open an issue with a minimal reproducible example — per-raw p-value traces (via `DADA2_TRACE_PVAL`) are often useful for narrowing down where the outputs diverge.
