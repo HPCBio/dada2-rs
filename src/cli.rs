@@ -81,6 +81,54 @@ pub enum Commands {
         /// used when `--expected-error` is set.
         #[arg(long, default_value_t = 200)]
         ee_bins: usize,
+
+        /// Maximum number of distinct quality values for the data to be judged
+        /// "binned" (NovaSeq/NextSeq collapse Phred to a handful of levels).
+        /// Continuous Illumina/HiFi data has dozens of distinct values.
+        #[arg(long, default_value_t = 8)]
+        binned_threshold: usize,
+
+        /// Also print a human-readable metrics report to stderr (total
+        /// sequences, quality/EE ranges, whether quality scores are binned and
+        /// their levels). Stdout stays clean JSON for piping.
+        #[arg(long)]
+        report: bool,
+    },
+
+    /// Merge per-sample `summary` JSONs into a run-level quality/binning report
+    ///
+    /// Unions the observed quality-value distribution across all samples so rare
+    /// bins missed by any single low-count sample (e.g. a seldom-called Q2) are
+    /// recovered at the run level. Optionally validates the run against a
+    /// user-declared bin scheme via `--expected-bins`.
+    SummaryMerge {
+        /// Per-sample `summary` JSON files (gzip ok; `-` reads stdin).
+        inputs: Vec<PathBuf>,
+
+        /// Write JSON output to this file instead of stdout.
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+
+        /// Output compact (minified) JSON instead of pretty-printed.
+        #[arg(long)]
+        compact: bool,
+
+        /// Maximum number of distinct quality values for the run to be judged
+        /// "binned". Matches the `summary` default.
+        #[arg(long, default_value_t = 8)]
+        binned_threshold: usize,
+
+        /// Also print a human-readable run-level report to stderr. Stdout stays
+        /// clean JSON for piping.
+        #[arg(long)]
+        report: bool,
+
+        /// Declared bin levels to validate the run against, e.g. `2,12,24,40`.
+        /// When set, observed ⊆ expected is "consistent"; any observed value
+        /// outside the declared set is a violation (a wrong or silently changed
+        /// scheme). Declared-but-unobserved bins are reported as informational.
+        #[arg(long, value_delimiter = ',')]
+        expected_bins: Vec<u8>,
     },
 
     /// Dereplicate sequences from a FASTQ file

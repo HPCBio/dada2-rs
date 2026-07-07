@@ -91,6 +91,13 @@ fn seq_complexity(seq: &[u8], k: usize) -> f64 {
     h.exp()
 }
 
+/// Whether a quality-value distribution with `distinct_len` distinct levels is
+/// judged "binned": 2..=`binned_threshold` distinct levels. Shared by the
+/// per-sample `summary` and the run-level `summary-merge` so both use one rule.
+pub fn judge_binned(distinct_len: usize, binned_threshold: usize) -> bool {
+    distinct_len >= 2 && distinct_len <= binned_threshold
+}
+
 pub struct QualitySummary {
     pub total_reads: u64,
     sums: Vec<f64>,
@@ -278,6 +285,47 @@ impl QualitySummary {
         (max_q, trimmed)
     }
 
+    /// Distinct quality values observed anywhere in the file, ascending, each
+    /// with its total read-base count summed over all positions. Derived from
+    /// the per-position histogram — no extra pass over the reads.
+    pub fn quality_value_counts(&self) -> Vec<(u8, u64)> {
+        let mut totals = [0u64; MAX_QUAL + 1];
+        for row in &self.hist {
+            for (q, &n) in row.iter().enumerate() {
+                totals[q] += n;
+            }
+        }
+        totals
+            .iter()
+            .enumerate()
+            .filter(|&(_, &n)| n > 0)
+            .map(|(q, &n)| (q as u8, n))
+            .collect()
+    }
+
+    /// Summary of the quality-value distribution used to judge whether the
+    /// data is binned. `binned_threshold` is the maximum number of distinct Q
+    /// values for the data to be judged binned (real binned schemes have 2–8
+    /// levels; continuous Illumina/HiFi data has dozens). The full distinct set
+    /// and counts are always returned so borderline cases can be judged by eye.
+    pub fn quality_metrics(&self, binned_threshold: usize) -> QualityMetrics {
+        let counts = self.quality_value_counts();
+        let distinct: Vec<u8> = counts.iter().map(|&(q, _)| q).collect();
+        let value_counts: Vec<u64> = counts.iter().map(|&(_, n)| n).collect();
+        let min_quality = distinct.first().copied().unwrap_or(0);
+        let max_quality = distinct.last().copied().unwrap_or(0);
+        let is_binned = judge_binned(distinct.len(), binned_threshold);
+        let binned_scores = is_binned.then(|| distinct.clone());
+        QualityMetrics {
+            distinct_quality_values: distinct,
+            quality_value_counts: value_counts,
+            min_quality,
+            max_quality,
+            is_binned,
+            binned_scores,
+        }
+    }
+
     /// The per-read complexity histogram, if it was requested.
     /// Returns `(kmer_size, bins, counts)` where `counts[bin]` covers the
     /// effective-k-mer-count range `[bin, bin+1) · 4^kmer_size / bins`.
@@ -339,6 +387,21 @@ impl QualitySummary {
         }
         Self::ee_bin_center(bins - 1, bins)
     }
+}
+
+/// Summary of the quality-value distribution (see `quality_metrics`), used to
+/// answer whether a FASTQ's quality scores are binned and to what levels.
+pub struct QualityMetrics {
+    /// Distinct Q values observed anywhere in the file, ascending.
+    pub distinct_quality_values: Vec<u8>,
+    /// Total read-base count for each distinct value (parallel to above).
+    pub quality_value_counts: Vec<u64>,
+    pub min_quality: u8,
+    pub max_quality: u8,
+    /// True when the number of distinct Q values is small enough to be binned.
+    pub is_binned: bool,
+    /// The bin levels (the distinct set) when `is_binned`, else `None`.
+    pub binned_scores: Option<Vec<u8>>,
 }
 
 /// Per-position cumulative expected-error metrics (see `expected_error_metrics`).
@@ -454,6 +517,56 @@ mod tests {
         // Cumulative is monotonic non-decreasing within the max curve.
         assert!(m.max[3] >= m.max[0]);
         assert!((m.max[3] - 0.4).abs() < 1e-12);
+    }
+
+    /// Phred+33 char for a given Q value.
+    fn qchar(q: u8) -> u8 {
+        q + 33
+    }
+
+    #[test]
+    fn judge_binned_rule() {
+        assert!(!judge_binned(0, 8)); // no data
+        assert!(!judge_binned(1, 8)); // constant quality — not binned
+        assert!(judge_binned(2, 8));
+        assert!(judge_binned(8, 8));
+        assert!(!judge_binned(9, 8)); // above threshold — continuous
+    }
+
+    #[test]
+    fn binned_data_detected() {
+        let mut s = QualitySummary::with_config(SummaryConfig::default());
+        // Only four distinct quality levels, NovaSeq-style {2,12,23,37}.
+        let quals = [qchar(2), qchar(12), qchar(23), qchar(37)];
+        s.add_record(b"ACGT", &quals, 33);
+        s.add_record(b"ACGT", &[qchar(37), qchar(37), qchar(2), qchar(12)], 33);
+        let m = s.quality_metrics(8);
+        assert!(m.is_binned);
+        assert_eq!(m.distinct_quality_values, vec![2, 12, 23, 37]);
+        assert_eq!(m.binned_scores, Some(vec![2, 12, 23, 37]));
+        assert_eq!(m.min_quality, 2);
+        assert_eq!(m.max_quality, 37);
+    }
+
+    #[test]
+    fn continuous_data_not_binned() {
+        let mut s = QualitySummary::with_config(SummaryConfig::default());
+        // Ten distinct quality levels — above the default threshold of 8.
+        let quals: Vec<u8> = (20u8..30).map(qchar).collect();
+        s.add_record(&vec![b'A'; quals.len()], &quals, 33);
+        let m = s.quality_metrics(8);
+        assert!(!m.is_binned);
+        assert_eq!(m.binned_scores, None);
+        assert_eq!(m.distinct_quality_values.len(), 10);
+    }
+
+    #[test]
+    fn quality_value_counts_sum_matches_total_bases() {
+        let mut s = QualitySummary::with_config(SummaryConfig::default());
+        s.add_record(b"ACGT", &[qchar(10), qchar(20), qchar(20), qchar(30)], 33);
+        s.add_record(b"AC", &[qchar(20), qchar(30)], 33);
+        let total_bases: u64 = s.quality_value_counts().iter().map(|&(_, n)| n).sum();
+        assert_eq!(total_bases, 6);
     }
 
     #[test]
