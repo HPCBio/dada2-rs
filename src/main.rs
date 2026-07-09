@@ -6,32 +6,13 @@ use flate2::read::MultiGzDecoder;
 use rand::seq::SliceRandom as _;
 use rayon::prelude::*;
 
-mod chimera;
-mod chimera_diagnostics;
-mod cli;
-mod cluster;
-mod cluster_trace;
-mod containers;
-mod dada;
-mod derep;
-mod error;
-mod error_models;
-mod evaluate;
-mod failed_uniques;
-mod filter;
-mod filter_trim;
-mod kdist_calibrate;
-mod kmers;
-mod learn_errors;
-mod merge_pairs;
-mod misc;
-mod nwalign;
-mod pval;
-mod remove_bimera;
-mod remove_primers;
-mod sequence_table;
-mod summary;
-mod taxonomy;
+// The module tree lives in the `dada2_rs` library crate (src/lib.rs); bring the
+// modules this binary uses into scope so the existing `foo::Bar` paths resolve.
+use dada2_rs::{
+    chimera_diagnostics, cli, cluster_trace, containers, dada, derep, error_models, failed_uniques,
+    filter_trim, kdist_calibrate, learn_errors, merge_pairs, misc, nwalign, remove_bimera,
+    remove_primers, sequence_table, summary, taxonomy,
+};
 
 use clap::CommandFactory;
 use cli::{Cli, Commands};
@@ -56,8 +37,8 @@ use taxonomy::{
     assign_taxonomy,
 };
 
-use crate::error_models::{LoessConfig, LoessSurface};
-use crate::misc::WithPath;
+use error_models::{LoessConfig, LoessSurface};
+use misc::WithPath;
 
 /// Default WFA edit-budget cap (issue #51), in edit operations, used when the
 /// experimental `--align-backend wfa2` is selected without an explicit
