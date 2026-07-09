@@ -11,8 +11,8 @@ use rayon::prelude::*;
 
 use crate::nwalign::{
     AlignBackend, AlignBuffers, VectorizedAlignScores, align_vectorized_with_buf,
-    align_wfa_endsfree_with_buf, wfa_cost_cap,
 };
+use crate::wfa::{align_wfa_endsfree_with_buf, wfa_cost_cap};
 
 /// Align `sq` against `par` (ends-free) into `buf`, dispatching on `backend`.
 /// `Nw` uses the vectorized NW; `Wfa2` the experimental WFA backend. WFA takes
