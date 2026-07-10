@@ -2243,8 +2243,11 @@ pub enum Commands {
         #[arg(long)]
         from_dada: bool,
 
-        /// With --from-dada: directory holding the derep JSONs that fed `dada`
-        /// (matched to each output by `sample` name → `{sample}.json[.gz]`).
+        /// With --from-dada: directory holding the derep JSONs that fed `dada`.
+        /// Matched to each output by sample name: an exact `{sample}.json[.gz]`
+        /// first, else a `{sample}.*.json[.gz]` file (e.g. a pipeline-renamed
+        /// `{sample}.derep.R1.json.gz`); ambiguous prefixes are resolved by the
+        /// derep JSON's own `sample` field.
         #[arg(long)]
         derep_dir: Option<PathBuf>,
 

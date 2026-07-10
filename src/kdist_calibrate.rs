@@ -45,8 +45,10 @@ pub struct Params {
     /// paired with its derep JSON (from `derep_dir`) so every input unique can be
     /// labelled by what denoising did to it (center / member / failed).
     pub from_dada: bool,
-    /// Directory holding the derep JSONs that fed `dada` (matched by `sample`
-    /// name → `{sample}.json` / `.json.gz`). Required with `from_dada`.
+    /// Directory holding the derep JSONs that fed `dada`. Matched to each dada
+    /// output by sample name: an exact `{sample}.json[.gz]` first, else a
+    /// `{sample}.*.json[.gz]` file (pipeline-renamed dereps, issue #72).
+    /// Required with `from_dada`.
     pub derep_dir: Option<PathBuf>,
     pub threads: usize,
     pub seed: u64,
@@ -227,6 +229,102 @@ fn load_derep_aligned(path: &Path) -> io::Result<(Vec<Vec<u8>>, Vec<u64>)> {
     Ok(seqs.into_iter().unzip())
 }
 
+/// Read just the `sample` field of a derep JSON (gzip-transparent), for
+/// disambiguating candidates. Returns `None` if unreadable or absent.
+fn derep_sample_name(path: &Path) -> Option<String> {
+    let f = File::open(path).ok()?;
+    let reader: Box<dyn Read> = if path.extension().and_then(|e| e.to_str()) == Some("gz") {
+        Box::new(MultiGzDecoder::new(f))
+    } else {
+        Box::new(f)
+    };
+    let v: serde_json::Value = serde_json::from_reader(io::BufReader::new(reader)).ok()?;
+    v.get("sample").and_then(|s| s.as_str()).map(str::to_string)
+}
+
+/// Resolve the derep JSON for sample `name` inside `derep_dir`.
+///
+/// `dada-pooled` names its per-sample outputs by the internal sample name, but
+/// derep inputs are commonly renamed by the pipeline (e.g. an `S1` sample whose
+/// derep is `S1.derep.R1.json.gz`), so an exact `{name}.json[.gz]` match is not
+/// guaranteed (issue #72). Resolution order:
+///   1. exact `{name}.json` / `{name}.json.gz` (fast, backward compatible);
+///   2. otherwise scan the directory for `*.json` / `*.json.gz` whose leading
+///      dot-delimited component equals `name`; if exactly one matches use it,
+///      and if several do (e.g. R1 and R2 in the same dir) disambiguate by the
+///      derep JSON's own `sample` field.
+fn find_derep_for_sample(derep_dir: &Path, name: &str) -> io::Result<PathBuf> {
+    // 1. Exact match — cheapest, preserves prior behaviour.
+    for cand in [
+        derep_dir.join(format!("{name}.json")),
+        derep_dir.join(format!("{name}.json.gz")),
+    ] {
+        if cand.exists() {
+            return Ok(cand);
+        }
+    }
+
+    // 2. Glob-like scan for `{name}.*.json[.gz]`.
+    let mut matches: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(derep_dir).with_path(derep_dir)? {
+        let path = entry?.path();
+        let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(stem) = fname
+            .strip_suffix(".json.gz")
+            .or_else(|| fname.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        // Whole stem, or its leading dot-component (`S1.derep.R1` → `S1`). Exact
+        // component equality avoids `S188` matching an `S1888` file.
+        if stem == name || stem.split('.').next() == Some(name) {
+            matches.push(path);
+        }
+    }
+
+    match matches.len() {
+        0 => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "no derep JSON for sample `{name}` in {}",
+                derep_dir.display()
+            ),
+        )),
+        1 => Ok(matches.pop().unwrap()),
+        _ => {
+            // Several filenames share the prefix (e.g. R1/R2 in one dir):
+            // fall back to the authoritative internal `sample` field.
+            let mut exact: Vec<PathBuf> = matches
+                .iter()
+                .filter(|p| derep_sample_name(p).as_deref() == Some(name))
+                .cloned()
+                .collect();
+            match exact.len() {
+                1 => Ok(exact.pop().unwrap()),
+                0 => Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "no derep JSON whose `sample` is `{name}` among {} name-prefixed \
+                         candidate(s) in {} (checked each file's internal `sample` field)",
+                        matches.len(),
+                        derep_dir.display()
+                    ),
+                )),
+                n => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "ambiguous derep JSON for sample `{name}` in {}: {n} files declare \
+                         `sample = {name}`",
+                        derep_dir.display()
+                    ),
+                )),
+            }
+        }
+    }
+}
+
 /// Load a `dada` output JSON and pair it with its derep input from `derep_dir`.
 fn load_dada(dada_path: &Path, derep_dir: &Path, k: usize) -> io::Result<DadaSample> {
     let f = File::open(dada_path).with_path(dada_path)?;
@@ -280,23 +378,9 @@ fn load_dada(dada_path: &Path, derep_dir: &Path, k: usize) -> io::Result<DadaSam
         .map(|e| e.as_u64().map(|u| u as usize))
         .collect();
 
-    // Locate and load the matching derep input (sample.json[.gz]).
-    let derep_path = [
-        derep_dir.join(format!("{name}.json")),
-        derep_dir.join(format!("{name}.json.gz")),
-    ]
-    .into_iter()
-    .find(|p| p.exists())
-    .ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "{}: no derep JSON for sample `{name}` in {}",
-                dada_path.display(),
-                derep_dir.display()
-            ),
-        )
-    })?;
+    // Locate and load the matching derep input.
+    let derep_path = find_derep_for_sample(derep_dir, &name)
+        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", dada_path.display())))?;
     let (enc, counts) = load_derep_aligned(&derep_path)?;
     if enc.len() != map.len() {
         return Err(io::Error::new(
@@ -829,4 +913,85 @@ fn nearest_parent_mode(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_derep_for_sample;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    /// Self-cleaning scratch dir.
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new(tag: &str) -> Self {
+            static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let d = std::env::temp_dir()
+                .join(format!("dada2rs_kdist_{tag}_{}_{n}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            TmpDir(d)
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn touch(dir: &std::path::Path, name: &str) {
+        std::fs::File::create(dir.join(name)).unwrap();
+    }
+
+    /// Write a plain-JSON derep with an explicit internal `sample` field.
+    fn write_derep(dir: &std::path::Path, name: &str, sample: &str) {
+        let mut f = std::fs::File::create(dir.join(name)).unwrap();
+        write!(f, r#"{{"sample":"{sample}","uniques":[]}}"#).unwrap();
+    }
+
+    #[test]
+    fn exact_match_preferred() {
+        let d = TmpDir::new("exact");
+        touch(&d.0, "F3D0.json");
+        touch(&d.0, "F3D0.derep.R1.json.gz"); // also present; exact wins
+        let got = find_derep_for_sample(&d.0, "F3D0").unwrap();
+        assert_eq!(got.file_name().unwrap(), "F3D0.json");
+    }
+
+    #[test]
+    fn infix_and_gzip_name_resolves() {
+        // The issue #72 case: only a renamed, gzipped derep exists.
+        let d = TmpDir::new("infix");
+        touch(&d.0, "F3D0_S188.derep.R1.json.gz");
+        let got = find_derep_for_sample(&d.0, "F3D0_S188").unwrap();
+        assert_eq!(got.file_name().unwrap(), "F3D0_S188.derep.R1.json.gz");
+    }
+
+    #[test]
+    fn prefix_component_is_exact_not_substring() {
+        // `S188` must not match an `S1888` file.
+        let d = TmpDir::new("prefix");
+        touch(&d.0, "F3D0_S1888.derep.R1.json.gz");
+        assert!(find_derep_for_sample(&d.0, "F3D0_S188").is_err());
+    }
+
+    #[test]
+    fn missing_is_not_found() {
+        let d = TmpDir::new("missing");
+        touch(&d.0, "other.json");
+        let e = find_derep_for_sample(&d.0, "F3D0").unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn multiple_candidates_disambiguated_by_sample_field() {
+        // R1 and R2 share the `F3D0` prefix in one dir; the internal `sample`
+        // field picks the right one.
+        let d = TmpDir::new("multi");
+        write_derep(&d.0, "F3D0.derep.R1.json", "F3D0");
+        write_derep(&d.0, "F3D0.derep.R2.json", "F3D0_R2");
+        let got = find_derep_for_sample(&d.0, "F3D0").unwrap();
+        assert_eq!(got.file_name().unwrap(), "F3D0.derep.R1.json");
+    }
 }
