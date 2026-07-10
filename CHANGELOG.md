@@ -28,6 +28,11 @@ minor versions may carry breaking changes).
 - `learn-errors` and `errors-from-sample` now gzip-compress their output when
   the `-o` path ends in `.gz`, for consistency with the other JSON-emitting
   subcommands (previously the file was written uncompressed) (#71).
+- `kdist-calibrate --from-dada` now resolves derep inputs whose filenames were
+  renamed by the pipeline (e.g. `{sample}.derep.R1.json.gz`): it falls back from
+  the exact `{sample}.json[.gz]` match to a `{sample}.*.json[.gz]` scan,
+  disambiguating an ambiguous prefix by the derep JSON's own `sample` field
+  (#72).
 
 ### Changed
 - The experimental WFA backend is now gated behind an **off-by-default `wfa`
