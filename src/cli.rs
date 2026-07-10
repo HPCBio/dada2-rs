@@ -1865,27 +1865,46 @@ pub enum Commands {
         verbose: bool,
     },
 
-    /// Learn an error model from FASTQ files
+    /// Learn an error model from FASTQ or derep/sample JSON files
     ///
-    /// Reads one or more FASTQ files, dereplicates and subsamples them on the
-    /// fly up to `--nbases` total bases, then iteratively runs the DADA2
-    /// algorithm and re-fits the chosen error model until self-consistency.
+    /// Reads one or more FASTQ files (dereplicated on the fly) or pre-computed
+    /// derep/sample JSON files (`.json` / `.json.gz`, as written by the `derep`
+    /// and `sample` subcommands), subsamples them up to `--nbases` total bases,
+    /// then iteratively runs the DADA2 algorithm and re-fits the chosen error
+    /// model until self-consistency.
     ///
     /// Output is a JSON object with three flat 16 × nq matrices:
     ///   `trans`   — accumulated transition counts,
     ///   `err_in`  — error rates used in the final DADA run,
     ///   `err_out` — error rates estimated from `trans`.
+    ///
+    /// CAVEAT (cross-sample diversity): accumulation is *sample-level*. Files
+    /// are taken whole — in supplied order, or shuffled with `--randomize` — and
+    /// each contributes all of its bases until the running total reaches
+    /// `--nbases`. Reads are never subsampled *within* a file. With modern deep
+    /// runs a single sample can supply the entire `--nbases` budget (e.g. 400k
+    /// reads × 250 bp = 100M bases = the default budget), so the error model may
+    /// be learned from the diversity of just one or a few samples. `--randomize`
+    /// only shuffles which samples are drawn first; it does not guarantee
+    /// representation across the run. Raise `--nbases`, pass a hand-picked set
+    /// of inputs, or pre-`sample` each file to spread learning across samples.
+    /// (Tracking: issue #68 — cross-sample diversity in learn-errors.)
     #[command(display_order = 6)]
     LearnErrors {
-        /// One or more FASTQ files (.fastq, .fastq.gz, .fq, .fq.gz) to learn from
+        /// FASTQ (.fastq/.fastq.gz/.fq/.fq.gz) or derep/sample JSON
+        /// (.json/.json.gz) files to learn from
         #[arg(required = true)]
         input: Vec<PathBuf>,
 
-        /// Stop after accumulating at least this many total bases across input files
+        /// Stop after accumulating at least this many total bases across input
+        /// files. NOTE: accumulation is sample-level (whole files); a single
+        /// deep sample can fill the entire budget — see the command help.
         #[arg(long, default_value_t = 100_000_000)]
         nbases: u64,
 
-        /// Process input files in random order instead of the supplied order
+        /// Process input files in random order instead of the supplied order.
+        /// NOTE: shuffles sample ORDER only — does not subsample reads within a
+        /// sample, so it does not guarantee cross-sample diversity.
         #[arg(long)]
         randomize: bool,
 
