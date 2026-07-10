@@ -72,7 +72,7 @@ For the native (`-C target-cpu=native`) build and Docker, see
 | `derep` | Dereplicate a FASTQ file |
 | `sample` | Dereplicate and subsample FASTQ files, one JSON per sample |
 | `errors-from-sample` | Learn error model from derep JSON files |
-| `learn-errors` | Learn error model directly from FASTQ files |
+| `learn-errors` | Learn error model from FASTQ or derep/sample JSON files |
 | `dada` | Denoise a sample using a learned error model |
 | `merge-pairs` | Merge denoised forward and reverse reads |
 | `make-sequence-table` | Build a sample × sequence count table |

@@ -271,10 +271,65 @@ fn is_gz(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some("gz")
 }
 
-/// Dereplicate FASTQ files and return one `Vec<RawInput>` per sample.
+/// Load one `Vec<RawInput>` per sample from raw FASTQ (dereplicated on the fly)
+/// or from pre-dereplicated derep/sample JSON (`.json` / `.json.gz`), matching
+/// the input flexibility of the `dada` subcommand.
 ///
 /// Files are processed in order (or shuffled when `randomize` is true) and
 /// processing stops once the cumulative base count reaches `nbases`.
+/// True when `path` names a JSON file (`.json` or `.json.gz`), i.e. a
+/// pre-dereplicated derep/sample file rather than raw FASTQ.
+fn is_json_path(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    ext == "json"
+        || path
+            .file_stem()
+            .and_then(|s| Path::new(s).extension())
+            .and_then(|e| e.to_str())
+            == Some("json")
+}
+
+/// Flatten a dereplicated FASTQ into `RawInput`s (uniques carry per-position
+/// quality sums, matching the derep/sample JSON `qual_sum` representation).
+fn derep_to_inputs(derep: crate::derep::Derep) -> Vec<RawInput> {
+    derep
+        .uniques
+        .into_iter()
+        .enumerate()
+        .map(|(i, (seq, count))| RawInput {
+            seq: String::from_utf8(seq).unwrap_or_default(),
+            abundance: count as u32,
+            prior: false,
+            quals: Some(derep.quals[i].clone()),
+        })
+        .collect()
+}
+
+/// Load a single pre-dereplicated derep/sample JSON file as `RawInput`s,
+/// applying the same defensive abundance sort as [`load_derep_samples`].
+fn load_derep_json(path: &Path) -> io::Result<Vec<RawInput>> {
+    let sample: SampleJson = crate::misc::read_tagged_json(path, &["derep", "sample"])
+        .with_path(path)
+        .map_err(|e| {
+            io::Error::new(e.kind(), format!("failed to parse {}: {e}", path.display()))
+        })?;
+    let already_sorted = sample.sort_order.as_deref() == Some("abundance_desc");
+    let mut inputs: Vec<RawInput> = sample
+        .uniques
+        .into_iter()
+        .map(|u| RawInput {
+            quals: Some(u.qual_sum),
+            seq: u.sequence,
+            abundance: u.count as u32,
+            prior: false,
+        })
+        .collect();
+    if !already_sorted {
+        inputs.sort_by_key(|a| std::cmp::Reverse(a.abundance));
+    }
+    Ok(inputs)
+}
+
 pub fn load_fastq_samples(
     paths: &[PathBuf],
     nbases: u64,
@@ -299,34 +354,26 @@ pub fn load_fastq_samples(
     let mut total_bases: u64 = 0;
 
     for path in ordered {
-        let derep = if is_gz(path) {
-            dereplicate(
+        // Accept both raw FASTQ and pre-dereplicated derep/sample JSON, like the
+        // `dada` subcommand does. Without this, passing a `.derep.json.gz` here
+        // feeds JSON into the FASTQ parser and fails with "invalid name prefix".
+        let inputs: Vec<RawInput> = if is_json_path(path) {
+            load_derep_json(path)?
+        } else if is_gz(path) {
+            derep_to_inputs(dereplicate(
                 MultiGzDecoder::new(File::open(path)?),
                 phred_offset,
                 pool,
                 verbose,
-            )?
+            )?)
         } else {
-            dereplicate(File::open(path)?, phred_offset, pool, verbose)?
+            derep_to_inputs(dereplicate(File::open(path)?, phred_offset, pool, verbose)?)
         };
 
-        let file_bases: u64 = derep
-            .uniques
+        let file_bases: u64 = inputs
             .iter()
-            .map(|(seq, count)| seq.len() as u64 * count)
+            .map(|r| r.seq.len() as u64 * r.abundance as u64)
             .sum();
-
-        let inputs: Vec<RawInput> = derep
-            .uniques
-            .into_iter()
-            .enumerate()
-            .map(|(i, (seq, count))| RawInput {
-                seq: String::from_utf8(seq).unwrap_or_default(),
-                abundance: count as u32,
-                prior: false,
-                quals: Some(derep.quals[i].clone()),
-            })
-            .collect();
 
         if verbose {
             eprintln!(
@@ -952,5 +999,124 @@ mod tests {
         let json = serde_json::to_string(&src).unwrap();
         let back: LearnedErrParams = serde_json::from_str(&json).unwrap();
         assert_eq!(back.wfa_max_edits, 37);
+    }
+
+    // --- derep/sample JSON input to learn-errors (issue #68 groundwork) ------
+
+    fn unique_test_pool() -> rayon::ThreadPool {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+    }
+
+    /// A minimal derep JSON with two uniques written to `path`; if `path` ends
+    /// in `.gz` the content is gzip-compressed. `sort_order` is declared only
+    /// when `declare_sorted` is true, in which case uniques are listed
+    /// abundance-descending; otherwise they are listed ascending so a correct
+    /// loader must apply the defensive re-sort.
+    fn write_derep_json(path: &Path, declare_sorted: bool) {
+        use std::io::Write as _;
+        let big = serde_json::json!({
+            "sequence": "ACGTAC", "count": 5, "qual_sum": [150, 150, 150, 150, 150, 150]
+        });
+        let small = serde_json::json!({
+            "sequence": "TTGGCC", "count": 2, "qual_sum": [60, 60, 60, 60, 60, 60]
+        });
+        let mut obj = serde_json::json!({
+            "dada2_rs_command": "derep",
+            "sample": "s",
+            "uniques": if declare_sorted { [big.clone(), small.clone()] } else { [small, big] },
+        });
+        if declare_sorted {
+            obj["sort_order"] = serde_json::json!("abundance_desc");
+        }
+        let bytes = serde_json::to_vec(&obj).unwrap();
+        let file = File::create(path).unwrap();
+        if is_gz(path) {
+            let mut enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+            enc.write_all(&bytes).unwrap();
+            enc.finish().unwrap();
+        } else {
+            let mut w = std::io::BufWriter::new(file);
+            w.write_all(&bytes).unwrap();
+            w.flush().unwrap();
+        }
+    }
+
+    /// `load_fastq_samples` accepts a plain `.json` derep file, parses its
+    /// uniques (seq / abundance / qual_sum), and — since `sort_order` is absent
+    /// here — applies the defensive abundance-descending sort.
+    #[test]
+    fn load_fastq_samples_reads_plain_derep_json() {
+        let dir = std::env::temp_dir().join(format!("dada2rs_le_json_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.derep.json");
+        write_derep_json(&path, /* declare_sorted */ false);
+
+        let pool = unique_test_pool();
+        let samples =
+            load_fastq_samples(&[path.clone()], u64::MAX, false, None, 33, &pool, false).unwrap();
+
+        assert_eq!(samples.len(), 1, "one input file -> one sample");
+        let inputs = &samples[0];
+        assert_eq!(inputs.len(), 2);
+        // Defensive sort must put the most-abundant unique first (issue #4).
+        assert_eq!(inputs[0].seq, "ACGTAC");
+        assert_eq!(inputs[0].abundance, 5);
+        assert_eq!(inputs[0].quals.as_deref(), Some([150u32; 6].as_slice()));
+        assert_eq!(inputs[1].seq, "TTGGCC");
+        assert_eq!(inputs[1].abundance, 2);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A gzipped derep JSON (`.json.gz`) — the format that originally triggered
+    /// the noodles-fastq "invalid name prefix" error — is now parsed correctly.
+    #[test]
+    fn load_fastq_samples_reads_gzipped_derep_json() {
+        let dir = std::env::temp_dir().join(format!("dada2rs_le_jsongz_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.derep.json.gz");
+        write_derep_json(&path, /* declare_sorted */ true);
+
+        let pool = unique_test_pool();
+        let samples =
+            load_fastq_samples(&[path.clone()], u64::MAX, false, None, 33, &pool, false).unwrap();
+
+        assert_eq!(samples.len(), 1);
+        let inputs = &samples[0];
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].seq, "ACGTAC");
+        assert_eq!(inputs[0].abundance, 5);
+        assert_eq!(inputs[1].seq, "TTGGCC");
+        assert_eq!(inputs[1].abundance, 2);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The sample-level `--nbases` budget counts abundance-weighted bases, so a
+    /// single high-multiplicity unique can satisfy the budget alone. This is the
+    /// accumulation behavior documented under issue #68.
+    #[test]
+    fn load_fastq_samples_nbases_counts_multiplicity() {
+        let dir = std::env::temp_dir().join(format!("dada2rs_le_nbases_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.derep.json");
+        let b = dir.join("b.derep.json");
+        write_derep_json(&a, true);
+        write_derep_json(&b, true);
+
+        // File a contributes 6*5 + 6*2 = 42 bases (multiplicity-weighted).
+        // With nbases = 1 the loop must stop after the first file only.
+        let pool = unique_test_pool();
+        let samples = load_fastq_samples(&[a, b], 1, false, None, 33, &pool, false).unwrap();
+        assert_eq!(
+            samples.len(),
+            1,
+            "one file already exceeds the base budget, so accumulation stops"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
