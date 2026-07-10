@@ -1238,6 +1238,7 @@ fn main() -> io::Result<()> {
             no_kmer_screen,
             failed_uniques: failed_uniques_path,
             compact,
+            gzip,
             verbose,
         } => {
             use std::collections::{HashMap, HashSet};
@@ -1559,8 +1560,12 @@ fn main() -> io::Result<()> {
 
                 let json = to_json(&Tagged::new("dada-pooled", out), compact)?;
 
-                let path = output_dir.join(format!("{sample_name}.json"));
-                std::fs::write(&path, &json)?;
+                let path = output_dir.join(if gzip {
+                    format!("{sample_name}.json.gz")
+                } else {
+                    format!("{sample_name}.json")
+                });
+                misc::write_maybe_gz(&path, json.as_bytes())?;
                 if verbose {
                     eprintln!(
                         "[dada-pooled] wrote {} ({} ASV(s), {} reads)",

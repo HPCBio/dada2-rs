@@ -19,6 +19,8 @@ minor versions may carry breaking changes).
 - Experimental **WFA alignment backend** (`--align-backend wfa2`) with a
   `--wfa-max-edits` edit-budget cap (#49, #51). ASV-equivalent to Needleman-
   Wunsch on tested Illumina and PacBio HiFi data, but not byte-identical.
+- `dada-pooled --gzip` writes the per-sample JSON files gzip-compressed as
+  `{sample}.json.gz` (#70).
 - `merge-pairs` records input-file provenance and warns on mismatch (#10).
 - `just` / `make` task runners for build, install, test, and docs (#46).
 
