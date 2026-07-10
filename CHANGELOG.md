@@ -22,6 +22,11 @@ minor versions may carry breaking changes).
 - `merge-pairs` records input-file provenance and warns on mismatch (#10).
 - `just` / `make` task runners for build, install, test, and docs (#46).
 
+### Fixed
+- `learn-errors` and `errors-from-sample` now gzip-compress their output when
+  the `-o` path ends in `.gz`, for consistency with the other JSON-emitting
+  subcommands (previously the file was written uncompressed) (#71).
+
 ### Changed
 - The experimental WFA backend is now gated behind an **off-by-default `wfa`
   Cargo feature** (#63). Default builds — and the published crate — are

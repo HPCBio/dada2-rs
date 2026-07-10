@@ -3098,7 +3098,7 @@ fn main() -> io::Result<()> {
             .map_err(io::Error::other)?;
 
             match output {
-                Some(path) => std::fs::write(&path, &json)?,
+                Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
                 None => println!("{json}"),
             }
         }
@@ -3784,7 +3784,7 @@ fn main() -> io::Result<()> {
             .map_err(io::Error::other)?;
 
             match output {
-                Some(path) => std::fs::write(&path, &json)?,
+                Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
                 None => println!("{json}"),
             }
         }
