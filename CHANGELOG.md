@@ -20,7 +20,8 @@ minor versions may carry breaking changes).
   `--wfa-max-edits` edit-budget cap (#49, #51). ASV-equivalent to Needleman-
   Wunsch on tested Illumina and PacBio HiFi data, but not byte-identical.
 - `dada-pooled --gzip` writes the per-sample JSON files gzip-compressed as
-  `{sample}.json.gz` (#70).
+  `{sample}.json.gz` (#70). `dada` and `dada-pseudo` gain the same `--gzip`
+  flag, for consistency across the per-sample denoisers.
 - `merge-pairs` records input-file provenance and warns on mismatch (#10).
 - `just` / `make` task runners for build, install, test, and docs (#46).
 
@@ -36,6 +37,15 @@ minor versions may carry breaking changes).
 - `kdist-calibrate --from-dada` now reads gzip-compressed `dada` output JSONs
   (`*.json.gz`, e.g. from `dada-pooled --gzip`); previously the gzip bytes were
   parsed as raw JSON and failed with `expected value, line 1 column 1`.
+- `make-sequence-table` now reads gzip-compressed `dada` / `merge-pairs` inputs
+  (`*.json.gz`, e.g. from `dada --gzip` / `dada-pooled --gzip`); previously the
+  gzip bytes were parsed as raw JSON and failed with `expected value, line 1
+  column 1`.
+- Single-file JSON `-o` outputs now honor a `.gz` output path, routing through
+  the shared gzip-aware writer instead of a raw write (matching `learn-errors`,
+  #71): `summary`, `summary-merge`, `merge-pairs`, `remove-primers`,
+  `filter-and-trim`, `make-sequence-table`, `remove-bimera-denovo`,
+  `assign-taxonomy`, `assign-species`, and `dada`'s single-sample output.
 
 ### Changed
 - The experimental WFA backend is now gated behind an **off-by-default `wfa`

@@ -360,7 +360,7 @@ fn main() -> io::Result<()> {
             .map_err(io::Error::other)?;
 
             match output {
-                Some(path) => std::fs::write(&path, &json)?,
+                Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
                 None => println!("{json}"),
             }
         }
@@ -597,7 +597,7 @@ fn main() -> io::Result<()> {
             .map_err(io::Error::other)?;
 
             match output {
-                Some(path) => std::fs::write(&path, &json)?,
+                Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
                 None => println!("{json}"),
             }
         }
@@ -730,6 +730,7 @@ fn main() -> io::Result<()> {
             output_dir,
             failed_uniques: failed_uniques_path,
             compact,
+            gzip,
             verbose,
         } => {
             // ---- Load uniques from FASTQ or a derep/sample JSON ----
@@ -892,8 +893,12 @@ fn main() -> io::Result<()> {
                     if collect_failed {
                         failed_rows.lock().unwrap().extend(failed);
                     }
-                    let out_path = output_dir.join(format!("{sample}.json"));
-                    std::fs::write(&out_path, &json)?;
+                    let out_path = output_dir.join(if gzip {
+                        format!("{sample}.json.gz")
+                    } else {
+                        format!("{sample}.json")
+                    });
+                    misc::write_maybe_gz(&out_path, json.as_bytes())?;
                     if verbose {
                         eprintln!("[dada] wrote {}", out_path.display());
                     }
@@ -1201,7 +1206,7 @@ fn main() -> io::Result<()> {
             let json = to_json(&Tagged::new("dada", out), compact)?;
 
             match output {
-                Some(path) => std::fs::write(&path, &json)?,
+                Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
                 None => println!("{json}"),
             }
         }
@@ -1641,6 +1646,7 @@ fn main() -> io::Result<()> {
             no_kmer_screen,
             failed_uniques: failed_uniques_path,
             compact,
+            gzip,
             verbose,
         } => {
             use std::collections::{HashMap, HashSet};
@@ -1910,8 +1916,12 @@ fn main() -> io::Result<()> {
                     if collect_failed {
                         failed_rows.lock().unwrap().extend(failed);
                     }
-                    let out_path = output_dir.join(format!("{sample_name}.json"));
-                    std::fs::write(&out_path, &json)?;
+                    let out_path = output_dir.join(if gzip {
+                        format!("{sample_name}.json.gz")
+                    } else {
+                        format!("{sample_name}.json")
+                    });
+                    misc::write_maybe_gz(&out_path, json.as_bytes())?;
                     if verbose {
                         eprintln!("[dada-pseudo] wrote {}", out_path.display());
                     }
@@ -1946,8 +1956,12 @@ fn main() -> io::Result<()> {
                     if collect_failed {
                         failed_rows.lock().unwrap().extend(failed);
                     }
-                    let out_path = output_dir.join(format!("{sample_name}.json"));
-                    std::fs::write(&out_path, &json)?;
+                    let out_path = output_dir.join(if gzip {
+                        format!("{sample_name}.json.gz")
+                    } else {
+                        format!("{sample_name}.json")
+                    });
+                    misc::write_maybe_gz(&out_path, json.as_bytes())?;
                     if verbose {
                         eprintln!("[dada-pseudo] wrote {}", out_path.display());
                     }
@@ -2102,7 +2116,7 @@ fn main() -> io::Result<()> {
             .map_err(io::Error::other)?;
 
             match output {
-                Some(path) => std::fs::write(&path, &json)?,
+                Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
                 None => println!("{json}"),
             }
         }
@@ -2237,7 +2251,7 @@ fn main() -> io::Result<()> {
             .map_err(io::Error::other)?;
 
             match output {
-                Some(path) => std::fs::write(&path, &json)?,
+                Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
                 None => println!("{json}"),
             }
         }
@@ -2391,7 +2405,7 @@ fn main() -> io::Result<()> {
             .map_err(io::Error::other)?;
 
             match output {
-                Some(path) => std::fs::write(&path, &json)?,
+                Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
                 None => println!("{json}"),
             }
         }
@@ -2463,7 +2477,7 @@ fn main() -> io::Result<()> {
             }
             .map_err(io::Error::other)?;
             match output {
-                Some(path) => std::fs::write(&path, &json)?,
+                Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
                 None => println!("{json}"),
             }
         }
@@ -2526,7 +2540,7 @@ fn main() -> io::Result<()> {
             }
             .map_err(io::Error::other)?;
             match output {
-                Some(path) => std::fs::write(&path, &json)?,
+                Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
                 None => println!("{json}"),
             }
         }
@@ -3356,7 +3370,7 @@ fn main() -> io::Result<()> {
             .map_err(io::Error::other)?;
 
             match output {
-                Some(path) => std::fs::write(&path, &json)?,
+                Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
                 None => println!("{json}"),
             }
         }
@@ -3540,7 +3554,7 @@ fn main() -> io::Result<()> {
             .map_err(io::Error::other)?;
 
             match output {
-                Some(path) => std::fs::write(&path, &json)?,
+                Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
                 None => println!("{json}"),
             }
         }
