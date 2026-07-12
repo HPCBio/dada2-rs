@@ -45,6 +45,11 @@ pub struct Params {
     /// paired with its derep JSON (from `derep_dir`) so every input unique can be
     /// labelled by what denoising did to it (center / member / failed).
     pub from_dada: bool,
+    /// Pooled post-inference mode: positional inputs are the `_pooled.json[.gz]`
+    /// record(s) written by `dada-pooled`. Self-contained (merged uniques with
+    /// pooled abundance + global map + global ASVs), so no `derep_dir` is needed
+    /// and no per-sample projection is re-aggregated — the pool is one population.
+    pub from_dada_pooled: bool,
     /// Directory holding the derep JSONs that fed `dada`. Matched to each dada
     /// output by sample name: an exact `{sample}.json[.gz]` first, else a
     /// `{sample}.*.json[.gz]` file (pipeline-renamed dereps, issue #72).
@@ -414,6 +419,124 @@ fn load_dada(dada_path: &Path, derep_dir: &Path, k: usize) -> io::Result<DadaSam
     })
 }
 
+/// Load a `dada-pooled` `_pooled.json[.gz]` record into a single [`DadaSample`].
+///
+/// Unlike [`load_dada`], the record is self-contained: it carries the merged
+/// uniques (with their POOLED abundance) inline alongside the global `map` and
+/// ASV list, so there is no derep JSON to locate and no per-sample projection to
+/// reconcile. Emitted in denoising input order, so `uniques`/`map` line up with
+/// no re-sort — the pool is one population named `__pooled__`.
+fn load_dada_pooled(path: &Path, k: usize) -> io::Result<DadaSample> {
+    let f = File::open(path).with_path(path)?;
+    let reader: Box<dyn Read> = if path.extension().and_then(|e| e.to_str()) == Some("gz") {
+        Box::new(MultiGzDecoder::new(f))
+    } else {
+        Box::new(f)
+    };
+    let v: serde_json::Value = serde_json::from_reader(io::BufReader::new(reader))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let uniques = v.get("uniques").and_then(|u| u.as_array()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{}: not a dada-pooled record (no `uniques`); pass the `_pooled.json[.gz]` \
+                 written by `dada-pooled`",
+                path.display()
+            ),
+        )
+    })?;
+    let (mut enc, mut counts) = (Vec::with_capacity(uniques.len()), Vec::new());
+    for e in uniques {
+        let seq = e.get("sequence").and_then(|s| s.as_str()).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "pooled unique missing `sequence`",
+            )
+        })?;
+        enc.push(encode(seq));
+        counts.push(e.get("count").and_then(|c| c.as_u64()).unwrap_or(1));
+    }
+    let asvs = v.get("asvs").and_then(|a| a.as_array()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: pooled record missing `asvs`", path.display()),
+        )
+    })?;
+    let (mut c_enc, mut c_ab, mut c_birth, mut c_birth_pval) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for a in asvs {
+        let seq = a.get("sequence").and_then(|s| s.as_str()).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "asv entry missing `sequence`")
+        })?;
+        c_enc.push(encode(seq));
+        c_ab.push(a.get("abundance").and_then(|x| x.as_u64()).unwrap_or(0));
+        c_birth.push(
+            a.get("birth_type")
+                .and_then(|s| s.as_str())
+                .unwrap_or("?")
+                .to_string(),
+        );
+        c_birth_pval.push(
+            a.get("birth_pval")
+                .and_then(|x| x.as_f64())
+                .unwrap_or(f64::NAN),
+        );
+    }
+    let map: Vec<Option<usize>> = v
+        .get("map")
+        .and_then(|m| m.as_array())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "pooled record missing `map`"))?
+        .iter()
+        .map(|e| e.as_u64().map(|u| u as usize))
+        .collect();
+    if enc.len() != map.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{}: {} merged uniques but map has {} entries — corrupt pooled record",
+                path.display(),
+                enc.len(),
+                map.len()
+            ),
+        ));
+    }
+    let kmers = enc.iter().map(|e| assign_kmer8(e, k)).collect();
+    let c_kmers = c_enc.iter().map(|e| assign_kmer8(e, k)).collect();
+    Ok(DadaSample {
+        name: "__pooled__".into(),
+        enc,
+        counts,
+        kmers,
+        map,
+        c_enc,
+        c_kmers,
+        c_ab,
+        c_birth,
+        c_birth_pval,
+    })
+}
+
+/// Post-inference driver for pooled runs: load each `_pooled.json[.gz]` record as
+/// one pool population and emit the labelled comparisons (no --derep-dir needed).
+fn run_from_dada_pooled(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
+    let samples: Vec<DadaSample> = inputs
+        .iter()
+        .map(|path| load_dada_pooled(path, p.k))
+        .collect::<io::Result<_>>()?;
+
+    let mut w: Box<dyn Write> = match &p.output {
+        Some(path) => Box::new(BufWriter::new(File::create(path).with_path(path)?)),
+        None => Box::new(BufWriter::new(io::stdout())),
+    };
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(p.threads)
+        .build()
+        .map_err(io::Error::other)?;
+    from_dada_mode(&mut *w, &pool, &samples, p)?;
+    w.flush()?;
+    Ok(())
+}
+
 /// Build the (i, j) pair list for a population of `n` uniques: enumerate all if
 /// `n*(n-1)/2 <= max_pairs`, else draw `max_pairs` random pairs (with possible
 /// repeats — fine for a calibration scatter).
@@ -454,6 +577,9 @@ pub fn run(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
             io::ErrorKind::InvalidInput,
             "no input derep JSON(s) given",
         ));
+    }
+    if p.from_dada_pooled {
+        return run_from_dada_pooled(inputs, p);
     }
     if p.from_dada {
         return run_from_dada(inputs, p);
@@ -922,7 +1048,7 @@ fn nearest_parent_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::{find_derep_for_sample, load_dada};
+    use super::{find_derep_for_sample, load_dada, load_dada_pooled};
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use std::io::Write;
@@ -991,6 +1117,35 @@ mod tests {
         let sample = load_dada(&dada_path, &d.0, 7).expect("gzipped dada output should load");
         assert_eq!(sample.name, "F3D0");
         assert_eq!(sample.enc.len(), 1);
+    }
+
+    /// A `_pooled.json` record loads as one self-contained population: uniques,
+    /// global map, and centers come from the single file (no derep_dir), and a
+    /// `null` map entry becomes a `None` fate (a globally-failed unique).
+    #[test]
+    fn load_pooled_record_self_contained() {
+        let d = TmpDir::new("pooled");
+        let path = d.0.join("_pooled.json");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"{{"tag":"dada-pooled-record","num_uniques":3,"num_asvs":1,
+                 "uniques":[{{"sequence":"ACGTACGT","count":10}},
+                            {{"sequence":"ACGTACGA","count":3}},
+                            {{"sequence":"TTTTTTTT","count":1}}],
+                 "map":[0,0,null],
+                 "asvs":[{{"sequence":"ACGTACGT","abundance":13,
+                           "birth_type":"Initial","birth_pval":0.0}}]}}"#
+        )
+        .unwrap();
+
+        let s = load_dada_pooled(&path, 5).expect("pooled record should load");
+        assert_eq!(s.name, "__pooled__");
+        assert_eq!(s.enc.len(), 3);
+        assert_eq!(s.counts, vec![10, 3, 1]);
+        assert_eq!(s.map, vec![Some(0), Some(0), None]); // third unique globally failed
+        assert_eq!(s.c_enc.len(), 1); // one center, no derep_dir consulted
+        assert_eq!(s.c_ab, vec![13]);
     }
 
     #[test]

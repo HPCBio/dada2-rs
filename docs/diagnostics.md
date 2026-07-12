@@ -126,6 +126,7 @@ dada2-rs kdist-calibrate sampleA.derep.json [sampleB.derep.json ...] \
 | `--per-sample` | off | Compute pairs **within** each sample (independent regime) instead of pooling all uniques into one set (full-pool regime). |
 | `--nearest-parent` | off | Abundance-aware mode (see below). |
 | `--from-dada` | off | Post-inference mode (see below); positional inputs are `dada` output JSONs. |
+| `--from-dada-pooled` | off | Pooled post-inference mode (see below); positional inputs are the pooled record(s) written by `dada-pooled --pooled-record <path>`. Self-contained — no `--derep-dir`. |
 | `--derep-dir` | — | With `--from-dada`: directory of the derep JSONs that fed `dada` (matched by sample name). |
 | `--threads` | `1` | Threads for the parallel Needleman–Wunsch alignments. |
 | `--seed` | fixed | RNG seed for subsampling (reproducible). |
@@ -253,6 +254,63 @@ prior recovered a real low-abundance variant; large divergence is worth a closer
 look. `birth_pval` lets you sort every ASV by how borderline its split was,
 independent of the prior question.
 
+#### 4. Pooled post-inference mode (`--from-dada-pooled`)
+
+`--from-dada` runs on the **per-sample** `dada` outputs. For a `dada-pooled` run
+that is subtly wrong for a *pool-level* question: pooled denoising decides every
+unique's fate **once**, on the merged unique table, and then writes each
+per-sample JSON as a *projection* of that single global partition. Feeding those
+per-sample files back to `--from-dada` re-fragments the pool — a sequence shared
+by *N* samples is loaded *N* times (once per sample's derep, at that sample's
+local read count), so it contributes *N* CSV rows and has its `failed` singleton
+/ multi-read split re-derived from each local count instead of its pooled
+abundance. In a two-sample run, summing the per-sample populations gives
+1805 unique-rows; the merged table has only 1730 — the 75 difference is exactly
+the sequences present in both samples, double-counted.
+
+To assess the pool as it was actually denoised, ask `dada-pooled` for a
+self-contained record with `--pooled-record <path>`. It carries the merged
+unique table — pooled abundances, the global map, and the global ASV list — in
+one file. It is **off by default**, and you give it an explicit path (gzip
+follows a `.gz` extension); keep that path **outside** `--output-dir` so it does
+not join the per-sample `*.json.gz` glob that downstream sequence-table /
+aggregation steps rely on:
+
+```bash
+dada2-rs dada-pooled sampleA.derep.json sampleB.derep.json ... \
+    --error-model err.json --output-dir dada_out/ --gzip \
+    --pooled-record kdist/pooled.json.gz
+```
+
+```
+dada_out/                 kdist/
+├── sampleA.json.gz       └── pooled.json.gz   # the merged unique table,
+└── sampleB.json.gz                            # kept clear of dada output
+```
+
+`--from-dada-pooled` reads that record directly — no `--derep-dir`, because the
+merged uniques are carried inline — and screens the whole run as **one**
+population (`sample = __pooled__`) with pooled abundances and global fate:
+
+```bash
+dada2-rs kdist-calibrate --from-dada-pooled \
+    kdist/pooled.json.gz \
+    --k 7 --threads 8 --verbose -o post.pooled.csv
+```
+
+The CSV columns are identical to `--from-dada` (§3); only the population differs
+(one deduplicated merged table vs. one block per sample). `member` / `failed` /
+`center_pair` mean the same thing, and the `failed` singleton split now reflects
+each unique's **pooled** read count. Use `--from-dada` when you want the
+per-sample view (e.g. which samples a failure appears in); use
+`--from-dada-pooled` when you want the pool's true screen behaviour without
+double-counting shared sequences.
+
+> **Note.** This is a `dada-pooled` concept. `dada-pseudo`'s screen population is
+> genuinely per-sample (priors reshape each sample's partition), so it has no
+> `--pooled-record` — use `--from-dada` there and filter on `birth_type == Prior`
+> (§3) to trace prior-born ASVs.
+
 #### `--verbose` summaries (stderr)
 
 `--verbose` adds per-population summary lines that are usually what you want
@@ -304,6 +362,15 @@ before touching the CSV:
   plausible error copies / real low-abundance variants that just lacked a second
   read) vs beyond it (the distant tail).
 - a prior line appears only when some ASV was born from a pseudo-pool prior.
+
+**Pooled post-inference mode (`--from-dada-pooled`):** the same lines, but one
+`__pooled__` block over the merged unique table — the fate counts and the
+singleton split are pool-wide (pooled abundances), not per-sample:
+
+```
+[kdist] __pooled__ : 1730 uniques (11 centers, 1601 members, 118 failed), 11 ASVs, 1774 jobs (k=7, band=-1, 8 threads)
+[kdist] __pooled__ : 118 failed | singletons 118 (30 within cutoff) | multi-read 0 (0 within cutoff) — failed singletons are the --detect-singletons tradeoff, not distance
+```
 
 !!! note "`failed` ≠ distant noise"
 
