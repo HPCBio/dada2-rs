@@ -72,15 +72,13 @@ To trace a failed unique's divergence from the nearest surviving ASV (is it a di
 Currently the k-mer **screen** (`KDIST_CUTOFF`) and the alignment **band size** 
 (`BAND_SIZE`) are two constants that ship with set defaults or recommendations, but without much documentation on how these were derived (which data were used, the tools for calibration, etc). Some of the tooling, e.g., ESPRIT, also are no longer available online. 
 
-!!! warning "Hidden, experimental subcommand"
+!!! note "Diagnostic subcommand"
 
-    `kdist-calibrate` is a **hidden** subcommand: it does not appear in
-    `dada2-rs --help` and is **not part of the supported pipeline**. It exists
-    to *measure* and *characterize* algorithm behaviour, not to denoise. Its
-    flags, output columns, and defaults may change without notice. Treat its
-    results as exploratory — see the [caveats](#caveats) before drawing
-    conclusions, especially the small sample sizes behind the preliminary
-    numbers below.
+    `kdist-calibrate` is a **diagnostic** subcommand: it exists to *measure* and
+    *characterize* algorithm behaviour, not to denoise, and is not part of the
+    denoising pipeline itself. Treat its results as exploratory — see the
+    [caveats](#caveats) before drawing conclusions, especially the small sample
+    sizes behind the preliminary numbers below.
 
 
 ### What it measures
@@ -200,9 +198,30 @@ empirical **error-copy distance ceiling**; `cutoff − ceiling` is the screen's
 | `ab_ratio` | `parent_ab / ab` (larger ⇒ more plausibly an error copy). |
 | `kdist`, `edits`, `core_len`, `pct_div`, `band_req`, `screened_in` | As above, for the child↔parent link. |
 
-This mode is also far cheaper — O(n²) *cheap* k-mer comparisons to find each
-parent plus only O(n) alignments (vs O(n²) alignments in all-pairs mode) — so it
-scales to pooled/multisample inputs much better.
+This mode replaces the O(n²) *alignments* of all-pairs mode with only O(n)
+alignments — one per unique — but it still does O(n²) *cheap* k-mer comparisons
+to find each parent, and (unlike all-pairs mode) it **ignores `--max-pairs`**:
+every unique is scanned against its entire more-abundant prefix, uncapped.
+
+!!! warning "Run `--nearest-parent` with `--per-sample` (or `--from-dada-pooled` for pooled)"
+
+    Because the scan is uncapped, feeding it a **pooled raw-derep union** is a
+    trap: `n` is the sum over all samples (e.g. ~750k uniques across 384 MiSeq
+    samples), so the O(n²) k-mer scan is enormous, and the "nearest more-abundant
+    parent" of a unique may live in a **different sample** — a cross-sample link
+    that is not a real error copy. Always pair `--nearest-parent` with
+    `--per-sample`, where `n` is per-sample small and every parent link is a
+    genuine within-sample error-copy candidate. For a *pooled* regime, don't use
+    the raw-derep union at all — use [`--from-dada-pooled`](#4-pooled-post-inference-mode-from-dada-pooled),
+    which scores the merged pool once with pooled abundances. `--max-pairs` does
+    **nothing** here (passing it alongside `--nearest-parent` is rejected); to
+    bound the scan on a large population, cap it with `--max-uniques` instead.
+
+```bash
+# Abundance-aware, per sample (the correct regime for --nearest-parent)
+dada2-rs kdist-calibrate derep/*.derep.json.gz \
+    --k 5 --nearest-parent --per-sample --threads 24 -o kdist.abundance.csv
+```
 
 #### 3. Post-inference mode (`--from-dada`)
 
