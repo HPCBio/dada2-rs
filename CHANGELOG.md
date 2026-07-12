@@ -33,6 +33,9 @@ minor versions may carry breaking changes).
   the exact `{sample}.json[.gz]` match to a `{sample}.*.json[.gz]` scan,
   disambiguating an ambiguous prefix by the derep JSON's own `sample` field
   (#72).
+- `kdist-calibrate --from-dada` now reads gzip-compressed `dada` output JSONs
+  (`*.json.gz`, e.g. from `dada-pooled --gzip`); previously the gzip bytes were
+  parsed as raw JSON and failed with `expected value, line 1 column 1`.
 
 ### Changed
 - The experimental WFA backend is now gated behind an **off-by-default `wfa`

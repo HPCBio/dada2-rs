@@ -328,7 +328,12 @@ fn find_derep_for_sample(derep_dir: &Path, name: &str) -> io::Result<PathBuf> {
 /// Load a `dada` output JSON and pair it with its derep input from `derep_dir`.
 fn load_dada(dada_path: &Path, derep_dir: &Path, k: usize) -> io::Result<DadaSample> {
     let f = File::open(dada_path).with_path(dada_path)?;
-    let v: serde_json::Value = serde_json::from_reader(io::BufReader::new(f))
+    let reader: Box<dyn Read> = if dada_path.extension().and_then(|e| e.to_str()) == Some("gz") {
+        Box::new(MultiGzDecoder::new(f))
+    } else {
+        Box::new(f)
+    };
+    let v: serde_json::Value = serde_json::from_reader(io::BufReader::new(reader))
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let name = v
         .get("sample")
@@ -917,7 +922,9 @@ fn nearest_parent_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::find_derep_for_sample;
+    use super::{find_derep_for_sample, load_dada};
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
     use std::io::Write;
     use std::path::PathBuf;
 
@@ -948,6 +955,42 @@ mod tests {
     fn write_derep(dir: &std::path::Path, name: &str, sample: &str) {
         let mut f = std::fs::File::create(dir.join(name)).unwrap();
         write!(f, r#"{{"sample":"{sample}","uniques":[]}}"#).unwrap();
+    }
+
+    /// A gzipped `dada` output paired with its plain derep must load cleanly:
+    /// `load_dada` has to gunzip a `.json.gz` input rather than parse the raw
+    /// gzip bytes as JSON (regression for the "expected value, line 1 column 1"
+    /// failure on gzipped dada outputs, e.g. those from `dada-pooled --gzip`).
+    #[test]
+    fn load_dada_reads_gzipped_output() {
+        let d = TmpDir::new("gzdada");
+        // Matching derep: one unique so `map.len()` lines up.
+        let mut df = std::fs::File::create(d.0.join("F3D0.json")).unwrap();
+        write!(
+            df,
+            r#"{{"sample":"F3D0","sort_order":"abundance_desc",
+                 "uniques":[{{"sequence":"ACGTACGT","count":5}}]}}"#
+        )
+        .unwrap();
+        // Gzipped dada output.
+        let dada_path = d.0.join("F3D0.dada.json.gz");
+        let mut gz = GzEncoder::new(
+            std::fs::File::create(&dada_path).unwrap(),
+            Compression::default(),
+        );
+        write!(
+            gz,
+            r#"{{"sample":"F3D0",
+                 "asvs":[{{"sequence":"ACGTACGT","abundance":5,
+                           "birth_type":"Abundance","birth_pval":0.0}}],
+                 "map":[0]}}"#
+        )
+        .unwrap();
+        gz.finish().unwrap();
+
+        let sample = load_dada(&dada_path, &d.0, 7).expect("gzipped dada output should load");
+        assert_eq!(sample.name, "F3D0");
+        assert_eq!(sample.enc.len(), 1);
     }
 
     #[test]
