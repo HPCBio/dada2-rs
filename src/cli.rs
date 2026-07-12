@@ -406,6 +406,10 @@ pub enum Commands {
         #[arg(long)]
         compact: bool,
 
+        /// Gzip-compress the per-sample JSON files (written as `{sample}.json.gz`)
+        #[arg(long)]
+        gzip: bool,
+
         /// Print progress to stderr
         #[arg(long)]
         verbose: bool,
@@ -770,6 +774,10 @@ pub enum Commands {
         /// Output compact (minified) JSON instead of pretty-printed
         #[arg(long)]
         compact: bool,
+
+        /// Gzip-compress the per-sample JSON files (written as `{sample}.json.gz`)
+        #[arg(long)]
+        gzip: bool,
 
         /// Print progress to stderr
         #[arg(long)]

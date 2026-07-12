@@ -11,7 +11,6 @@
 //! Rows = samples, columns = sequences (ordered by decreasing total abundance by default).
 
 use std::collections::HashMap;
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -68,7 +67,7 @@ struct SampleCounts {
 /// * `"dada"` / `"dada-pooled"` / `"dada-pseudo"` → single-sample dada output (same schema)
 /// * `"merge-pairs"` → multi-sample merge-pairs output (a `samples` array)
 fn parse_file(path: &Path, sample_name: Option<&str>) -> io::Result<Vec<SampleCounts>> {
-    let bytes = fs::read(path)?;
+    let bytes = crate::misc::read_all_maybe_gz(path)?;
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
@@ -143,6 +142,43 @@ fn file_stem(path: &Path) -> String {
         })
         .unwrap_or("unknown")
         .to_owned()
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::parse_file;
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    /// A gzipped `dada` output JSON (`*.json.gz`, e.g. from `dada --gzip` /
+    /// `dada-pooled --gzip`) must be gunzipped before parsing — otherwise the
+    /// gzip magic bytes hit serde as raw JSON and fail with "expected value,
+    /// line 1 column 1". Regression for the make-sequence-table read path.
+    #[test]
+    fn parse_file_reads_gzipped_dada_output() {
+        let dir = std::env::temp_dir().join(format!("dada2rs_seqtab_gz_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("F3D0.json.gz");
+        let mut gz = GzEncoder::new(
+            std::fs::File::create(&path).unwrap(),
+            Compression::default(),
+        );
+        write!(
+            gz,
+            r#"{{"dada2_rs_command":"dada","sample":"F3D0",
+                 "asvs":[{{"sequence":"ACGTACGT","abundance":7}}]}}"#
+        )
+        .unwrap();
+        gz.finish().unwrap();
+
+        let got = parse_file(&path, None).expect("gzipped dada output should parse");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "F3D0");
+        assert_eq!(got[0].counts.get("ACGTACGT"), Some(&7));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 // ---------------------------------------------------------------------------

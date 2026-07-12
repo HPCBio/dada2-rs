@@ -54,7 +54,7 @@ impl<T> WithPath<T> for io::Result<T> {
 /// Read the full contents of `path` into a `Vec<u8>`.  Treats `-` as stdin and
 /// transparently decompresses gzip — by extension when reading a real file,
 /// by sniffing the magic bytes (`1f 8b`) when reading stdin.
-fn read_all_maybe_gz(path: &Path) -> io::Result<Vec<u8>> {
+pub fn read_all_maybe_gz(path: &Path) -> io::Result<Vec<u8>> {
     if is_stdin(path) {
         let mut raw = Vec::new();
         io::stdin().lock().read_to_end(&mut raw)?;
