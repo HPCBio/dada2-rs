@@ -438,12 +438,14 @@ print("band needed for error copies:", ec.band_req.max())
 
 ### Preliminary outcomes
 
-!!! danger "Preliminary — tiny datasets"
+!!! danger "Preliminary — single-sample illustrations"
 
-    All numbers below come from **single, small samples** (one Illumina sample,
-    449 uniques; one PacBio sample, 259 uniques). They illustrate the *kind* of
-    result the tool produces; they are **not** a basis for retuning any default.
-    See [caveats](#caveats).
+    The single-sample numbers in this section come from **one Illumina sample**
+    (449 uniques) and **one PacBio sample** (259 uniques). They illustrate the
+    *kind* of result the tool produces; they are **not** a basis for retuning any
+    default. The [384-sample MiSeq run](#at-scale-a-384-sample-miseq-run) below is
+    the first at-scale check — it *confirms* the single-sample trends rather than
+    overturning them, but is still one platform / amplicon. See [caveats](#caveats).
 
 #### The screen cutoff (`KDIST_CUTOFF = 0.42`)
 
@@ -511,17 +513,69 @@ band_req to 10; band 8 would miss ~1% of real error copies). Since DP cost is
 O(L·band), a smaller short-read band is a direct speed-up. Like the cutoff, 16
 looks like a single worst-case constant applied uniformly.
 
+#### At scale: a 384-sample MiSeq run
+
+The first multi-sample check — a 384-sample MiSeq 16S run (2×250, `k = 5`),
+scored independently for R1 and R2. The all-vs-all geometry used `--max-pairs
+400000` over the ~753k-unique pool; abundance mode used `--per-sample`; the
+pooled partition came from `dada-pooled --from-dada-pooled`. Every single-sample
+trend above reappears — and holds across **both** reads.
+
+**Cutoff (`kdist = 0.42`) is looser than its "~10%" label.**
+
+| read | uniques | kdist 0.42 → divergence | 10% divergence → kdist |
+|---|---|---|---|
+| **R1** | 753,645 | **14.9%** | 0.309 |
+| **R2** | 752,747 | **13.1%** | 0.327 |
+
+Same direction and magnitude as the single Illumina sample (~14.6%). The nominal
+10% actually sits at kdist ≈ 0.31–0.33. R2's distance saturates slightly faster
+per unit divergence (noisier tail), but the conclusion is identical for both reads.
+
+**The cutoff is very safe — real error copies sit far below it** (abundance mode,
+`--per-sample`):
+
+| read | nearest-parent kdist (median / p90) | within cutoff 0.42 | clear error copies missed by screen |
+|---|---|---|---|
+| **R1** | 0.021 / 0.123 | 99.2% | 1 / 538,762 (**0.000%**) |
+| **R2** | 0.032 / 0.147 | 99.3% | 4 / 408,977 (**0.001%**) |
+
+The handful of "missed" clear error copies are `core_len ≤ 2` degenerate
+alignments (the `core == 0 → pct_div = 0` fallback), not real full-length error
+copies. In practice the screen misses **nothing**, confirming ~0.28 of headroom —
+0.42 could be tightened substantially before touching a genuine error copy.
+
+**Band 16 is over-provisioned for MiSeq.** Across 400k random pairs, `band_req`
+median = 1 and p99 = 3–4; **band ≤ 4 covers 100%** of screened-in pairs and all
+clear error copies (the max_req 158–240 outliers are distant junk pairs that
+never survive inference). Consistent with the single Illumina sample (error
+copies needed ≤ 1).
+
+**The screen causes no denoising failures.** In the `--from-dada-pooled`
+partition, every *multi-read* failed unique is *within* cutoff (1000/1000 R1,
+835/835 R2) — those failures are the pooled abundance p-value, not distance.
+Failed singletons are the `--detect-singletons` tradeoff. The screen is not
+responsible for any shed sequence.
+
+!!! note "Still one platform"
+
+    This is a strong at-scale confirmation on **short-read MiSeq 16S**, not a
+    green light to change defaults globally. Long reads behave differently (see
+    [saturation](#screen-saturation-on-long-reads)); the PacBio at-scale run is
+    the next check.
+
 ---
 
 #### Caveats!
 
 !!! danger "Read before using these numbers"
 
-    - **Tiny sample sizes.** The preliminary outcomes are from one Illumina and
-      one PacBio sample (hundreds of uniques each). They demonstrate the
-      *method*, not population-level truth. Any retuning of `KDIST_CUTOFF` or
-      `BAND_SIZE` must be validated across **many** samples spanning depth,
-      diversity, and chemistry.
+    - **Sample sizes and platform coverage.** The single-sample outcomes are from
+      one Illumina and one PacBio sample (hundreds of uniques each); the at-scale
+      confirmation is a single 384-sample **MiSeq 16S** run. Both point the same
+      way, but any retuning of `KDIST_CUTOFF` or `BAND_SIZE` must still be
+      validated across platforms (long reads saturate differently), amplicons,
+      and chemistries — the MiSeq result does not license a global default change.
     - **Per-sample lower bound.** The headroom and band-fit ceilings are the
       maximum over a *single* sample's error copies. Deeper or more diverse
       samples can push real error copies further out, so the measured slack is a
