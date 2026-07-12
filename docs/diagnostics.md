@@ -557,12 +557,52 @@ partition, every *multi-read* failed unique is *within* cutoff (1000/1000 R1,
 Failed singletons are the `--detect-singletons` tradeoff. The screen is not
 responsible for any shed sequence.
 
-!!! note "Still one platform"
+This is a strong at-scale confirmation on **short-read MiSeq 16S**. Long reads
+behave differently — the PacBio run below is the complementary check.
 
-    This is a strong at-scale confirmation on **short-read MiSeq 16S**, not a
-    green light to change defaults globally. Long reads behave differently (see
-    [saturation](#screen-saturation-on-long-reads)); the PacBio at-scale run is
-    the next check.
+#### At scale: a 74-sample PacBio HiFi run (`k = 7`)
+
+A 74-sample PacBio HiFi full-length 16S run (~1.5 kb, ~857k uniques, `k = 7`).
+This is the long-read counterpart to the MiSeq set, and it validates the two
+things that are *specific* to long reads: that `k = 7` de-saturates the screen,
+and that the band must be larger.
+
+**`k = 7` de-saturates the screen and lands the cutoff near ~10%.** Where the
+single-sample PacBio at `k = 5` never exceeded kdist 0.339 (screen blind, prunes
+nothing), at `k = 7` the pool reaches **kdist 0.955** and the screen prunes
+**85.6%** of pairs (14.4% screened-in). The cutoff `0.42` corresponds to **12.5%**
+divergence (10% sits at kdist 0.374) — the closest to its nominal label of any
+dataset here, and only 60% of screened-in pairs are >5%-divergent (vs 89% on
+MiSeq): at `k = 7` the screen is both *functional* and *less leaky* on long reads.
+
+**The cutoff is safe with even more headroom than MiSeq.** Real error copies sit
+extremely close to their parent — nearest-parent kdist **median 0.005**, 99.6%
+within cutoff, and **0.000%** of clear error copies (with a non-degenerate core)
+are screened out. Per-sample clear-error-copy ceilings run ~0.10–0.16, so ~0.28
+of headroom, matching MiSeq.
+
+**Band 16 is appropriately sized here — not over-provisioned.** This is the sharp
+contrast with MiSeq. Real error copies mostly need a small band (`band_req`
+median 1, p90 2, p99 5), but CCS homopolymer indels give a long tail (max 545);
+**band ≤ 16 covers ~99.7%** of clear error copies per sample, and `32` (the HiFi
+recommendation) catches most of the remainder. The all-pairs `band_req` is huge
+(median 17, max 1564) because distant full-length pairs need wide bands to align
+at all — but those are never error copies and never survive inference, so they
+don't constrain `BAND_SIZE`.
+
+**The screen causes no denoising failures.** In the `--from-dada-pooled`
+partition, all 16,235 failed uniques are *within* cutoff (15,955 singletons +
+280 multi-read) — abundance-driven, not the screen.
+
+!!! note "Two platforms, same direction"
+
+    MiSeq and PacBio now agree: `KDIST_CUTOFF = 0.42` is safe with large headroom
+    on both, `BAND_SIZE = 16` is over-provisioned for short reads but correctly
+    sized for long reads, and `k = 7` is what makes the screen meaningful on
+    full-length 16S. This is still 16S bacterial amplicon on two chemistries — not
+    a mandate to change defaults across all markers/organisms, but the strongest
+    evidence to date that the constants are *safe*, and that a platform-aware band
+    (smaller for short reads) is the clearest available lever.
 
 ---
 
@@ -570,12 +610,13 @@ responsible for any shed sequence.
 
 !!! danger "Read before using these numbers"
 
-    - **Sample sizes and platform coverage.** The single-sample outcomes are from
+    - **Sample sizes and marker coverage.** The single-sample outcomes are from
       one Illumina and one PacBio sample (hundreds of uniques each); the at-scale
-      confirmation is a single 384-sample **MiSeq 16S** run. Both point the same
-      way, but any retuning of `KDIST_CUTOFF` or `BAND_SIZE` must still be
-      validated across platforms (long reads saturate differently), amplicons,
-      and chemistries — the MiSeq result does not license a global default change.
+      confirmation spans a 384-sample **MiSeq 16S** run and a 74-sample **PacBio
+      HiFi 16S** run. All four point the same way, but every dataset here is 16S
+      bacterial amplicon — retuning `KDIST_CUTOFF` or `BAND_SIZE` still needs
+      validation across other markers (ITS, 18S), organisms, and chemistries
+      before any global default change.
     - **Per-sample lower bound.** The headroom and band-fit ceilings are the
       maximum over a *single* sample's error copies. Deeper or more diverse
       samples can push real error copies further out, so the measured slack is a
