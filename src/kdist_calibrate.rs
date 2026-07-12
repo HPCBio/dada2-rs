@@ -45,10 +45,11 @@ pub struct Params {
     /// paired with its derep JSON (from `derep_dir`) so every input unique can be
     /// labelled by what denoising did to it (center / member / failed).
     pub from_dada: bool,
-    /// Pooled post-inference mode: positional inputs are the `_pooled.json[.gz]`
-    /// record(s) written by `dada-pooled`. Self-contained (merged uniques with
-    /// pooled abundance + global map + global ASVs), so no `derep_dir` is needed
-    /// and no per-sample projection is re-aggregated — the pool is one population.
+    /// Pooled post-inference mode: positional inputs are the pooled record(s)
+    /// written by `dada-pooled --pooled-record <path>`. Self-contained (merged
+    /// uniques with pooled abundance + global map + global ASVs), so no
+    /// `derep_dir` is needed and no per-sample projection is re-aggregated — the
+    /// pool is one population.
     pub from_dada_pooled: bool,
     /// Directory holding the derep JSONs that fed `dada`. Matched to each dada
     /// output by sample name: an exact `{sample}.json[.gz]` first, else a
