@@ -2195,14 +2195,37 @@ pub enum Commands {
         verbose: bool,
     },
 
-    /// (dev) Calibrate the k-mer screen: emit kdist vs true alignment divergence
+    /// Calibrate the k-mer screen: emit kdist vs true alignment divergence
     ///
     /// For sampled pairs of unique sequences, reports the k-mer distance
     /// (`KDIST_CUTOFF` screen metric) alongside the true UNBANDED ends-free
     /// alignment divergence, so the 0.42 cutoff (nominally ~10%, calibrated on
     /// Illumina 16S) can be checked per dataset / platform / k / pooling regime.
     /// Outputs CSV: sample,kdist,edits,core_len,pct_div,screened_in,ab_i,ab_j.
-    #[command(hide = true)]
+    ///
+    /// PICKING A REGIME. The default pools all input uniques into one set
+    /// (full-pool geometry baseline). For the abundance-aware modes below,
+    /// prefer a biologically meaningful population instead:
+    ///
+    ///   * `--per-sample` for the independent (per-sample denoising) regime.
+    ///   * `--from-dada-pooled` for a true pooled run — pass the
+    ///     `_pooled.json[.gz]` record from `dada-pooled`, NOT the raw derep
+    ///     union, so the pool is scored once with pooled abundances and no
+    ///     cross-sample double-counting.
+    ///
+    /// EXAMPLES
+    ///
+    /// All-vs-all geometry baseline, per sample (fast: pairs capped by --max-pairs):
+    ///
+    ///   dada2-rs kdist-calibrate derep/*.json.gz --k 5 --per-sample --threads 24 -o kdist.allvall.csv
+    ///
+    /// Abundance mode (nearest more-abundant parent): ALWAYS pair with --per-sample. --nearest-parent scans ALL uniques and ignores --max-pairs, so pooling the raw dereps is both O(n^2) huge and cross-sample noise (a unique's "parent" may live in another sample):
+    ///
+    ///   dada2-rs kdist-calibrate derep/*.json.gz --k 5 --nearest-parent --per-sample --threads 24 -o kdist.abundance.csv
+    ///
+    /// Pooled regime, post-inference: score the merged pool as one population:
+    ///
+    ///   dada2-rs kdist-calibrate run_pooled.json.gz --k 5 --from-dada-pooled --threads 24 -o kdist.pooled.csv
     KdistCalibrate {
         /// One or more derep JSON files (`.json` / `.json.gz`)
         #[arg(required = true)]
@@ -2227,12 +2250,17 @@ pub enum Commands {
         band: i32,
 
         /// Max pairs computed PER population (random-subsample above this to
-        /// bound the O(n^2) cost)
-        #[arg(long, default_value_t = 200_000)]
+        /// bound the O(n^2) cost). Applies to all-pairs mode and the center
+        /// pairs of --from-dada[-pooled]; it has NO effect under
+        /// --nearest-parent (which scans every unique uncapped — bound that with
+        /// --max-uniques instead), so passing both is rejected.
+        #[arg(long, default_value_t = 200_000, conflicts_with = "nearest_parent")]
         max_pairs: usize,
 
         /// Randomly subsample each sample to at most this many uniques before
-        /// pairing (0 = keep all)
+        /// pairing (0 = keep all). Unlike --max-pairs this DOES apply under
+        /// --nearest-parent, so it is the lever for bounding that mode's uncapped
+        /// O(n^2) scan.
         #[arg(long, default_value_t = 0)]
         max_uniques: usize,
 
@@ -2246,6 +2274,12 @@ pub enum Commands {
         /// report the screen's headroom above the real error-copy distances.
         /// Output columns change to sample,ab,parent_ab,ab_ratio,kdist,edits,
         /// core_len,pct_div,screened_in.
+        ///
+        /// CAVEAT: this scans EVERY unique against its more-abundant prefix and
+        /// does NOT honour --max-pairs, so it is O(n^2) in the population size.
+        /// Pair it with --per-sample (small per-sample n, and each parent link is
+        /// a genuine within-sample error copy); for a pooled run use
+        /// --from-dada-pooled. Do NOT run it over a pooled raw-derep union.
         #[arg(long)]
         nearest_parent: bool,
 
