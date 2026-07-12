@@ -1242,6 +1242,7 @@ fn main() -> io::Result<()> {
             kmer_size,
             no_kmer_screen,
             failed_uniques: failed_uniques_path,
+            pooled_record,
             compact,
             gzip,
             verbose,
@@ -1577,6 +1578,64 @@ fn main() -> io::Result<()> {
                         path.display(),
                         n_asvs,
                         total_reads
+                    );
+                }
+            }
+
+            // ---- Pooled record (kdist-calibrate --from-dada-pooled) ----
+            // The per-sample JSONs above are projections of ONE global partition:
+            // inference ran once on the merged unique table, so each unique's
+            // fate (`result.map`) and every ASV are pool-level facts. A pool-level
+            // screen assessment must not re-aggregate the per-sample splits (that
+            // double-counts shared sequences and re-derives the failed singleton
+            // split from local counts). When asked (`--pooled-record`), emit one
+            // self-contained record carrying the merged uniques with their POOLED
+            // abundance, the global `map`, and the global ASVs, so kdist can screen
+            // the pool without touching --derep-dir. Off by default and written to
+            // an explicit path (NOT --output-dir) so it never lands in the
+            // per-sample `*.json.gz` glob downstream steps rely on. gzip follows the
+            // path's own `.gz` extension (write_maybe_gz), not `--gzip`.
+            if let Some(ref rec_path) = pooled_record {
+                #[derive(Serialize)]
+                struct PooledUnique {
+                    sequence: String,
+                    count: u32,
+                }
+                #[derive(Serialize)]
+                struct PooledRecord {
+                    num_uniques: usize,
+                    num_asvs: usize,
+                    uniques: Vec<PooledUnique>,
+                    map: Vec<Option<usize>>,
+                    asvs: Vec<AsvEntry>,
+                }
+                let pooled_uniques: Vec<PooledUnique> = raw_inputs
+                    .iter()
+                    .map(|r| PooledUnique {
+                        sequence: r.seq.clone(),
+                        count: r.abundance,
+                    })
+                    .collect();
+                let pooled_asvs: Vec<AsvEntry> = result
+                    .clusters
+                    .iter()
+                    .map(|c| asv_entry_from_cluster(c, c.reads))
+                    .collect();
+                let record = PooledRecord {
+                    num_uniques: pooled_uniques.len(),
+                    num_asvs: pooled_asvs.len(),
+                    uniques: pooled_uniques,
+                    map: result.map.clone(),
+                    asvs: pooled_asvs,
+                };
+                let json = to_json(&Tagged::new("dada-pooled-record", record), compact)?;
+                misc::write_maybe_gz(rec_path, json.as_bytes())?;
+                if verbose {
+                    eprintln!(
+                        "[dada-pooled] wrote pooled record {} ({} merged unique(s), {} ASV(s))",
+                        rec_path.display(),
+                        n_merged,
+                        result.clusters.len(),
                     );
                 }
             }
@@ -3819,6 +3878,7 @@ fn main() -> io::Result<()> {
             per_sample,
             nearest_parent,
             from_dada,
+            from_dada_pooled,
             derep_dir,
             threads,
             seed,
@@ -3837,6 +3897,7 @@ fn main() -> io::Result<()> {
                     per_sample,
                     nearest_parent,
                     from_dada,
+                    from_dada_pooled,
                     derep_dir,
                     threads,
                     seed,

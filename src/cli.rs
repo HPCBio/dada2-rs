@@ -572,6 +572,14 @@ pub enum Commands {
         #[arg(long)]
         failed_uniques: Option<PathBuf>,
 
+        /// Write a self-contained pooled record (merged uniques with pooled
+        /// abundance + the global map + global ASVs) to this path, for
+        /// `kdist-calibrate --from-dada-pooled`. Off by default. Give an explicit
+        /// path OUTSIDE `--output-dir` so it doesn't join the per-sample
+        /// `*.json.gz` glob; gzip follows the path's `.gz` extension.
+        #[arg(long)]
+        pooled_record: Option<PathBuf>,
+
         /// Output compact (minified) JSON instead of pretty-printed
         #[arg(long)]
         compact: bool,
@@ -2250,6 +2258,15 @@ pub enum Commands {
         /// pct_div,band_req,screened_in.
         #[arg(long)]
         from_dada: bool,
+
+        /// Pooled post-inference mode: treat the positional inputs as the
+        /// `_pooled.json[.gz]` record(s) written by `dada-pooled` and screen the
+        /// merged unique table against the single global partition. Self-contained
+        /// (no --derep-dir), so the pool is assessed as one population with pooled
+        /// abundances — not the re-aggregated per-sample splits. Same output
+        /// columns as --from-dada (sample = `__pooled__`).
+        #[arg(long, conflicts_with = "from_dada")]
+        from_dada_pooled: bool,
 
         /// With --from-dada: directory holding the derep JSONs that fed `dada`.
         /// Matched to each output by sample name: an exact `{sample}.json[.gz]`
