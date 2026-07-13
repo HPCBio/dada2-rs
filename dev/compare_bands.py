@@ -7,12 +7,13 @@ per-band error models (`errors_band<B>.json`), it evaluates the two pass
 criteria for "a tighter band is safe":
 
   1. ASV-set identity  — the set of ASV sequences is unchanged vs the baseline
-     band. This is the concordance-guardrail gate (see project #35).
-  2. Partition stability — no unique changes its assignment (absorbed<->split,
-     or reassigned to a different center), with a MULTI-READ breakdown so the
-     ~few truncation/offset variants (the edge cases isolated in the kdist
-     calibration work) are called out explicitly. Singleton churn is reported
-     but is expected/benign (singletons don't seed ASVs by default).
+     band (always required). This is the concordance-guardrail gate (project #35).
+  2. Abundance impact — the fraction of reads that change assignment stays under
+     --max-reads-moved-pct (default 0.01%). Partition churn is reported per
+     unique with a MULTI-READ breakdown and center-aware labels (failed /
+     absorbed / center), so a lost ASV ("center->failed") or an offset-variant
+     reshuffle is called out explicitly, but a benign Hamming-1 member
+     reassignment that leaves the ASV set intact does not fail the run.
 
 The learned error matrix (`err_out`) max-abs delta vs baseline is reported too,
 but as INFORMATIONAL context, not a gate.
@@ -97,19 +98,30 @@ def diff(base, other):
     multi = [s for s in churn if b_counts.get(s, 1) > 1]
     singl = [s for s in churn if b_counts.get(s, 1) == 1]
 
+    def state(seq, assign):
+        """Human label for a unique's map state. A null map is unassigned/failed;
+        a unique mapped to ITSELF is a center (an ASV)."""
+        c = assign[seq]
+        if c is None:
+            return "failed"
+        if c == seq:
+            return "center"
+        return "absorbed"
+
     def classify(s):
-        bc, oc = b_assign[s], o_assign[s]
-        if bc is None and oc is not None:
-            return "split->absorbed"
-        if bc is not None and oc is None:
-            return "absorbed->split"
-        return "reassigned"
+        return f"{state(s, b_assign)}->{state(s, o_assign)}"
 
     multi_detail = sorted(
         ({"seq": s[:24] + "...", "count": b_counts.get(s, 1), "change": classify(s)}
          for s in multi),
         key=lambda r: -r["count"],
     )
+
+    # Abundance impact: total reads carried by uniques whose assignment changed.
+    total_reads = sum(b_counts.values())
+    reads_moved = sum(b_counts.get(s, 1) for s in churn)
+    reads_moved_pct = (100.0 * reads_moved / total_reads) if total_reads else 0.0
+
     return {
         "asv_added": added,
         "asv_removed": removed,
@@ -117,6 +129,8 @@ def diff(base, other):
         "churn_total": len(churn),
         "churn_multiread": len(multi),
         "churn_singleton": len(singl),
+        "reads_moved": reads_moved,
+        "reads_moved_pct": reads_moved_pct,
         "multiread_detail": multi_detail[:20],
     }
 
@@ -129,6 +143,9 @@ def main():
                     help="a tightened band's pooled record; repeatable")
     ap.add_argument("--errors", action="append", default=[], metavar="LABEL=ERRJSON",
                     help="optional error model per label for the err_out delta")
+    ap.add_argument("--max-reads-moved-pct", type=float, default=0.01, metavar="PCT",
+                    help="pass ceiling on the %% of reads that change assignment "
+                         "(default 0.01); ASV-set identity is always required")
     ap.add_argument("--json", metavar="PATH", help="write machine-readable report")
     args = ap.parse_args()
 
@@ -154,12 +171,18 @@ def main():
         if b_label in err_paths and label in err_paths:
             r["err_out_maxdelta"] = err_maxdelta(err_paths[b_label], err_paths[label])
 
-        ok = r["asv_identical"] and r["churn_multiread"] == 0
+        # Pass = ASV catalogue unchanged AND abundance impact under the ceiling.
+        # (Raw multi-read churn is reported but not gated: a Hamming-1 member
+        # reassignment that leaves the ASV set intact is benign.)
+        ok = r["asv_identical"] and r["reads_moved_pct"] <= args.max_reads_moved_pct
+        r["pass"] = ok
         all_pass &= ok
         status = "PASS" if ok else "FAIL"
         print(f"band={label} vs {b_label}: {status}")
         print(f"  ASVs: {r['n_asv']}  added={len(r['asv_added'])} "
               f"removed={len(r['asv_removed'])}  identical={r['asv_identical']}")
+        print(f"  reads moved: {r['reads_moved']} ({r['reads_moved_pct']:.4f}%)  "
+              f"[ceiling {args.max_reads_moved_pct}%]")
         print(f"  partition churn: total={r['churn_total']} "
               f"multi-read={r['churn_multiread']} singleton={r['churn_singleton']}")
         if "err_out_maxdelta" in r:
@@ -172,9 +195,11 @@ def main():
 
     report["all_pass"] = all_pass
     print("=" * 48)
-    print("OVERALL: " + ("PASS — tighter band(s) safe by both gates"
+    print("OVERALL: " + ("PASS — tighter band(s) preserve the ASV set within "
+                         f"{args.max_reads_moved_pct}% read drift"
                           if all_pass else
-                          "FAIL — ASV set or multi-read partition changed"))
+                          "FAIL — an ASV was gained/lost or read drift exceeded "
+                         f"{args.max_reads_moved_pct}%"))
     if args.json:
         with open(args.json, "w") as fh:
             json.dump(report, fh, indent=2)
