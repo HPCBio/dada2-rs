@@ -37,7 +37,15 @@
 #
 # Env overrides (held constant across all bands):
 #   MAX_CONSIST=10  KDIST_CUTOFF=0.42  THREADS=1  GZIP=1
+#   NBASES=100000000   # error-model learning subsample (learnErrors nbases=1e8)
 #   FILE_GLOB="*.json.gz *.json *.fastq.gz *.fastq"
+#
+# Error learning uses `learn-errors --nbases` (NOT `errors-from-sample`), so the
+# nbases subsample matches the pipeline default and is multiplicity-weighted:
+# derep JSON accumulate bases as seq_len * count, exactly like FASTQ. Set
+# NBASES=0 to learn on the full data. Denoising (dada-pooled) always runs on the
+# FULL derep set regardless. File order is deterministic (sorted), so the same
+# subsample is used for every band.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -61,6 +69,7 @@ MAX_CONSIST="${MAX_CONSIST:-10}"
 KDIST_CUTOFF="${KDIST_CUTOFF:-0.42}"
 THREADS="${THREADS:-1}"
 GZIP="${GZIP:-1}"
+NBASES="${NBASES:-100000000}"
 FILE_GLOB="${FILE_GLOB:-*.json.gz *.json *.fastq.gz *.fastq}"
 
 if [[ -z "$DADA2RS" || ! -x "$DADA2RS" ]]; then
@@ -128,10 +137,11 @@ for BAND in $BANDLIST; do
     POOLED_REC="${OUTDIR}/pooled_band${BAND}.${ext}"
     mkdir -p "$DADA_OUT"
 
-    echo "==> errors-from-sample (band=$BAND, k=$KMER_SIZE, cutoff=$KDIST_CUTOFF, errfun=$ERRFUN)"
-    "$DADA2RS" errors-from-sample "${DEREPS[@]}" \
+    echo "==> learn-errors (band=$BAND, k=$KMER_SIZE, cutoff=$KDIST_CUTOFF, errfun=$ERRFUN, nbases=$NBASES)"
+    "$DADA2RS" learn-errors "${DEREPS[@]}" \
         --errfun "$ERRFUN" --band "$BAND" \
         --kmer-size "$KMER_SIZE" --kdist-cutoff "$KDIST_CUTOFF" \
+        --nbases "$NBASES" \
         --max-consist "$MAX_CONSIST" --threads "$THREADS" \
         -o "$ERR_JSON" 2> "${OUTDIR}/learn_band${BAND}.log"
 
