@@ -38,7 +38,15 @@
 # Env overrides (held constant across all cutoffs):
 #   MAX_CONSIST=10  THREADS=1  GZIP=1  NBASES=100000000
 #   MAX_READS_MOVED_PCT=0.5   # OVERALL pass ceiling on reads reassigned
+#   LEARN_CUTOFF=""           # decouple learn cutoff from inference (see below)
 #   FILE_GLOB="*.json.gz *.json *.fastq.gz *.fastq"
+#
+# DECOUPLED MODE (LEARN_CUTOFF set): learn the error model ONCE at the looser
+# LEARN_CUTOFF, then sweep only the INFERENCE cutoff reusing that fixed model.
+# This isolates the inference-screen effect (partition / fragmentation) from the
+# error-model destabilization that joint tightening incurs — i.e. "looser KDIST
+# for error modeling, tighter for inference". Example:
+#   LEARN_CUTOFF=0.42 bash run_cutoff_sweep.sh "$prep/derep/R1" out_dec loess 5 16 "0.42 0.30 0.20"
 #
 # The cutoff is a HARD screen, so tightening it reassigns far more reads than the
 # band (mostly singletons screened out). The pass ceiling on reads-moved defaults
@@ -68,6 +76,12 @@ THREADS="${THREADS:-1}"
 GZIP="${GZIP:-1}"
 NBASES="${NBASES:-100000000}"
 MAX_READS_MOVED_PCT="${MAX_READS_MOVED_PCT:-0.5}"
+# DECOUPLE the learn cutoff from the inference cutoff. Empty = joint (learn AND
+# infer at each swept cutoff, the default). Set LEARN_CUTOFF (e.g. 0.42) to learn
+# the error model ONCE at that looser cutoff and reuse it for every inference
+# cutoff — isolating the inference-screen effect (partition / fragmentation) from
+# the error-model destabilization that joint tightening also incurs.
+LEARN_CUTOFF="${LEARN_CUTOFF:-}"
 FILE_GLOB="${FILE_GLOB:-*.json.gz *.json *.fastq.gz *.fastq}"
 
 if [[ -z "$DADA2RS" || ! -x "$DADA2RS" ]]; then
@@ -123,8 +137,22 @@ for f in "${INPUTS[@]}"; do
     esac
 done
 
-# --- per-cutoff: learn errors + dada-pooled (+ pooled record) --------------
+# --- optional: learn ONCE at a fixed (looser) cutoff -----------------------
 ext="json"; [[ "$GZIP" == "1" ]] && ext="json.gz"
+SHARED_ERR=""
+if [[ -n "$LEARN_CUTOFF" ]]; then
+    SHARED_ERR="${OUTDIR}/errors_learn${LEARN_CUTOFF}.json"
+    echo ""
+    echo "==> DECOUPLED: learn-errors ONCE at cutoff=$LEARN_CUTOFF (reused for all inference cutoffs)"
+    "$DADA2RS" learn-errors "${DEREPS[@]}" \
+        --errfun "$ERRFUN" --band "$BAND" \
+        --kmer-size "$KMER_SIZE" --kdist-cutoff "$LEARN_CUTOFF" \
+        --nbases "$NBASES" \
+        --max-consist "$MAX_CONSIST" --threads "$THREADS" \
+        -o "$SHARED_ERR" 2> "${OUTDIR}/learn_shared.log"
+fi
+
+# --- per-cutoff: (learn) + dada-pooled (+ pooled record) -------------------
 declare -a POOLED_ARGS=() ERR_ARGS=()
 for CUT in $CUTOFFLIST; do
     echo ""
@@ -135,15 +163,20 @@ for CUT in $CUTOFFLIST; do
     POOLED_REC="${OUTDIR}/pooled_${tag}.${ext}"
     mkdir -p "$DADA_OUT"
 
-    echo "==> learn-errors (cutoff=$CUT, band=$BAND, k=$KMER_SIZE, errfun=$ERRFUN, nbases=$NBASES)"
-    "$DADA2RS" learn-errors "${DEREPS[@]}" \
-        --errfun "$ERRFUN" --band "$BAND" \
-        --kmer-size "$KMER_SIZE" --kdist-cutoff "$CUT" \
-        --nbases "$NBASES" \
-        --max-consist "$MAX_CONSIST" --threads "$THREADS" \
-        -o "$ERR_JSON" 2> "${OUTDIR}/learn_${tag}.log"
+    if [[ -n "$SHARED_ERR" ]]; then
+        ERR_JSON="$SHARED_ERR"
+        echo "==> using shared error model (learned at cutoff=$LEARN_CUTOFF)"
+    else
+        echo "==> learn-errors (cutoff=$CUT, band=$BAND, k=$KMER_SIZE, errfun=$ERRFUN, nbases=$NBASES)"
+        "$DADA2RS" learn-errors "${DEREPS[@]}" \
+            --errfun "$ERRFUN" --band "$BAND" \
+            --kmer-size "$KMER_SIZE" --kdist-cutoff "$CUT" \
+            --nbases "$NBASES" \
+            --max-consist "$MAX_CONSIST" --threads "$THREADS" \
+            -o "$ERR_JSON" 2> "${OUTDIR}/learn_${tag}.log"
+    fi
 
-    echo "==> dada-pooled (cutoff=$CUT)"
+    echo "==> dada-pooled (inference cutoff=$CUT)"
     gzip_flag=(); [[ "$GZIP" == "1" ]] && gzip_flag=(--gzip)
     "$DADA2RS" dada-pooled "${DEREPS[@]}" \
         --error-model "$ERR_JSON" --output-dir "$DADA_OUT" \
