@@ -158,7 +158,7 @@ def main():
     base = load_pooled(b_path)
     err_paths = dict(split(s) for s in args.errors)
 
-    print(f"baseline band={b_label}: {len(base[0])} ASVs, {len(base[1])} uniques\n")
+    print(f"baseline {b_label}: {len(base[0])} ASVs, {len(base[1])} uniques\n")
     report = {"baseline": b_label, "n_asv": len(base[0]), "comparisons": []}
     all_pass = True
 
@@ -178,7 +178,7 @@ def main():
         r["pass"] = ok
         all_pass &= ok
         status = "PASS" if ok else "FAIL"
-        print(f"band={label} vs {b_label}: {status}")
+        print(f"{label} vs {b_label}: {status}")
         print(f"  ASVs: {r['n_asv']}  added={len(r['asv_added'])} "
               f"removed={len(r['asv_removed'])}  identical={r['asv_identical']}")
         print(f"  reads moved: {r['reads_moved']} ({r['reads_moved_pct']:.4f}%)  "
