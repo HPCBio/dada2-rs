@@ -37,7 +37,13 @@
 #
 # Env overrides (held constant across all cutoffs):
 #   MAX_CONSIST=10  THREADS=1  GZIP=1  NBASES=100000000
+#   MAX_READS_MOVED_PCT=0.5   # OVERALL pass ceiling on reads reassigned
 #   FILE_GLOB="*.json.gz *.json *.fastq.gz *.fastq"
+#
+# The cutoff is a HARD screen, so tightening it reassigns far more reads than the
+# band (mostly singletons screened out). The pass ceiling on reads-moved defaults
+# to 0.5% here (vs the band sweep's tighter implicit 0.01%); ASV-set identity is
+# always required regardless. Read the ASV-identity line as the primary verdict.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -61,6 +67,7 @@ MAX_CONSIST="${MAX_CONSIST:-10}"
 THREADS="${THREADS:-1}"
 GZIP="${GZIP:-1}"
 NBASES="${NBASES:-100000000}"
+MAX_READS_MOVED_PCT="${MAX_READS_MOVED_PCT:-0.5}"
 FILE_GLOB="${FILE_GLOB:-*.json.gz *.json *.fastq.gz *.fastq}"
 
 if [[ -z "$DADA2RS" || ! -x "$DADA2RS" ]]; then
@@ -158,6 +165,7 @@ done
 echo ""
 echo "================  COMPARE  ================"
 python3 "${SCRIPT_DIR}/compare_bands.py" "${POOLED_ARGS[@]}" "${ERR_ARGS[@]}" \
+    --max-reads-moved-pct "$MAX_READS_MOVED_PCT" \
     --json "${OUTDIR}/cutoff_report.json" || true
 echo ""
 echo "Done. Outputs in ${OUTDIR}/ (report: cutoff_report.json)"
