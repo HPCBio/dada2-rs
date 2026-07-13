@@ -601,25 +601,52 @@ Crucially, these tail cases need `band_req` of 179–1676 — which the default 
 under any practical band regardless. They therefore do **not** constrain
 `BAND_SIZE`, and they are not error copies of a real center. (The `--nearest-parent`
 proxy inflates this tail further because it pairs singleton↔singleton, a
-comparison that never occurs in real center-based correction.) Net: genuine HiFi
-error copies need ≈ the same small band as Illumina (≤ 8); the apparent long-read
-band requirement is an artifact of counting truncation / off-target sequences as
-error copies.
+comparison that never occurs in real center-based correction.) So for the
+*alignment-reach* question, genuine HiFi error copies need ≈ the same small band
+as Illumina (≤ 8).
+
+!!! warning "`band_req` is necessary but NOT sufficient — the end-to-end A/B overrules it"
+
+    An earlier version of this page concluded from the above that `BAND_SIZE`
+    could be lowered on HiFi too. **An end-to-end band A/B refutes that.**
+    Sweeping `--band` through both error learning and `dada-pooled` (dev
+    `run_band_sweep.sh`) and diffing the ASV set:
+
+    - **MiSeq (384-sample, k=5):** band 16→8 preserves the ASV set on both R1/R2
+      (≤ 0.0013% read drift); band 4 starts to break (loses a borderline ASV on
+      R2). Band 8 is a safe floor.
+    - **PacBio HiFi (74-sample, k=7):** band 32→16 **already changes the ASV
+      catalogue** — −14/+7 ASVs, 0.02% read drift, and it worsens at band 8
+      (−9/+11, 0.06%). The lost ASVs are `Abundance`-born, often strongly
+      significant, and merge into a **Hamming-1 neighbour** already in the set.
+
+    Why the divergence, when HiFi error copies need only band ≤ 8? Because the
+    band perturbs two things: alignment reach (mechanism 1, weak here) **and the
+    learned error model** (mechanism 2). On 1.5 kb reads the error-model
+    perturbation is ~10–20× larger than on MiSeq (`err_out` max Δ ~2e-3 vs
+    ~1e-4), and that shift flips the abundance test for close (Hamming-1) ASV
+    *pairs*, merging variants that band 32 resolves. So band 32 earns its keep on
+    HiFi not through alignment reach but by keeping the error model stable enough
+    to separate near-identical variants. **The platform-aware default (16
+    Illumina / 32 HiFi) is correct**; `band_req` alone understates the impact.
 
 **The screen causes no denoising failures.** In the `--from-dada-pooled`
 partition, all 16,235 failed uniques are *within* cutoff (15,955 singletons +
 280 multi-read) — abundance-driven, not the screen.
 
-!!! note "Two platforms, same direction"
+!!! note "Two platforms — cutoff agrees, band diverges"
 
-    MiSeq and PacBio now agree: `KDIST_CUTOFF = 0.42` is safe with large headroom
-    on both, and `k = 7` is what makes the screen meaningful on full-length 16S.
-    `BAND_SIZE = 16` is over-provisioned on *both* — once truncation / off-target
-    artifacts are excluded, genuine error copies need band ≤ 8 on HiFi just as on
-    MiSeq. This is still 16S bacterial amplicon on two chemistries — not a mandate
-    to change defaults across all markers/organisms, but the strongest evidence to
-    date that the constants are *safe*, and that a smaller band is a viable lever
-    on both platforms (pending an ASV-level A/B before any default change).
+    MiSeq and PacBio agree on the screen: `KDIST_CUTOFF = 0.42` is safe with large
+    headroom on both, and `k = 7` is what makes it meaningful on full-length 16S.
+    They **disagree on the band**, which is the point of the platform-aware
+    default. The end-to-end A/B (see the warning above) shows `BAND_SIZE` can drop
+    to 8 on MiSeq without touching the ASV set, but on HiFi even 32→16 changes the
+    catalogue — so `16` (Illumina) / `32` (HiFi) is correct, and the long-read
+    band is doing real work via the error model, not alignment reach. This is
+    still 16S bacterial amplicon on two chemistries; newer Illumina chemistries
+    (i100, NovaSeq, binned qualities) remain to be tested and may move the MiSeq
+    boundary. No default change is warranted beyond confirming the existing ones
+    are well-placed.
 
 ---
 
