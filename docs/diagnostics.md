@@ -582,13 +582,29 @@ are screened out. Per-sample clear-error-copy ceilings run ~0.10–0.16, so ~0.2
 of headroom, matching MiSeq.
 
 **Band 16 is appropriately sized here — not over-provisioned.** This is the sharp
-contrast with MiSeq. Real error copies mostly need a small band (`band_req`
-median 1, p90 2, p99 5), but CCS homopolymer indels give a long tail (max 545);
-**band ≤ 16 covers ~99.7%** of clear error copies per sample, and `32` (the HiFi
-recommendation) catches most of the remainder. The all-pairs `band_req` is huge
-(median 17, max 1564) because distant full-length pairs need wide bands to align
-at all — but those are never error copies and never survive inference, so they
-don't constrain `BAND_SIZE`.
+contrast with MiSeq — but reading it correctly matters. Looking at the *real*
+inference alignments (member→center pairs from `--from-dada-pooled`, 528k of
+them), genuine error copies (≤3% divergence) need `band_req` median 1, p99 **7**,
+and **band ≤ 8 covers 99.5%** of them. The long tail (`band_req` into the
+hundreds) is **not** homopolymer indels — HiFi consensus reads are not
+homopolymer-error-prone (unlike CLR / 454 / Nanopore). It is dominated by:
+
+- **absorbed noise** (>3% divergence, ~0.3% of members): off-target / chimeric
+  **singletons** parked in the nearest cluster because they are not abundant
+  enough to split off — median ~23% divergence, needing bands of 500–1600;
+- **truncation / offset artifacts**: partial-length or off-target reads that are
+  *identical over their overlap* but shifted by hundreds of bp (`edits ≈ 0`,
+  short `core_len`), so the ends-free alignment carries a large terminal gap.
+
+Crucially, these tail cases need `band_req` of 179–1676 — which the default `16`
+(or `32` for HiFi) **already does not reach**, so they are aligned sub-optimally
+under any practical band regardless. They therefore do **not** constrain
+`BAND_SIZE`, and they are not error copies of a real center. (The `--nearest-parent`
+proxy inflates this tail further because it pairs singleton↔singleton, a
+comparison that never occurs in real center-based correction.) Net: genuine HiFi
+error copies need ≈ the same small band as Illumina (≤ 8); the apparent long-read
+band requirement is an artifact of counting truncation / off-target sequences as
+error copies.
 
 **The screen causes no denoising failures.** In the `--from-dada-pooled`
 partition, all 16,235 failed uniques are *within* cutoff (15,955 singletons +
@@ -597,12 +613,13 @@ partition, all 16,235 failed uniques are *within* cutoff (15,955 singletons +
 !!! note "Two platforms, same direction"
 
     MiSeq and PacBio now agree: `KDIST_CUTOFF = 0.42` is safe with large headroom
-    on both, `BAND_SIZE = 16` is over-provisioned for short reads but correctly
-    sized for long reads, and `k = 7` is what makes the screen meaningful on
-    full-length 16S. This is still 16S bacterial amplicon on two chemistries — not
-    a mandate to change defaults across all markers/organisms, but the strongest
-    evidence to date that the constants are *safe*, and that a platform-aware band
-    (smaller for short reads) is the clearest available lever.
+    on both, and `k = 7` is what makes the screen meaningful on full-length 16S.
+    `BAND_SIZE = 16` is over-provisioned on *both* — once truncation / off-target
+    artifacts are excluded, genuine error copies need band ≤ 8 on HiFi just as on
+    MiSeq. This is still 16S bacterial amplicon on two chemistries — not a mandate
+    to change defaults across all markers/organisms, but the strongest evidence to
+    date that the constants are *safe*, and that a smaller band is a viable lever
+    on both platforms (pending an ASV-level A/B before any default change).
 
 ---
 
