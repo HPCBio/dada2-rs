@@ -634,19 +634,73 @@ as Illumina (≤ 8).
 partition, all 16,235 failed uniques are *within* cutoff (15,955 singletons +
 280 multi-read) — abundance-driven, not the screen.
 
-!!! note "Two platforms — cutoff agrees, band diverges"
+#### End-to-end A/B: the cutoff, and decoupling learning from inference
 
-    MiSeq and PacBio agree on the screen: `KDIST_CUTOFF = 0.42` is safe with large
-    headroom on both, and `k = 7` is what makes it meaningful on full-length 16S.
-    They **disagree on the band**, which is the point of the platform-aware
-    default. The end-to-end A/B (see the warning above) shows `BAND_SIZE` can drop
-    to 8 on MiSeq without touching the ASV set, but on HiFi even 32→16 changes the
-    catalogue — so `16` (Illumina) / `32` (HiFi) is correct, and the long-read
-    band is doing real work via the error model, not alignment reach. This is
-    still 16S bacterial amplicon on two chemistries; newer Illumina chemistries
-    (i100, NovaSeq, binned qualities) remain to be tested and may move the MiSeq
-    boundary. No default change is warranted beyond confirming the existing ones
-    are well-placed.
+The same end-to-end harness sweeps the **k-mer cutoff** (`dev/run_cutoff_sweep.sh`,
+varying `--kdist-cutoff` in both learning and inference; `dev/compare_bands.py`
+diffs the pooled ASV set). `KDIST_CUTOFF = 0.42` is **well-placed** — tightening it
+diverges from the reference, monotonically:
+
+| tighten to | MiSeq R1 (add/rem) | PacBio HiFi (add/rem) |
+|---|---|---|
+| **0.30** | +5 / −12 | +5 / −5 |
+| **0.20** | +62 / −62 | +38 / −21 |
+
+!!! warning "`n_asv` is a trap — diff the ASV *set*, not the count"
+
+    At MiSeq 0.20 the ASV **count** is unchanged (2514→2514) yet 62 ASVs are added
+    and 62 removed — 2.5% of the catalogue turns over. Always compare set membership
+    (added/removed), never the count.
+
+**Mechanism — the cutoff acts through the error model, not by dropping error
+copies.** The transition tally is built by re-aligning every clustered read to its
+center with the screen **disabled**, so a tighter cutoff never removes a pair from
+the tally directly. Instead it changes the **partition**: a divergent error copy
+screened out during clustering can't reach its center, so it splits off (or fails)
+and, in the screen-off tally, contributes zero substitutions instead of its real
+ones. That biases the learned rates down in the tail, flipping borderline abundance
+(`OMEGA_A`) calls — even high-abundance Hamming-1 neighbours. The cutoff perturbs
+the error model **~100× more than the band** on MiSeq (`err_out` Δ ~3e-3 at 0.30 vs
+~1e-4). More `nbases` does **not** fix this: the cutoff gap is a stable, sample-size
+independent bias (~5.5e-4 at both 1e8 and 1e9), and the model is still under-converged
+at 1e8 (both cutoffs move ~1.3e-3 to 1e9, in parallel — so `nbases` is itself a
+*larger* error-model lever than the cutoff, and must be held fixed for any comparison).
+
+**Decoupling: learn loose, infer tight.** Because the damage is in the learned model,
+learning at 0.42 (stable) and tightening only the *inference* screen (`LEARN_CUTOFF=0.42`)
+removes it. This cleanly separates the two mechanisms:
+
+| | MiSeq R1 0.20 | PacBio 0.20 |
+|---|---|---|
+| joint (learn+infer) | +62 / −62 | +38 / −21 |
+| **decoupled (learn @0.42)** | **+51 / −13** | **+8 / −7** |
+
+Decoupling collapses the **removals** (lost ASVs — the *dangerous*, invisible failure)
+on both platforms. What remains is the screen's intrinsic mis-fragmentation
+(**additions**), whose size is set by `k`: large at k=5 (MiSeq error copies sit near
+the cutoff, +51 persists), tiny at k=7 (HiFi error copies sit far below it, additions
+mostly vanish too, leaving +8). So loose-learn/tight-infer converts bidirectional churn
+into benign, detectable over-splitting, and buys real headroom — safe to **~0.30 on
+MiSeq**, **~0.20 on PacBio**.
+
+!!! note "Two platforms, two levers — the unifying picture"
+
+    Every ASV fluctuation traces to the **error model**: a parameter moves the ASV
+    set only insofar as it perturbs the learned rates (removed by decoupling) or lets
+    the inference screen mis-fragment real error copies (residual, `k`-set). The two
+    levers then diverge *oppositely* across platforms, because they are governed by
+    different things:
+
+    | | Band (tracks read length) | Cutoff (tracks `k` / error-copy placement) |
+    |---|---|---|
+    | **MiSeq** (k=5) | tolerant — 8 safe | strict — 0.30 already perturbs |
+    | **PacBio** (k=7) | strict — needs 32 | tolerant — 0.30 nearly free |
+
+    So `BAND_SIZE = 16/32` and `KDIST_CUTOFF = 0.42` are all **well-placed defaults**;
+    nothing should change globally. If tightening for speed is wanted, **decouple**
+    (loose-learn, tight-infer) rather than tighten jointly. Still 16S bacterial
+    amplicon on two chemistries; newer Illumina (i100, NovaSeq, binned qualities)
+    remain to be tested and may move the MiSeq boundaries.
 
 ---
 
