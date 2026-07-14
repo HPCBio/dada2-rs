@@ -61,6 +61,18 @@ Usage:
   python3 bench_pooled.py pacbio /path/to/hifi_raw --run-r --threads 8 \\
       --dada2rs target/release/dada2-rs
 
+  # DECOUPLED k-mer screen A/B — is "learn loose, infer tight" a real speed win?
+  # Run the default (0.42 both), then a decoupled arm (learn 0.42, infer 0.30),
+  # and diff wall/RSS with compare_bench.py:
+  python3 bench_pooled.py illumina /path/to/miseq_raw --outdir bench_042 \\
+      --dada2rs target/release/dada2-rs
+  python3 bench_pooled.py illumina /path/to/miseq_raw --outdir bench_dec \\
+      --learn-kdist-cutoff 0.42 --kdist-cutoff 0.30 \\
+      --dada2rs target/release/dada2-rs
+  # then: compare_bench.py --baseline 042=bench_042 --compare dec=bench_dec
+  # (the decoupling correctness result — no ASV loss — is established in
+  #  docs/diagnostics.md; this benchmark isolates the wall/RSS effect.)
+
 Run `python3 bench_pooled.py --help` for all options.
 """
 import argparse
@@ -97,6 +109,33 @@ def maybe_verbose(cmd):
     if VERBOSE and len(cmd) > 1 and str(cmd[1]) in RS_VERBOSE_SUBCMDS:
         return [*cmd, "--verbose"]
     return cmd
+
+
+# Set from --kdist-cutoff / --learn-kdist-cutoff in main(). The k-mer pre-align
+# screen cutoff (KDIST_CUTOFF default 0.42), threaded independently into the
+# LEARN step and the INFERENCE step so a DECOUPLED config ("learn loose, infer
+# tight") can be benchmarked: learn the error model at LEARN_KDIST (e.g. 0.42,
+# the stable default) but denoise at a tighter INFER_KDIST (e.g. 0.30) to prune
+# more pairs from the O(pairs) inference alignment. Both None = leave the
+# binary's default (0.42) on every step, so a default run is byte-identical to
+# before. The diagnostics work (project_kdist_cutoff_errmodel_stability) found
+# decoupling removes the ASV-loss failure that JOINT tightening incurs; this
+# benchmark measures whether it also buys a real wall/RSS win at inference.
+INFER_KDIST = None
+LEARN_KDIST = None
+
+
+def infer_kdist_extra():
+    """--kdist-cutoff for the inference (dada*) step, or [] to keep the default."""
+    return [] if INFER_KDIST is None else ["--kdist-cutoff", str(INFER_KDIST)]
+
+
+def learn_kdist_extra():
+    """--kdist-cutoff for the learn-errors step. Falls back to the inference
+    cutoff when only --kdist-cutoff is given (JOINT mode); explicit
+    --learn-kdist-cutoff decouples it (looser learn, tighter infer)."""
+    v = LEARN_KDIST if LEARN_KDIST is not None else INFER_KDIST
+    return [] if v is None else ["--kdist-cutoff", str(v)]
 
 
 # Set from --align-backend in main(). The dada2-rs alignment backend ("nw" or
@@ -224,6 +263,9 @@ def rust_dada_step(args, bin_, step, filts, names, errmodel, ddir, outdir, resul
     pick round(threads/4))."""
     t = args.threads if threads is None else threads
     sj = args.sample_jobs if sample_jobs == "default" else sample_jobs
+    # Inference-side k-mer screen cutoff (may differ from the learn cutoff for a
+    # decoupled "learn loose, infer tight" run); [] leaves the binary default.
+    extra = [*extra, *infer_kdist_extra()]
     if args.pool == "true":
         run_step(step, [bin_, "dada-pooled", *map(str, filts),
                  "--error-model", errmodel, "--output-dir", ddir, *extra,
@@ -284,10 +326,12 @@ def prepare_illumina(args, bin_, outdir, results):
     errF = outdir / "errors_fwd.json"; errR = outdir / "errors_rev.json"
     run_step("learn_fwd", [bin_, "learn-errors", *map(str, filtFs),
              "--nbases", str(int(args.nbases)), "--errfun", "loess",
+             *learn_kdist_extra(),
              "--threads", str(args.threads), "-o", errF],
              outdir / "learn_fwd.log", results)
     run_step("learn_rev", [bin_, "learn-errors", *map(str, filtRs),
              "--nbases", str(int(args.nbases)), "--errfun", "loess",
+             *learn_kdist_extra(),
              "--threads", str(args.threads), "-o", errR],
              outdir / "learn_rev.log", results)
     return {"filtFs": filtFs, "filtRs": filtRs, "names": names,
@@ -370,6 +414,7 @@ def prepare_pacbio(args, bin_, outdir, results):
     learn_cmd = [bin_, "learn-errors", *map(str, filts),
                  "--nbases", str(int(args.nbases)), "--errfun", "pacbio",
                  "--band", str(args.band), "--kmer-size", str(args.kmer_size),
+                 *learn_kdist_extra(),
                  "--threads", str(args.threads), "-o", err]
     if args.homo_gap is not None:
         learn_cmd += ["--homo-gap-p", str(args.homo_gap)]
@@ -875,6 +920,20 @@ def main():
                         "correctness-neutrality). Include 0 for the unbounded WFA "
                         "reference. Watch that '≡ unbnd WFA' stays 'yes' across caps "
                         "while wall/peak drop. e.g. --wfa-max-edits-sweep 0,30,50,80")
+    p.add_argument("--kdist-cutoff", type=float, default=None, metavar="C",
+                   help="dada2-rs k-mer pre-align screen cutoff (KDIST_CUTOFF, default "
+                        "0.42) for the INFERENCE (dada*) step. Tightening it prunes more "
+                        "pairs from the O(pairs) inference alignment. Default: leave the "
+                        "binary default (0.42). Threaded into learn-errors too UNLESS "
+                        "--learn-kdist-cutoff overrides it (see below).")
+    p.add_argument("--learn-kdist-cutoff", type=float, default=None, metavar="C",
+                   help="DECOUPLED mode: k-mer cutoff for LEARN-ERRORS only, held looser "
+                        "than --kdist-cutoff so the error model is learned at the stable "
+                        "0.42 while inference runs tight (e.g. --learn-kdist-cutoff 0.42 "
+                        "--kdist-cutoff 0.30). Diagnostics show this removes the ASV-loss "
+                        "that JOINT tightening causes; this benchmark times whether it also "
+                        "wins wall/RSS at inference. dada2-rs only (R has no per-step "
+                        "KDIST_CUTOFF); ignored by the R arm.")
     p.add_argument("--no-run-rust", action="store_true", help="skip the dada2-rs pipeline")
     p.add_argument("--verbose", action="store_true",
                    help="pass --verbose to each dada2-rs step (filter/remove-primers/"
@@ -913,10 +972,16 @@ def main():
     p.add_argument("--max-n", type=int, default=0)
     args = p.parse_args()
 
-    global VERBOSE, ALIGN_BACKEND, WFA_MAX_EDITS
+    global VERBOSE, ALIGN_BACKEND, WFA_MAX_EDITS, INFER_KDIST, LEARN_KDIST
     VERBOSE = args.verbose
     ALIGN_BACKEND = args.align_backend
     WFA_MAX_EDITS = args.wfa_max_edits
+    INFER_KDIST = args.kdist_cutoff
+    LEARN_KDIST = args.learn_kdist_cutoff
+    if LEARN_KDIST is not None and args.run_r:
+        print("  note: --learn-kdist-cutoff (decoupled learn/infer screen) is a dada2-rs\n"
+              "        capability; the R arm uses one global KDIST_CUTOFF and ignores it.",
+              file=sys.stderr)
 
     if args.trunc_q is None:
         args.trunc_q = 2 if args.platform == "illumina" else 0
@@ -973,8 +1038,15 @@ def main():
         mode += " cached" if args.cache_samples else " streaming"
     rmode = f", R derep={args.r_derep_mode}" if args.run_r else ""
     bemode = f", dada2-rs align={args.align_backend}" if args.align_backend != "nw" else ""
+    # Surface a non-default k-mer cutoff, and flag DECOUPLED (learn≠infer).
+    kdmode = ""
+    if INFER_KDIST is not None or LEARN_KDIST is not None:
+        infer_c = INFER_KDIST if INFER_KDIST is not None else 0.42
+        learn_c = LEARN_KDIST if LEARN_KDIST is not None else infer_c
+        kdmode = (f", kdist learn={learn_c}/infer={infer_c} (decoupled)"
+                  if learn_c != infer_c else f", kdist={infer_c}")
     print(f"BENCHMARK SUMMARY — {args.platform}, {mode} denoise, "
-          f"{args.threads} thread(s){bemode}{rmode}")
+          f"{args.threads} thread(s){bemode}{kdmode}{rmode}")
     print("=" * 56)
     print(f"  cores = CPU/wall (effective cores; ideal ≈ {args.threads} for an "
           "in-process step, ≈ min(#samples, threads) for fanned steps)")
