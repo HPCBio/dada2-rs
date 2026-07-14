@@ -149,7 +149,7 @@ if [[ -n "$LEARN_CUTOFF" ]]; then
         --kmer-size "$KMER_SIZE" --kdist-cutoff "$LEARN_CUTOFF" \
         --nbases "$NBASES" \
         --max-consist "$MAX_CONSIST" --threads "$THREADS" \
-        -o "$SHARED_ERR" 2> "${OUTDIR}/learn_shared.log"
+        --verbose -o "$SHARED_ERR" 2> "${OUTDIR}/learn_shared.log"
 fi
 
 # --- per-cutoff: (learn) + dada-pooled (+ pooled record) -------------------
@@ -173,16 +173,17 @@ for CUT in $CUTOFFLIST; do
             --kmer-size "$KMER_SIZE" --kdist-cutoff "$CUT" \
             --nbases "$NBASES" \
             --max-consist "$MAX_CONSIST" --threads "$THREADS" \
-            -o "$ERR_JSON" 2> "${OUTDIR}/learn_${tag}.log"
+            --verbose -o "$ERR_JSON" 2> "${OUTDIR}/learn_${tag}.log"
     fi
 
     echo "==> dada-pooled (inference cutoff=$CUT)"
     gzip_flag=(); [[ "$GZIP" == "1" ]] && gzip_flag=(--gzip)
+    # --verbose emits the "ALIGN: N aligns, M shrouded" line to the log.
     "$DADA2RS" dada-pooled "${DEREPS[@]}" \
         --error-model "$ERR_JSON" --output-dir "$DADA_OUT" \
         --pooled-record "$POOLED_REC" "${gzip_flag[@]}" \
         --band "$BAND" --kmer-size "$KMER_SIZE" --kdist-cutoff "$CUT" \
-        --threads "$THREADS" 2> "${OUTDIR}/dada_${tag}.log"
+        --threads "$THREADS" --verbose 2> "${OUTDIR}/dada_${tag}.log"
 
     echo "    errors -> $ERR_JSON"
     echo "    pooled -> $POOLED_REC"

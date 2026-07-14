@@ -143,15 +143,16 @@ for BAND in $BANDLIST; do
         --kmer-size "$KMER_SIZE" --kdist-cutoff "$KDIST_CUTOFF" \
         --nbases "$NBASES" \
         --max-consist "$MAX_CONSIST" --threads "$THREADS" \
-        -o "$ERR_JSON" 2> "${OUTDIR}/learn_band${BAND}.log"
+        --verbose -o "$ERR_JSON" 2> "${OUTDIR}/learn_band${BAND}.log"
 
     echo "==> dada-pooled (band=$BAND)"
     gzip_flag=(); [[ "$GZIP" == "1" ]] && gzip_flag=(--gzip)
+    # --verbose emits the "ALIGN: N aligns, M shrouded" line to the log.
     "$DADA2RS" dada-pooled "${DEREPS[@]}" \
         --error-model "$ERR_JSON" --output-dir "$DADA_OUT" \
         --pooled-record "$POOLED_REC" "${gzip_flag[@]}" \
         --band "$BAND" --kmer-size "$KMER_SIZE" --kdist-cutoff "$KDIST_CUTOFF" \
-        --threads "$THREADS" 2> "${OUTDIR}/dada_band${BAND}.log"
+        --threads "$THREADS" --verbose 2> "${OUTDIR}/dada_band${BAND}.log"
 
     echo "    errors -> $ERR_JSON"
     echo "    pooled -> $POOLED_REC"
