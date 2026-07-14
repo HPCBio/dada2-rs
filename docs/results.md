@@ -273,6 +273,42 @@ Prior data also suggested a small improvement for pooled samples using a higher 
 
 Notably the big improvement is with `merge-pairs`, largely due to threading, though overall steps are generally faster.  One interesting point: the full pooling run suggests that the two `dada` steps are not fully utilizing all cores, which may be a further point to assess. 
 
+### Pooled `dada` core under-utilization: root cause (Amdahl serial fraction)
+
+The depressed core counts in the pooled `dada` steps (12.9 for `dada_fwd`, 9.9
+for `dada_rev`, of 24 available) are **not** a parallel-efficiency problem — the
+compare step's parallel alignment map is already 96–97% efficient at 24 cores.
+The low averages are entirely the *serial* phases of `run_dada`
+(`b_shuffle2` / `b_bud` / `b_p_update` / the compare store-loop) running at ~1
+core and dragging the average down. Verbose phase timings from the pooled k5 run
+(272,580 fwd / 296,898 rev raws):
+
+| Phase | `dada_fwd` | `dada_rev` | Parallel? |
+|---|---:|---:|---|
+| compare-map | 98.9s | 58.1s | ✅ 24 cores @ 96–97% |
+| compare-store | 12.7s | 11.1s | ❌ serial |
+| **shuffle** (`b_shuffle2`) | **49.6s** | **57.8s** | ❌ serial |
+| **bud** (`b_bud`) | **21.5s** | **18.9s** | ❌ serial |
+| p_update (`b_p_update`) | 2.9s | 4.1s | ❌ serial |
+
+Weighting these serial/parallel splits reproduces the reported 12.9 / 9.9
+average core counts almost exactly, confirming the diagnosis. In `dada_rev`,
+`shuffle` alone (57.8s) exceeds the entire parallel map (58.1s).
+
+This is **pooled-specific**: `b_shuffle2` and `b_bud` both scan all
+clusters × all raws every round. In no-pool / pseudo each sample is small so
+these scans are trivial and cores stay ~20; pooling merges all 384 samples into
+one `B` (~273k–297k raws, hundreds of clusters), so the O(nraw × nclusters)
+serial scans balloon. Overall throughput is unaffected (still 3.1× vs R), but
+there is significant headroom.
+
+Highest-leverage targets, ranked: (1) parallelize `b_shuffle2`'s per-raw
+best-cluster selection (a max-reduction, ~50–58s); (2) parallelize `b_bud`'s
+min-p-value scan (~19–22s); (3) the compare store-loop (~11–13s, harder — the
+`cluster.comp` push serializes). Each is inside the core partition algorithm and
+must stay byte-identical (order-dependent tie-breaking), so any change requires a
+concordance check against the R reference.
+
 ## Regenerating these tables
 
 After a run, distill its `summary.csv` to Markdown:
