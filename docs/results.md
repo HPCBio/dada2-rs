@@ -391,11 +391,24 @@ Result on the 384-sample pool (vs `main`, one run each, distinct commits):
 | dada peak RSS | +5% | +4.6–5.5% |
 
 `learn-errors` speeds up too because it runs the same dada/shuffle internally.
-The one cost is dada RSS +~5% (the index double-stores each comparison) — but
-the *pipeline* peak RSS is unchanged, since the peak lives in `merge`, not
-`dada`. Follow-ups (issue #85): apply the same incremental idea to `b_bud`
-(done — below), and replace per-cluster `comp` storage *with* the index to erase
-the duplication (deferred).
+The one cost is dada RSS +~5% (the index stores each comparison's
+`lambda`/`hamming` alongside the per-cluster `comp` copy) — but the *pipeline*
+peak RSS is unchanged, since the peak lives in `merge`, not `dada`. That +5% is
+**a justified denormalization, not waste** (see the negative result below); the
+`b_bud` follow-up (issue #85) is done and covered next.
+
+**Negative result — pointer-izing the index to erase the +5% RSS (do not
+retry).** The obvious dedup is to store 8-byte `(ci, off)` pointers into the
+per-cluster `comp` vecs instead of copying `lambda`/`hamming` into the index.
+On the 384-sample pool it recovered the RSS as predicted (dada −1.8/−2.3%) but
+**regressed wall +5.5% fwd / +12.1% rev (+7.1% pipeline)**. Cause: the
+reconcile's `best_from_cands` is *hot* (every shuffle-loop iteration, billions
+of candidate touches), and dereferencing `clusters[ci].comp[off]` per candidate
+is a **scattered gather** — the same cache penalty as the scattered-index build.
+The inline copy exists precisely so the raw-major reconcile scan stays
+sequential; the "duplication" buys cache locality on the hottest path. Since
+dada RSS is not the binding resource (pipeline peak is in `merge`), −2% RSS for
++7% wall is a clear loss. Reverted.
 
 #### Incremental `b_bud` — per-cluster candidate cache (WIN)
 
