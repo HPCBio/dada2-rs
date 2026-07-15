@@ -344,7 +344,58 @@ not thread them: incremental/cached best-cluster tracking in `b_shuffle2` (only
 re-score raws whose candidate clusters changed this round, vs rescanning all
 clusters × all raws every shuffle) and an incremental structure for `b_bud`'s
 minimum. The ~12-core pooled utilization is the inherent shape of a
-single-population run, not reclaimable waste.
+single-population run, not reclaimable waste. This lever is pursued next, and
+it works.
+
+#### Incremental shuffle-to-convergence (WIN — merged approach)
+
+First, the redundancy was quantified. Instrumenting the serial shuffle on the
+384-sample pool (verbose `[dada] shuffle redundancy` line) showed the waste is
+enormous: **10.3B / 10.8B comparisons scanned** (fwd/rev) to perform ~1.0M moves
+— **~10,000 comps scanned per move** — and **31–35% of shuffle calls move zero
+raws** (the terminal convergence-check of each bud's shuffle loop rescans
+everything to move nothing). Within a shuffle loop the comparisons are *fixed*;
+only cluster read counts change as raws move.
+
+`b_shuffle_converge` exploits this: it maintains a persistent per-raw candidate
+index (`CandIndex`, appended once per cluster — O(new comps) per bud, never
+rebuilt), rebuilds the best-cluster map once per loop, then after each move pass
+only recomputes raws whose candidate clusters' reads changed. It is
+byte-identical to looping `b_shuffle2` (same max, same lowest-ci tie-break), so
+moves are identical — confirmed by an order-independent ASV+count map match
+against `main` at scale (the `seqtab.json` *row order* differs only by
+per-process `HashMap` nondeterminism in `sequence_table.rs`, which varies across
+any two runs including main-vs-main; concordance is checked on the ASV+count map,
+not raw bytes).
+
+The **cache-locality subtlety was decisive**. A first cut rebuilt the map each
+loop by reading the raw-major inverted index — scattered, cache-missing access.
+It cut comparisons by the predicted ~55% (10.3B → 4.5B) yet made the shuffle
+phase *slower* (48→59s fwd): 4.5B scattered reads cost more wall than the serial
+scan's 10.3B *sequential* reads — the same bandwidth/cache lesson as the
+threading attempt. The fix (the merged version) does the per-loop initial build
+the serial way — a contiguous cache-friendly scan of the per-cluster comp vecs
+(the bulk of the work) — and uses the inverted index *only* for the reconcile,
+where the touched-raw volume is small.
+
+Result on the 384-sample pool (vs `main`, one run each, distinct commits):
+
+| Metric (Δ% vs main) | scattered-index cut | **cache-friendly (merged)** |
+|---|---:|---:|
+| dada_fwd shuffle phase | 48→59s (+22%) | **48→32s (−33%)** |
+| dada_rev shuffle phase | 56→60s (+6%) | **56→42s (−25%)** |
+| dada_fwd wall | +4.2% | **−10.4%** |
+| dada_rev wall | +3.5% | **−8.7%** |
+| learn_fwd / learn_rev wall | ≈0 | **−2.9% / −2.6%** |
+| **total pipeline wall** | +3.5% | **−8.4%** (427→391s) |
+| dada peak RSS | +5% | +4.6–5.5% |
+
+`learn-errors` speeds up too because it runs the same dada/shuffle internally.
+The one cost is dada RSS +~5% (the index double-stores each comparison) — but
+the *pipeline* peak RSS is unchanged, since the peak lives in `merge`, not
+`dada`. Follow-ups (tracked): apply the same incremental+index approach to
+`b_bud` (~20s serial), and replace per-cluster `comp` storage *with* the index
+to erase the duplication.
 
 ## Regenerating these tables
 
