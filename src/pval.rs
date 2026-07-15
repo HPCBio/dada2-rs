@@ -29,14 +29,28 @@ const TAIL_APPROX_CUTOFF: f64 = 1e-7;
 /// their observed count (preventing them from budding a new cluster).
 ///
 /// Returns the number of Raws whose `p` was recomputed this call — i.e. the
-/// members of every cluster with `update_e` set. This is the per-round p-churn:
-/// the count of decrease/increase-key operations a p-ordered incremental
-/// budding structure would have to process before each `b_bud`. It gates the
-/// b_bud incremental follow-up (issue #85) — if the churn approaches `nraw`,
-/// re-keying costs as much as the O(nraw) scan it would replace.
+/// members of every cluster with `update_e` set. This is the per-round p-churn
+/// that gated the b_bud incremental follow-up (issue #85).
+///
+/// While repricing each dirty cluster's members, this also refreshes that
+/// cluster's cached best budding candidate (`Bi::bud_min` / `bud_min_prior`),
+/// applying the same eligibility filters and tie-break as `b_bud`'s scan. The
+/// member loop already touches exactly these Raws with `bi_reads` in hand, so
+/// the cache is maintained at no extra memory traffic — and `b_bud` then
+/// combines the per-cluster minima in O(nclusters) instead of rescanning every
+/// Raw (issue #85). `min_fold`/`min_hamming`/`min_abund` are `b_bud`'s
+/// candidate filters, threaded through so the cache matches its scan exactly.
 ///
 /// Equivalent to C++ `b_p_update`.
-pub fn b_p_update(b: &mut B, greedy: bool, detect_singletons: bool) -> u64 {
+pub fn b_p_update(
+    b: &mut B,
+    greedy: bool,
+    detect_singletons: bool,
+    min_fold: f64,
+    min_hamming: u32,
+    min_abund: u32,
+) -> u64 {
+    use crate::containers::BudCand;
     let mut raws_repriced = 0u64;
     for i in 0..b.clusters.len() {
         if b.clusters[i].update_e {
@@ -44,7 +58,11 @@ pub fn b_p_update(b: &mut B, greedy: bool, detect_singletons: bool) -> u64 {
             // while mutating b.raws.
             let members: Vec<usize> = b.clusters[i].raws.clone();
             let bi_reads = b.clusters[i].reads;
-            for raw_idx in members {
+            // Refresh this cluster's cached bud candidate in the same pass.
+            // Position 0 is skipped, mirroring b_bud's `for r in 1..len`.
+            let mut bud_min: Option<BudCand> = None;
+            let mut bud_min_prior: Option<BudCand> = None;
+            for (r, &raw_idx) in members.iter().enumerate() {
                 let p = get_pA(
                     b.raws[raw_idx].reads,
                     b.raws[raw_idx].prior,
@@ -55,7 +73,38 @@ pub fn b_p_update(b: &mut B, greedy: bool, detect_singletons: bool) -> u64 {
                 );
                 b.raws[raw_idx].p = p;
                 raws_repriced += 1;
+
+                if r == 0 {
+                    continue; // center slot: never a bud candidate
+                }
+                let raw = &b.raws[raw_idx];
+                if raw.reads < min_abund || raw.comp.hamming < min_hamming {
+                    continue;
+                }
+                let fold_ok = min_fold <= 1.0
+                    || raw.reads as f64 >= min_fold * raw.comp.lambda * bi_reads as f64;
+                if !fold_ok {
+                    continue;
+                }
+                let cand = BudCand {
+                    p,
+                    reads: raw.reads,
+                    r,
+                    raw_idx,
+                };
+                // Ascending r with strict replacement keeps the first-in-scan
+                // (min p, then max reads, then lowest r) — identical to b_bud.
+                if bud_min.is_none_or(|m| p < m.p || (p == m.p && cand.reads > m.reads)) {
+                    bud_min = Some(cand);
+                }
+                if raw.prior
+                    && bud_min_prior.is_none_or(|m| p < m.p || (p == m.p && cand.reads > m.reads))
+                {
+                    bud_min_prior = Some(cand);
+                }
             }
+            b.clusters[i].bud_min = bud_min;
+            b.clusters[i].bud_min_prior = bud_min_prior;
             b.clusters[i].update_e = false;
         }
 
@@ -78,6 +127,72 @@ pub fn b_p_update(b: &mut B, greedy: bool, detect_singletons: bool) -> u64 {
         }
     }
     raws_repriced
+}
+
+/// Non-mutating serial equivalent of `b_bud`'s candidate selection: scans every
+/// non-position-0 raw across all clusters and returns the abundance and prior
+/// minima it would pick, as `(mini, min_p, min_reads, mini_prior, min_p_prior,
+/// min_reads_prior)` where each `mini*` is `Option<(ci, r, raw_idx)>`. Used only
+/// by `b_bud`'s debug cross-check against the incremental cache (issue #85).
+#[cfg(debug_assertions)]
+#[allow(clippy::type_complexity)]
+pub fn b_bud_scan_select(
+    b: &B,
+    min_fold: f64,
+    min_hamming: u32,
+    min_abund: u32,
+) -> (
+    Option<(usize, usize, usize)>,
+    f64,
+    u32,
+    Option<(usize, usize, usize)>,
+    f64,
+    u32,
+) {
+    let init_center = b.clusters[0]
+        .center
+        .expect("b_bud_scan_select: cluster 0 has no center");
+    let mut mini: Option<(usize, usize, usize)> = None;
+    let mut mini_prior: Option<(usize, usize, usize)> = None;
+    let mut min_p = b.raws[init_center].p;
+    let mut min_p_prior = b.raws[init_center].p;
+    let mut min_reads = b.raws[init_center].reads;
+    let mut min_reads_prior = b.raws[init_center].reads;
+
+    for ci in 0..b.clusters.len() {
+        for r in 1..b.clusters[ci].raws.len() {
+            let raw_idx = b.clusters[ci].raws[r];
+            let raw = &b.raws[raw_idx];
+            if raw.reads < min_abund || raw.comp.hamming < min_hamming {
+                continue;
+            }
+            let fold_ok = min_fold <= 1.0
+                || raw.reads as f64 >= min_fold * raw.comp.lambda * b.clusters[ci].reads as f64;
+            if !fold_ok {
+                continue;
+            }
+            if raw.p < min_p || (raw.p == min_p && raw.reads > min_reads) {
+                mini = Some((ci, r, raw_idx));
+                min_p = raw.p;
+                min_reads = raw.reads;
+            }
+            if raw.prior
+                && (raw.p < min_p_prior || (raw.p == min_p_prior && raw.reads > min_reads_prior))
+            {
+                mini_prior = Some((ci, r, raw_idx));
+                min_p_prior = raw.p;
+                min_reads_prior = raw.reads;
+            }
+        }
+    }
+    (
+        mini,
+        min_p,
+        min_reads,
+        mini_prior,
+        min_p_prior,
+        min_reads_prior,
+    )
 }
 
 /// Abundance p-value: P(X ≥ `reads` | Poisson(λ = `e_reads`)).

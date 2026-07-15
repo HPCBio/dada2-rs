@@ -637,3 +637,164 @@ pub fn b_bud(
     }
     None
 }
+
+/// Incremental equivalent of [`b_bud`] (issue #85).
+///
+/// Instead of rescanning every non-center raw across all clusters, this combines
+/// the per-cluster cached minima (`Bi::bud_min` / `bud_min_prior`) that
+/// `b_p_update` maintains, seeded — exactly as the scan is — with cluster 0's
+/// center. The combine is O(nclusters); the cache refresh rides along on the
+/// p-update pass at no extra memory traffic. The abundance/prior significance
+/// tests and the pop-into-new-cluster tail are byte-identical to [`b_bud`].
+///
+/// Correctness rests on the invariant (verified in issue #85) that between
+/// consecutive bud calls a candidate raw's p or eligibility changes *iff* its
+/// cluster was flagged `update_e` — the exact set `b_p_update` reprices and
+/// re-caches. A debug-only cross-check asserts the combined selection equals the
+/// serial scan every call.
+///
+/// `min_fold`/`min_hamming`/`min_abund` must match the values passed to
+/// `b_p_update` (they define which members were cached as candidates).
+/// `combine_len` receives the O(nclusters) combine cost, mirroring `b_bud`'s
+/// `raws_scanned` out-param for the redundancy diagnostic.
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
+pub fn b_bud_incremental(
+    b: &mut B,
+    min_fold: f64,
+    min_hamming: u32,
+    min_abund: u32,
+    verbose: bool,
+    combine_len: &mut u64,
+) -> Option<usize> {
+    let nraw = b.raws.len() as f64;
+    let init_center = b.clusters[0]
+        .center
+        .expect("b_bud_incremental: cluster 0 has no center");
+
+    *combine_len = b.clusters.len() as u64;
+
+    // Seed with cluster 0's center, then combine per-cluster cached minima in
+    // ascending cluster order with the same strict replacement as the scan
+    // (keeps the lowest cluster index on a full (p, reads) tie; each cluster's
+    // cache already resolved the lowest position within it).
+    let mut mini: Option<(usize, usize, usize)> = None;
+    let mut mini_prior: Option<(usize, usize, usize)> = None;
+    let mut min_p = b.raws[init_center].p;
+    let mut min_p_prior = b.raws[init_center].p;
+    let mut min_reads = b.raws[init_center].reads;
+    let mut min_reads_prior = b.raws[init_center].reads;
+
+    for ci in 0..b.clusters.len() {
+        if let Some(c) = b.clusters[ci].bud_min
+            && (c.p < min_p || (c.p == min_p && c.reads > min_reads))
+        {
+            mini = Some((ci, c.r, c.raw_idx));
+            min_p = c.p;
+            min_reads = c.reads;
+        }
+        if let Some(c) = b.clusters[ci].bud_min_prior
+            && (c.p < min_p_prior || (c.p == min_p_prior && c.reads > min_reads_prior))
+        {
+            mini_prior = Some((ci, c.r, c.raw_idx));
+            min_p_prior = c.p;
+            min_reads_prior = c.reads;
+        }
+    }
+
+    // Debug guardrail: the incremental combine must match a full serial scan
+    // exactly (same winners, same p/reads). Catches any cache-staleness bug the
+    // update_e invariant would otherwise hide. Compiled out of release.
+    #[cfg(debug_assertions)]
+    {
+        let (s_mini, s_min_p, s_min_reads, s_mini_prior, s_min_p_prior, s_min_reads_prior) =
+            crate::pval::b_bud_scan_select(b, min_fold, min_hamming, min_abund);
+        debug_assert_eq!(mini, s_mini, "b_bud_incremental: abundance mini mismatch");
+        debug_assert_eq!(min_p.to_bits(), s_min_p.to_bits(), "min_p mismatch");
+        debug_assert_eq!(min_reads, s_min_reads, "min_reads mismatch");
+        debug_assert_eq!(mini_prior, s_mini_prior, "prior mini mismatch");
+        debug_assert_eq!(
+            min_p_prior.to_bits(),
+            s_min_p_prior.to_bits(),
+            "min_p_prior"
+        );
+        debug_assert_eq!(min_reads_prior, s_min_reads_prior, "min_reads_prior");
+    }
+
+    let p_a = min_p * nraw;
+    let p_p = min_p_prior;
+
+    // Abundance-based bud (tail identical to b_bud).
+    if p_a < b.omega_a
+        && let Some((ci, r, raw_idx)) = mini
+    {
+        let expected = b.raws[raw_idx].comp.lambda * b.clusters[ci].reads as f64;
+        let birth_comp = b.raws[raw_idx].comp.clone();
+        let birth_fold = b.raws[raw_idx].reads as f64 / expected.max(f64::MIN_POSITIVE);
+        let nraw_total = b.raws.len() as u32;
+
+        b.bi_pop_raw(ci, r);
+
+        let mut new_bi = Bi::new(nraw_total);
+        new_bi.birth_type = BirthType::Abundance;
+        new_bi.birth_from = ci as u32;
+        new_bi.birth_pval = p_a;
+        new_bi.birth_fold = birth_fold;
+        new_bi.birth_e = expected;
+        new_bi.birth_comp = birth_comp;
+
+        let new_ci = b.add_cluster(new_bi);
+        b.bi_add_raw(new_ci, raw_idx);
+        b.assign_center(new_ci);
+
+        if verbose {
+            eprint!(", Division (naive): Raw {raw_idx} from Bi {ci}, pA={p_a:.2e}");
+        }
+        return Some(new_ci);
+    }
+
+    // Prior-based bud (tail identical to b_bud).
+    if p_p < b.omega_p
+        && let Some((ci, r, raw_idx)) = mini_prior
+    {
+        let expected = b.raws[raw_idx].comp.lambda * b.clusters[ci].reads as f64;
+        let birth_comp = b.raws[raw_idx].comp.clone();
+        let birth_fold = b.raws[raw_idx].reads as f64 / expected.max(f64::MIN_POSITIVE);
+        let nraw_total = b.raws.len() as u32;
+
+        b.bi_pop_raw(ci, r);
+
+        let mut new_bi = Bi::new(nraw_total);
+        new_bi.birth_type = BirthType::Prior;
+        new_bi.birth_pval = p_p;
+        new_bi.birth_fold = birth_fold;
+        new_bi.birth_e = expected;
+        new_bi.birth_comp = birth_comp;
+
+        let new_ci = b.add_cluster(new_bi);
+        b.bi_add_raw(new_ci, raw_idx);
+        b.assign_center(new_ci);
+
+        if verbose {
+            eprint!(", Division (prior): Raw {raw_idx} from Bi {ci}, pP={p_p:.2e}");
+        }
+        return Some(new_ci);
+    }
+
+    if verbose {
+        let (raw_idx_str, reads, ci_str) = match mini {
+            Some((ci, r, _)) => {
+                let raw_idx = b.clusters[ci].raws[r];
+                (raw_idx.to_string(), b.raws[raw_idx].reads, ci.to_string())
+            }
+            None => (
+                init_center.to_string(),
+                b.raws[init_center].reads,
+                String::from("0"),
+            ),
+        };
+        eprint!(
+            ", No Division. Minimum pA={p_a:.2e} (Raw {raw_idx_str} w/ {reads} reads in Bi {ci_str})."
+        );
+    }
+    None
+}

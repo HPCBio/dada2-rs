@@ -19,7 +19,8 @@
 use rayon::prelude::*;
 
 use crate::cluster::{
-    CandIndex, b_bud, b_compare, b_compare_parallel, b_shuffle_converge, index_add_cluster,
+    CandIndex, b_bud_incremental, b_compare, b_compare_parallel, b_shuffle_converge,
+    index_add_cluster,
 };
 use crate::containers::{B, BirthType, Raw, Sub};
 use crate::error::{
@@ -652,7 +653,14 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     let mut cand_index: CandIndex = vec![Vec::new(); bb.raws.len()];
     index_add_cluster(&mut cand_index, &bb, 0);
     let t = Instant::now();
-    b_p_update(&mut bb, params.greedy, params.detect_singletons);
+    b_p_update(
+        &mut bb,
+        params.greedy,
+        params.detect_singletons,
+        params.min_fold,
+        params.min_hamming,
+        params.min_abund,
+    );
     t_pupdate += t.elapsed();
 
     let max_clust = if params.max_clust == 0 {
@@ -664,7 +672,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     while bb.clusters.len() < max_clust {
         let t = Instant::now();
         let mut bud_scanned = 0u64;
-        let bud = b_bud(
+        let bud = b_bud_incremental(
             &mut bb,
             params.min_fold,
             params.min_hamming,
@@ -736,7 +744,14 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         }
 
         let t = Instant::now();
-        let repriced = b_p_update(&mut bb, params.greedy, params.detect_singletons);
+        let repriced = b_p_update(
+            &mut bb,
+            params.greedy,
+            params.detect_singletons,
+            params.min_fold,
+            params.min_hamming,
+            params.min_abund,
+        );
         t_pupdate += t.elapsed();
         pupd_rounds += 1;
         pupd_raws_repriced += repriced;
@@ -798,17 +813,18 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             shuf_zero_move_calls,
             zero_pct,
         );
-        // b_bud scan redundancy: raws visited per successful bud. High
-        // scanned/bud bounds the headroom for an incremental p-ordered
-        // structure (see docs/results.md).
-        let scanned_per_bud = if bud_success > 0 {
-            bud_raws_scanned as f64 / bud_success as f64
+        // b_bud combine cost: with the incremental candidate cache (#85) each
+        // bud combines per-cluster minima in O(nclusters) instead of rescanning
+        // every raw. This reports the combine volume — compare to the historical
+        // ~nraw scanned/bud to see the reduction.
+        let combine_per_bud = if bud_calls > 0 {
+            bud_raws_scanned as f64 / bud_calls as f64
         } else {
             f64::INFINITY
         };
         eprintln!(
-            "[dada] bud redundancy: {} calls ({} budded), {} raws scanned ({:.0} scanned/bud)",
-            bud_calls, bud_success, bud_raws_scanned, scanned_per_bud,
+            "[dada] bud redundancy: {} calls ({} budded), {} clusters combined ({:.0} combined/bud, incremental cache)",
+            bud_calls, bud_success, bud_raws_scanned, combine_per_bud,
         );
         // p-update churn between bud calls (issue #85 gate): raws whose p is
         // recomputed per in-loop round. A p-ordered incremental budding

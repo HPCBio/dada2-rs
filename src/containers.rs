@@ -182,6 +182,21 @@ impl Raw {
 // Bi
 // ---------------------------------------------------------------------------
 
+/// Cached best budding candidate for one cluster: the member (excluding
+/// position 0) with the smallest abundance p-value, tie-broken by most reads
+/// then lowest position — mirroring `b_bud`'s scan. Recomputed by `b_p_update`
+/// only when the cluster is repriced (`update_e`), so `b_bud` can combine the
+/// per-cluster minima in O(nclusters) instead of rescanning every raw. `r` is
+/// the member's position in `Bi.raws` at cache time (valid until the cluster is
+/// mutated, which re-flags `update_e`). See issue #85.
+#[derive(Clone, Copy, Debug)]
+pub struct BudCand {
+    pub p: f64,
+    pub reads: u32,
+    pub r: usize,
+    pub raw_idx: usize,
+}
+
 /// A single cluster in the partition.
 /// Equivalent to the C++ `Bi` struct.
 pub struct Bi {
@@ -219,6 +234,11 @@ pub struct Bi {
     pub birth_comp: Comparison,
     /// Comparisons with all Raws that could potentially join this cluster.
     pub comp: Vec<Comparison>,
+    /// Cached best abundance-bud candidate among members (see [`BudCand`]).
+    /// `None` when the cluster has no eligible non-position-0 candidate.
+    pub bud_min: Option<BudCand>,
+    /// Cached best candidate restricted to prior members (see [`BudCand`]).
+    pub bud_min_prior: Option<BudCand>,
 }
 
 impl Bi {
@@ -241,6 +261,8 @@ impl Bi {
             birth_e: 0.0,
             birth_comp: Comparison::default(),
             comp: Vec::new(),
+            bud_min: None,
+            bud_min_prior: None,
         }
     }
 
