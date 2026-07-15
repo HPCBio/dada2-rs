@@ -78,10 +78,14 @@ PacBio is benchmarked from `--kmer-size 5` (matched to R's fixed
 
 #### k-mer size
 
-- R DADA2 *currently* has a fixed (hard-coded) k-mer size of 5 for screening. This appears to have the effect of reducing k-mer screening efficiency almost to zero (a no-op), with almost every unique sequence proceeding to NW alignment. 
-- Increasing the k-mer length marginally has a significant effect, dramatically reducing walltime. 
-- Preliminary followup (to be added) indicates this has essentially **no impact** on the ASVs derived post-chimera removal as well as their counts, and may actually increase sensitivity slightly with a few more ASVs recovered in the `dada2-rs` runs.
-- We are also evaluating the overall effect increasing k-mer sizes have on clustering with the different pooling results. Initial k=8 results confirms this increases memory usage dramatically (>100GB), so we don't anticipate this to have much practical use. 
+R DADA2 has a fixed (hard-coded) k-mer size of 5, which on full-length 16S makes
+the screen a near-no-op (almost every unique proceeds to NW alignment); raising
+`k` dramatically reduces walltime. The full investigation — including the key
+result that **k-mer size has ~no effect on the final chimera-filtered table on
+either platform** (it is a speed/memory knob, not an accuracy knob) — is written
+up in [Findings → K-mer screen size](findings/kmer-size-screening.md). The memory
+cost scales as ~`4^k` (PacBio k8 ≈ 135 GB), which is why k7/k6 are the practical
+operating points.
 
 #### ASVs
 

@@ -54,5 +54,10 @@ nav:
   - Performance:
     - Tooling & metrics: benchmarking.md
     - Results: results.md
+  - Findings:
+    - Overview: findings/index.md
+    - KDIST cutoff decoupling: findings/kdist-cutoff-decoupling.md
+    - K-mer screen size: findings/kmer-size-screening.md
+    - Band size & platform defaults: findings/band-size-platform-defaults.md
   - Diagnostics: diagnostics.md
   - Citation: citation.md
