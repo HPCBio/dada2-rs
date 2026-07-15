@@ -302,12 +302,49 @@ one `B` (~273k–297k raws, hundreds of clusters), so the O(nraw × nclusters)
 serial scans balloon. Overall throughput is unaffected (still 3.1× vs R), but
 there is significant headroom.
 
-Highest-leverage targets, ranked: (1) parallelize `b_shuffle2`'s per-raw
-best-cluster selection (a max-reduction, ~50–58s); (2) parallelize `b_bud`'s
-min-p-value scan (~19–22s); (3) the compare store-loop (~11–13s, harder — the
-`cluster.comp` push serializes). Each is inside the core partition algorithm and
-must stay byte-identical (order-dependent tie-breaking), so any change requires a
-concordance check against the R reference.
+#### Attempted fix: parallelizing the serial scans (NEGATIVE RESULT — do not retry)
+
+The obvious idea — thread-parallelize `b_shuffle2`'s per-raw best-cluster
+selection (~50–58s serial) and `b_bud`'s min-p-value scan (~19–22s serial) —
+was implemented byte-identical and A/B'd on this exact 384-sample pool (four
+arms, one run each, all confirmed distinct commits via the bench `version.txt`):
+
+| Metric (Δ% vs main) | `b_bud` only | `b_shuffle2` only | both |
+|---|---:|---:|---:|
+| learn_fwd wall | +1.7% | **+97.5%** | +102.0% |
+| learn_rev wall | −0.1% | **+137.5%** | +121.4% |
+| dada_fwd wall | +0.6% | **+62.7%** | +67.9% |
+| dada_rev wall | +1.7% | **+80.7%** | +80.0% |
+| dada_fwd cores | +3.2% | −12.1% | −13.1% |
+
+Both changes were **net losses**:
+
+- **`b_shuffle2` (atomic scatter-reduce) is catastrophic** — it doubles
+  `learn-errors` and inflates pooled `dada` 60–80%, while *lowering* dada cores.
+  It flattens all comparisons into a fresh allocation every call, then does
+  random-access atomic CAS scatter (cache-hostile, contended on cluster 0's
+  all-raw entries). Called thousands of times, this costs far more than the
+  cheap sequential serial scan it replaced.
+- **`b_bud` (lightweight per-cluster reduce) is a wash** — learn stays flat (no
+  fan-out contention), dada cores tick up ~3%, but cpu rises ~4–5% and wall is
+  unchanged (within run-to-run noise). The ~20s bud phase parallelized, but
+  allocation/dispatch overhead ate the savings. No wall benefit.
+
+**Why threading can't help here.** `learn-errors` runs the *same* dada algorithm
+yet stays near-saturated (~21 cores) because it fans out across 384 independent
+per-sample jobs (`all_inputs.par_iter()` in `learn_errors.rs`), so one sample's
+serial phase overlaps another's parallel phase. Pooled `dada` is a single
+monolithic run: its serial scans are a global barrier with no other work to fill
+the cores, *and* the scans are cheap sequential/bandwidth-bound memory traffic,
+not parallelizable compute. Spreading bandwidth-bound work across cores that
+share one memory bus adds synchronization for no gain.
+
+The remaining lever is therefore **algorithmic — reduce the scans' total work**,
+not thread them: incremental/cached best-cluster tracking in `b_shuffle2` (only
+re-score raws whose candidate clusters changed this round, vs rescanning all
+clusters × all raws every shuffle) and an incremental structure for `b_bud`'s
+minimum. The ~12-core pooled utilization is the inherent shape of a
+single-population run, not reclaimable waste.
 
 ## Regenerating these tables
 
