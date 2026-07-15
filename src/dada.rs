@@ -600,6 +600,11 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // plus summed worker-busy time to derive the map's parallel efficiency.
     let (mut t_cmp_map, mut t_cmp_serial, mut t_cmp_busy) =
         (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+    // Shuffle rescan-redundancy accounting (verbose-only diagnostics).
+    let (mut shuf_calls, mut shuf_moves, mut shuf_zero_move_calls) = (0u64, 0u64, 0u64);
+    let mut shuf_comps_scanned = 0u64;
+    // b_bud scan-redundancy accounting (verbose-only diagnostics).
+    let (mut bud_calls, mut bud_success, mut bud_raws_scanned) = (0u64, 0u64, 0u64);
 
     // Initial compare: no k-mer distance screen so that cluster 0 accumulates
     // comparisons for every Raw (required by b_shuffle2).
@@ -646,14 +651,21 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
 
     while bb.clusters.len() < max_clust {
         let t = Instant::now();
+        let mut bud_scanned = 0u64;
         let bud = b_bud(
             &mut bb,
             params.min_fold,
             params.min_hamming,
             params.min_abund,
             params.verbose,
+            &mut bud_scanned,
         );
         t_bud += t.elapsed();
+        bud_calls += 1;
+        bud_raws_scanned += bud_scanned;
+        if bud.is_some() {
+            bud_success += 1;
+        }
         let newi = match bud {
             Some(i) => i,
             None => break,
@@ -694,12 +706,22 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         let t = Instant::now();
         let mut nshuffle = 0usize;
         loop {
-            let shuffled = b_shuffle2(&mut bb);
+            let st = b_shuffle2(&mut bb);
+            // Redundancy accounting: comps_scanned is the full-rescan work each
+            // call; moves is what actually changed. A large scanned/moves ratio
+            // (and many zero-move calls) is the headroom an incremental
+            // best-cluster tracker would reclaim.
+            shuf_calls += 1;
+            shuf_moves += st.moves as u64;
+            shuf_comps_scanned += st.comps_scanned as u64;
+            if st.moves == 0 {
+                shuf_zero_move_calls += 1;
+            }
             if params.verbose {
                 eprint!("S");
             }
             nshuffle += 1;
-            if !shuffled || nshuffle >= MAX_SHUFFLE {
+            if !st.shuffled() || nshuffle >= MAX_SHUFFLE {
                 break;
             }
         }
@@ -745,6 +767,41 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             t_cmp_busy.as_secs_f64(),
             t_cmp_map.as_secs_f64(),
             nthreads,
+        );
+        // Shuffle rescan redundancy: how much of the full-rescan work each
+        // b_shuffle2 call actually translated into moves. High scanned/move and
+        // a high zero-move-call fraction bound the headroom for an incremental
+        // best-cluster tracker (the "reduce work" lever in docs/results.md).
+        let scanned_per_move = if shuf_moves > 0 {
+            shuf_comps_scanned as f64 / shuf_moves as f64
+        } else {
+            f64::INFINITY
+        };
+        let zero_pct = if shuf_calls > 0 {
+            100.0 * shuf_zero_move_calls as f64 / shuf_calls as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "[dada] shuffle redundancy: {} calls, {} moves, {} comps scanned ({:.0} scanned/move), {} zero-move calls ({:.0}%)",
+            shuf_calls,
+            shuf_moves,
+            shuf_comps_scanned,
+            scanned_per_move,
+            shuf_zero_move_calls,
+            zero_pct,
+        );
+        // b_bud scan redundancy: raws visited per successful bud. High
+        // scanned/bud bounds the headroom for an incremental p-ordered
+        // structure (see docs/results.md).
+        let scanned_per_bud = if bud_success > 0 {
+            bud_raws_scanned as f64 / bud_success as f64
+        } else {
+            f64::INFINITY
+        };
+        eprintln!(
+            "[dada] bud redundancy: {} calls ({} budded), {} raws scanned ({:.0} scanned/bud)",
+            bud_calls, bud_success, bud_raws_scanned, scanned_per_bud,
         );
     }
 

@@ -215,11 +215,34 @@ pub fn b_compare_parallel(
 // b_shuffle2
 // ---------------------------------------------------------------------------
 
+/// Diagnostics from one [`b_shuffle2`] call, used to quantify the rescan
+/// redundancy that gates any future incremental best-cluster tracking (see the
+/// "reduce work, don't parallelize" conclusion in docs/results.md). Purely
+/// observational — collecting it changes no partition behaviour.
+#[derive(Clone, Copy, Default)]
+pub struct ShuffleStats {
+    /// Raws relocated to a different cluster this call.
+    pub moves: usize,
+    /// Comparisons scanned to rebuild the best-cluster map (the full-rescan
+    /// work: Σ over clusters of comp-vec length). `moves` ≪ `comps_scanned`
+    /// across a shuffle loop means most of the rescan is redundant.
+    pub comps_scanned: usize,
+    /// Cluster count at this call (context for the scan cost).
+    pub nclusters: usize,
+}
+
+impl ShuffleStats {
+    /// Whether any raw moved — the loop-termination signal callers use.
+    pub fn shuffled(&self) -> bool {
+        self.moves > 0
+    }
+}
+
 /// Move each Raw to the cluster that maximises its expected read count.
 /// The center of a cluster may not be reassigned.
-/// Returns `true` if any Raws were moved.
+/// Returns a [`ShuffleStats`] whose `shuffled()` is true iff any Raws moved.
 /// Equivalent to C++ `b_shuffle2`.
-pub fn b_shuffle2(b: &mut B) -> bool {
+pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
     let nraw = b.raws.len();
 
     // Initialise best-E and best-comparison trackers from cluster 0.
@@ -228,6 +251,7 @@ pub fn b_shuffle2(b: &mut B) -> bool {
     let mut emax: Vec<f64> = vec![f64::NEG_INFINITY; nraw];
     let mut compmax: Vec<Comparison> = vec![Comparison::default(); nraw];
 
+    let mut comps_scanned = b.clusters[0].comp.len();
     let c0_reads = b.clusters[0].reads as f64;
     for comp in &b.clusters[0].comp {
         let idx = comp.index as usize;
@@ -237,6 +261,7 @@ pub fn b_shuffle2(b: &mut B) -> bool {
 
     // Scan remaining clusters for better matches.
     for ci in 1..b.clusters.len() {
+        comps_scanned += b.clusters[ci].comp.len();
         let ci_reads = b.clusters[ci].reads as f64;
         for comp in &b.clusters[ci].comp {
             let idx = comp.index as usize;
@@ -250,7 +275,7 @@ pub fn b_shuffle2(b: &mut B) -> bool {
 
     // Move raws to their best cluster.
     // Iterate backwards because bi_pop_raw uses swap_remove.
-    let mut shuffled = false;
+    let mut moves = 0usize;
     for ci in 0..b.clusters.len() {
         let mut r = b.clusters[ci].raws.len();
         while r > 0 {
@@ -265,11 +290,15 @@ pub fn b_shuffle2(b: &mut B) -> bool {
                 b.bi_pop_raw(ci, r);
                 b.bi_add_raw(best_ci, raw_idx);
                 b.raws[raw_idx].comp = compmax[raw_idx].clone();
-                shuffled = true;
+                moves += 1;
             }
         }
     }
-    shuffled
+    ShuffleStats {
+        moves,
+        comps_scanned,
+        nclusters: b.clusters.len(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -287,11 +316,23 @@ pub fn b_bud(
     min_hamming: u32,
     min_abund: u32,
     verbose: bool,
+    raws_scanned: &mut u64,
 ) -> Option<usize> {
     let nraw = b.raws.len() as f64;
     let init_center = b.clusters[0]
         .center
         .expect("b_bud: cluster 0 has no center");
+
+    // Redundancy accounting (observational only): the full min-p scan visits
+    // every non-center raw across all clusters each call, yet at most one buds.
+    // Recording the scan cost bounds the headroom an incremental min-p
+    // structure (e.g. a p-ordered queue) could reclaim. Knowable up front, so
+    // it stays correct across the function's several early returns.
+    *raws_scanned = b
+        .clusters
+        .iter()
+        .map(|bi| bi.raws.len().saturating_sub(1) as u64)
+        .sum();
 
     // (cluster_idx, position_r, raw_index) for non-prior and prior minimums.
     let mut mini: Option<(usize, usize, usize)> = None;
