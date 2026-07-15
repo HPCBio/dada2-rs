@@ -191,6 +191,23 @@ def find_binary(explicit):
     return explicit
 
 
+def capture_version(bin_, outdir):
+    """Record the binary's version+commit so a run is tied to the code that
+    produced it. Without this, the only provenance is the outdir name — a
+    mislabeled dir or a forgotten rebuild silently confounds an A/B. Writes
+    `version.txt` into `outdir` and returns the string (or None on failure)."""
+    try:
+        ver = subprocess.run([str(bin_), "--version"],
+                             capture_output=True, text=True, timeout=30).stdout.strip()
+    except (subprocess.SubprocessError, OSError) as e:
+        ver = None
+        print(f"  (warning: could not capture --version: {e})", flush=True)
+    if ver:
+        (Path(outdir) / "version.txt").write_text(ver + "\n")
+        print(f"  binary: {ver}", flush=True)
+    return ver
+
+
 def run_step(name, cmd, logf, results, append_log=False):
     """Run cmd as one process; record (name, wall_s, maxrss_kb, rc). Returns rc."""
     cmd = maybe_align_backend(maybe_verbose(cmd))
@@ -995,6 +1012,7 @@ def main():
         bin_ = find_binary(args.dada2rs)
         print(f"=== thread sweep: dada2-rs ({args.platform}, {args.pool}) — {bin_} ===",
               flush=True)
+        capture_version(bin_, outdir)
         thread_sweep(args, bin_, outdir)
         return
 
@@ -1002,6 +1020,7 @@ def main():
         bin_ = find_binary(args.dada2rs)
         print(f"=== sample-jobs sweep: dada2-rs ({args.platform}, {args.pool}) — {bin_} ===",
               flush=True)
+        capture_version(bin_, outdir)
         sample_jobs_sweep(args, bin_, outdir)
         return
 
@@ -1009,6 +1028,7 @@ def main():
         bin_ = find_binary(args.dada2rs)
         print(f"=== wfa-max-edits sweep: dada2-rs ({args.platform}, {args.pool}) — {bin_} ===",
               flush=True)
+        capture_version(bin_, outdir)
         wfa_max_edits_sweep(args, bin_, outdir)
         return
 
@@ -1019,6 +1039,7 @@ def main():
     if not args.no_run_rust:
         bin_ = find_binary(args.dada2rs)
         print(f"=== dada2-rs ({args.platform}) — {bin_} ===", flush=True)
+        capture_version(bin_, outdir)
         rust_out = outdir / "rust"; rust_out.mkdir(exist_ok=True)
         (rust_illumina if args.platform == "illumina" else rust_pacbio)(args, bin_, rust_out, rust_results)
 

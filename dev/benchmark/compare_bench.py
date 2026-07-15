@@ -108,6 +108,23 @@ def parse_run(spec, default_file):
     return label, paths
 
 
+def read_version(paths):
+    """Return the binary version+commit recorded by bench_pooled.py for a run, or
+    None if absent. `version.txt` sits next to summary.csv (in the run's --outdir),
+    while the CSV itself may be one level down (e.g. sweep CSVs); check the CSV's
+    dir and its parent. If reps disagree, they were not the same binary."""
+    seen = []
+    for pth in paths:
+        d = Path(pth).parent
+        for cand in (d / "version.txt", d.parent / "version.txt"):
+            if cand.is_file():
+                seen.append(cand.read_text().strip())
+                break
+    if not seen:
+        return None
+    return seen[0] if len(set(seen)) == 1 else "MIXED(" + " | ".join(sorted(set(seen))) + ")"
+
+
 def detect_kind(path):
     with open(path, newline="") as f:
         header = next(csv.reader(f), [])
@@ -255,7 +272,7 @@ def main():
         if m not in spec["metrics"]:
             sys.exit(f"metric {m!r} not in {kind} CSV (have: {', '.join(spec['metrics'])})")
 
-    runs, key_order = [], []
+    runs, key_order, versions = [], [], []
     for label, paths in [(base_label, base_paths)] + [
             parse_run(c, spec["file"]) for c in args.compare]:
         rows, order, spread, nreps = load_reps(paths, kind, args.stack)
@@ -263,6 +280,7 @@ def main():
             where = f" (stack={args.stack})" if kind == "summary" else ""
             sys.exit(f"{label}: no rows in {', '.join(map(str, paths))}{where}")
         runs.append((label, rows, spread, nreps))
+        versions.append((label, read_version(paths)))
         for k in order:
             if k not in key_order:
                 key_order.append(k)
@@ -277,6 +295,22 @@ def main():
           + f"\nbaseline: {label_n(base_label, runs[0][3])}   vs: {label_desc}")
     if any(nr > 1 for *_, nr in runs):
         print("(values are medians across reps; ±N% = relative half-range)")
+    # Provenance: tie each arm to the binary that produced it. A same-commit
+    # comparison (or a missing/mixed version) means the A/B can't be trusted.
+    if any(v for _, v in versions):
+        print("-" * 64)
+        for label, v in versions:
+            print(f"  {label}: {v or 'UNKNOWN (no version.txt — rerun with current bench_pooled.py)'}")
+        known = [(l, v) for l, v in versions if v and not v.startswith("MIXED")]
+        dupes = {v for _, v in known if [w for _, w in known].count(v) > 1}
+        if dupes:
+            print("  ⚠ WARNING: arms share the same binary version — this is not a "
+                  "real A/B (identical code).")
+        if any(v and v.startswith("MIXED") for _, v in versions):
+            print("  ⚠ WARNING: an arm's reps used different binaries (MIXED) — "
+                  "results confound code with run.")
+        if any(v is None for _, v in versions):
+            print("  ⚠ NOTE: some arms have no recorded version; provenance unverified.")
     print("=" * 64)
     for m in metrics:
         print_table(m, key_order, runs, base_label)
