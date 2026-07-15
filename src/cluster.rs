@@ -221,14 +221,20 @@ pub fn b_compare_parallel(
 /// observational — collecting it changes no partition behaviour.
 #[derive(Clone, Copy, Default)]
 pub struct ShuffleStats {
-    /// Raws relocated to a different cluster this call.
+    /// Raws relocated to a different cluster (summed over the loop's iterations
+    /// for `b_shuffle_converge`; a single call's moves for `b_shuffle2`).
     pub moves: usize,
-    /// Comparisons scanned to rebuild the best-cluster map (the full-rescan
-    /// work: Σ over clusters of comp-vec length). `moves` ≪ `comps_scanned`
-    /// across a shuffle loop means most of the rescan is redundant.
+    /// Comparisons scanned to (re)build the best-cluster map. For the serial
+    /// scan this is Σ over clusters of comp-vec length per call; for the
+    /// incremental driver it is the realised work (one build + the per-iteration
+    /// recomputes), so the reduction is directly measurable.
     pub comps_scanned: usize,
     /// Cluster count at this call (context for the scan cost).
     pub nclusters: usize,
+    /// Move-pass iterations that relocated no raws (pure convergence checks).
+    pub zero_move_calls: usize,
+    /// Move-pass iterations run.
+    pub calls: usize,
 }
 
 impl ShuffleStats {
@@ -298,6 +304,160 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
         moves,
         comps_scanned,
         nclusters: b.clusters.len(),
+        zero_move_calls: usize::from(moves == 0),
+        calls: 1,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// b_shuffle_converge — incremental shuffle-to-convergence
+// ---------------------------------------------------------------------------
+
+/// One candidate cluster for a raw: (cluster index, lambda, hamming) — the
+/// fields the shuffle scan needs from a stored `Comparison`.
+#[derive(Clone, Copy)]
+pub struct Cand {
+    pub ci: u32,
+    pub lambda: f64,
+    pub hamming: u32,
+}
+
+/// Per-raw candidate index, maintained across the whole `run_dada`: each
+/// cluster's stored comparisons are appended once, when the cluster is created
+/// (see [`index_add_cluster`]). This lets a shuffle recompute a raw's best
+/// cluster from just its own candidates, without rescanning every cluster — and
+/// crucially it is built incrementally (O(new comps) per bud) rather than
+/// rebuilt per shuffle loop, which is what makes the incremental driver a net
+/// win rather than a wash.
+pub type CandIndex = Vec<Vec<Cand>>;
+
+/// Append cluster `ci`'s stored comparisons to the per-raw candidate index.
+/// Must be called once per cluster, immediately after `b_compare`/
+/// `b_compare_parallel` populates `clusters[ci].comp`, and in ascending `ci`
+/// order (cluster 0 first, then each bud's new cluster). Ascending order means
+/// each raw's candidate list stays cluster-ascending, so a strict-`>` scan keeps
+/// the lowest cluster index on ties — matching the serial scan's tie-break.
+pub fn index_add_cluster(index: &mut CandIndex, b: &B, ci: usize) {
+    for comp in &b.clusters[ci].comp {
+        index[comp.index as usize].push(Cand {
+            ci: ci as u32,
+            lambda: comp.lambda,
+            hamming: comp.hamming,
+        });
+    }
+}
+
+/// Raw's best cluster over its candidate list at the clusters' current reads.
+/// Ascending-ci order + strict `>` reproduces the serial lowest-ci tie-break.
+fn best_from_cands(cands: &[Cand], raw: usize, clusters: &[Bi]) -> Comparison {
+    let mut best_e = f64::NEG_INFINITY;
+    let mut best = Comparison::default();
+    for c in cands {
+        let e = c.lambda * clusters[c.ci as usize].reads as f64;
+        if e > best_e {
+            best_e = e;
+            best = Comparison {
+                i: c.ci,
+                index: raw as u32,
+                lambda: c.lambda,
+                hamming: c.hamming,
+            };
+        }
+    }
+    best
+}
+
+/// Incremental equivalent of looping [`b_shuffle2`] to convergence (or
+/// `max_shuffle`). Rebuilds `compmax` once from the persistent candidate
+/// `index` (one pass over the comps), then after each move pass only recomputes
+/// raws whose candidate clusters' read counts changed — instead of rescanning
+/// every cluster every iteration. Byte-identical to the serial loop: `compmax`
+/// is kept exactly equal to what a full rebuild at the current reads would
+/// produce (same max, same lowest-ci tie-break), so the move decisions are
+/// identical. `comps_scanned` reports the realised scan work (initial build +
+/// per-iteration recomputes) so the reduction against the serial baseline is
+/// directly measurable.
+pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> ShuffleStats {
+    let nraw = b.raws.len();
+
+    // Initial build: every raw's true best at the current reads. Only the
+    // winning `Comparison` is stored (the move loop reads compmax.i).
+    let mut compmax = vec![Comparison::default(); nraw];
+    let mut comps_scanned = 0usize;
+    for raw in 0..nraw {
+        compmax[raw] = best_from_cands(&index[raw], raw, &b.clusters);
+        comps_scanned += index[raw].len();
+    }
+
+    // Reads the map is currently consistent with (for dirty detection).
+    let mut reads_used: Vec<u32> = b.clusters.iter().map(|c| c.reads).collect();
+
+    // Reused scratch for the affected-raw set (avoid per-iteration nraw alloc).
+    let mut in_affected = vec![false; nraw];
+    let mut affected: Vec<usize> = Vec::new();
+
+    let mut total_moves = 0usize;
+    let mut nshuffle = 0usize;
+    let mut zero_move_calls = 0usize;
+    loop {
+        // Move pass — identical to b_shuffle2's, using the current compmax.
+        let mut moves = 0usize;
+        for ci in 0..b.clusters.len() {
+            let mut r = b.clusters[ci].raws.len();
+            while r > 0 {
+                r -= 1;
+                let raw_idx = b.clusters[ci].raws[r];
+                let best_ci = compmax[raw_idx].i as usize;
+                if best_ci != ci {
+                    if b.clusters[ci].center == Some(raw_idx) {
+                        continue;
+                    }
+                    b.bi_pop_raw(ci, r);
+                    b.bi_add_raw(best_ci, raw_idx);
+                    b.raws[raw_idx].comp = compmax[raw_idx].clone();
+                    moves += 1;
+                }
+            }
+        }
+        total_moves += moves;
+        if moves == 0 {
+            zero_move_calls += 1;
+        }
+        nshuffle += 1;
+        if moves == 0 || nshuffle >= max_shuffle {
+            break;
+        }
+
+        // Reconcile: any raw with a comp in a cluster whose reads changed may
+        // have a new best. Collect those raws (dedup) and recompute each from
+        // its candidates — provably correct at the current reads regardless of
+        // increase/decrease, avoiding stale-max ordering hazards.
+        for (ci, ru) in reads_used.iter_mut().enumerate() {
+            if b.clusters[ci].reads != *ru {
+                for comp in &b.clusters[ci].comp {
+                    let raw = comp.index as usize;
+                    if !in_affected[raw] {
+                        in_affected[raw] = true;
+                        affected.push(raw);
+                    }
+                }
+                *ru = b.clusters[ci].reads;
+            }
+        }
+        for &raw in &affected {
+            compmax[raw] = best_from_cands(&index[raw], raw, &b.clusters);
+            comps_scanned += index[raw].len();
+            in_affected[raw] = false;
+        }
+        affected.clear();
+    }
+
+    ShuffleStats {
+        moves: total_moves,
+        comps_scanned,
+        nclusters: b.clusters.len(),
+        zero_move_calls,
+        calls: nshuffle,
     }
 }
 
