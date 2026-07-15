@@ -28,8 +28,16 @@ const TAIL_APPROX_CUTOFF: f64 = 1e-7;
 /// whose expected read count from the cluster center alone already exceeds
 /// their observed count (preventing them from budding a new cluster).
 ///
+/// Returns the number of Raws whose `p` was recomputed this call — i.e. the
+/// members of every cluster with `update_e` set. This is the per-round p-churn:
+/// the count of decrease/increase-key operations a p-ordered incremental
+/// budding structure would have to process before each `b_bud`. It gates the
+/// b_bud incremental follow-up (issue #85) — if the churn approaches `nraw`,
+/// re-keying costs as much as the O(nraw) scan it would replace.
+///
 /// Equivalent to C++ `b_p_update`.
-pub fn b_p_update(b: &mut B, greedy: bool, detect_singletons: bool) {
+pub fn b_p_update(b: &mut B, greedy: bool, detect_singletons: bool) -> u64 {
+    let mut raws_repriced = 0u64;
     for i in 0..b.clusters.len() {
         if b.clusters[i].update_e {
             // Clone indices to avoid holding a shared borrow on b.clusters
@@ -46,6 +54,7 @@ pub fn b_p_update(b: &mut B, greedy: bool, detect_singletons: bool) {
                     detect_singletons,
                 );
                 b.raws[raw_idx].p = p;
+                raws_repriced += 1;
             }
             b.clusters[i].update_e = false;
         }
@@ -68,6 +77,7 @@ pub fn b_p_update(b: &mut B, greedy: bool, detect_singletons: bool) {
             b.clusters[i].check_locks = false;
         }
     }
+    raws_repriced
 }
 
 /// Abundance p-value: P(X ≥ `reads` | Poisson(λ = `e_reads`)).

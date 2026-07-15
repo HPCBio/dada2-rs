@@ -607,6 +607,11 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     let mut shuf_comps_scanned = 0u64;
     // b_bud scan-redundancy accounting (verbose-only diagnostics).
     let (mut bud_calls, mut bud_success, mut bud_raws_scanned) = (0u64, 0u64, 0u64);
+    // p-update churn: raws whose p was recomputed per round (see issue #85).
+    // Only the in-loop p_update rounds count — the pre-loop call reprices the
+    // whole partition once and is not part of the per-bud churn a p-ordered
+    // structure would face.
+    let (mut pupd_rounds, mut pupd_raws_repriced) = (0u64, 0u64);
 
     // Initial compare: no k-mer distance screen so that cluster 0 accumulates
     // comparisons for every Raw (required by b_shuffle2).
@@ -731,8 +736,10 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         }
 
         let t = Instant::now();
-        b_p_update(&mut bb, params.greedy, params.detect_singletons);
+        let repriced = b_p_update(&mut bb, params.greedy, params.detect_singletons);
         t_pupdate += t.elapsed();
+        pupd_rounds += 1;
+        pupd_raws_repriced += repriced;
     }
 
     if params.verbose {
@@ -802,6 +809,23 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         eprintln!(
             "[dada] bud redundancy: {} calls ({} budded), {} raws scanned ({:.0} scanned/bud)",
             bud_calls, bud_success, bud_raws_scanned, scanned_per_bud,
+        );
+        // p-update churn between bud calls (issue #85 gate): raws whose p is
+        // recomputed per in-loop round. A p-ordered incremental budding
+        // structure must re-key each of these. Compare repriced/round to nraw:
+        // if it approaches the scanned/bud figure above, re-keying costs about
+        // as much as the scan it would replace — i.e. no obvious net win.
+        let repriced_per_round = if pupd_rounds > 0 {
+            pupd_raws_repriced as f64 / pupd_rounds as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "[dada] p-update churn: {} rounds, {} raws repriced ({:.0} repriced/round, nraw={})",
+            pupd_rounds,
+            pupd_raws_repriced,
+            repriced_per_round,
+            bb.raws.len(),
         );
     }
 
