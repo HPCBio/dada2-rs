@@ -313,13 +313,16 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
 // b_shuffle_converge — incremental shuffle-to-convergence
 // ---------------------------------------------------------------------------
 
-/// One candidate cluster for a raw: (cluster index, lambda, hamming) — the
-/// fields the shuffle scan needs from a stored `Comparison`.
+/// A pointer to one stored comparison: `clusters[ci].comp[off]`. The candidate
+/// index holds these 8-byte references instead of copying each comparison's
+/// `lambda`/`hamming` (issue #85) — the values live once, in the per-cluster
+/// `comp` vecs (which are also the shuffle's contiguous initial-build source).
+/// Valid for the whole run because a cluster's `comp` vec is written once, by
+/// `b_compare` at the cluster's creation, and never mutated afterwards.
 #[derive(Clone, Copy)]
-pub struct Cand {
+pub struct CandRef {
     pub ci: u32,
-    pub lambda: f64,
-    pub hamming: u32,
+    pub off: u32,
 }
 
 /// Per-raw candidate index, maintained across the whole `run_dada`: each
@@ -328,39 +331,41 @@ pub struct Cand {
 /// cluster from just its own candidates, without rescanning every cluster — and
 /// crucially it is built incrementally (O(new comps) per bud) rather than
 /// rebuilt per shuffle loop, which is what makes the incremental driver a net
-/// win rather than a wash.
-pub type CandIndex = Vec<Vec<Cand>>;
+/// win rather than a wash. Entries are [`CandRef`] pointers into the per-cluster
+/// `comp` vecs, not copies, so the comparison data is stored once (issue #85).
+pub type CandIndex = Vec<Vec<CandRef>>;
 
-/// Append cluster `ci`'s stored comparisons to the per-raw candidate index.
-/// Must be called once per cluster, immediately after `b_compare`/
+/// Append cluster `ci`'s stored comparisons to the per-raw candidate index as
+/// pointers. Must be called once per cluster, immediately after `b_compare`/
 /// `b_compare_parallel` populates `clusters[ci].comp`, and in ascending `ci`
 /// order (cluster 0 first, then each bud's new cluster). Ascending order means
 /// each raw's candidate list stays cluster-ascending, so a strict-`>` scan keeps
 /// the lowest cluster index on ties — matching the serial scan's tie-break.
 pub fn index_add_cluster(index: &mut CandIndex, b: &B, ci: usize) {
-    for comp in &b.clusters[ci].comp {
-        index[comp.index as usize].push(Cand {
+    for (off, comp) in b.clusters[ci].comp.iter().enumerate() {
+        index[comp.index as usize].push(CandRef {
             ci: ci as u32,
-            lambda: comp.lambda,
-            hamming: comp.hamming,
+            off: off as u32,
         });
     }
 }
 
-/// Raw's best cluster over its candidate list at the clusters' current reads.
+/// Raw's best cluster over its candidate list at the clusters' current reads,
+/// dereferencing each [`CandRef`] into the owning cluster's `comp` vec.
 /// Ascending-ci order + strict `>` reproduces the serial lowest-ci tie-break.
-fn best_from_cands(cands: &[Cand], raw: usize, clusters: &[Bi]) -> Comparison {
+fn best_from_cands(cands: &[CandRef], raw: usize, clusters: &[Bi]) -> Comparison {
     let mut best_e = f64::NEG_INFINITY;
     let mut best = Comparison::default();
     for c in cands {
-        let e = c.lambda * clusters[c.ci as usize].reads as f64;
+        let comp = &clusters[c.ci as usize].comp[c.off as usize];
+        let e = comp.lambda * clusters[c.ci as usize].reads as f64;
         if e > best_e {
             best_e = e;
             best = Comparison {
                 i: c.ci,
                 index: raw as u32,
-                lambda: c.lambda,
-                hamming: c.hamming,
+                lambda: comp.lambda,
+                hamming: comp.hamming,
             };
         }
     }
