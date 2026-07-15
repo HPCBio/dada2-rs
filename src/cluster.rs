@@ -380,14 +380,32 @@ fn best_from_cands(cands: &[Cand], raw: usize, clusters: &[Bi]) -> Comparison {
 pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> ShuffleStats {
     let nraw = b.raws.len();
 
-    // Initial build: every raw's true best at the current reads. Only the
-    // winning `Comparison` is stored (the move loop reads compmax.i).
+    // Initial build: every raw's true best at the current reads. Done the
+    // serial way — a contiguous, cache-friendly scan of the per-cluster comp
+    // vecs (cluster-major), NOT the raw-major inverted index. This is the bulk
+    // of the work each loop, and sequential access here is far cheaper per
+    // comparison than the index's scattered reads (which is what made a
+    // fully-index-based build a net wall loss despite fewer comparisons). The
+    // index is reserved for the reconcile, where the touched-raw volume is
+    // small. Byte-identical to b_shuffle2's build: ascending ci + strict `>`
+    // keeps the lowest-ci max.
     let mut compmax = vec![Comparison::default(); nraw];
+    let mut emax = vec![f64::NEG_INFINITY; nraw];
     let mut comps_scanned = 0usize;
-    for raw in 0..nraw {
-        compmax[raw] = best_from_cands(&index[raw], raw, &b.clusters);
-        comps_scanned += index[raw].len();
+    for bi in &b.clusters {
+        let ci_reads = bi.reads as f64;
+        for comp in &bi.comp {
+            let idx = comp.index as usize;
+            let e = comp.lambda * ci_reads;
+            if e > emax[idx] {
+                emax[idx] = e;
+                compmax[idx] = comp.clone();
+            }
+        }
+        comps_scanned += bi.comp.len();
     }
+    // emax was only needed to build compmax; the reconcile recomputes affected
+    // raws from the index, so it is not carried forward.
 
     // Reads the map is currently consistent with (for dirty detection).
     let mut reads_used: Vec<u32> = b.clusters.iter().map(|c| c.reads).collect();
