@@ -18,7 +18,10 @@
 
 use rayon::prelude::*;
 
-use crate::cluster::{b_bud, b_compare, b_compare_parallel, b_shuffle2};
+use crate::cluster::{
+    CandIndex, b_bud_incremental, b_compare, b_compare_parallel, b_shuffle_converge,
+    index_add_cluster,
+};
 use crate::containers::{B, BirthType, Raw, Sub};
 use crate::error::{
     BirthSubRecord, ClusterStats, birth_sub_records, cluster_quality, cluster_stats,
@@ -605,6 +608,11 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     let mut shuf_comps_scanned = 0u64;
     // b_bud scan-redundancy accounting (verbose-only diagnostics).
     let (mut bud_calls, mut bud_success, mut bud_raws_scanned) = (0u64, 0u64, 0u64);
+    // p-update churn: raws whose p was recomputed per round (see issue #85).
+    // Only the in-loop p_update rounds count — the pre-loop call reprices the
+    // whole partition once and is not part of the per-bud churn a p-ordered
+    // structure would face.
+    let (mut pupd_rounds, mut pupd_raws_repriced) = (0u64, 0u64);
 
     // Initial compare: no k-mer distance screen so that cluster 0 accumulates
     // comparisons for every Raw (required by b_shuffle2).
@@ -639,8 +647,20 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         );
     }
     t_compare += t.elapsed();
+    // Persistent per-raw candidate index for the incremental shuffle driver.
+    // Appended once per cluster, in ascending cluster order, right after each
+    // compare populates that cluster's comps.
+    let mut cand_index: CandIndex = vec![Vec::new(); bb.raws.len()];
+    index_add_cluster(&mut cand_index, &bb, 0);
     let t = Instant::now();
-    b_p_update(&mut bb, params.greedy, params.detect_singletons);
+    b_p_update(
+        &mut bb,
+        params.greedy,
+        params.detect_singletons,
+        params.min_fold,
+        params.min_hamming,
+        params.min_abund,
+    );
     t_pupdate += t.elapsed();
 
     let max_clust = if params.max_clust == 0 {
@@ -652,7 +672,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     while bb.clusters.len() < max_clust {
         let t = Instant::now();
         let mut bud_scanned = 0u64;
-        let bud = b_bud(
+        let bud = b_bud_incremental(
             &mut bb,
             params.min_fold,
             params.min_hamming,
@@ -701,38 +721,40 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             );
         }
         t_compare += t.elapsed();
+        // Append the new cluster's comps to the persistent candidate index
+        // (ascending cluster order preserved: newi is the largest index so far).
+        index_add_cluster(&mut cand_index, &bb, newi);
 
-        // Shuffle until stable or MAX_SHUFFLE reached.
+        // Shuffle until stable or MAX_SHUFFLE reached — incremental driver.
+        // Redundancy accounting: comps_scanned is now the realised scan work
+        // (one build + per-iteration recomputes), so comparing it to the serial
+        // baseline's counts shows the reduction directly.
         let t = Instant::now();
-        let mut nshuffle = 0usize;
-        loop {
-            let st = b_shuffle2(&mut bb);
-            // Redundancy accounting: comps_scanned is the full-rescan work each
-            // call; moves is what actually changed. A large scanned/moves ratio
-            // (and many zero-move calls) is the headroom an incremental
-            // best-cluster tracker would reclaim.
-            shuf_calls += 1;
-            shuf_moves += st.moves as u64;
-            shuf_comps_scanned += st.comps_scanned as u64;
-            if st.moves == 0 {
-                shuf_zero_move_calls += 1;
-            }
-            if params.verbose {
-                eprint!("S");
-            }
-            nshuffle += 1;
-            if !st.shuffled() || nshuffle >= MAX_SHUFFLE {
-                break;
-            }
+        let st = b_shuffle_converge(&mut bb, &cand_index, MAX_SHUFFLE);
+        shuf_calls += st.calls as u64;
+        shuf_moves += st.moves as u64;
+        shuf_comps_scanned += st.comps_scanned as u64;
+        shuf_zero_move_calls += st.zero_move_calls as u64;
+        if params.verbose {
+            eprint!("{}", "S".repeat(st.calls));
         }
         t_shuffle += t.elapsed();
-        if params.verbose && nshuffle >= MAX_SHUFFLE {
+        if params.verbose && st.calls >= MAX_SHUFFLE {
             eprintln!("Warning: Reached maximum ({MAX_SHUFFLE}) shuffles.");
         }
 
         let t = Instant::now();
-        b_p_update(&mut bb, params.greedy, params.detect_singletons);
+        let repriced = b_p_update(
+            &mut bb,
+            params.greedy,
+            params.detect_singletons,
+            params.min_fold,
+            params.min_hamming,
+            params.min_abund,
+        );
         t_pupdate += t.elapsed();
+        pupd_rounds += 1;
+        pupd_raws_repriced += repriced;
     }
 
     if params.verbose {
@@ -791,17 +813,35 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             shuf_zero_move_calls,
             zero_pct,
         );
-        // b_bud scan redundancy: raws visited per successful bud. High
-        // scanned/bud bounds the headroom for an incremental p-ordered
-        // structure (see docs/results.md).
-        let scanned_per_bud = if bud_success > 0 {
-            bud_raws_scanned as f64 / bud_success as f64
+        // b_bud combine cost: with the incremental candidate cache (#85) each
+        // bud combines per-cluster minima in O(nclusters) instead of rescanning
+        // every raw. This reports the combine volume — compare to the historical
+        // ~nraw scanned/bud to see the reduction.
+        let combine_per_bud = if bud_calls > 0 {
+            bud_raws_scanned as f64 / bud_calls as f64
         } else {
             f64::INFINITY
         };
         eprintln!(
-            "[dada] bud redundancy: {} calls ({} budded), {} raws scanned ({:.0} scanned/bud)",
-            bud_calls, bud_success, bud_raws_scanned, scanned_per_bud,
+            "[dada] bud redundancy: {} calls ({} budded), {} clusters combined ({:.0} combined/bud, incremental cache)",
+            bud_calls, bud_success, bud_raws_scanned, combine_per_bud,
+        );
+        // p-update churn between bud calls (issue #85 gate): raws whose p is
+        // recomputed per in-loop round. A p-ordered incremental budding
+        // structure must re-key each of these. Compare repriced/round to nraw:
+        // if it approaches the scanned/bud figure above, re-keying costs about
+        // as much as the scan it would replace — i.e. no obvious net win.
+        let repriced_per_round = if pupd_rounds > 0 {
+            pupd_raws_repriced as f64 / pupd_rounds as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "[dada] p-update churn: {} rounds, {} raws repriced ({:.0} repriced/round, nraw={})",
+            pupd_rounds,
+            pupd_raws_repriced,
+            repriced_per_round,
+            bb.raws.len(),
         );
     }
 
