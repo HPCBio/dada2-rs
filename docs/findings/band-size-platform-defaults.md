@@ -1,10 +1,10 @@
 # Band size & platform-aware defaults
 
 **Verdict:** the platform-aware alignment band default — **16 for Illumina, 32 for
-PacBio HiFi** — is *vindicated*, but not for the reason you'd expect. Band 32 on
-HiFi earns its keep through **error-model stability**, not alignment reach. A
+PacBio HiFi** — is *validated*, but not for the reason one would expect. Band 32 on
+HiFi seems to work via **error-model stability**, not alignment reach. A
 single global `BAND_SIZE` would be wrong for one platform or the other, because
-the two platforms fail band-tightening through **opposite** mechanisms.
+the two platforms fail band-tightening through **opposing, different** mechanisms.
 
 ## Setup
 
@@ -61,7 +61,7 @@ binding constraint. The `band_req` proxy (how much band an alignment demands) is
    error rates, so mechanism 2's boundary shifts run to run. The direct
    band-safety claim (error copies need ≤ 8) is robust; the end-to-end "is
    lowering the default safe" claim is chemistry-conditional.
-3. This **refuted** an earlier `diagnostics.md` claim that "band ≤ 8 is viable on
+3. This **refuted** an earlier `diagnostics.md` note that "band ≤ 8 is viable on
    both platforms" — true for mechanism 1, false end-to-end on HiFi. Corrected on
    main.
 
