@@ -2,11 +2,15 @@
 
 **Verdict:** the k-mer-distance (KDIST) cutoff used by `learn-errors` and the one
 used by `dada` can be set independently, and they *should* be. Most of the
-speedup a tighter cutoff buys lives in the **dada stage**, and that portion is
-safe — it leaves the final ASV table essentially unchanged. The learn-stage
-speedup is the risky part: pushing the same tight cutoff into `learn-errors`
-perturbs the error model enough to churn real-abundance ASVs. `--learn-kdist-cutoff`
-lets you keep the error model at its default while still tightening `dada`.
+speedup from a tighter cutoff buys in the **dada stage**, and that portion is
+safe — it leaves the final ASV table essentially unchanged. The learning stage
+speedup is the risky part: pushing the same cutoff into `learn-errors`
+perturbs the error model enough to churn real-abundance ASVs. 
+
+In the benchmarking script, `--learn-kdist-cutoff`
+lets you set the error model for `learn-error` independently (e.g., to 0.42) while still tightening `dada`.  When running the workflow steps independently, 
+you can independently set `--kdist-cutoff` for `learn-errors` and for 
+`dada-pooled`/`dada-pseudo`/`dada` (thus leaving `learn-errors` at the default and the denoising/inference step using a tighter cutoff).
 
 ## Background
 
@@ -15,14 +19,14 @@ is screened out before Needleman–Wunsch alignment. A tighter cutoff screens mo
 aggressively → fewer alignments → faster. Prior work
 (*kdist cutoff + error-model stability*) established that the cutoff does **not**
 act by screening out error copies (the final sub-alignment re-includes them);
-it acts by biasing the **partition / error model**. That predicted a clean lever:
-decouple the cutoff `learn-errors` sees from the one `dada` sees. This benchmark
-tests that prediction.
+it acts by altering the **partition / error model**. That predicted a clean 
+alternative: decoupling the cutoff `learn-errors` sees from the one `dada` sees.
+This benchmark tests that prediction.
 
 ## Setup
 
-Illumina MiSeq, F1000 `MiSeqSOP` full data set (384 samples), pooled mode, k=5,
-24 threads on a node-exclusive run. Three arms, one run each, same binary
+Illumina MiSeq, F1000 `MiSeqSOP` full data set (384 samples), full pooled mode, 
+k=5, 24 threads on a node-exclusive run. Three arms, one run each, same binary
 (`dada2-rs 0.2.0-ed578190` — this is a *settings* A/B, not a code A/B):
 
 | Arm | Flags | learn cutoff | dada cutoff |
@@ -57,7 +61,7 @@ within ±3%).
 
 ## Correctness (ASV concordance)
 
-`dev/compare_asvs.py` on the final chimera-filtered table, baseline `main`
+Using `dev/compare_asvs.py` on the final chimera-filtered table, baseline `main`
 (725 ASVs):
 
 | Arm | ASVs | churn | dropped from main | novel | novel ≥10 abund |
@@ -74,7 +78,7 @@ within ±3%).
   (31, 23) sitting Hamming-4/7 from high-abundance neighbors — the signature of
   an error-model-driven partition shift, not new biology.
 
-## What this dictates
+## What this suggests:
 
 1. **The dada-stage KDIST win is safe to take.** Tightening the cutoff `dada`
    sees buys ~−32%/−26% on the dada steps with a near-identical ASV table. This is
@@ -89,10 +93,10 @@ within ±3%).
 
 ## The one novel ASV, characterized
 
-The single sequence `decoupled` adds is worth pinning down, because it decides
-whether the "churn=1" is a benign gain or a subtle artifact. It is a **genuinely
-distinct, real-looking rare taxon** — additive promotion, exactly the mode the
-mechanism decomposition predicts for a tight-inference / frozen-error-model run:
+The single sequence `decoupled` adds is worth chasing down, because it decides
+whether the "churn=1" is a benign gain or a subtle artifact. It appears to be 
+a **genuinely distinct, real-looking rare taxon** — additive promotion, 
+exactly the mode the mechanism decomposition predicts for a tight-inference / frozen-error-model run:
 
 - **253 bp**, a clean modal-length V4 amplicon — no length anomaly, no
   homopolymer/indel signature.
@@ -115,7 +119,18 @@ lost). The only caveat is depth: at 4 reads it sits right at the abundance-p-val
 borderline, a real-but-marginal call that would firm up or drop out with more
 sequencing.
 
-## Open thread
+## Remaining threads
 
-Confirm the pattern holds on binned-quality platforms (i100 / NovaSeq), where the
-error-model sensitivity to the cutoff could differ.
+Confirm the pattern holds on PacBio HiFi data and binned-quality platforms 
+(i100 / NovaSeq / PacBio Revio), where the error-model sensitivity to 
+the cutoff could differ.
+
+**Open question — platform-appropriate OMEGA_A/OMEGA_C.** On PacBio the churn
+introduced by a cutoff change concentrates in the low-abundance band (≈4–76 reads),
+i.e. right at the OMEGA_A abundance-p-value borderline. The abundance/error
+thresholds (`OMEGA_A`, `OMEGA_C`) are fixed at `1e-40` and platform-blind, inherited
+from DADA2's Illumina-calibrated defaults; HiFi's error structure is very different.
+Whether they should differ for HiFi is a real question, but it is **not answerable
+from concordance-vs-reference A/Bs** — those measure whether an ASV moved, not
+whether it was correct. It requires a PacBio mock-community truth set (the same
+resource that gates the raise-k question). Scoped and parked until that exists.
