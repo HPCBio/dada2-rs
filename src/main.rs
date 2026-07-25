@@ -10,8 +10,8 @@ use rayon::prelude::*;
 // modules this binary uses into scope so the existing `foo::Bar` paths resolve.
 use dada2_rs::{
     chimera_diagnostics, cli, cluster_trace, containers, dada, derep, error_models, failed_uniques,
-    filter_trim, kdist_calibrate, learn_errors, merge_pairs, misc, nwalign, remove_bimera,
-    remove_primers, sequence_table, summary, taxonomy,
+    filter_trim, kdist_calibrate, learn_errors, merge_pairs, misc, nwalign, reference_eval,
+    remove_bimera, remove_primers, sequence_table, summary, taxonomy,
 };
 
 use clap::CommandFactory;
@@ -3939,6 +3939,46 @@ fn main() -> io::Result<()> {
                     verbose,
                 },
             )?;
+        }
+
+        Commands::ReferenceEval {
+            asvs,
+            reference,
+            max_diffs,
+            near_diffs,
+            kdist_screen,
+            kmer_size,
+            match_score,
+            mismatch,
+            gap_p,
+            band,
+            nraw,
+            non_chimeric,
+            per_asv,
+            per_ref,
+            output,
+            threads,
+            compact,
+        } => {
+            reference_eval::run(&reference_eval::Params {
+                asvs,
+                reference,
+                max_diffs,
+                near_diffs,
+                kdist_screen,
+                kmer_size,
+                match_score,
+                mismatch,
+                gap_p,
+                band,
+                nraw,
+                non_chimeric,
+                per_asv,
+                per_ref,
+                out: output,
+                threads,
+                compact,
+            })?;
         }
     }
 

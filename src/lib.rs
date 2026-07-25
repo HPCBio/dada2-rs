@@ -26,6 +26,7 @@ pub mod merge_pairs;
 pub mod misc;
 pub mod nwalign;
 pub mod pval;
+pub mod reference_eval;
 pub mod remove_bimera;
 pub mod remove_primers;
 pub mod sequence_table;
