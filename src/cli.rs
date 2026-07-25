@@ -580,6 +580,22 @@ pub enum Commands {
         #[arg(long)]
         pooled_record: Option<PathBuf>,
 
+        /// Write a single full cluster trace (clusters.json) of the final pooled
+        /// denoising pass to this file: merged-unique centers, members with
+        /// hamming/λ/pval, and birth metadata (incl. `nraw`/`omega_a`/`omega_p`
+        /// for OMEGA_A conservatism analysis). See examples/cluster_trace/.
+        #[arg(long)]
+        cluster_trace: Option<PathBuf>,
+
+        /// Skip the per-cluster `members` array in the trace; emit only
+        /// cluster centers and birth metadata.
+        #[arg(long)]
+        trace_no_members: bool,
+
+        /// In the trace, only include members with abundance >= this value.
+        #[arg(long, default_value_t = 1)]
+        trace_min_abund: u32,
+
         /// Output compact (minified) JSON instead of pretty-printed
         #[arg(long)]
         compact: bool,

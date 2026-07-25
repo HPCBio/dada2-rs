@@ -82,6 +82,14 @@ struct ClusterTrace {
     iteration: Option<usize>,
     nclust: usize,
     total_reads: u32,
+    /// Bonferroni divisor for the abundance p-value test (unique-input count),
+    /// constant across the run. For a cluster with `birth_type == "Prior"` the
+    /// abundance-scale p-value OMEGA_A applied is `birth_pval * nraw`; for
+    /// `"Abundance"` it is `birth_pval` directly. Compare either to `omega_a`.
+    nraw: u32,
+    /// OMEGA_A / OMEGA_P thresholds in force for this run.
+    omega_a: f64,
+    omega_p: f64,
     /// Knob values that produced this file; useful when consumers want
     /// to know whether members are complete.
     trace_no_members: bool,
@@ -207,6 +215,9 @@ pub fn write_trace(
         iteration,
         nclust: result.clusters.len(),
         total_reads,
+        nraw: result.nraw,
+        omega_a: result.omega_a,
+        omega_p: result.omega_p,
         trace_no_members: params.no_members,
         trace_min_abund: params.min_abund,
         nq,

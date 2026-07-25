@@ -1243,6 +1243,9 @@ fn main() -> io::Result<()> {
             no_kmer_screen,
             failed_uniques: failed_uniques_path,
             pooled_record,
+            cluster_trace,
+            trace_no_members,
+            trace_min_abund,
             compact,
             gzip,
             verbose,
@@ -1460,6 +1463,7 @@ fn main() -> io::Result<()> {
             )?;
             let dada_params = resolved.params;
             let mut run_params = resolved.run;
+            let nq = resolved.nq;
             run_params.n_prior = raw_inputs.iter().filter(|r| r.prior).count();
 
             // ---- Run DADA once on the merged table ----
@@ -1489,6 +1493,36 @@ fn main() -> io::Result<()> {
                     result.nalign,
                     result.nshroud,
                 );
+            }
+
+            // ---- Cluster trace (diagnostics; write-only, does not affect ASVs) ----
+            if let Some(ref trace_path) = cluster_trace {
+                if let Some(parent) = trace_path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let trace_params = cluster_trace::TraceParams {
+                    no_members: trace_no_members,
+                    min_abund: trace_min_abund,
+                };
+                cluster_trace::write_trace(
+                    trace_path,
+                    "pooled",
+                    None, // no iteration: this is the final pooled dada run
+                    &raw_inputs,
+                    &result,
+                    Some(&dada_params.err_mat),
+                    nq,
+                    trace_params,
+                    compact,
+                )?;
+                if verbose {
+                    eprintln!(
+                        "[dada-pooled] cluster trace written to {}",
+                        trace_path.display()
+                    );
+                }
             }
 
             // ---- Per-sample output ----
