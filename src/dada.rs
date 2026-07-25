@@ -194,6 +194,16 @@ pub struct DadaResult {
     /// Auxiliary R-DADA2-parity outputs. `Some` only when
     /// `DadaParams::aux_outputs` was true.
     pub aux: Option<DadaAux>,
+    /// Bonferroni divisor used in the abundance p-value test
+    /// (`p_a = min_p * nraw`); equals the unique-input count. Constant across
+    /// all births in this run. Lets a consumer recover the abundance-scale
+    /// p-value of a `Prior`-born cluster as `birth_pval * nraw`.
+    pub nraw: u32,
+    /// `omega_a` / `omega_p` thresholds in force for this run, echoed so the
+    /// trace/consumer can compare against the exact values used rather than a
+    /// presumed default.
+    pub omega_a: f64,
+    pub omega_p: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +474,10 @@ pub fn dada_uniques_cached(
         None
     };
 
+    // The abundance p-value's Bonferroni divisor is the unique count `b.raws`
+    // used by the bud scan; it must equal the input count (no raws are dropped,
+    // only reassigned between clusters). Locked here so the trace can record it.
+    debug_assert_eq!(b.raws.len(), inputs.len(), "nraw divisor != input count");
     let result = DadaResult {
         clusters,
         map,
@@ -471,6 +485,9 @@ pub fn dada_uniques_cached(
         nalign: b.nalign,
         nshroud: b.nshroud,
         aux,
+        nraw: b.raws.len() as u32,
+        omega_a: params.omega_a,
+        omega_p: params.omega_p,
     };
 
     // Reclaim Raws for the caller to pass back on the next iteration.
