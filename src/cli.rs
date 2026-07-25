@@ -2389,6 +2389,13 @@ pub enum Commands {
         #[arg(long)]
         nraw: Option<f64>,
 
+        /// Non-chimeric survivor set (a `remove-bimera-denovo`/`make-sequence-table`
+        /// JSON or a FASTA). ASVs whose sequence is absent are flagged chimeric;
+        /// the summary then reports a chimera × reference-class 2×2 (does the FP
+        /// tail = chimeras? does chimera removal drop any TP allele?).
+        #[arg(long)]
+        non_chimeric: Option<PathBuf>,
+
         /// Write the per-ASV classification table (TSV) here
         #[arg(long)]
         per_asv: Option<PathBuf>,

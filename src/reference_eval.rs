@@ -51,6 +51,11 @@ pub struct Params {
     /// scale as `p_a = birth_pval * nraw`; an `Abundance` ASV's `birth_pval`
     /// is already `p_a`. `None` leaves `p_a` blank.
     pub nraw: Option<f64>,
+    /// Optional survivor set from `remove-bimera-denovo` (a sequence-table JSON
+    /// or FASTA). When given, each ASV whose sequence is NOT in this set is
+    /// flagged chimeric, and the summary reports a chimera × reference-class
+    /// 2×2. Pure join by sequence — no chimera inference here.
+    pub non_chimeric: Option<PathBuf>,
     pub per_asv: Option<PathBuf>,
     pub per_ref: Option<PathBuf>,
     pub out: Option<PathBuf>,
@@ -167,6 +172,28 @@ fn load_references(path: &std::path::Path, k: usize) -> io::Result<Vec<Reference
             }
         })
         .collect())
+}
+
+/// Load the non-chimeric survivor sequences (uppercased) into a set. Accepts a
+/// `make-sequence-table` / `remove-bimera-denovo` JSON (`sequences` array) or a
+/// FASTA, auto-detected by the first non-whitespace byte.
+fn load_survivors(path: &std::path::Path) -> io::Result<std::collections::HashSet<String>> {
+    let bytes = crate::misc::read_all_maybe_gz(path)?;
+    let first = bytes.iter().find(|b| !b.is_ascii_whitespace()).copied();
+    let seqs: Vec<String> = if first == Some(b'{') {
+        #[derive(Deserialize)]
+        struct SeqTable {
+            sequences: Vec<String>,
+        }
+        let t: SeqTable = read_tagged_json(path, &["make-sequence-table", "remove-bimera-denovo"])?;
+        t.sequences
+    } else {
+        read_fasta_records(path)?
+            .into_iter()
+            .map(|(_, s)| String::from_utf8_lossy(&s).into_owned())
+            .collect()
+    };
+    Ok(seqs.into_iter().map(|s| s.to_ascii_uppercase()).collect())
 }
 
 /// Classification bucket for a query ASV.
@@ -307,10 +334,33 @@ struct Summary {
     /// 0/1/2/3; index 4 is `> 3` (includes no-match). Chosen to make the
     /// exact-vs-near boundary a data decision.
     edit_hist: [usize; 5],
+    /// chimera × reference-class 2×2, present only when `--non-chimeric` is
+    /// supplied. `is_chimeric` = ASV sequence absent from the survivor set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chimera_breakdown: Option<ChimeraBreakdown>,
     max_diffs: u32,
     near_diffs: u32,
     band: i32,
     kdist_screen: Option<f64>,
+}
+
+/// chimera × reference-class 2×2 (see `--non-chimeric`).
+#[derive(Serialize)]
+struct ChimeraBreakdown {
+    n_chimeric: usize,
+    /// FP ASVs flagged chimeric — the tail chimera removal correctly explains.
+    fp_chimeric: usize,
+    /// FP ASVs NOT flagged chimeric — junk chimera removal missed.
+    fp_nonchimeric: usize,
+    near_chimeric: usize,
+    near_nonchimeric: usize,
+    /// TP ASVs flagged chimeric — true alleles a chimera filter would wrongly
+    /// drop (chimera-removal false positives). Should be ~0.
+    tp_chimeric: usize,
+    tp_nonchimeric: usize,
+    /// References that survive as TP with a non-chimeric ASV (recovery that
+    /// holds up after chimera removal).
+    recovered_refs_nonchimeric: usize,
 }
 
 pub fn run(p: &Params) -> io::Result<()> {
@@ -345,6 +395,22 @@ pub fn run(p: &Params) -> io::Result<()> {
         ));
     }
 
+    // Optional chimera join: flag each ASV chimeric if its sequence is absent
+    // from the non-chimeric survivor set.
+    let survivors = match &p.non_chimeric {
+        Some(path) => Some(load_survivors(path)?),
+        None => None,
+    };
+    let is_chimeric: Vec<bool> = queries
+        .iter()
+        .map(|q| {
+            survivors
+                .as_ref()
+                .map(|s| !s.contains(&String::from_utf8_lossy(&q.seq_ascii).to_ascii_uppercase()))
+                .unwrap_or(false)
+        })
+        .collect();
+
     // Parallel classification; each query indexes back into `queries` by order.
     let mut results: Vec<QueryResult> = pool.install(|| {
         queries
@@ -371,25 +437,55 @@ pub fn run(p: &Params) -> io::Result<()> {
 
     let mut edit_hist = [0usize; 5];
     let (mut tp, mut tp_exact, mut near, mut fp) = (0, 0, 0, 0);
+    // chimera × class tallies (used only when --non-chimeric is supplied).
+    let mut recovered_nonchim = vec![false; n_ref];
+    let (mut n_chim, mut fp_chim, mut fp_non, mut near_chim, mut near_non, mut tp_chim, mut tp_non) =
+        (0usize, 0, 0, 0, 0, 0, 0);
 
     for r in &results {
         let h = (r.edit.min(4)) as usize;
         edit_hist[h] += 1;
+        let chim = is_chimeric[r.idx];
+        if chim {
+            n_chim += 1;
+        }
         match r.class {
             Class::Tp => {
                 tp += 1;
                 if r.edit == 0 {
                     tp_exact += 1;
                 }
+                if chim {
+                    tp_chim += 1;
+                } else {
+                    tp_non += 1;
+                }
             }
-            Class::Near => near += 1,
-            Class::Fp => fp += 1,
+            Class::Near => {
+                near += 1;
+                if chim {
+                    near_chim += 1;
+                } else {
+                    near_non += 1;
+                }
+            }
+            Class::Fp => {
+                fp += 1;
+                if chim {
+                    fp_chim += 1;
+                } else {
+                    fp_non += 1;
+                }
+            }
         }
         if let Some(ri) = r.best_ref {
             if r.class == Class::Tp {
                 recovered[ri] = true;
                 ref_tp_count[ri] += 1;
                 ref_obs_abund[ri] += queries[r.idx].abundance.unwrap_or(0) as u64;
+                if !chim {
+                    recovered_nonchim[ri] = true;
+                }
             }
             if r.class == Class::Tp || r.class == Class::Near {
                 near_recovered[ri] = true;
@@ -452,12 +548,26 @@ pub fn run(p: &Params) -> io::Result<()> {
         for (ri, edit, qi) in rescued {
             recovered[ri] = true;
             near_recovered[ri] = true;
+            if !is_chimeric[qi] {
+                recovered_nonchim[ri] = true;
+            }
             if edit < ref_best_edit[ri] {
                 ref_best_edit[ri] = edit;
                 ref_best_query[ri] = Some(qi);
             }
         }
     }
+
+    let chimera_breakdown = survivors.as_ref().map(|_| ChimeraBreakdown {
+        n_chimeric: n_chim,
+        fp_chimeric: fp_chim,
+        fp_nonchimeric: fp_non,
+        near_chimeric: near_chim,
+        near_nonchimeric: near_non,
+        tp_chimeric: tp_chim,
+        tp_nonchimeric: tp_non,
+        recovered_refs_nonchimeric: recovered_nonchim.iter().filter(|&&b| b).count(),
+    });
 
     let recovered_refs = recovered.iter().filter(|&&b| b).count();
     let near_recovered_refs = near_recovered.iter().filter(|&&b| b).count();
@@ -487,6 +597,7 @@ pub fn run(p: &Params) -> io::Result<()> {
             0.0
         },
         edit_hist,
+        chimera_breakdown,
         max_diffs: p.max_diffs,
         near_diffs: p.near_diffs,
         band: p.band,
@@ -498,15 +609,21 @@ pub fn run(p: &Params) -> io::Result<()> {
         let mut w = io::BufWriter::new(std::fs::File::create(path)?);
         writeln!(
             w,
-            "query_id\tseq_len\tabundance\tbirth_type\tbirth_pval\tp_a\tbest_ref\tedit\tmism\tindel\tidentity\tclass\tsequence"
+            "query_id\tseq_len\tabundance\tbirth_type\tbirth_pval\tp_a\tbest_ref\tedit\tmism\tindel\tidentity\tclass\tis_chimeric\tsequence"
         )?;
         for r in &results {
             let q = &queries[r.idx];
             let best_ref = r.best_ref.map(|ri| refs[ri].id.as_str()).unwrap_or("-");
             let pa = p_a(&q.birth_type, q.birth_pval, p.nraw);
+            // Blank when no survivor set was given (no chimera call made).
+            let chim = if survivors.is_some() {
+                is_chimeric[r.idx].to_string()
+            } else {
+                String::new()
+            };
             writeln!(
                 w,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.5}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.5}\t{}\t{}\t{}",
                 q.id,
                 q.seq_ascii.len(),
                 q.abundance.map(|a| a.to_string()).unwrap_or_default(),
@@ -523,6 +640,7 @@ pub fn run(p: &Params) -> io::Result<()> {
                 r.indel,
                 identity(r.matches, r.mism, r.indel),
                 class_str(r.class),
+                chim,
                 String::from_utf8_lossy(&q.seq_ascii),
             )?;
         }
@@ -590,6 +708,20 @@ pub fn run(p: &Params) -> io::Result<()> {
         "[reference-eval] edit-distance histogram (best match): 0={} 1={} 2={} 3={} >3={}",
         edit_hist[0], edit_hist[1], edit_hist[2], edit_hist[3], edit_hist[4]
     );
+    if let Some(cb) = &summary.chimera_breakdown {
+        eprintln!(
+            "[reference-eval] chimera join: {} chimeric | FP {}chim/{}non | near {}chim/{}non | TP {}chim/{}non (TP-chimeric = chimera-removal false positives) | recovered-nonchimeric {}/{} refs",
+            cb.n_chimeric,
+            cb.fp_chimeric,
+            cb.fp_nonchimeric,
+            cb.near_chimeric,
+            cb.near_nonchimeric,
+            cb.tp_chimeric,
+            cb.tp_nonchimeric,
+            cb.recovered_refs_nonchimeric,
+            n_ref,
+        );
+    }
 
     Ok(())
 }
@@ -619,6 +751,7 @@ mod tests {
             gap_p: -8,
             band: 16,
             nraw: None,
+            non_chimeric: None,
             per_asv: None,
             per_ref: None,
             out: None,
