@@ -2326,4 +2326,87 @@ pub enum Commands {
         #[arg(long)]
         verbose: bool,
     },
+
+    /// Evaluate a query ASV set against a reference (truth) set by NW alignment
+    ///
+    /// Classifies each ASV (TP / near / FP) by ends-free global alignment,
+    /// reports reference recovery (FN) and precision/recall, and — for a
+    /// `dada`/`dada-pooled` JSON input — joins the classification to each ASV's
+    /// p-value. A pure diagnostic; it only reads existing fields. v1 scope
+    /// (issue #91): single query set vs single reference; no TN, no
+    /// cross-sample logic, no abundance modeling. Output rows are keyed by ASV
+    /// sequence and reference header annotations pass through verbatim so
+    /// downstream (R/Python) analyses can extend it.
+    ReferenceEval {
+        /// Query ASV set: a FASTA, or a `dada`/`dada-pooled` JSON (auto-detected)
+        #[arg(long)]
+        asvs: PathBuf,
+
+        /// Reference/truth FASTA (e.g. mock-community alleles)
+        #[arg(long)]
+        reference: PathBuf,
+
+        /// Edit distance (mismatches + internal indels) at/below which an ASV is
+        /// a true positive. 0 = exact (alignment-internal) match.
+        #[arg(long, default_value_t = 0)]
+        max_diffs: u32,
+
+        /// Upper edit-distance bound for the report-only "near" bucket
+        /// (max_diffs < edit <= near_diffs). Must be >= --max-diffs.
+        #[arg(long, default_value_t = 3)]
+        near_diffs: u32,
+
+        /// Optional permissive k-mer prefilter cutoff before NW. Omit to disable
+        /// (recommended for small reference sets: too tight a screen can drop an
+        /// ASV's true reference and misclassify it as FP).
+        #[arg(long)]
+        kdist_screen: Option<f64>,
+
+        /// K-mer size for the optional prefilter
+        #[arg(long, default_value_t = 5)]
+        kmer_size: usize,
+
+        /// Match score for the NW alignment
+        #[arg(long = "match", allow_hyphen_values = true, default_value_t = 5)]
+        match_score: i32,
+
+        /// Mismatch score for the NW alignment
+        #[arg(long, allow_hyphen_values = true, default_value_t = -4)]
+        mismatch: i32,
+
+        /// Gap penalty for the NW alignment
+        #[arg(long, allow_hyphen_values = true, default_value_t = -8)]
+        gap_p: i32,
+
+        /// Alignment band radius (over-provisioned by default; internal indels
+        /// need band coverage, end length differences are free/ends-free)
+        #[arg(long, allow_hyphen_values = true, default_value_t = 32)]
+        band: i32,
+
+        /// Bonferroni divisor `nraw` (from a pooled cluster-trace) so a `Prior`
+        /// ASV's birth_pval is reported on the abundance scale as p_a =
+        /// birth_pval * nraw. Omit to leave p_a blank.
+        #[arg(long)]
+        nraw: Option<f64>,
+
+        /// Write the per-ASV classification table (TSV) here
+        #[arg(long)]
+        per_asv: Option<PathBuf>,
+
+        /// Write the per-reference recovery table (TSV) here
+        #[arg(long)]
+        per_ref: Option<PathBuf>,
+
+        /// Write the summary JSON here instead of stdout
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+
+        /// Number of threads for alignment
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+
+        /// Output compact (minified) summary JSON
+        #[arg(long)]
+        compact: bool,
+    },
 }
