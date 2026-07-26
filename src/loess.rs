@@ -153,9 +153,25 @@ impl LoessConfig {
 /// in raw basis `[1, x, x², …]`.
 ///
 /// Shared by [`loess_predict`]'s Direct (one call per query) and Interpolate
-/// (one call per kd-tree vertex) paths.  Returns `None` if there aren't
-/// enough positively-weighted observations in the neighborhood, or if the
-/// weighted least-squares solve is rank-deficient.
+/// (one call per kd-tree vertex) paths.  Returns `None` only if the
+/// neighborhood is empty after weighting, or if even a local constant fit is
+/// numerically singular.
+///
+/// # Degree fallback
+///
+/// The tricube kernel assigns weight exactly zero to the farthest included
+/// neighbor (`u == 1.0`), so a neighborhood of `n_local` points yields at most
+/// `n_local - 1` positively-weighted observations.  When that is fewer than the
+/// `p` coefficients a degree-`p-1` polynomial needs, we fit the highest degree
+/// the surviving points *can* support instead of giving up.
+///
+/// This matters only in the degenerate regime.  With `span = 0.75` and
+/// `degree = 2` (`p = 3`) the fallback engages at `nv <= 5`
+/// (`floor(0.75 * 5) - 1 = 2 < 3`); from `nv >= 6` there are always at least
+/// `p` surviving points and the fit is unchanged.  Previously this path
+/// returned `None`, which propagated through [`extrapolate_flat`] to `NaN` and
+/// then to `min_error_rate` for every cell — a silently floored error model on
+/// binned-quality data, where 3–4 distinct Q values is normal.  See issue #95.
 fn fit_local_at(
     x0: f64,
     valid: &[usize],
@@ -184,34 +200,49 @@ fn fit_local_at(
         .filter(|&(_, w)| w > 0.0)
         .collect();
 
-    if ws.len() < p {
-        return None;
-    }
+    // Distinct x values bound the degree we can identify: fitting a degree-d
+    // polynomial needs d+1 distinct abscissae regardless of how many
+    // observations share them.
+    let mut distinct_xs: Vec<f64> = ws.iter().map(|&(i, _)| xs[i]).collect();
+    distinct_xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    distinct_xs.dedup();
 
-    // Normal equations X^T W X a = X^T W y in raw basis [1, x, x², …].
-    let mut xtx = vec![0.0f64; p * p];
-    let mut xty = vec![0.0f64; p];
+    // Highest `p` the surviving neighborhood can support.  Equals `p` whenever
+    // the neighborhood is non-degenerate, so the common path is unchanged.
+    let mut p_eff = p.min(ws.len()).min(distinct_xs.len());
 
-    for &(i, w) in &ws {
-        let xi = xs[i];
-        let yi = ys[i];
+    while p_eff >= 1 {
+        // Normal equations X^T W X a = X^T W y in raw basis [1, x, x², …].
+        let mut xtx = vec![0.0f64; p_eff * p_eff];
+        let mut xty = vec![0.0f64; p_eff];
 
-        let mut row = vec![1.0f64; p];
-        let mut xpow = xi;
-        for j in row.iter_mut().take(p).skip(1) {
-            *j = xpow;
-            xpow *= xi;
-        }
+        for &(i, w) in &ws {
+            let xi = xs[i];
+            let yi = ys[i];
 
-        for j in 0..p {
-            xty[j] += w * row[j] * yi;
-            for k in 0..p {
-                xtx[j * p + k] += w * row[j] * row[k];
+            let mut row = vec![1.0f64; p_eff];
+            let mut xpow = xi;
+            for j in row.iter_mut().take(p_eff).skip(1) {
+                *j = xpow;
+                xpow *= xi;
+            }
+
+            for j in 0..p_eff {
+                xty[j] += w * row[j] * yi;
+                for k in 0..p_eff {
+                    xtx[j * p_eff + k] += w * row[j] * row[k];
+                }
             }
         }
+
+        if let Some(coeffs) = solve_linear(&mut xtx, &mut xty, p_eff) {
+            return Some(coeffs);
+        }
+        // Numerically rank-deficient at this degree — drop one and retry.
+        p_eff -= 1;
     }
 
-    solve_linear(&mut xtx, &mut xty, p)
+    None
 }
 
 /// Evaluate a polynomial in raw basis at `x` via Horner-equivalent loop.
@@ -452,4 +483,120 @@ pub(crate) fn extrapolate_flat(raw: Vec<Option<f64>>, n: usize) -> Vec<f64> {
         *i = max_v;
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sparse quality anchors with the shape binned-quality data produces:
+    /// a handful of distinct Q values, monotonically decreasing log10 rate,
+    /// weighted by wildly unequal observation counts.
+    fn sparse_case(n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let xs: Vec<f64> = (0..n)
+            .map(|i| 12.0 + 27.0 * i as f64 / (n - 1) as f64)
+            .collect();
+        let ys: Vec<f64> = (0..n)
+            .map(|i| -1.5 - 3.0 * i as f64 / (n - 1) as f64)
+            .collect();
+        let ws: Vec<f64> = (0..n).map(|i| 100.0 * (i + 1) as f64).collect();
+        (xs, ys, ws)
+    }
+
+    /// Regression test for issue #95: with `span = 0.75`, `degree = 2`, the
+    /// tricube kernel zeroes the farthest included neighbor, leaving fewer
+    /// than the 3 coefficients a quadratic needs whenever `nv <= 5`.  That used
+    /// to return `None` at every query point, which `extrapolate_flat` turned
+    /// into `NaN` and `loess_errfun` then floored at `min_error_rate` — a
+    /// silently useless error model on binned-quality input.
+    #[test]
+    fn sparse_neighborhoods_still_fit() {
+        for n in 3..=8 {
+            let (xs, ys, ws) = sparse_case(n);
+            for surface in [
+                LoessSurface::Direct,
+                LoessSurface::Interpolate { cell: 0.2 },
+            ] {
+                let pred = loess_predict(&xs, &ys, &ws, 0.75, 2, surface);
+                assert!(
+                    pred.iter().all(|p| p.is_some_and(|v| v.is_finite())),
+                    "n={n} surface={surface:?} produced a non-finite prediction: {pred:?}"
+                );
+            }
+        }
+    }
+
+    /// The fit at n <= 5 should not merely be finite — it should track the
+    /// data.  These points are exactly collinear in log space, so any sane
+    /// local fit reproduces them.
+    #[test]
+    fn sparse_fit_reproduces_collinear_data() {
+        for n in 3..=6 {
+            let (xs, ys, ws) = sparse_case(n);
+            let pred = loess_predict(&xs, &ys, &ws, 0.75, 2, LoessSurface::Direct);
+            for (i, p) in pred.iter().enumerate() {
+                let v = p.expect("fit should succeed");
+                assert!(
+                    (v - ys[i]).abs() < 1e-9,
+                    "n={n} i={i}: fit {v} != data {}",
+                    ys[i]
+                );
+            }
+        }
+    }
+
+    /// The degree fallback must engage *only* in the degenerate regime.  With
+    /// enough observations the neighborhood supports a full quadratic, and a
+    /// quadratic fit reproduces quadratic data exactly — which a linear
+    /// fallback would not.
+    #[test]
+    fn dense_neighborhoods_keep_full_degree() {
+        let xs: Vec<f64> = (0..40).map(|i| i as f64).collect();
+        let ys: Vec<f64> = xs.iter().map(|&x| 2.0 - 0.3 * x + 0.01 * x * x).collect();
+        let ws = vec![1.0f64; 40];
+
+        let pred = loess_predict(&xs, &ys, &ws, 0.75, 2, LoessSurface::Direct);
+        for (i, p) in pred.iter().enumerate() {
+            let v = p.expect("fit should succeed");
+            assert!(
+                (v - ys[i]).abs() < 1e-8,
+                "i={i}: quadratic fit {v} != {} — degree was silently reduced",
+                ys[i]
+            );
+        }
+    }
+
+    /// Repeated x values do not add identifiability: three observations at two
+    /// distinct abscissae can only support a line, and the solve must not be
+    /// attempted at quadratic degree.
+    #[test]
+    fn repeated_abscissae_fall_back_to_supportable_degree() {
+        let xs = vec![10.0, 10.0, 20.0, 20.0];
+        let ys = vec![-2.0, -2.0, -4.0, -4.0];
+        let ws = vec![50.0, 50.0, 80.0, 80.0];
+
+        let pred = loess_predict(&xs, &ys, &ws, 0.75, 2, LoessSurface::Direct);
+        for (i, p) in pred.iter().enumerate() {
+            let v = p.expect("fit should succeed despite duplicate x");
+            assert!(v.is_finite(), "i={i} produced {v}");
+        }
+    }
+
+    /// A neighborhood with no positively-weighted observations still has no
+    /// fit to give — `None` remains the answer, and `extrapolate_flat` turns a
+    /// fully-empty prediction vector into NaN rather than a bogus value.
+    #[test]
+    fn no_valid_observations_still_yields_none() {
+        let xs = vec![1.0, 2.0, 3.0];
+        let ys = vec![f64::NAN, f64::NAN, f64::NAN];
+        let ws = vec![1.0, 1.0, 1.0];
+
+        let pred = loess_predict(&xs, &ys, &ws, 0.75, 2, LoessSurface::Direct);
+        assert!(pred.iter().all(|p| p.is_none()));
+        assert!(extrapolate_flat(pred, 3).iter().all(|v| v.is_nan()));
+    }
 }
