@@ -26,6 +26,16 @@ minor versions may carry breaking changes).
 - `just` / `make` task runners for build, install, test, and docs (#46).
 
 ### Fixed
+- LOESS error models no longer collapse to a uniform `1e-7` floor on input with
+  five or fewer populated quality columns (#95). The tricube kernel zeroes the
+  farthest neighbour in the local window, which left a `span = 0.75`,
+  `degree = 2` fit short of the coefficients it needed; the local fit now falls
+  back to the highest degree the surviving points can identify. Affected
+  `--errfun loess` (and the `pacbio` loess path) on binned-quality data, where a
+  handful of distinct Q values is normal. Fits with six or more populated
+  columns are byte-identical to before. `loess_errfun` and `pacbio_errfun` now
+  return `Result` and report an error rather than emitting an unusable uniform
+  matrix when every transition fails to fit.
 - `learn-errors` and `errors-from-sample` now gzip-compress their output when
   the `-o` path ends in `.gz`, for consistency with the other JSON-emitting
   subcommands (previously the file was written uncompressed) (#71).

@@ -2,6 +2,8 @@
 /data
 /target
 notes/Chat*
+# Unsent drafts — keep local until the wording is settled.
+notes/*-draft.md
 .DS_Store
 /tmp
 
