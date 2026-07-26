@@ -98,13 +98,35 @@ fn expand_err_matrix(off_diag: &[f64], nq: usize) -> Vec<f64> {
 /// - `config`: surface + clamp bounds — see [`LoessConfig`]
 ///
 /// # Returns
-/// Flat 16 × `nq` row-major error rate matrix.
-pub fn loess_errfun(trans: &[u32], qual_scores: &[f64], config: &LoessConfig) -> Vec<f64> {
+/// Flat 16 × `nq` row-major error rate matrix, or `Err` if the LOESS fit failed
+/// for every transition — see the safety net below.
+///
+/// # When every fit fails
+///
+/// A `None` from [`loess_predict`] becomes `NaN` after [`extrapolate_flat`] and
+/// is then written out as `min_error_rate`.  That is the right behaviour for an
+/// isolated gap, but if it happens for all 12 transitions the result is a
+/// uniform `1e-7` matrix that looks like a valid error model and silently
+/// destroys downstream inference, so we return `Err` instead.
+///
+/// Historically that is what happened on any input with five or fewer populated
+/// quality columns (issue #95).  The degree fallback in [`loess_predict`] fixes
+/// that case and degrades gracefully all the way down to a single populated
+/// column, which yields a local constant — a quality-independent model, but an
+/// honest one.  In practice, then, this check now only fires when the
+/// transition matrix holds no observations at all (every read filtered out, an
+/// empty sample list), which previously also produced a silent uniform floor.
+pub fn loess_errfun(
+    trans: &[u32],
+    qual_scores: &[f64],
+    config: &LoessConfig,
+) -> Result<Vec<f64>, String> {
     let nq = qual_scores.len();
     assert_eq!(trans.len(), 16 * nq, "trans length must be 16 * nq");
 
     let mut off_diag = vec![0.0f64; 12 * nq];
     let mut off_row = 0usize;
+    let mut failed_transitions = 0usize;
 
     for nti in 0..4usize {
         // Total counts across all destinations for this source nucleotide.
@@ -139,6 +161,10 @@ pub fn loess_errfun(trans: &[u32], qual_scores: &[f64], config: &LoessConfig) ->
             let raw_pred = loess_predict(qual_scores, &rlogp, &tot, 0.75, 2, config.surface);
             let filled = extrapolate_flat(raw_pred, nq);
 
+            if !filled.iter().any(|v| v.is_finite()) {
+                failed_transitions += 1;
+            }
+
             for q in 0..nq {
                 let rate = if filled[q].is_finite() {
                     10.0f64.powf(filled[q])
@@ -151,7 +177,22 @@ pub fn loess_errfun(trans: &[u32], qual_scores: &[f64], config: &LoessConfig) ->
         }
     }
 
-    expand_err_matrix(&off_diag, nq)
+    if failed_transitions == 12 {
+        let populated = (0..nq)
+            .filter(|&q| (0..16usize).any(|r| trans[r * nq + q] > 0))
+            .count();
+        return Err(format!(
+            "LOESS fit failed for all 12 transitions: {populated} of {nq} quality \
+             columns have any observations. The error model would be uniformly \
+             {:e}, which is not usable. Check that reads survived filtering and \
+             that the samples contain alignable sequence; if this is \
+             binned-quality data, `--errfun binned-qual --binned-quals <values>` \
+             fits the observed bins directly.",
+            config.min_error_rate
+        ));
+    }
+
+    Ok(expand_err_matrix(&off_diag, nq))
 }
 
 /// Estimate error rates ignoring quality scores.
@@ -364,7 +405,11 @@ pub fn binned_qual_errfun(
 /// # Arguments
 /// - `trans`: flat 16 × `nq` row-major transition count matrix
 /// - `qual_scores`: quality score values for each column
-pub fn pacbio_errfun(trans: &[u32], qual_scores: &[f64], config: &LoessConfig) -> Vec<f64> {
+pub fn pacbio_errfun(
+    trans: &[u32],
+    qual_scores: &[f64],
+    config: &LoessConfig,
+) -> Result<Vec<f64>, String> {
     let nq = qual_scores.len();
     assert_eq!(trans.len(), 16 * nq, "trans length must be 16 * nq");
 
@@ -375,7 +420,7 @@ pub fn pacbio_errfun(trans: &[u32], qual_scores: &[f64], config: &LoessConfig) -
             .flat_map(|r| (0..sub_nq).map(move |q| trans[r * nq + q]))
             .collect();
         let qs_sub = &qual_scores[..sub_nq];
-        let err_sub = loess_errfun(&trans_sub, qs_sub, config); // 16 × sub_nq
+        let err_sub = loess_errfun(&trans_sub, qs_sub, config)?; // 16 × sub_nq
 
         // MLE for Q93: (count + 1) / (group_total + 4).
         let q93 = nq - 1;
@@ -398,7 +443,7 @@ pub fn pacbio_errfun(trans: &[u32], qual_scores: &[f64], config: &LoessConfig) -
             }
             full_err[r * nq + q93] = err93[r];
         }
-        full_err
+        Ok(full_err)
     } else {
         loess_errfun(trans, qual_scores, config)
     }
@@ -803,11 +848,114 @@ mod tests {
         let nq = 41;
         let qs: Vec<f64> = (0..nq).map(|i| i as f64).collect();
         let trans = make_uniform_trans(nq, 10_000, 10);
-        let err = loess_errfun(&trans, &qs, &LoessConfig::default());
+        let err = loess_errfun(&trans, &qs, &LoessConfig::default()).expect("fit should succeed");
         assert_eq!(err.len(), 16 * nq);
         // All rates should be in [0, 1].
         for &r in &err {
             assert!(r >= 0.0 && r <= 1.0, "rate {r} out of [0,1]");
+        }
+    }
+
+    /// Safety net for issue #95: an all-transitions-failed fit must be an
+    /// error, not a uniform `min_error_rate` matrix that looks valid.
+    ///
+    /// After the degree fallback the only input that fails every transition is
+    /// one with no observations at all — which is precisely the case a user
+    /// most needs told about, since it means filtering or alignment produced
+    /// nothing.
+    #[test]
+    fn loess_errfun_errors_on_an_empty_transition_matrix() {
+        let nq = 40;
+        let qs: Vec<f64> = (0..nq).map(|i| i as f64).collect();
+        let trans = vec![0u32; 16 * nq];
+
+        let msg = loess_errfun(&trans, &qs, &LoessConfig::default())
+            .expect_err("an empty trans matrix must not silently floor");
+        assert!(
+            msg.contains("all 12 transitions") && msg.contains("0 of 40"),
+            "message should name the cause and the populated-column count: {msg}"
+        );
+        assert!(
+            msg.contains("--errfun binned-qual"),
+            "message should point at the binned-quality path: {msg}"
+        );
+    }
+
+    /// Graceful degradation, not an error: one populated quality column cannot
+    /// express a quality *trend*, but the local constant it does yield is an
+    /// honest estimate of the observed rate.  Documents the boundary of the
+    /// safety net above.
+    #[test]
+    fn loess_errfun_single_populated_column_fits_a_constant() {
+        let nq = 40;
+        let qs: Vec<f64> = (0..nq).map(|i| i as f64).collect();
+        let mut trans = vec![0u32; 16 * nq];
+        for nti in 0..4usize {
+            for ntj in 0..4usize {
+                let count = if nti == ntj { 10_000 } else { 10 };
+                trans[(nti * 4 + ntj) * nq + 30] = count;
+            }
+        }
+
+        let err = loess_errfun(&trans, &qs, &LoessConfig::default())
+            .expect("a single populated column should still fit a constant");
+
+        // Off-diagonals: (10 + 1) / 10_030 across all Q, flat.
+        let expected = 11.0 / 10_030.0;
+        // Row 1 of the flattened 16-row matrix is the A->C transition.
+        for q in 0..nq {
+            let r = err[nq + q];
+            assert!(
+                (r - expected).abs() < 1e-12,
+                "q={q}: {r} != {expected} — expected a flat constant model"
+            );
+        }
+    }
+
+    /// The complement: realistic binned-quality input still fits, so the guard
+    /// is a safety net and not a new failure mode.  Three and four populated
+    /// columns are both real schemes — MiSeq i100 is documented with four bins
+    /// (three observed in the data evaluated so far) and NovaSeq bins to four.
+    #[test]
+    fn loess_errfun_fits_binned_quality_schemes() {
+        let nq = 40;
+        let qs: Vec<f64> = (0..nq).map(|i| i as f64).collect();
+
+        for bins in [vec![12usize, 24, 38], vec![2usize, 12, 23, 37]] {
+            let mut trans = vec![0u32; 16 * nq];
+            for (rank, &q) in bins.iter().enumerate() {
+                for nti in 0..4usize {
+                    for ntj in 0..4usize {
+                        // Error counts fall with quality; totals vary a lot
+                        // between bins, as they do in real data.
+                        let count = if nti == ntj {
+                            10_000 * (rank as u32 + 1)
+                        } else {
+                            100 / (rank as u32 + 1) + 1
+                        };
+                        trans[(nti * 4 + ntj) * nq + q] = count;
+                    }
+                }
+            }
+
+            let err = loess_errfun(&trans, &qs, &LoessConfig::default())
+                .unwrap_or_else(|e| panic!("{} bins should fit: {e}", bins.len()));
+            assert_eq!(err.len(), 16 * nq);
+
+            // Not floored, and every rate is a valid probability.
+            let off: Vec<f64> = (0..4)
+                .flat_map(|nti| (0..4).flat_map(move |ntj| (0..nq).map(move |q| (nti, ntj, q))))
+                .filter(|&(nti, ntj, _)| nti != ntj)
+                .map(|(nti, ntj, q)| err[(nti * 4 + ntj) * nq + q])
+                .collect();
+            assert!(
+                off.iter().any(|&r| r > DEFAULT_MIN_ERROR_RATE),
+                "{} bins produced an all-floor error model",
+                bins.len()
+            );
+            for &r in &err {
+                assert!((0.0..=1.0).contains(&r), "rate {r} out of [0,1]");
+            }
         }
     }
 
@@ -816,7 +964,7 @@ mod tests {
         let nq = 5;
         let trans = make_uniform_trans(nq, 1000, 1);
         let qs: Vec<f64> = (0..nq).map(|i| i as f64).collect();
-        let err = loess_errfun(&trans, &qs, &LoessConfig::default());
+        let err = loess_errfun(&trans, &qs, &LoessConfig::default()).expect("fit should succeed");
         let inflated = inflate_err(&err, nq, 2.0, false);
 
         for nti in 0..4 {

@@ -86,7 +86,7 @@ impl ErrFun {
     pub fn apply(&self, trans: &[u32], nq: usize) -> Result<Vec<f64>, String> {
         let qual_scores: Vec<f64> = (0..nq).map(|q| q as f64).collect();
         match self {
-            ErrFun::Loess { config } => Ok(loess_errfun(trans, &qual_scores, config)),
+            ErrFun::Loess { config } => loess_errfun(trans, &qual_scores, config),
             ErrFun::Noqual {
                 pseudocount,
                 config,
@@ -94,7 +94,7 @@ impl ErrFun {
             ErrFun::BinnedQual { bins, config } => {
                 binned_qual_errfun(trans, &qual_scores, bins, config)
             }
-            ErrFun::PacBio { config } => Ok(pacbio_errfun(trans, &qual_scores, config)),
+            ErrFun::PacBio { config } => pacbio_errfun(trans, &qual_scores, config),
             ErrFun::External { command } => external_errfun(trans, nq, command),
         }
     }

@@ -171,7 +171,9 @@ impl LoessConfig {
 /// `p` surviving points and the fit is unchanged.  Previously this path
 /// returned `None`, which propagated through [`extrapolate_flat`] to `NaN` and
 /// then to `min_error_rate` for every cell — a silently floored error model on
-/// binned-quality data, where 3–4 distinct Q values is normal.  See issue #95.
+/// binned-quality data, where a handful of distinct Q values is normal (NovaSeq
+/// bins to 4; MiSeq i100 is documented as 4, though the data we have evaluated
+/// so far shows 3).  See issue #95.
 fn fit_local_at(
     x0: f64,
     valid: &[usize],
