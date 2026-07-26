@@ -11,7 +11,7 @@ free on Illumina MiSeq, but subject to an irreducible borderline-ASV churn floor
 PacBio HiFi (see the PacBio section). 
 
 In the benchmarking script, `--learn-kdist-cutoff`
-lets you set the error model for `learn-error` independently (e.g., to 0.42) while still tightening `dada`.  When running the workflow steps independently, 
+lets you set the error model for `learn-errors` independently (e.g., to 0.42) while still tightening `dada`.  When running the workflow steps independently, 
 you can independently set `--kdist-cutoff` for `learn-errors` and for 
 `dada-pooled`/`dada-pseudo`/`dada` (thus leaving `learn-errors` at the default and the denoising/inference step using a tighter cutoff).
 
