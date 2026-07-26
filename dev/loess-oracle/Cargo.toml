@@ -1,0 +1,22 @@
+# Standalone oracle crate — NOT part of the dada2-rs build.
+# The empty [workspace] table makes this its own workspace root so no ancestor
+# Cargo.toml can ever pull it in. It depends on the upstream `loess-rs` crate ON
+# PURPOSE, purely as a comparison arm; that dependency never reaches the
+# shipped crate. See README.md and issue #84.
+[package]
+name = "loess-oracle"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+# The real smoother under test — path dep, so this harness can never drift out
+# of sync with src/loess.rs the way a copied file would.
+dada2-rs = { path = "../.." }
+
+# Comparison arm. Pinned: the maintainer's own note on the 0.9.0 release was
+# "the API has changed a lot in this new version", so an unpinned range would
+# break this harness without warning.
+loess-rs = "=0.9.0"

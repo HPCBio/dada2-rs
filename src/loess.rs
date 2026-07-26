@@ -334,7 +334,11 @@ fn eval_poly_and_deriv(coeffs: &[f64], x: f64) -> (f64, f64) {
 ///
 /// Returns a `Vec<Option<f64>>` aligned to `xs`; `None` at a position means
 /// the local fit could not be computed there.
-pub(crate) fn loess_predict(
+///
+/// Public so the LOESS oracle harness (`dev/loess-oracle`) can fit the *real*
+/// smoother rather than a copy that would silently drift out of sync with this
+/// file. See that crate's README.
+pub fn loess_predict(
     xs: &[f64],
     ys: &[f64],
     weights: &[f64],
@@ -460,7 +464,8 @@ pub(crate) fn loess_predict(
 ///
 /// Fills `None` entries at the low end with the first finite value and at the
 /// high end with the last finite value.  Returns the filled vector.
-pub(crate) fn extrapolate_flat(raw: Vec<Option<f64>>, n: usize) -> Vec<f64> {
+/// Public for the same reason as [`loess_predict`] — see `dev/loess-oracle`.
+pub fn extrapolate_flat(raw: Vec<Option<f64>>, n: usize) -> Vec<f64> {
     let valid: Vec<(usize, f64)> = raw
         .iter()
         .enumerate()
