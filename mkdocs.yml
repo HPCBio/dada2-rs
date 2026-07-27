@@ -30,7 +30,11 @@ markdown_extensions:
   - admonition
   - tables
   - attr_list
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.details
   - pymdownx.highlight:
       anchor_linenums: true
@@ -47,6 +51,7 @@ nav:
   - Home: index.md
   - About: about.md
   - Building & installing: installation.md
+  - Algorithm: algorithm-dada.md
   - Walkthroughs:
     - Illumina MiSeq: walkthrough-illumina.md
     - PacBio HiFi: walkthrough-pacbio.md
