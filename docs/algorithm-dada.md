@@ -19,7 +19,7 @@ so they stay valid as the code moves.
 
 ```mermaid
 flowchart TD
-  V["1 · Validate inputs<br/>len &lt; SEQLEN · k in range · err_mat = 16 x ncol · quals match"]
+  V["1 · Validate inputs<br/>len < SEQLEN · k in range · err_mat = 16 x ncol · quals match"]
   R["2 · Build or reset Raws<br/>2-bit encode · qual sums · k-mer screens"]
   V --> R
 
