@@ -51,7 +51,12 @@ nav:
   - Home: index.md
   - About: about.md
   - Building & installing: installation.md
-  - Algorithm: algorithm-dada.md
+  - Algorithm:
+    - Denoising modes: algorithm.md
+    - Shared denoising core: algorithm-core.md
+    - Per-sample (dada): algorithm-dada.md
+    - Pooled (dada-pooled): algorithm-dada-pooled.md
+    - Pseudo-pooled (dada-pseudo): algorithm-dada-pseudo.md
   - Walkthroughs:
     - Illumina MiSeq: walkthrough-illumina.md
     - PacBio HiFi: walkthrough-pacbio.md

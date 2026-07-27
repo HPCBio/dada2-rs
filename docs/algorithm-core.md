@@ -1,7 +1,13 @@
-# The `dada` algorithm, step by step
+# The shared denoising core
 
-A walkthrough of what `dada` actually does in this implementation, in the order
-it does it. Two layers:
+This is the code every denoising mode runs. [`dada`](algorithm-dada.md),
+[`dada-pooled`](algorithm-dada-pooled.md) and
+[`dada-pseudo`](algorithm-dada-pseudo.md) differ only in what unique table they
+hand to it and how many times they call it — see
+[Denoising modes](algorithm.md) for that comparison. Everything on this page is
+identical in all three.
+
+Two layers:
 
 - **The wrapper** — [`dada_uniques_cached`][w] validates inputs, prepares the
   `Raw` objects, and post-processes the finished partition into a `DadaResult`.
@@ -12,7 +18,7 @@ it does it. Two layers:
 Ported from Ben Callahan's DADA2 (`dada_uniques`, `run_dada`, `b_compare`,
 `b_shuffle2`, `b_bud`); see [About](about.md) for provenance. All source links on
 this page are pinned to commit
-[`045f035`](https://github.com/HPCBio/dada2-rs/tree/045f035782a421185d4d1313f7708a667ebe62db),
+[`33ed55b`](https://github.com/HPCBio/dada2-rs/tree/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09),
 so they stay valid as the code moves.
 
 ## Control flow
@@ -210,23 +216,23 @@ which is exactly what step E consumes on the next turn of the loop.
 
 See [Parameters](parameters.md) for the CLI flags that set these.
 
-[w]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L236
-[core]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L606
-[cmp]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/cluster.rs#L38
-[s1]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L241-L287
-[s2]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L290-L400
-[s3]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L403
-[s4]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L407-L426
-[s5]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L429-L436
-[s6]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L439-L467
-[s7]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L471
-[s7b]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L507
-[sA]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L608
-[sB]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L636-L665
-[sC]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L670-L671
-[sD]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L673-L680
-[sE]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L692
-[sF]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L716-L739
-[sG]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L750
-[sH]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L764
-[sV]: https://github.com/HPCBio/dada2-rs/blob/045f035782a421185d4d1313f7708a667ebe62db/src/dada.rs#L777-L863
+[w]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L236
+[core]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L606
+[cmp]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/cluster.rs#L38
+[s1]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L241-L287
+[s2]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L290-L400
+[s3]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L403
+[s4]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L407-L426
+[s5]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L429-L436
+[s6]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L439-L467
+[s7]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L471
+[s7b]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L507
+[sA]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L608
+[sB]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L636-L665
+[sC]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L670-L671
+[sD]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L673-L680
+[sE]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L692
+[sF]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L716-L739
+[sG]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L750
+[sH]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L764
+[sV]: https://github.com/HPCBio/dada2-rs/blob/33ed55b1d6078aa16c8ab4b6db0509383b0c4e09/src/dada.rs#L777-L863
