@@ -1812,10 +1812,11 @@ fn main() -> io::Result<()> {
             )?;
 
             // ---- Round 1: denoise each sample independently (no priors) ----
-            // Produces sample_names + per-sample round-1 ASVs. Default (cached)
-            // keeps every sample's uniques for round 2; --low-memory drops them
-            // after denoising and re-reads in round 2, capping peak memory at
-            // `jobs` samples in flight instead of all of them.
+            // Produces sample_names + per-sample round-1 ASVs. The default
+            // (streaming) drops each sample's uniques after denoising and
+            // re-reads them in round 2, capping peak memory at `jobs` samples in
+            // flight instead of all of them; --cache-samples opts into keeping
+            // every sample's uniques resident across both rounds.
             if verbose {
                 eprintln!(
                     "[dada-pseudo] round 1: {n_samples} sample(s), no priors ({jobs} concurrent{})",
