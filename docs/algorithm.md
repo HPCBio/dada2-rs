@@ -21,9 +21,9 @@ projects the result back to per-sample output.
 | --- | --- | --- | --- |
 | Core invocations | one per sample | **one, total** | two per sample |
 | Unique table | one sample's uniques | all samples merged | one sample's uniques |
-| Cross-sample information | none | full (single partition) | prior sequences only |
+| Cross-sample information | none from the run itself | full (single partition) | prior sequences only |
 | Detects rare variants shared across samples | no | yes | yes, if they clear the prior rule |
-| `OMEGA_P` in play | no | only with `--prior` | yes, in round 2 |
+| `OMEGA_P` in play | only with `--prior` | only with `--prior` | yes, in round 2 |
 | Sensitive to sample count | no | yes | yes |
 | Peak memory driver | one sample | merged table | one sample (streaming default) |
 
@@ -46,6 +46,15 @@ sample with those priors flagged. Prior-bearing uniques are tested against
 `OMEGA_P` instead of the Bonferroni-corrected `OMEGA_A`, which is what lets a
 per-sample singleton be called when the pool has already vouched for it. Close to
 pooled sensitivity at per-sample memory cost.
+
+!!! note "`--prior` is available in all three modes"
+    Flagging priors is a general mechanism, not a pseudo-pooled feature: `dada`
+    and `dada-pooled` both accept a `--prior` FASTA, whose exact matches are
+    tested against `OMEGA_P` instead of the Bonferroni-corrected `OMEGA_A`. What
+    makes `dada-pseudo` distinct is that it *derives* its prior set from a first
+    denoising round rather than taking one from you. If you already have a
+    trusted sequence set, `dada --prior` gives you the same relaxation without
+    the second pass.
 
 !!! note "The modes are not nested"
     Pseudo-pooled is not "pooled, cheaper" — it is a different rule. Pooled sums
