@@ -730,6 +730,49 @@ fn dada_input_output_guards() {
     assert!(e.contains("--output-dir"), "unexpected error: {e}");
 }
 
+/// CLI failures use a stable, parseable one-line format on stderr:
+///
+/// ```text
+/// dada2-rs: error[<ErrorKind>]: <message>
+/// ```
+///
+/// Pinned because consumers (pipelines, nf-core wrappers) may match on it, and
+/// because the default `main() -> io::Result` behaviour it replaced printed the
+/// `Debug` of io::Error -- `Error: Custom { kind: Other, error: "..." }` -- which
+/// buried the message in a struct dump.
+#[test]
+fn cli_errors_use_the_documented_format() {
+    let dir = scratch("err_format");
+    let err = shared_err_model();
+    let missing = dir.join("does_not_exist.json");
+
+    let e = run_expect_err(&[
+        "dada",
+        missing.to_str().unwrap(),
+        "--error-model",
+        err.to_str().unwrap(),
+        "-o",
+        dir.join("out.json").to_str().unwrap(),
+    ]);
+    let line = e.lines().next().unwrap_or_default();
+    assert!(
+        line.starts_with("dada2-rs: error[") && line.contains("]: "),
+        "error line does not match `dada2-rs: error[Kind]: message`: {line:?}"
+    );
+    // The kind must be the ErrorKind token, not prose, so it can be matched on.
+    assert!(
+        line.starts_with("dada2-rs: error[NotFound]: "),
+        "expected NotFound for a missing input: {line:?}"
+    );
+    // The path belongs in the message (WithPath), not just the kind.
+    assert!(
+        line.contains("does_not_exist.json"),
+        "message should name the offending path: {line:?}"
+    );
+    // No struct dump from the std runtime's Debug formatting.
+    assert!(!e.contains("Custom {"), "raw io::Error Debug leaked: {e}");
+}
+
 /// Non-ACGT input must fail with a usable error, not a panic (issue #101).
 ///
 /// Before the fix, an `N` reached `compute_lambda` and aborted a rayon worker

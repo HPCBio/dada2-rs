@@ -1,5 +1,5 @@
 #![allow(clippy::doc_overindented_list_items)]
-use std::{fs::File, io, path::Path};
+use std::{fs::File, io, path::Path, process::ExitCode};
 
 use clap::Parser;
 use flate2::read::MultiGzDecoder;
@@ -172,7 +172,34 @@ struct DadaRunParams {
     reestimated_err_between_rounds: bool,
 }
 
-fn main() -> io::Result<()> {
+/// Print a failure and exit non-zero, instead of letting the std runtime print
+/// `Error: {:?}` of the `io::Error` — which dumps the struct
+/// (`Custom { kind: Other, error: "..." }`) and buries the message.
+///
+/// Format is stable and meant to be both readable and parseable:
+///
+/// ```text
+/// dada2-rs: error[<ErrorKind>]: <message>
+/// ```
+///
+/// The bracketed token is `io::ErrorKind`'s debug name (`NotFound`,
+/// `InvalidInput`, `InvalidData`, `Other`, …), so a consumer can split on
+/// `"]: "` for the message or match the kind without parsing prose. The message
+/// is the error's `Display`, which already carries the offending path where
+/// `WithPath` was applied. Emitted on stderr; stdout stays clean for data.
+fn die(e: &io::Error) -> ExitCode {
+    eprintln!("dada2-rs: error[{:?}]: {e}", e.kind());
+    ExitCode::FAILURE
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => die(&e),
+    }
+}
+
+fn run() -> io::Result<()> {
     let cli = Cli::parse();
 
     let command = match cli.command {
