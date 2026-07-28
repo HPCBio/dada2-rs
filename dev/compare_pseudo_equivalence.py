@@ -80,6 +80,7 @@ def load_sample_dir(path):
             "asvs": {a["sequence"].upper(): a["abundance"] for a in d.get("asvs", [])},
             "map": d.get("map", []),
             "total_reads": d.get("total_reads"),
+            "input_file": d.get("input_file"),
         }
     return out
 
@@ -124,16 +125,16 @@ def load_derep(paths):
         if "uniques" not in d:
             continue
         counts = [u["count"] for u in d["uniques"]]
-        # Key on BOTH the embedded sample name and the filename stem. A run's
-        # outputs may be named per read direction (F3D0_S188.R1) while the derep
-        # files embed only the sample (F3D0_S188), in which case R1 and R2 share
-        # one embedded name and keying on it alone would silently pair the wrong
-        # derep with an output. Ambiguous keys are dropped rather than guessed.
+        # Primary key is the FILE BASENAME, because every dada output records the
+        # `input_file` it consumed -- an exact, naming-convention-free join.
+        # Embedded sample name and a stripped stem are kept as fallbacks for
+        # outputs that predate that field. Ambiguous keys are dropped rather than
+        # guessed: pairing R1's output with R2's counts would yield a plausible
+        # wrong number instead of an error.
         stem = f.name
-        for suffix in (".gz", ".json", ".derep"):
-            if stem.endswith(suffix):
-                stem = stem[: -len(suffix)]
-        for key in {d.get("sample"), stem} - {None}:
+        for part in (".gz", ".json", ".derep"):
+            stem = stem.replace(part, "")
+        for key in {f.name, d.get("sample"), stem} - {None}:
             if key in out and out[key] != counts:
                 out[key] = AMBIGUOUS
             elif key not in out:
@@ -215,7 +216,7 @@ def summarize(a, b, label_a, label_b, derep=None):
     fa = fb = ua = ub = 0
     unmatched, mismatched = [], []
     for n in names:
-        counts = derep.get(n)
+        counts = derep_for(a[n], n, derep)
         if counts is None:
             unmatched.append(n)
             continue
@@ -250,7 +251,8 @@ def summarize(a, b, label_a, label_b, derep=None):
             lines.append(f"       {len(unmatched)} with no derep entry matching their "
                          "sample name, e.g.:")
             for n in unmatched[:3]:
-                lines.append(f"         output sample {n!r}")
+                lines.append(f"         output sample {n!r} "
+                             f"(input_file {a[n].get('input_file')!r})")
             have = sorted(derep)[:3]
             lines.append(f"       derep names seen: {have if have else 'NONE -- wrong path?'}")
             lines.append("       Pass the SAME derep files the run consumed via --derep "
@@ -263,13 +265,24 @@ def summarize(a, b, label_a, label_b, derep=None):
     return lines
 
 
+def derep_for(entry, name, derep):
+    """Counts for one sample: join on the recorded input_file first, then name."""
+    stem = (entry.get("input_file") or "")
+    for part in (".gz", ".json", ".derep"):
+        stem = stem.replace(part, "")
+    for key in (entry.get("input_file"), name, stem):
+        if key and key in derep:
+            return derep[key]
+    return None
+
+
 def reads_lost(entries, derep):
     """(reads, uniques) belonging to uniques that failed OMEGA_C, summed."""
     if derep is None:
         return None
     reads = uniq = 0
     for name, e in entries.items():
-        counts = derep.get(name)
+        counts = derep_for(e, name, derep)
         if counts is None:
             continue
         r = failed_reads(e, counts)
