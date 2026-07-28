@@ -177,6 +177,13 @@ tables:
 Our own two arms differ by 0.0434 Jaccard, and the two distances to R differ by
 0.0383 — 88% of that gap, so the test has real power rather than splitting noise.
 
+Both controls check out in the run's own artifacts: the two arms' error models are
+**byte-identical** (`errors_fwd/rev.json`), so the flag is the only difference
+between them, and both were fitted with `surface: interpolate, cell: 0.2` and
+R's `[1e-7, 0.25]` clamps — i.e. R's `loessErrfun` surface, not our `direct`
+default. The loess confound is therefore controlled rather than merely bounded by
+the residual.
+
 The set-level detail is what makes it conclusive:
 
 | | count |
