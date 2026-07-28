@@ -555,24 +555,37 @@ fn run_init_pass(
     dada_params.max_clust = saved_max_clust;
 
     let mut sample_trans: Vec<Vec<u32>> = Vec::new();
+    // Keep the first failure's message. When every sample fails, the aggregate
+    // error is useless on its own -- the actionable detail (e.g. "sequence 12
+    // contains a non-ACGT base 'N'", issue #101) lives in the per-sample error,
+    // which was previously only visible under --verbose.
+    let mut first_err: Option<(usize, String)> = None;
     for (si, outcome) in sample_results {
         match outcome {
             Ok(t) => sample_trans.push(t),
-            Err(e) if verbose => {
-                eprintln!(
-                    "[learn_errors] init pass sample={}: dada_uniques failed: {}",
-                    si + 1,
-                    e
-                );
+            Err(e) => {
+                if verbose {
+                    eprintln!(
+                        "[learn_errors] init pass sample={}: dada_uniques failed: {}",
+                        si + 1,
+                        e
+                    );
+                }
+                if first_err.is_none() {
+                    first_err = Some((si, e.to_string()));
+                }
             }
-            Err(_) => {}
         }
     }
 
     if sample_trans.is_empty() {
-        return Err(io::Error::other(
-            "All DADA runs failed during init pass; cannot estimate error model",
-        ));
+        let detail = match first_err {
+            Some((si, e)) => format!(" First failure (sample {}): {e}", si + 1),
+            None => String::new(),
+        };
+        return Err(io::Error::other(format!(
+            "All DADA runs failed during init pass; cannot estimate error model.{detail}"
+        )));
     }
 
     let refs: Vec<(&[u32], usize)> = sample_trans.iter().map(|t| (t.as_slice(), nq)).collect();
@@ -830,6 +843,7 @@ pub fn learn_errors(
         // Serial post-processing: logging and diagnostics.
         let mut sample_trans_pairs: Vec<(Vec<u32>, usize)> = Vec::new();
         let mut sample_diags: Vec<SampleIterDiag> = Vec::new();
+        let mut iter_first_err: Option<(usize, String)> = None;
 
         for (si, outcome) in sample_results {
             match outcome {
@@ -905,14 +919,23 @@ pub fn learn_errors(
                             e,
                         );
                     }
+                    if iter_first_err.is_none() {
+                        iter_first_err = Some((si, e.to_string()));
+                    }
                 }
             }
         }
 
         if sample_trans_pairs.is_empty() {
-            return Err(io::Error::other(
-                "All DADA runs failed; cannot estimate error model",
-            ));
+            // Same reasoning as the init pass: carry the first underlying error,
+            // or the aggregate message tells the user nothing actionable.
+            let detail = match iter_first_err {
+                Some((si, e)) => format!(" First failure (sample {}): {e}", si + 1),
+                None => String::new(),
+            };
+            return Err(io::Error::other(format!(
+                "All DADA runs failed; cannot estimate error model.{detail}"
+            )));
         }
 
         // ---- Accumulate transition matrices ----

@@ -262,6 +262,29 @@ pub fn dada_uniques_cached(
             "All input sequences must be longer than the k-mer size ({k})."
         ));
     }
+    // Reject non-ACGT here rather than in the inner loop (issue #101). `N` in
+    // particular is a user error with a known remedy — DADA2's workflow requires
+    // `maxN=0` — so it deserves the same treatment as the other input problems
+    // above, not a panic from a rayon worker inside `compute_lambda` that names
+    // neither the sample nor the sequence. `U` is accepted because `nt_encode`
+    // folds it to `T`; everything else (including `N` and `-`) has no transition
+    // row in the error matrix and cannot be scored.
+    for (i, inp) in inputs.iter().enumerate() {
+        if let Some(off) = inp.seq.bytes().position(|b| {
+            !matches!(
+                b,
+                b'A' | b'C' | b'G' | b'T' | b'U' | b'a' | b'c' | b'g' | b't' | b'u'
+            )
+        }) {
+            let ch = inp.seq.as_bytes()[off] as char;
+            return Err(format!(
+                "Sequence {i} contains a non-ACGT base {ch:?} at position {off} \
+                 (0-based). DADA2 cannot assign an error rate to it. Filter the \
+                 reads first — `filter-and-trim --max-n 0` removes reads \
+                 containing N, as R DADA2's workflow requires."
+            ));
+        }
+    }
     if params.err_mat.len() != 16 * params.err_ncol {
         return Err(format!(
             "Error matrix length {} does not match 16 × {} = {}.",

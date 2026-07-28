@@ -273,7 +273,15 @@ pub fn compute_lambda(
         let nti = raw.seq[pos]
             .checked_sub(1)
             .filter(|&n| n < 4)
-            .expect("non-ACGT nucleotide in compute_lambda") as usize;
+            // Unreachable: dada_uniques_cached rejects non-ACGT input up front
+            // (issue #101), which is where a user-facing error belongs — this is
+            // inside a rayon worker and knows neither the sample nor the sequence.
+            // Kept as a hard invariant rather than silently scoring an unknown
+            // base as a match, which would corrupt lambda instead of failing.
+            .expect(
+                "non-ACGT nucleotide reached compute_lambda; input validation in \
+                 dada_uniques_cached should have rejected it (bug)",
+            ) as usize;
         tvec[pos] = nti * 4 + nti;
         qind[pos] = if use_quals {
             raw.qual.as_ref().map_or(0, |q| q[pos] as usize)

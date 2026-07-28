@@ -730,6 +730,59 @@ fn dada_input_output_guards() {
     assert!(e.contains("--output-dir"), "unexpected error: {e}");
 }
 
+/// Non-ACGT input must fail with a usable error, not a panic (issue #101).
+///
+/// Before the fix, an `N` reached `compute_lambda` and aborted a rayon worker
+/// with a message naming neither the sample nor the sequence -- after a
+/// potentially long dereplication, and repeated once per worker. Non-ACGT input
+/// is a user error with a known remedy (DADA2's workflow requires maxN=0), so it
+/// belongs with the other input guards.
+#[test]
+fn dada_rejects_non_acgt_with_a_clear_error() {
+    let dir = scratch("non_acgt");
+    let err = shared_err_model();
+    let read = |id: &str, seq: &str| format!("@{id}\n{seq}\n+\n{}\n", "I".repeat(seq.len()));
+
+    // One clean unique plus one carrying an N, both long enough to clear the
+    // k-mer-size guard so the ACGT check is what trips.
+    let clean = "ACGTACGTACGTACGTACGTACGTACGTACGT";
+    let withn = "ACGTACGTACGTACNTACGTACGTACGTACGT";
+    let mut fq = String::new();
+    for i in 0..4 {
+        fq.push_str(&read(&format!("clean{i}"), clean));
+    }
+    for i in 0..3 {
+        fq.push_str(&read(&format!("ambig{i}"), withn));
+    }
+    let fq_path = dir.join("withN.fastq");
+    std::fs::write(&fq_path, fq).unwrap();
+
+    let e = run_expect_err(&[
+        "dada",
+        fq_path.to_str().unwrap(),
+        "--error-model",
+        err.to_str().unwrap(),
+        "--threads",
+        "1",
+        "-o",
+        dir.join("out.json").to_str().unwrap(),
+    ]);
+
+    // Must be the validation error, and must be actionable: name the base, and
+    // point at the fix rather than just refusing.
+    assert!(e.contains("non-ACGT"), "unexpected error: {e}");
+    assert!(e.contains('N'), "error should name the offending base: {e}");
+    assert!(
+        e.contains("max-n") || e.contains("filter-and-trim"),
+        "error should say how to fix it: {e}"
+    );
+    // And it must be an error, not a panic escaping a worker thread.
+    assert!(
+        !e.contains("panicked"),
+        "should not panic on non-ACGT input: {e}"
+    );
+}
+
 /// Dereplication orders uniques by abundance descending, ties broken lexically
 /// by sequence — matching R `derepFastq` (its `qtables2` builds uniques in
 /// lexical order, then a stable abundance sort preserves it among ties). This
