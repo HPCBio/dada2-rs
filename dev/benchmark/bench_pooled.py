@@ -102,6 +102,21 @@ RS_VERBOSE_SUBCMDS = {
 }
 
 
+# Set from --loess-preset in main(). Threaded into the learn-errors steps so the
+# error model can be fitted the way R DADA2's loessErrfun does (R's default
+# `surface = "interpolate"`) instead of our `direct` default. Needed whenever the
+# run is compared against R at a resolution finer than a few hundred reads: the
+# two surfaces disagree by ~1e-3 absolute at low-Q edges, worth ~1 read/sample on
+# a 362-sample run. None = leave the binary's default, so a normal run is
+# unchanged.
+LOESS_PRESET = None
+
+
+def loess_extra():
+    """`--loess-preset` for the learn-errors step, or nothing."""
+    return ["--loess-preset", LOESS_PRESET] if LOESS_PRESET else []
+
+
 def maybe_verbose(cmd):
     """Append --verbose to a dada2-rs subcommand (keyed on cmd[1]) when the global
     --verbose is set, so its progress is written to that step's own log. Leaves R
@@ -300,6 +315,11 @@ def rust_dada_step(args, bin_, step, filts, names, errmodel, ddir, outdir, resul
         # opts back into the all-in-memory mode for comparison.
         if args.cache_samples:
             cmd += ["--cache-samples"]
+        # R-emulation arm (issue #100): re-fit the error model from round 1 and
+        # use it for round 2, as R's pool="pseudo" appears to do. Off by default;
+        # the point of benchmarking it is to see which arm R's output resembles.
+        if args.reestimate_err_between_rounds:
+            cmd += ["--reestimate-err-between-rounds"]
         run_step(step, cmd, outdir / f"{step}.log", results)
     else:
         # Multi-input dada: one process, per-sample (R pool=FALSE), fanning
@@ -343,12 +363,12 @@ def prepare_illumina(args, bin_, outdir, results):
     errF = outdir / "errors_fwd.json"; errR = outdir / "errors_rev.json"
     run_step("learn_fwd", [bin_, "learn-errors", *map(str, filtFs),
              "--nbases", str(int(args.nbases)), "--errfun", "loess",
-             *learn_kdist_extra(),
+             *learn_kdist_extra(), *loess_extra(),
              "--threads", str(args.threads), "-o", errF],
              outdir / "learn_fwd.log", results)
     run_step("learn_rev", [bin_, "learn-errors", *map(str, filtRs),
              "--nbases", str(int(args.nbases)), "--errfun", "loess",
-             *learn_kdist_extra(),
+             *learn_kdist_extra(), *loess_extra(),
              "--threads", str(args.threads), "-o", errR],
              outdir / "learn_rev.log", results)
     return {"filtFs": filtFs, "filtRs": filtRs, "names": names,
@@ -903,6 +923,15 @@ def main():
     p.add_argument("--dada2rs", help="path to dada2-rs binary (REQUIRED; e.g. "
                    "target/release/dada2-rs or target/release-native/dada2-rs)")
     p.add_argument("--rscript", help="path to Rscript (default: Rscript on PATH)")
+    p.add_argument("--loess-preset",
+                   help="pass --loess-preset to learn-errors (e.g. r-dada2, which "
+                        "uses R's interpolate loess surface). Set this when comparing "
+                        "against R at fine resolution: our 'direct' default differs "
+                        "from R's loessErrfun by ~1 read/sample on a 362-sample run.")
+    p.add_argument("--reestimate-err-between-rounds", action="store_true",
+                   help="pseudo only: pass --reestimate-err-between-rounds to "
+                        "dada-pseudo, emulating R's between-round error-model re-fit "
+                        "(issue #100). Use with --pool pseudo.")
     p.add_argument("--run-r", action="store_true", help="also run the R DADA2 pipeline")
     p.add_argument("--r-mode", choices=["split", "single", "both"], default="both",
                    help="how to run R: 'split' = one process per step (per-step RSS, "
@@ -990,11 +1019,16 @@ def main():
     args = p.parse_args()
 
     global VERBOSE, ALIGN_BACKEND, WFA_MAX_EDITS, INFER_KDIST, LEARN_KDIST
+    global LOESS_PRESET
     VERBOSE = args.verbose
     ALIGN_BACKEND = args.align_backend
     WFA_MAX_EDITS = args.wfa_max_edits
     INFER_KDIST = args.kdist_cutoff
     LEARN_KDIST = args.learn_kdist_cutoff
+    LOESS_PRESET = args.loess_preset
+    if args.reestimate_err_between_rounds and args.pool != "pseudo":
+        p_err = "--reestimate-err-between-rounds applies to --pool pseudo only"
+        raise SystemExit(p_err)
     if LEARN_KDIST is not None and args.run_r:
         print("  note: --learn-kdist-cutoff (decoupled learn/infer screen) is a dada2-rs\n"
               "        capability; the R arm uses one global KDIST_CUTOFF and ignores it.",
