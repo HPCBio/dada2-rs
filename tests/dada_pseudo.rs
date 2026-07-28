@@ -730,6 +730,85 @@ fn dada_input_output_guards() {
     assert!(e.contains("--output-dir"), "unexpected error: {e}");
 }
 
+/// A quality score above the error model's column count must extend the model and
+/// warn, not panic with an index-out-of-bounds (issue #102).
+///
+/// Mirrors R DADA2 (`dada.R:302-312`), which repeats the last column rather than
+/// failing -- a model learned on one run, or on a `--nbases` subsample that missed
+/// the top quality bin, would otherwise abort on data R handles. Unlike R the
+/// warning is not verbose-gated: extrapolated rates move low-abundance calls, so a
+/// run that extrapolates says so.
+#[test]
+fn dada_extends_error_model_for_out_of_range_quality() {
+    let dir = scratch("q_extend");
+    let read = |id: &str, seq: &str, q: char| {
+        format!("@{id}\n{seq}\n+\n{}\n", q.to_string().repeat(seq.len()))
+    };
+    let seq = "ACGTACGTACGTACGTACGTACGTACGTACGT";
+
+    // Learn a model from reads capped at Phred 30 ('?'), so err_ncol covers Q0..Q30.
+    let learn_fq = dir.join("learn.fastq");
+    let mut fq = String::new();
+    for i in 0..40 {
+        fq.push_str(&read(&format!("l{i}"), seq, '?'));
+    }
+    std::fs::write(&learn_fq, fq).unwrap();
+    let err = dir.join("err_lowq.json");
+    run(&[
+        "learn-errors",
+        learn_fq.to_str().unwrap(),
+        "--errfun",
+        "loess",
+        "--threads",
+        "1",
+        "-o",
+        err.to_str().unwrap(),
+    ]);
+
+    // Denoise reads at Phred 40 ('I') -- above what the model covers.
+    let hi_fq = dir.join("hi.fastq");
+    let mut fq = String::new();
+    for i in 0..6 {
+        fq.push_str(&read(&format!("h{i}"), seq, 'I'));
+    }
+    std::fs::write(&hi_fq, fq).unwrap();
+    let out = dir.join("hi.json");
+
+    let res = Command::new(BIN)
+        .args([
+            "dada",
+            hi_fq.to_str().unwrap(),
+            "--error-model",
+            err.to_str().unwrap(),
+            "--threads",
+            "1",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&res.stderr);
+
+    assert!(
+        res.status.success(),
+        "out-of-range quality should extend the model, not fail: {stderr}"
+    );
+    assert!(
+        !stderr.contains("index out of bounds"),
+        "must not panic on out-of-range quality: {stderr}"
+    );
+    // The extrapolation must be announced without needing --verbose.
+    assert!(
+        stderr.contains("warning") && stderr.contains("Extending"),
+        "extension should warn unconditionally: {stderr}"
+    );
+    assert!(
+        stderr.contains("extrapolated"),
+        "warning should say the rates are extrapolated: {stderr}"
+    );
+    assert!(out.exists(), "no output written");
+}
+
 /// CLI failures use a stable, parseable one-line format on stderr:
 ///
 /// ```text

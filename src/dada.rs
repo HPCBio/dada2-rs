@@ -44,6 +44,11 @@ const SEQLEN: usize = 9999;
 // ---------------------------------------------------------------------------
 
 /// All tuning parameters for the DADA2 algorithm.
+///
+/// `Clone` so `dada_uniques_cached` can hand `run_dada` a copy carrying an
+/// error matrix extended to cover the data's quality range (issue #102) without
+/// forcing every caller to build one.
+#[derive(Clone)]
 pub struct DadaParams {
     /// Alignment parameters (method selection, scoring, band).
     pub align: AlignParams,
@@ -308,6 +313,73 @@ pub fn dada_uniques_cached(
             }
         }
     }
+
+    // ---- Extend the error model if the data has higher quality than it covers ----
+    // Mirrors R DADA2 (`dada.R:302-312`), which repeats the last column up to the
+    // maximum observed quality rather than failing: a model learned on one run,
+    // or on a `--nbases` subsample that missed the top quality bin, would
+    // otherwise abort on data R processes fine. Without this the index runs off
+    // the end of `err_mat` inside `compute_lambda` (issue #102).
+    //
+    // Two deliberate departures from R:
+    //  - the warning is NOT verbose-gated. R extends silently by default;
+    //    extrapolated error rates shift low-abundance calls, so a run that does
+    //    it should say so.
+    //  - `qmax` uses `round`, matching what our own indexing does
+    //    (`Raw::from_qual_sums`) and what `learn_errors::detect_nq` sizes the
+    //    matrix with. R uses `ceiling` (`dada.R:290`), but adopting that here
+    //    would fire on the STANDARD workflow: a mean of 39.4 rounds to 39, so
+    //    detect_nq produces nq=40, while ceiling gives qmax=40 >= 40 and would
+    //    extend a matrix that already covers the data. The trigger has to match
+    //    the index that can actually overflow.
+    let extended_err: Option<(Vec<f64>, usize)> = if has_quals && params.err_ncol > 0 {
+        let qmax = inputs
+            .iter()
+            .filter_map(|inp| {
+                let q = inp.quals.as_ref()?;
+                let c = inp.abundance.max(1) as f64;
+                q.iter().map(|&s| (s as f64 / c).round() as usize).max()
+            })
+            .max()
+            .unwrap_or(0);
+        if qmax >= params.err_ncol {
+            let old_ncol = params.err_ncol;
+            let new_ncol = qmax + 1;
+            let mut ext = vec![0.0f64; 16 * new_ncol];
+            for t in 0..16 {
+                let row = &params.err_mat[t * old_ncol..(t + 1) * old_ncol];
+                ext[t * new_ncol..t * new_ncol + old_ncol].copy_from_slice(row);
+                // Repeat the last learned column across the new ones.
+                let last = row[old_ncol - 1];
+                for q in old_ncol..new_ncol {
+                    ext[t * new_ncol + q] = last;
+                }
+            }
+            eprintln!(
+                "dada2-rs: warning: input has quality up to Q{qmax} but the error \
+                 model covers Q0-Q{}. Extending the model by repeating its last \
+                 column (Q{}) for Q{}-Q{qmax}. Rates for the extended columns are \
+                 extrapolated, not learned; re-run learn-errors on this data to \
+                 avoid it.",
+                old_ncol - 1,
+                old_ncol - 1,
+                old_ncol,
+            );
+            Some((ext, new_ncol))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    // Owned params only when the matrix had to grow, so the common path keeps
+    // borrowing the caller's and copies nothing.
+    let owned_params: Option<DadaParams> = extended_err.map(|(err_mat, err_ncol)| DadaParams {
+        err_mat,
+        err_ncol,
+        ..params.clone()
+    });
+    let params: &DadaParams = owned_params.as_ref().unwrap_or(params);
 
     // ---- Build or reset Raw objects ----
     let raws: Vec<Raw> = match cached {
