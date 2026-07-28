@@ -181,4 +181,29 @@ seqtab.nochim <- timed("remove_bimera",
 cat(sprintf("R pipeline done: %d samples x %d ASVs (%d after chimera removal)\n",
             nrow(seqtab.nochim), ncol(seqtab), ncol(seqtab.nochim)))
 saveRDS(seqtab.nochim, file.path(outdir, "seqtab_nochim_R.rds"))
+
+## ---- long-CSV export, for comparing against dada2-rs without R -----------
+## Same schema as dev/concordance/write_reference.R (`sequence,sample,count`),
+## which is what dev/concordance/compare_to_reference.py reads. Both the PRE- and
+## post-chimera tables are written: chimera removal can mask or redistribute a
+## denoising difference, so an implementation comparison should be made on the
+## pre-chimera table, with the post-chimera one as the end-to-end view.
+write_long_csv <- function(tab, path) {
+  seqs <- colnames(tab)
+  samples <- rownames(tab)
+  con <- file(path, "w")
+  on.exit(close(con))
+  writeLines("sequence,sample,count", con)
+  for (si in seq_len(nrow(tab))) {
+    nz <- which(tab[si, ] > 0)
+    if (length(nz)) {
+      writeLines(sprintf("%s,%s,%d", seqs[nz], samples[si],
+                         as.integer(tab[si, nz])), con)
+    }
+  }
+  cat(sprintf("wrote %s: %d ASVs x %d sample(s)\n", path, ncol(tab), nrow(tab)))
+}
+write_long_csv(seqtab, file.path(outdir, "seqtab_R.csv"))
+write_long_csv(seqtab.nochim, file.path(outdir, "seqtab_nochim_R.csv"))
+
 cat(sprintf("\nBENCH_RESULT\tn_asv\t%d\n", ncol(seqtab.nochim)))
