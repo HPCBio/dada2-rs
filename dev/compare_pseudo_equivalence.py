@@ -84,6 +84,39 @@ def load_sample_dir(path):
     return out
 
 
+def load_derep_dir(path):
+    """{sample: [per-unique read count]} from the derep JSONs the run consumed.
+
+    Needed because a dada output's `total_reads` is NOT a recovery measure: a
+    cluster's abundance includes members that failed the OMEGA_C attribution
+    test, so `total_reads` always equals the input total and is invariant across
+    configurations. The quantity that actually moves is the reads belonging to
+    uniques that failed (`map[i] is None`), and their counts live in the derep.
+
+    Keyed by the derep's embedded `sample` field so it lines up with the dada
+    output regardless of file naming.
+    """
+    out = {}
+    for f in sorted(Path(path).glob("*.json*")):
+        opener = gzip.open if f.name.endswith(".gz") else open
+        with opener(f, "rt") as fh:
+            d = json.load(fh)
+        if len(d) == 1 and isinstance(next(iter(d.values())), dict):
+            d = next(iter(d.values()))
+        name = d.get("sample", f.stem)
+        out[name] = [u["count"] for u in d.get("uniques", [])]
+    return out
+
+
+def failed_reads(entry, counts):
+    """(failed_uniques, reads_in_failed_uniques) for one sample."""
+    m = entry["map"]
+    if len(counts) != len(m):
+        return None
+    idx = [i for i, v in enumerate(m) if v is None]
+    return len(idx), sum(counts[i] for i in idx)
+
+
 def diff_asvs(a, b, label_a, label_b, limit=5):
     """Human-readable diff of two {seq: abundance} maps."""
     lines = []
@@ -107,13 +140,13 @@ def diff_asvs(a, b, label_a, label_b, limit=5):
     return lines
 
 
-def summarize(a, b, label_a, label_b):
+def summarize(a, b, label_a, label_b, derep=None):
     """Aggregate scoreboard across samples.
 
-    Reports reads recovered as well as ASV counts: a change in partitioning can
-    move reads between clusters, or add clusters, without recovering any reads
-    that were previously dropped. Those are different claims and the ASV count
-    alone cannot distinguish them.
+    ASV counts alone cannot tell repartitioning from recovery, so this also
+    reports reads lost to failed uniques when `derep` is supplied -- the only
+    read-level quantity that actually varies between configurations. See
+    `load_derep_dir` for why `total_reads` does not.
     """
     lines = []
     names = sorted(set(a) & set(b))
@@ -135,18 +168,45 @@ def summarize(a, b, label_a, label_b):
     lines.append(f"    samples differing        : {ndiff}/{len(names)}")
     lines.append(f"    total ASVs {label_a:>{w}}      : {asv_a}")
     lines.append(f"    total ASVs {label_b:>{w}}      : {asv_b}  ({asv_b - asv_a:+d})")
-    lines.append(f"    reads recovered {label_a:>{w}} : {reads_a}")
-    lines.append(f"    reads recovered {label_b:>{w}} : {reads_b}  ({reads_b - reads_a:+d})")
     lines.append(f"    ASVs only in {label_b:<{w}}    : {gained}")
     lines.append(f"    ASVs only in {label_a:<{w}}    : {lost}")
     lines.append(f"    reads reassigned among shared ASVs: {moved}")
-    if reads_a == reads_b and (gained or lost or moved):
-        lines.append(
-            "    NOTE: identical reads recovered -- the difference is partitioning"
-        )
-        lines.append(
-            "          (reads moved between clusters), NOT extra reads rescued."
-        )
+    lines.append(f"    reads in ASV table (both)        : {reads_a}"
+                 + ("" if reads_a == reads_b else f" vs {reads_b} -- UNEXPECTED, see below"))
+    lines.append("      (= input total; invariant, NOT a recovery measure)")
+
+    if derep is None:
+        lines.append("    reads lost to failed uniques    : pass --derep-dir to measure")
+        return lines
+
+    fa = fb = ua = ub = 0
+    skipped = []
+    for n in names:
+        counts = derep.get(n)
+        if counts is None:
+            skipped.append(n)
+            continue
+        ra = failed_reads(a[n], counts)
+        rb = failed_reads(b[n], counts)
+        if ra is None or rb is None:
+            skipped.append(n)
+            continue
+        ua += ra[0]
+        fa += ra[1]
+        ub += rb[0]
+        fb += rb[1]
+    lines.append(f"    failed uniques {label_a:>{w}}  : {ua}")
+    lines.append(f"    failed uniques {label_b:>{w}}  : {ub}  ({ub - ua:+d})")
+    lines.append(f"    READS LOST to failed uniques {label_a:>{w}} : {fa}"
+                 + (f" ({100 * fa / reads_a:.3f}%)" if reads_a else ""))
+    lines.append(f"    READS LOST to failed uniques {label_b:>{w}} : {fb}"
+                 + (f" ({100 * fb / reads_b:.3f}%)" if reads_b else "")
+                 + f"  ({fb - fa:+d})")
+    if fb != fa:
+        better, worse = (label_a, label_b) if fa < fb else (label_b, label_a)
+        lines.append(f"    -> {better} recovers {abs(fb - fa)} MORE reads than {worse}")
+    if skipped:
+        lines.append(f"    NOTE: {len(skipped)} sample(s) skipped (no matching derep)")
     return lines
 
 
@@ -194,6 +254,12 @@ def main():
     ap.add_argument("--pseudo")
     ap.add_argument("--manual")
     ap.add_argument("--round1")
+    ap.add_argument(
+        "--derep-dir",
+        help="Directory of the derep JSONs the run consumed. Enables the "
+        "reads-lost-to-failed-uniques metric, which is the read-level number "
+        "that actually varies; total_reads does not.",
+    )
     ap.add_argument("--arm-c")
     ap.add_argument("--label-a", default="pseudo", help="Name for the --pseudo arm in reports")
     ap.add_argument("--label-b", default="manual", help="Name for the --manual arm in reports")
@@ -243,7 +309,8 @@ def main():
     overall &= ok
     print("\n".join(lines))
     print("\n    -- aggregate --")
-    print("\n".join(summarize(pseudo, manual, args.label_a, args.label_b)))
+    derep = load_derep_dir(args.derep_dir) if args.derep_dir else None
+    print("\n".join(summarize(pseudo, manual, args.label_a, args.label_b, derep)))
 
     if args.arm_c:
         armc = load_sample_dir(args.arm_c)

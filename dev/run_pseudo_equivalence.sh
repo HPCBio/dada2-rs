@@ -252,6 +252,7 @@ echo
     --pseudo "${OUTDIR}/A_pseudo" \
     --manual "${OUTDIR}/B_round2" \
     --round1 "${OUTDIR}/B_round1" \
+    --derep-dir "${DEREP_DIR}" \
     ${ARM_C[@]+"${ARM_C[@]}"} | tee "${OUTDIR}/report.txt"
 
 if [[ "${REESTIMATE:-0}" == "1" ]]; then
@@ -265,5 +266,6 @@ if [[ "${REESTIMATE:-0}" == "1" ]]; then
         --priors-a "${OUTDIR}/priors.A.fa" \
         --priors-b "${OUTDIR}/priors.D.fa" \
         --pseudo "${OUTDIR}/A_pseudo" \
-        --manual "${OUTDIR}/D_pseudo_reest" | tee "${OUTDIR}/report.reestimate.txt"
+        --manual "${OUTDIR}/D_pseudo_reest" \
+        --derep-dir "${DEREP_DIR}" | tee "${OUTDIR}/report.reestimate.txt"
 fi
