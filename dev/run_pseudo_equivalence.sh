@@ -46,9 +46,23 @@
 #           (prevalence 2 mirrors R DADA2's PSEUDO_PREVALENCE; the abundance
 #            disjunct is left off, mirroring R's PSEUDO_ABUNDANCE=Inf)
 #
-# Environment overrides (held CONSTANT across both arms):
+# Environment overrides (held CONSTANT across all arms):
 #   THREADS=1  KDIST_CUTOFF=0.42  MAX_CONSIST=10  NBASES=100000000
 #   FILE_GLOB="*.fastq.gz *.fastq *.json *.json.gz"
+#
+#   REESTIMATE=1  adds arm D: a second dada-pseudo run with
+#                 --reestimate-err-between-rounds, i.e. R's behaviour of re-fitting
+#                 the error model from round 1 (issue #100). Reported separately,
+#                 since differences there are the finding rather than a bug.
+#
+# INPUT MUST BE FILTERED. Non-ACGT bases abort the run (issue #101); run
+# `filter-and-trim --max-n 0` first, as DADA2's own workflow requires.
+#
+# Scale note: this runs dada-pseudo TWICE (three times with REESTIMATE=1) plus
+# two plain dada passes, so budget roughly 4-5x a single pseudo run in wall time.
+# On a full MiSeq run (e.g. the 384-sample F1000 MiSeqSOP benchmark) give it a
+# compute node and set THREADS accordingly; the arms are sequential, so peak
+# memory stays that of one pseudo run rather than the sum.
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
@@ -207,6 +221,28 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Arm D (opt-in, REESTIMATE=1): the R-emulation A/B. Same inputs and same error
+# model as arm A, but round 2 re-fits the error model from round 1
+# (--reestimate-err-between-rounds). This is a DIFFERENT question from the
+# equivalence test above -- differences here are the finding, not a bug -- so it
+# is reported separately with --expect-differences.
+#
+# Watch `reads recovered` in the aggregate block, not just the ASV count: a
+# re-fit can repartition reads and add clusters while rescuing no additional
+# reads at all, and those are different claims.
+# ---------------------------------------------------------------------------
+if [[ "${REESTIMATE:-0}" == "1" ]]; then
+    echo "==> arm D: dada-pseudo --reestimate-err-between-rounds (R emulation)"
+    rm -rf "${OUTDIR}/D_pseudo_reest"
+    "$DADA2RS" dada-pseudo "${DEREPS[@]}" \
+        "${COMMON[@]}" \
+        --pseudo-prevalence "$PREVALENCE" \
+        --reestimate-err-between-rounds \
+        --priors-out "${OUTDIR}/priors.D.fa" \
+        -o "${OUTDIR}/D_pseudo_reest" > "${OUTDIR}/D_pseudo.log" 2>&1
+fi
+
+# ---------------------------------------------------------------------------
 # Compare.
 # ---------------------------------------------------------------------------
 echo
@@ -217,3 +253,17 @@ echo
     --manual "${OUTDIR}/B_round2" \
     --round1 "${OUTDIR}/B_round1" \
     ${ARM_C[@]+"${ARM_C[@]}"} | tee "${OUTDIR}/report.txt"
+
+if [[ "${REESTIMATE:-0}" == "1" ]]; then
+    echo
+    echo "########################################################################"
+    echo "# R-emulation A/B: error model re-estimated between rounds, or not"
+    echo "########################################################################"
+    "${SCRIPT_DIR}/compare_pseudo_equivalence.py" \
+        --expect-differences \
+        --label-a "default" --label-b "reest" \
+        --priors-a "${OUTDIR}/priors.A.fa" \
+        --priors-b "${OUTDIR}/priors.D.fa" \
+        --pseudo "${OUTDIR}/A_pseudo" \
+        --manual "${OUTDIR}/D_pseudo_reest" | tee "${OUTDIR}/report.reestimate.txt"
+fi

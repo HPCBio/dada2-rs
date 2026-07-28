@@ -195,6 +195,8 @@ def main():
     ap.add_argument("--manual")
     ap.add_argument("--round1")
     ap.add_argument("--arm-c")
+    ap.add_argument("--label-a", default="pseudo", help="Name for the --pseudo arm in reports")
+    ap.add_argument("--label-b", default="manual", help="Name for the --manual arm in reports")
     ap.add_argument(
         "--expect-differences",
         action="store_true",
@@ -221,12 +223,12 @@ def main():
     # ---- 1. prior sets -------------------------------------------------
     pa = read_fasta_seqs(args.priors_a)
     pb = read_fasta_seqs(args.priors_b)
-    print(f"\n[1] prior sets: {len(pa)} (dada-pseudo) vs {len(pb)} (manual)")
+    print(f"\n[1] prior sets: {len(pa)} ({args.label_a}) vs {len(pb)} ({args.label_b})")
     if pa == pb:
         print("    identical")
     else:
         overall = False
-        print(f"    DIFFER: {len(pa - pb)} only in pseudo, {len(pb - pa)} only in manual")
+        print(f"    DIFFER: {len(pa - pb)} only in {args.label_a}, {len(pb - pa)} only in {args.label_b}")
         print("    -> prior SELECTION differs; see arm C to isolate denoising")
         for s in sorted(pa - pb)[:3]:
             print(f"      pseudo-only: {s[:60]}...")
@@ -236,12 +238,12 @@ def main():
     # ---- 2/3. per-sample ASVs and maps ---------------------------------
     pseudo = load_sample_dir(args.pseudo)
     manual = load_sample_dir(args.manual)
-    print(f"\n[2] round-2 output: dada-pseudo vs manual ({len(pseudo)} sample(s))")
-    ok, lines = compare_dirs(pseudo, manual, "pseudo", "manual")
+    print(f"\n[2] round-2 output: {args.label_a} vs {args.label_b} ({len(pseudo)} sample(s))")
+    ok, lines = compare_dirs(pseudo, manual, args.label_a, args.label_b)
     overall &= ok
     print("\n".join(lines))
     print("\n    -- aggregate --")
-    print("\n".join(summarize(pseudo, manual, "pseudo", "manual")))
+    print("\n".join(summarize(pseudo, manual, args.label_a, args.label_b)))
 
     if args.arm_c:
         armc = load_sample_dir(args.arm_c)
