@@ -659,6 +659,31 @@ pub enum Commands {
         #[arg(long)]
         priors_out: Option<PathBuf>,
 
+        /// Re-estimate the error model from round 1 and use it for round 2,
+        /// instead of using the supplied model for both rounds.
+        ///
+        /// EMULATES R DADA2's `pool="pseudo"`. R implements pseudo-pooling as
+        /// two turns of the self-consistency loop rather than two `dada()`
+        /// calls, and re-fits `err <- errorEstimationFunction(trans)` at the end
+        /// of every turn with no `selfConsist` guard (dada.R:371-378). So R's
+        /// round 2 denoises with an error model derived from round 1's
+        /// transitions, not the matrix you passed in — a difference that is
+        /// invisible in its return value, which reports only round 1's `err_in`.
+        ///
+        /// Off by default: the published definition of pseudo-pooling is
+        /// "select priors from round 1, re-run with them flagged", which is what
+        /// dada2-rs does, and whether R's extra re-fit is intended or incidental
+        /// is still an open question (issue #100). Enable this to compare the
+        /// two behaviours; do not assume it is more correct.
+        ///
+        /// The re-fit uses the errfun and loess settings recorded in the error
+        /// model's `params` block, mirroring R's use of a fixed
+        /// `errorEstimationFunction` independent of how `err` was produced.
+        /// Requires an error model that carries that block, and costs one extra
+        /// alignment pass over round 1 to collect the transition counts.
+        #[arg(long)]
+        reestimate_err_between_rounds: bool,
+
         /// Phred quality score offset (33 for Sanger/Illumina 1.8+, 64 for Illumina 1.3–1.7)
         #[arg(long, default_value_t = 33)]
         phred_offset: u8,

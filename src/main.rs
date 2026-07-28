@@ -163,6 +163,13 @@ struct DadaRunParams {
     pool: bool,
     /// Number of unique input sequences flagged as priors (0 when no `--prior`).
     n_prior: usize,
+    /// True when `dada-pseudo --reestimate-err-between-rounds` re-fitted the
+    /// error model from round 1, so round 2 did NOT use the supplied model.
+    /// Skipped when false, keeping every other mode's output byte-identical to
+    /// before the flag existed — but a run whose error model changed mid-flight
+    /// must say so, since the `--error-model` path alone no longer describes it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    reestimated_err_between_rounds: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -1713,6 +1720,7 @@ fn main() -> io::Result<()> {
             pseudo_prevalence,
             pseudo_min_abundance,
             priors_out,
+            reestimate_err_between_rounds,
             phred_offset,
             threads,
             sample_jobs,
@@ -1781,12 +1789,15 @@ fn main() -> io::Result<()> {
                 .map_err(io::Error::other)?;
 
             // Resolve parameters once (shared across both rounds and all samples).
-            let resolved = resolve_dada_params(
+            let mut resolved = resolve_dada_params(
                 &error_model,
                 use_err_in,
                 inherit_err_params,
                 threads,
-                false, // aux_outputs
+                // aux_outputs: round 1 only needs the extra final-subs pass when
+                // we are going to re-fit from its transition counts. Flipped back
+                // off before round 2 below, so the flag costs nothing when unset.
+                reestimate_err_between_rounds,
                 false, // pool (pseudo is per-sample, not pooled)
                 verbose,
                 omega_a,
@@ -1810,6 +1821,35 @@ fn main() -> io::Result<()> {
                 align_backend,
                 wfa_max_edits,
             )?;
+
+            // ---- Validate the re-estimation request up front ----
+            // Both conditions are cheap to check and expensive to hit late: the
+            // transition matrix is only collected per quality column when quals
+            // are in use, and re-fitting needs the errfun the model was built
+            // with. Failing here beats failing after round 1.
+            if reestimate_err_between_rounds {
+                if !resolved.params.use_quals {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--reestimate-err-between-rounds requires quality scores \
+                         (transition counts collapse to a single column with \
+                         --use-quals false)",
+                    ));
+                }
+                if resolved.err_params.is_none() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "--reestimate-err-between-rounds needs the error model's \
+                         `params` block to know which errfun to re-fit with; this \
+                         model has none (re-run learn-errors to produce one)",
+                    ));
+                }
+            }
+            // Accumulated 16 × nq transition counts from round 1, R's
+            // `accumulateTrans`. Counts are integers, so folding them in whatever
+            // order samples happen to finish is exact — the result does not
+            // depend on --sample-jobs.
+            let trans_acc: Mutex<Vec<u32>> = Mutex::new(vec![0u32; 16 * resolved.nq]);
 
             // ---- Round 1: denoise each sample independently (no priors) ----
             // Produces sample_names + per-sample round-1 ASVs. The default
@@ -1850,6 +1890,7 @@ fn main() -> io::Result<()> {
                     let result = sub_pool
                         .install(|| dada::dada_uniques(&sample_raws[s], &resolved.params))
                         .map_err(io::Error::other)?;
+                    accumulate_round1_trans(&trans_acc, &result)?;
                     let asvs = result_to_asvs(&result);
                     if verbose {
                         eprintln!(
@@ -1874,6 +1915,7 @@ fn main() -> io::Result<()> {
                     let result = sub_pool
                         .install(|| dada::dada_uniques(&raws, &resolved.params))
                         .map_err(io::Error::other)?;
+                    accumulate_round1_trans(&trans_acc, &result)?;
                     let asvs = result_to_asvs(&result);
                     let name = match &sample_names {
                         Some(n) => n[s].clone(),
@@ -1967,6 +2009,54 @@ fn main() -> io::Result<()> {
                     },
                 );
             }
+
+            // ---- Optional: re-estimate the error model from round 1 (#100) ----
+            // R DADA2's pool="pseudo" runs both rounds inside the self-consistency
+            // loop, which re-fits `err` from the just-finished round's transitions
+            // (dada.R:371-378) with no selfConsist guard — so its round 2 uses a
+            // model derived from round 1, not the supplied one. Off by default:
+            // the published definition of pseudo-pooling is priors-only, and
+            // whether R's re-fit is intended is still open (issue #100).
+            if reestimate_err_between_rounds {
+                let trans = std::mem::take(&mut *trans_acc.lock().unwrap());
+                let err_params = resolved
+                    .err_params
+                    .as_ref()
+                    .expect("validated above: err_params present");
+                let errfun = errfun_from_learned(err_params)?;
+                let new_err = errfun
+                    .apply(&trans, resolved.nq)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                if new_err.len() != resolved.params.err_mat.len() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "re-fitted error model is {} entries, expected {}",
+                            new_err.len(),
+                            resolved.params.err_mat.len()
+                        ),
+                    ));
+                }
+                if verbose {
+                    let max_delta = resolved
+                        .params
+                        .err_mat
+                        .iter()
+                        .zip(&new_err)
+                        .map(|(a, b)| (a - b).abs())
+                        .fold(0.0f64, f64::max);
+                    eprintln!(
+                        "[dada-pseudo] re-estimated error model from round 1 \
+                         (errfun {}, max |delta| = {max_delta:.2e}); round 2 will \
+                         NOT use the supplied model",
+                        err_params.errfun,
+                    );
+                }
+                resolved.params.err_mat = new_err;
+                resolved.run.reestimated_err_between_rounds = true;
+            }
+            // Round 1's extra alignment pass is done with; do not pay for it again.
+            resolved.params.aux_outputs = false;
 
             // ---- Round 2: re-denoise each sample with the priors flagged ----
             if verbose {
@@ -4103,6 +4193,11 @@ struct ResolvedDada {
     params: dada::DadaParams,
     nq: usize,
     run: DadaRunParams,
+    /// The error model's own `params` block, when it carried one. Kept so a
+    /// caller can rebuild the errfun the model was fitted with — needed by
+    /// `dada-pseudo --reestimate-err-between-rounds`, which must re-fit round 2's
+    /// model the same way the original was fitted.
+    err_params: Option<LearnedErrParams>,
 }
 
 /// Emit a one-line note when homopolymer gapping is active. Because
@@ -4333,9 +4428,94 @@ fn resolve_dada_params(
         use_kmers,
         pool,
         n_prior: 0,
+        // Set only by dada-pseudo, after round 1, if the re-fit actually ran.
+        reestimated_err_between_rounds: false,
     };
 
-    Ok(ResolvedDada { params, nq, run })
+    Ok(ResolvedDada {
+        params,
+        nq,
+        run,
+        err_params: em.params,
+    })
+}
+
+/// Fold one round-1 sample's transition counts into the shared accumulator
+/// (R's `accumulateTrans`). A no-op unless `aux_outputs` was set, i.e. unless
+/// `dada-pseudo --reestimate-err-between-rounds` asked for the re-fit.
+///
+/// Integer addition, so the fold is exact and independent of the order samples
+/// complete in — the accumulated matrix does not vary with `--sample-jobs`.
+fn accumulate_round1_trans(
+    acc: &std::sync::Mutex<Vec<u32>>,
+    result: &dada::DadaResult,
+) -> io::Result<()> {
+    let Some(aux) = result.aux.as_ref() else {
+        return Ok(());
+    };
+    let mut acc = acc.lock().unwrap();
+    if aux.transitions.len() != acc.len() {
+        // Unreachable in practice: compute_aux sizes the matrix from
+        // `params.err_ncol` (the same nq the accumulator was built from) whenever
+        // quals are in use, and the caller rejects --use-quals false up front.
+        // Checked anyway so a future change to that sizing fails loudly instead
+        // of silently truncating the fit's input.
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "round-1 transition matrix is {} entries, expected {}",
+                aux.transitions.len(),
+                acc.len()
+            ),
+        ));
+    }
+    for (slot, add) in acc.iter_mut().zip(&aux.transitions) {
+        *slot += add;
+    }
+    Ok(())
+}
+
+/// Rebuild the [`ErrFun`] an error model was fitted with, from the `params`
+/// block the model carries.
+///
+/// Used by `dada-pseudo --reestimate-err-between-rounds`, which must re-fit
+/// round 2's model the same way the supplied one was fitted. R applies a fixed
+/// `errorEstimationFunction` (default `loessErrfun`) independent of how `err`
+/// was produced; taking the recorded errfun is the closest analogue that also
+/// keeps the loess surface and clamps consistent with the original fit.
+fn errfun_from_learned(p: &LearnedErrParams) -> io::Result<ErrFun> {
+    let config = p.loess.as_ref().map(LoessConfig::from).unwrap_or_default();
+    let missing = |what: &str| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "error model records errfun \"{}\" but no {what}; cannot re-fit \
+                 between pseudo rounds",
+                p.errfun
+            ),
+        )
+    };
+    Ok(match p.errfun.as_str() {
+        "loess" => ErrFun::Loess { config },
+        "noqual" => ErrFun::Noqual {
+            pseudocount: p.errfun_pseudocount.unwrap_or(1.0),
+            config,
+        },
+        "binned-qual" => ErrFun::BinnedQual {
+            bins: p.errfun_bins.clone().ok_or_else(|| missing("bins"))?,
+            config,
+        },
+        "pacbio" => ErrFun::PacBio { config },
+        "external" => ErrFun::External {
+            command: p.errfun_cmd.clone().ok_or_else(|| missing("command"))?,
+        },
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("error model records unknown errfun \"{other}\""),
+            ));
+        }
+    })
 }
 
 /// Per-sample round-1 ASVs tagged with their sample index (collected unordered

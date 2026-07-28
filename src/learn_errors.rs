@@ -237,6 +237,32 @@ pub struct LoessParams {
     pub min_error_rate: f64,
 }
 
+impl From<&LoessParams> for LoessConfig {
+    /// Rebuild a fitting config from the loess settings recorded in an error
+    /// model's `params` block. Used when a later step has to re-fit with the
+    /// *same* surface and clamps the model was originally learned under — see
+    /// `dada-pseudo --reestimate-err-between-rounds`. An unrecognized surface
+    /// string falls back to `direct`, matching this crate's default rather than
+    /// failing: the field is `#[serde(default)]` for forward compatibility, so
+    /// an empty or unknown value means "written by a version that did not
+    /// record it".
+    fn from(p: &LoessParams) -> Self {
+        let surface = match p.surface.as_str() {
+            "interpolate" => LoessSurface::Interpolate {
+                // R `loess.control(cell = 0.2)`, same fallback as
+                // `resolve_loess_config` in main.rs.
+                cell: p.cell.unwrap_or(0.2),
+            },
+            _ => LoessSurface::Direct,
+        };
+        LoessConfig {
+            surface,
+            max_error_rate: p.max_error_rate,
+            min_error_rate: p.min_error_rate,
+        }
+    }
+}
+
 impl From<&LoessConfig> for LoessParams {
     fn from(c: &LoessConfig) -> Self {
         let (surface, cell) = match c.surface {

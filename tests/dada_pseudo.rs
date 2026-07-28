@@ -217,6 +217,74 @@ fn dada_pseudo_matches_manual_recipe() {
     }
 }
 
+/// `--reestimate-err-between-rounds` must be strictly opt-in: with the flag off,
+/// output is unchanged, and with it on the run records that its round 2 did not
+/// use the supplied error model.
+///
+/// The flag exists to emulate R DADA2's `pool="pseudo"`, which re-fits `err`
+/// from round 1's transitions inside the self-consistency loop (issue #100).
+/// Whether that is the better behaviour is unresolved, so what is pinned here is
+/// the *contract*: default behaviour untouched, and a re-estimated run is
+/// self-describing in its output params. The fixtures are two shallow samples,
+/// so this asserts the plumbing, not the magnitude of any difference.
+#[test]
+fn dada_pseudo_reestimate_err_is_opt_in_and_recorded() {
+    let dir = scratch("pseudo_reestimate");
+    let err = shared_err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+    let s2 = fixture("sam2F.fastq.gz");
+
+    let run_mode = |out: &std::path::Path, reestimate: bool| {
+        let mut args = vec![
+            "dada-pseudo",
+            s1.to_str().unwrap(),
+            s2.to_str().unwrap(),
+            "--error-model",
+            err.to_str().unwrap(),
+            "--output-dir",
+            out.to_str().unwrap(),
+            "--pseudo-prevalence",
+            "2",
+            "--threads",
+            "1",
+        ];
+        if reestimate {
+            args.push("--reestimate-err-between-rounds");
+        }
+        run(&args);
+    };
+
+    let off = dir.join("off");
+    let on = dir.join("on");
+    run_mode(&off, false);
+    run_mode(&on, true);
+
+    for sample in ["sam1F.json", "sam2F.json"] {
+        let off_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(off.join(sample)).unwrap()).unwrap();
+        let on_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(on.join(sample)).unwrap()).unwrap();
+        // The output envelope is flat, tagged by a `dada2_rs_command` key.
+        let params = |v: &serde_json::Value| v["params"].clone();
+
+        // Flag off: the provenance field is absent entirely, so pre-existing
+        // outputs stay byte-identical to before the flag was added.
+        assert!(
+            params(&off_json)
+                .get("reestimated_err_between_rounds")
+                .is_none(),
+            "{sample}: default run must not emit reestimated_err_between_rounds",
+        );
+        // Flag on: the run says so, because --error-model alone no longer
+        // describes what round 2 actually used.
+        assert_eq!(
+            params(&on_json)["reestimated_err_between_rounds"],
+            serde_json::json!(true),
+            "{sample}: re-estimated run must record it in params",
+        );
+    }
+}
+
 /// dada-pseudo output must be accepted by the downstream consumers that key off
 /// the `dada2_rs_command` tag (merge-pairs and make-sequence-table). This is the
 /// path that broke in benchmarking: those readers allowlisted only "dada" /
