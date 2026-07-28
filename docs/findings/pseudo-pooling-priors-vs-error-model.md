@@ -8,10 +8,14 @@ axis we can measure: **3,118 fewer reads recovered, 709 more ASVs, and 72× more
 ASVs that prior flagging cannot account for**. R emulation is available behind
 `--reestimate-err-between-rounds` but is **not** the default.
 
-**Still open:** whether R actually does this is a *code reading*, not a
-measurement. Everything below establishes what the consequence would be *if* it
-does. See [issue 100](https://github.com/HPCBio/dada2-rs/issues/100); nothing
-should be reported upstream before that is confirmed directly.
+**R's behaviour is now empirically confirmed at the table level** (see
+[R really does re-fit](#r-really-does-re-fit-the-model-between-rounds)): enabling
+our emulation moves us from 31 ASVs apart from R to 3, and **30 of R's 31 extra
+ASVs are precisely the ones the re-fit produces**. The remaining gap is our
+kernel/tie-break noise floor. What is still not directly observed is the code path
+executing — that would need `err` dumped per turn inside R — but the consequence is
+no longer hypothetical. See
+[issue 100](https://github.com/HPCBio/dada2-rs/issues/100).
 
 ## Background
 
@@ -155,6 +159,59 @@ never a hard equality assertion — at 1 in ~98,713 it is noise, while 72 is
 signal. An `== 0` assertion derived from the small subset would have failed on
 real data.
 
+## R really does re-fit the model between rounds
+
+The decisive test does not require patching R. If R re-fits, its ASV table should
+sit closer to our `--reestimate-err-between-rounds` arm than to our default. Run
+on the same MiSeq data via `dev/benchmark/bench_pooled.py --pool pseudo --run-r`
+with `--loess-preset r-dada2` on both arms (so the loess surface is not a second
+difference), compared with `dev/compare_pseudo_vs_r.py` on the **pre-chimera**
+tables:
+
+| | ASVs | Jaccard vs R | shared | R-only | ours-only |
+| --- | --- | --- | --- | --- | --- |
+| R `pool="pseudo"` | 781 | — | — | — | — |
+| our default | 752 | 0.9579 | 750 | **31** | 2 |
+| our `--reestimate…` | 782 | **0.9962** | 780 | 1 | 2 |
+
+Our own two arms differ by 0.0434 Jaccard, and the two distances to R differ by
+0.0383 — 88% of that gap, so the test has real power rather than splitting noise.
+
+The set-level detail is what makes it conclusive:
+
+| | count |
+| --- | --- |
+| ASVs R has that our default lacks | 31 |
+| ASVs the re-fit produces that our default lacks | 32 |
+| **overlap** | **30 (96.8% of R's extras)** |
+| R extras the re-fit does not produce | 1 |
+| re-fit extras R lacks | 2 |
+
+**The between-round re-fit accounts for ~97% of the pseudo-mode ASV difference
+between the two implementations.** Those shared extras are low-abundance — median
+6 reads, max 22, 14 of 30 at ≤5 reads — i.e. the borderline class, consistent with
+the 72 prior-unexplained ASVs measured above.
+
+The residual after enabling emulation (3 ASVs in ~783, 0.4%) bounds *everything*
+else — alignment kernel, tie-breaks, loess surface — and is a useful concordance
+result in its own right.
+
+### Chimera removal absorbs most of it
+
+The same comparison on post-chimera tables:
+
+| | ASVs | Jaccard vs R | R-only |
+| --- | --- | --- | --- |
+| R | 415 | — | — |
+| our default | 409 | 0.9855 | 6 |
+| our `--reestimate…` | 416 | 0.9928 | 1 |
+
+The 31-ASV gap collapses to 6: roughly **80% of the extra ASVs the re-fit produces
+are removed as chimeras**. Two consequences — the end-to-end impact on a final
+table is far smaller than the denoising-stage difference, and the fact that these
+ASVs are predominantly chimera-like is further evidence they are spurious rather
+than rescued signal.
+
 ## What this dictates
 
 1. **Keep priors-only as the default.** Every measured axis supports it: more
@@ -165,11 +222,19 @@ real data.
    (`reestimated_err_between_rounds`) because `--error-model` alone no longer
    describes what round 2 used. Flag-off output is byte-identical to before the
    flag existed.
-3. **Confirm R's behaviour before reporting anything upstream.** Instrument a
-   `pool="pseudo"` run to dump `err` at the top of each turn. This is the
-   remaining gate in issue 100.
-4. **Bound, do not assert, the provenance check.** See above.
-5. **Cover pseudo mode in the concordance guardrail**, which currently exercises
+3. **A decision is now on the table: concordance with R, or the documented
+   design?** These pull in opposite directions, and it is a judgement call rather
+   than a measurement. Our default is better on every metric we can compute
+   (reads recovered, ASV count, prior-explained provenance) and matches the
+   published description of pseudo-pooling; matching R's behaviour instead would
+   close a known ~4% pseudo-mode ASV gap (~1.5% post-chimera). The current
+   position is to keep the documented behaviour as the default and expose the
+   other via flag.
+4. **Raising this upstream is now evidence-backed**, where before it was a code
+   reading. Dumping `err` per turn inside R remains the direct mechanistic
+   confirmation if wanted, but the table-level result no longer depends on it.
+5. **Bound, do not assert, the provenance check.** See above.
+6. **Cover pseudo mode in the concordance guardrail**, which currently exercises
    per-sample and pooled.
 
 ## Why this was hard to see from R
