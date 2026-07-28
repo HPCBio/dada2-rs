@@ -30,6 +30,12 @@ env:
   MIN_PRECISION: "0.80"
   MIN_COUNT_CORR: "0.95"
   MIN_ABUNDANCE: "2"
+  # Pseudo arm only. Measured on the committed fixture: recall 0.974, precision
+  # 0.993 against the R pseudo reference, the gap being R's between-round
+  # error-model re-fit (issue #100), which we deliberately do not do. Set below
+  # measured so the known gap passes but a real regression does not.
+  PSEUDO_MIN_RECALL: "0.93"
+  PSEUDO_MIN_PRECISION: "0.95"
 
 jobs:
   concordance:
@@ -116,6 +122,44 @@ jobs:
               --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
               --min-count-corr "$MIN_COUNT_CORR" --gate \
               --summary "$GITHUB_STEP_SUMMARY" --json work/illumina_wfa_report.json
+
+      # -------- Illumina, pseudo-pooling (issue #100) --------------------------
+      # dada-pseudo vs an R `dada(pool="pseudo")` reference. Separate fixture:
+      # the 2-sample illumina fixture selects priors that change nothing, so
+      # pseudo there is indistinguishable from a per-sample run and the check
+      # would pass while testing nothing. run_illumina.sh POOL=pseudo enforces
+      # this with a positive control that fails if the priors turn out inert.
+      #
+      # A KNOWN, UNDERSTOOD GAP is expected here. R re-fits the error model
+      # between its two pseudo rounds; we deliberately do not (see
+      # docs/findings/pseudo-pooling-priors-vs-error-model.md). On this fixture
+      # that costs recall 0.974 / precision 0.993 -- 4 low-abundance ASVs R calls
+      # and we do not. Running our opt-in emulation
+      # (--reestimate-err-between-rounds) instead scores 1.000/1.000 against the
+      # same reference, which is how we know the residual is entirely the re-fit
+      # and not drift. Thresholds are set below the measured default-arm values,
+      # so a regression in the pseudo path still trips the gate.
+      - name: Illumina pseudo — run pipeline
+        run: |
+          POOL=pseudo bash dev/concordance/run_illumina.sh \
+              ./target/release/dada2-rs \
+              dev/concordance/data/illumina_pseudo work/illumina_pseudo 2
+
+      - name: Illumina pseudo — compare to R reference
+        run: |
+          ref=dev/concordance/reference/illumina_pseudo_seqtab_nochim.csv
+          if [ ! -f "$ref" ]; then
+            echo "::notice::Illumina pseudo reference CSV not committed yet ($ref); skipping comparison. Generate with: Rscript dev/concordance/write_reference.R illumina dev/concordance/data/illumina_pseudo \"$ref\" --pool=pseudo"
+            echo "Illumina pseudo reference not yet committed — pipeline ran but no comparison." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 dev/concordance/compare_to_reference.py \
+              --rs work/illumina_pseudo/seqtab.nochim.json --reference "$ref" \
+              --label illumina-pseudo --min-abundance "$MIN_ABUNDANCE" \
+              --min-recall "$PSEUDO_MIN_RECALL" \
+              --min-precision "$PSEUDO_MIN_PRECISION" \
+              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --summary "$GITHUB_STEP_SUMMARY" --json work/illumina_pseudo_report.json
 
       # ---------------- PacBio (committed subsampled fixture) -----------------
       # Skipped until both the fixture and the reference CSV are committed.

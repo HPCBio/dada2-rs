@@ -22,8 +22,17 @@
 suppressPackageStartupMessages(library(dada2))
 
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) < 3) stop("usage: write_reference.R <illumina|pacbio> <data-dir> <out.csv> [primer_fwd primer_rev]")
+if (length(args) < 3) stop("usage: write_reference.R <illumina|pacbio> <data-dir> <out.csv> [primer_fwd primer_rev] [--pool=false|pseudo]")
 platform <- args[1]; data_dir <- args[2]; out_csv <- args[3]
+
+# --pool=pseudo generates a reference for `dada(pool="pseudo")` instead of the
+# per-sample default, so run_illumina.sh POOL=pseudo can be compared against a
+# matching R run. Anywhere in the args; default per-sample.
+pool_arg <- grep("^--pool=", args, value = TRUE)
+POOL <- if (length(pool_arg)) sub("^--pool=", "", pool_arg[1]) else "false"
+POOL <- if (identical(POOL, "pseudo")) "pseudo" else FALSE
+args <- args[!grepl("^--pool=", args)]
+cat(sprintf("pool mode: %s\n", if (identical(POOL, "pseudo")) "pseudo" else "FALSE (per-sample)"))
 
 write_long <- function(seqtab, path) {
   # seqtab: matrix rows = samples, cols = sequences (colnames = ASV seqs)
@@ -63,8 +72,8 @@ if (platform == "illumina") {
 
   errF <- learnErrors(filtFs, multithread = TRUE)
   errR <- learnErrors(filtRs, multithread = TRUE)
-  ddF <- dada(filtFs, err = errF, pool = FALSE, multithread = TRUE)
-  ddR <- dada(filtRs, err = errR, pool = FALSE, multithread = TRUE)
+  ddF <- dada(filtFs, err = errF, pool = POOL, multithread = TRUE)
+  ddR <- dada(filtRs, err = errR, pool = POOL, multithread = TRUE)
   mergers <- mergePairs(ddF, filtFs, ddR, filtRs)
   seqtab <- makeSequenceTable(mergers)
   seqtab.nochim <- removeBimeraDenovo(seqtab, method = "consensus",

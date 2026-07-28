@@ -22,6 +22,12 @@ THREADS="${4:-2}"
 # concordance guardrail can run the whole pipeline with WFA. Unset = default
 # (nw), leaving existing behavior unchanged. The `+"${...}"` form keeps the
 # empty-array expansion safe under `set -u`.
+# POOL=pseudo switches the two denoising steps from per-sample `dada` to
+# `dada-pseudo` (R `dada(pool="pseudo")`). Unset/false = per-sample, the original
+# behaviour. The reference CSV must have been generated with the SAME pool mode --
+# write_reference.R takes a matching argument.
+POOL="${POOL:-false}"
+
 ALIGN_BACKEND="${ALIGN_BACKEND:-}"
 backend_arg=()
 [ -n "$ALIGN_BACKEND" ] && backend_arg=(--align-backend "$ALIGN_BACKEND")
@@ -34,7 +40,7 @@ TRUNC_Q=2
 MAX_N=0
 NBASES=20000000   # learn-errors subsampling cap; small data uses all reads anyway
 
-mkdir -p "$OUT"/{filtered,dada_fwd,dada_rev}
+mkdir -p "$OUT"/{filtered,dada_fwd,dada_rev,control_persample}
 
 fwds=("$DATA"/*F.fastq.gz)
 if [ ! -e "${fwds[0]}" ]; then
@@ -63,12 +69,55 @@ echo "==> learn-errors (fwd, rev)"
 "$BIN" learn-errors "${filtRs[@]}" --nbases "$NBASES" --errfun loess \
     --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} -o "$OUT/errR.json"
 
-# Per-sample denoising (pool=FALSE analog) — matches R dada() default.
-echo "==> dada (fwd, rev; per-sample)"
-"$BIN" dada "${filtFs[@]}" --error-model "$OUT/errF.json" \
-    --output-dir "$OUT/dada_fwd" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"}
-"$BIN" dada "${filtRs[@]}" --error-model "$OUT/errR.json" \
-    --output-dir "$OUT/dada_rev" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"}
+if [ "$POOL" = "pseudo" ]; then
+  # Pseudo-pooling. NOTE: dada-pseudo takes -o for its output DIRECTORY, whereas
+  # `dada` uses --output-dir (-o there means a single-sample output FILE).
+  echo "==> dada-pseudo (fwd, rev)"
+  "$BIN" dada-pseudo "${filtFs[@]}" --error-model "$OUT/errF.json" \
+      -o "$OUT/dada_fwd" --priors-out "$OUT/priors_fwd.fasta" \
+      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"}
+  "$BIN" dada-pseudo "${filtRs[@]}" --error-model "$OUT/errR.json" \
+      -o "$OUT/dada_rev" --priors-out "$OUT/priors_rev.fasta" \
+      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"}
+
+  # Positive control: did the priors actually CHANGE anything?
+  #
+  # A non-empty prior set is NOT sufficient. The 2-sample dev/concordance/data/
+  # illumina fixture selects 8 priors that alter nothing, so round 2 equals round 1,
+  # the pseudo path goes untested, and every comparison still passes -- a green
+  # result that means nothing. That trap has bitten twice (see
+  # docs/findings/pseudo-pooling-priors-vs-error-model.md), so this checks against
+  # an actual per-sample run rather than trusting a prior count. Costs one extra
+  # dada pass on a small fixture.
+  echo "==> positive control: per-sample run for comparison"
+  "$BIN" dada "${filtFs[@]}" --error-model "$OUT/errF.json" \
+      --output-dir "$OUT/control_persample" --threads "$THREADS" \
+      ${backend_arg[@]+"${backend_arg[@]}"} > /dev/null
+  python3 - "$OUT/dada_fwd" "$OUT/control_persample" <<'PYCTL'
+import glob, json, os, sys
+def load(d):
+    out = {}
+    for p in sorted(glob.glob(os.path.join(d, "*.json"))):
+        j = json.load(open(p))
+        out[j["sample"]] = {a["sequence"] for a in j["asvs"]}
+    return out
+pseudo, ctrl = load(sys.argv[1]), load(sys.argv[2])
+if pseudo == ctrl:
+    sys.exit("run_illumina.sh: POOL=pseudo output is IDENTICAL to a per-sample run.\n"
+             "  The priors were inert, so the pseudo path is untested and any PASS\n"
+             "  below is meaningless. The fixture needs >=2 samples sharing\n"
+             "  low-abundance variants.")
+gained = sum(len(pseudo[s] - ctrl[s]) for s in ctrl if s in pseudo)
+print(f"==> control OK: pseudo rescued {gained} ASV(s) a per-sample run did not call")
+PYCTL
+else
+  # Per-sample denoising (pool=FALSE analog) — matches R dada() default.
+  echo "==> dada (fwd, rev; per-sample)"
+  "$BIN" dada "${filtFs[@]}" --error-model "$OUT/errF.json" \
+      --output-dir "$OUT/dada_fwd" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"}
+  "$BIN" dada "${filtRs[@]}" --error-model "$OUT/errR.json" \
+      --output-dir "$OUT/dada_rev" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"}
+fi
 
 echo "==> merge-pairs"
 "$BIN" merge-pairs \
