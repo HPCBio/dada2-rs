@@ -84,6 +84,9 @@ def load_sample_dir(path):
     return out
 
 
+AMBIGUOUS = object()
+
+
 def load_derep(paths):
     """{sample: [per-unique read count]} from the derep JSONs the run consumed.
 
@@ -120,9 +123,22 @@ def load_derep(paths):
             d = next(iter(d.values()))
         if "uniques" not in d:
             continue
-        name = d.get("sample", f.stem)
-        out[name] = [u["count"] for u in d["uniques"]]
-    return out
+        counts = [u["count"] for u in d["uniques"]]
+        # Key on BOTH the embedded sample name and the filename stem. A run's
+        # outputs may be named per read direction (F3D0_S188.R1) while the derep
+        # files embed only the sample (F3D0_S188), in which case R1 and R2 share
+        # one embedded name and keying on it alone would silently pair the wrong
+        # derep with an output. Ambiguous keys are dropped rather than guessed.
+        stem = f.name
+        for suffix in (".gz", ".json", ".derep"):
+            if stem.endswith(suffix):
+                stem = stem[: -len(suffix)]
+        for key in {d.get("sample"), stem} - {None}:
+            if key in out and out[key] != counts:
+                out[key] = AMBIGUOUS
+            elif key not in out:
+                out[key] = counts
+    return {k: v for k, v in out.items() if v is not AMBIGUOUS}
 
 
 def failed_reads(entry, counts):
@@ -245,6 +261,50 @@ def summarize(a, b, label_a, label_b, derep=None):
         if not (fa or fb) and (unmatched or mismatched):
             lines.append("       The zeros above are therefore NOT a result.")
     return lines
+
+
+def reads_lost(entries, derep):
+    """(reads, uniques) belonging to uniques that failed OMEGA_C, summed."""
+    if derep is None:
+        return None
+    reads = uniq = 0
+    for name, e in entries.items():
+        counts = derep.get(name)
+        if counts is None:
+            continue
+        r = failed_reads(e, counts)
+        if r is None:
+            continue
+        uniq += r[0]
+        reads += r[1]
+    return reads, uniq
+
+
+def provenance(r2, r1, priors, label):
+    """Where did each round-2 ASV come from?
+
+    Pseudo-pooling is documented as raising sensitivity *on the restricted prior
+    set* -- rescuing sequences that failed in a given sample -- without admitting
+    false positives from the unrestricted space of all possible sequences. If the
+    error model is unchanged between rounds, an ASV that appears in round 2 but in
+    NO sample's round 1 and is not a prior has no legitimate source: the only
+    inputs that changed are the prior flags. Such ASVs are therefore a red flag,
+    and their count is a much sharper check than any total.
+    """
+    lines = []
+    r1_union = set().union(*(set(v["asvs"]) for v in r1.values())) if r1 else set()
+    rescued = new = 0
+    for name, e in r2.items():
+        if name not in r1:
+            continue
+        added = set(e["asvs"]) - set(r1[name]["asvs"])
+        rescued += len(added & priors)
+        new += len(added - priors - r1_union)
+    lines.append(f"    {label}:")
+    lines.append(f"      rescued via the prior set (intended)   : {rescued}")
+    lines.append(f"      in NO round 1 and not a prior          : {new}"
+                 + ("" if new == 0 else "   <-- unexplained by priors alone"))
+    return lines, new
 
 
 def compare_dirs(pseudo, manual, label_a, label_b):
@@ -385,6 +445,34 @@ def main():
             print("    yes -- ASV count change per sample (round 2 - round 1):")
             for n, d in deltas:
                 print(f"      {n}: {d:+d}")
+
+        # Sensitivity gain over plain per-sample calling, in reads. This is the
+        # point of pseudo-pooling, and round 1 IS the per-sample baseline.
+        base = reads_lost(r1, derep)
+        if base is not None and base[0]:
+            print("\n[4] sensitivity vs per-sample (round 1) -- reads lost to failed uniques")
+            print(f"    round 1 (per-sample)   : {base[0]} ({base[1]} uniques)")
+            for lbl, arm in ((args.label_a, pseudo), (args.label_b, manual)):
+                got = reads_lost(arm, derep)
+                if got:
+                    print(f"    {lbl:<22} : {got[0]} ({got[1]} uniques)"
+                          f"  -> {base[0] - got[0]:+d} reads rescued vs per-sample")
+
+        # ASV provenance: priors should raise sensitivity on a restricted set,
+        # not invent sequences. Anything unexplained points at a model change.
+        print("\n[5] round-2 ASV provenance (absent from that sample's round 1)")
+        priors_a = read_fasta_seqs(args.priors_a)
+        priors_b = read_fasta_seqs(args.priors_b)
+        bad = 0
+        for lbl, arm, pr in ((args.label_a, pseudo, priors_a), (args.label_b, manual, priors_b)):
+            lines_p, n_new = provenance(arm, r1, pr, lbl)
+            print("\n".join(lines_p))
+            bad += n_new
+        if bad:
+            print("\n    An ASV in no round-1 output and not in the prior set cannot come")
+            print("    from prior flagging alone -- it implies the error model changed")
+            print("    between rounds (expected only with")
+            print("    --reestimate-err-between-rounds; a red flag otherwise).")
 
     print("\n" + "=" * 72)
     if args.expect_differences:
