@@ -32,6 +32,11 @@ here is the evidence, and here is the path it opens or closes."
 - [K-mer screen size](kmer-size-screening.md) — `--kmer-size` has ~no effect on
   the final chimera-filtered table on either platform; it is a speed/memory knob,
   not an accuracy knob (k=5 Illumina, k=7 PacBio for speed).
+- [Pseudo-pooling: priors, not a re-fitted error model](pseudo-pooling-priors-vs-error-model.md)
+  — our priors-only `dada-pseudo` beats emulating R's between-round error-model
+  re-fit on every axis (+3,118 reads recovered, 709 fewer ASVs, 72× fewer ASVs
+  unexplained by priors); R emulation stays opt-in, and confirming R's actual
+  behaviour is still the open gate.
 - [Band size & platform-aware defaults](band-size-platform-defaults.md) — the
   16/32 Illumina/HiFi band default is vindicated; the two platforms fail
   band-tightening through opposite mechanisms, so a single global band would be
