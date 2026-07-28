@@ -227,6 +227,11 @@ fi
 # equivalence test above -- differences here are the finding, not a bug -- so it
 # is reported separately with --expect-differences.
 #
+# Arm B's round 1 is passed as the round-1 baseline for BOTH arms, which is
+# correct: the re-fit happens AFTER round 1, so arm D's round 1 ran with the same
+# error model and the same (absent) priors as arm B's. That baseline is what makes
+# the sensitivity and ASV-provenance checks possible.
+#
 # Watch `reads recovered` in the aggregate block, not just the ASV count: a
 # re-fit can repartition reads and add clusters while rescuing no additional
 # reads at all, and those are different claims.
@@ -267,5 +272,6 @@ if [[ "${REESTIMATE:-0}" == "1" ]]; then
         --priors-b "${OUTDIR}/priors.D.fa" \
         --pseudo "${OUTDIR}/A_pseudo" \
         --manual "${OUTDIR}/D_pseudo_reest" \
+        --round1 "${OUTDIR}/B_round1" \
         --derep "${DEREPS[@]}" | tee "${OUTDIR}/report.reestimate.txt"
 fi
