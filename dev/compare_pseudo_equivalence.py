@@ -84,8 +84,12 @@ def load_sample_dir(path):
     return out
 
 
-def load_derep_dir(path):
+def load_derep(paths):
     """{sample: [per-unique read count]} from the derep JSONs the run consumed.
+
+    `paths` may name files or directories, because the run's dereps are not
+    necessarily in one place: when the input is already derep JSON the harness
+    passes those files straight through and never populates a derep directory.
 
     Needed because a dada output's `total_reads` is NOT a recovery measure: a
     cluster's abundance includes members that failed the OMEGA_C attribution
@@ -96,15 +100,28 @@ def load_derep_dir(path):
     Keyed by the derep's embedded `sample` field so it lines up with the dada
     output regardless of file naming.
     """
+    files = []
+    for p in paths:
+        p = Path(p)
+        if p.is_dir():
+            files.extend(sorted(p.glob("*.json*")))
+        elif p.is_file():
+            files.append(p)
+        else:
+            # A wrong --derep path must not look like "0 reads lost"; say so and
+            # let the incomplete-metric warning downstream do the rest.
+            print(f"    warning: --derep path does not exist: {p}", file=sys.stderr)
     out = {}
-    for f in sorted(Path(path).glob("*.json*")):
+    for f in files:
         opener = gzip.open if f.name.endswith(".gz") else open
         with opener(f, "rt") as fh:
             d = json.load(fh)
         if len(d) == 1 and isinstance(next(iter(d.values())), dict):
             d = next(iter(d.values()))
+        if "uniques" not in d:
+            continue
         name = d.get("sample", f.stem)
-        out[name] = [u["count"] for u in d.get("uniques", [])]
+        out[name] = [u["count"] for u in d["uniques"]]
     return out
 
 
@@ -180,16 +197,16 @@ def summarize(a, b, label_a, label_b, derep=None):
         return lines
 
     fa = fb = ua = ub = 0
-    skipped = []
+    unmatched, mismatched = [], []
     for n in names:
         counts = derep.get(n)
         if counts is None:
-            skipped.append(n)
+            unmatched.append(n)
             continue
         ra = failed_reads(a[n], counts)
         rb = failed_reads(b[n], counts)
         if ra is None or rb is None:
-            skipped.append(n)
+            mismatched.append(n)
             continue
         ua += ra[0]
         fa += ra[1]
@@ -205,8 +222,28 @@ def summarize(a, b, label_a, label_b, derep=None):
     if fb != fa:
         better, worse = (label_a, label_b) if fa < fb else (label_b, label_a)
         lines.append(f"    -> {better} recovers {abs(fb - fa)} MORE reads than {worse}")
-    if skipped:
-        lines.append(f"    NOTE: {len(skipped)} sample(s) skipped (no matching derep)")
+    if unmatched or mismatched:
+        lines.insert(
+            len(lines) - 4 if fa or fb else len(lines),
+            "",
+        )
+        lines.append("")
+        lines.append(f"    !! METRIC INCOMPLETE: {len(unmatched) + len(mismatched)} of "
+                     f"{len(names)} sample(s) could not be measured")
+        if unmatched:
+            lines.append(f"       {len(unmatched)} with no derep entry matching their "
+                         "sample name, e.g.:")
+            for n in unmatched[:3]:
+                lines.append(f"         output sample {n!r}")
+            have = sorted(derep)[:3]
+            lines.append(f"       derep names seen: {have if have else 'NONE -- wrong path?'}")
+            lines.append("       Pass the SAME derep files the run consumed via --derep "
+                         "(files or dirs).")
+        if mismatched:
+            lines.append(f"       {len(mismatched)} whose unique count != map length "
+                         "(derep does not correspond to this run)")
+        if not (fa or fb) and (unmatched or mismatched):
+            lines.append("       The zeros above are therefore NOT a result.")
     return lines
 
 
@@ -255,11 +292,15 @@ def main():
     ap.add_argument("--manual")
     ap.add_argument("--round1")
     ap.add_argument(
-        "--derep-dir",
-        help="Directory of the derep JSONs the run consumed. Enables the "
-        "reads-lost-to-failed-uniques metric, which is the read-level number "
-        "that actually varies; total_reads does not.",
+        "--derep",
+        nargs="+",
+        metavar="PATH",
+        help="The derep JSONs the run consumed -- files or directories, and the "
+        "same ones passed to the run. Enables the reads-lost-to-failed-uniques "
+        "metric, which is the read-level number that actually varies; "
+        "total_reads does not.",
     )
+    ap.add_argument("--derep-dir", help="Deprecated alias for a single --derep directory.")
     ap.add_argument("--arm-c")
     ap.add_argument("--label-a", default="pseudo", help="Name for the --pseudo arm in reports")
     ap.add_argument("--label-b", default="manual", help="Name for the --manual arm in reports")
@@ -309,7 +350,10 @@ def main():
     overall &= ok
     print("\n".join(lines))
     print("\n    -- aggregate --")
-    derep = load_derep_dir(args.derep_dir) if args.derep_dir else None
+    derep_paths = list(args.derep or [])
+    if args.derep_dir:
+        derep_paths.append(args.derep_dir)
+    derep = load_derep(derep_paths) if derep_paths else None
     print("\n".join(summarize(pseudo, manual, args.label_a, args.label_b, derep)))
 
     if args.arm_c:
