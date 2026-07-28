@@ -8,13 +8,13 @@ axis we can measure: **3,118 fewer reads recovered, 709 more ASVs, and 72× more
 ASVs that prior flagging cannot account for**. R emulation is available behind
 `--reestimate-err-between-rounds` but is **not** the default.
 
-**R's behaviour is now empirically confirmed at the table level** (see
-[R really does re-fit](#r-really-does-re-fit-the-model-between-rounds)): enabling
-our emulation moves us from 31 ASVs apart from R to 3, and **30 of R's 31 extra
-ASVs are precisely the ones the re-fit produces**. The remaining gap is our
-kernel/tie-break noise floor. What is still not directly observed is the code path
-executing — that would need `err` dumped per turn inside R — but the consequence is
-no longer hypothetical. See
+**R's behaviour is confirmed, both by direct observation and at the table level.**
+Tracing R's own `dada_uniques` shows `pool="pseudo"` denoising its second round
+with an error model the caller never supplied, while `pool=FALSE` uses the supplied
+model throughout ([details](#observed-directly-r-round-2-uses-a-different-model)).
+Independently, enabling our emulation moves us from 31 ASVs apart from R to 3, and
+**30 of R's 31 extra ASVs are precisely the ones the re-fit produces**
+([details](#r-really-does-re-fit-the-model-between-rounds)). See
 [issue 100](https://github.com/HPCBio/dada2-rs/issues/100).
 
 ## Background
@@ -159,6 +159,29 @@ never a hard equality assertion — at 1 in ~98,713 it is noise, while 72 is
 signal. An `== 0` assertion derived from the small subset would have failed on
 real data.
 
+## Observed directly: R round 2 uses a different model
+
+`dev/probe_r_pseudo_err.R` traces `dada2:::dada_uniques` — the Rcpp entry point
+every per-sample inference passes through — and records the `err` matrix handed to
+it on each call, comparing against the matrix the caller supplied. No dada2 source
+changes, just a `trace()`. Two shallow samples, because this is a binary property
+of the code path rather than of the data.
+
+| run | `dada_uniques` calls | error model used |
+| --- | --- | --- |
+| `pool=FALSE` (control) | 2 | both the supplied matrix, Δ = 0 |
+| `pool="pseudo"` | 4 | round 1: supplied, Δ = 0 · **round 2: different, Δ = 4.4e-2** |
+
+The control matters: it shows the deviation is specific to pseudo-pooling, not
+something `dada()` does generally. `selfConsist` is off in both runs, so a caller
+has every reason to expect the supplied matrix to be used throughout.
+
+This is the mechanism, not an inference from it. Reproduce with:
+
+```bash
+Rscript dev/probe_r_pseudo_err.R          # uses the data/dada2 fixtures
+```
+
 ## R really does re-fit the model between rounds
 
 The decisive test does not require patching R. If R re-fits, its ASV table should
@@ -237,9 +260,12 @@ than rescued signal.
    close a known ~4% pseudo-mode ASV gap (~1.5% post-chimera). The current
    position is to keep the documented behaviour as the default and expose the
    other via flag.
-4. **Raising this upstream is now evidence-backed**, where before it was a code
-   reading. Dumping `err` per turn inside R remains the direct mechanistic
-   confirmation if wanted, but the table-level result no longer depends on it.
+4. **This is reportable upstream now.** The chain is complete: a mechanism in
+   `dada.R`, the code path observed executing, the predicted output direction, the
+   specific ASVs, and both controls verified. The remaining question for upstream
+   is whether the re-fit is intended — the documented description of pseudo-pooling
+   does not mention it, and it is invisible in `dada()`'s return value, which
+   reports only round 1's `err_in`.
 5. **Bound, do not assert, the provenance check.** See above.
 6. **Cover pseudo mode in the concordance guardrail**, which currently exercises
    per-sample and pooled.
