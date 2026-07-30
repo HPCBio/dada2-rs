@@ -37,6 +37,11 @@ here is the evidence, and here is the path it opens or closes."
   re-fit on every axis (+3,118 reads recovered, 709 fewer ASVs, 72× fewer ASVs
   unexplained by priors); R emulation stays opt-in, and confirming R's actual
   behaviour is still the open gate.
+- [Binned quality & the `binned-qual` error model](binned-quality-error-model.md)
+  — on PacBio mock-community data, binning quality to 7 levels costs nothing in
+  reference recovery (identical 43/52 alleles) while cutting ASVs 4× and
+  non-chimeric near-variants 12×; the effect is denoising, not filtering. Scoped
+  to PacBio + known truth; a real-community A/B is the open gate.
 - [Band size & platform-aware defaults](band-size-platform-defaults.md) — the
   16/32 Illumina/HiFi band default is vindicated; the two platforms fail
   band-tightening through opposite mechanisms, so a single global band would be

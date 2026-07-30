@@ -70,5 +70,6 @@ nav:
     - K-mer screen size: findings/kmer-size-screening.md
     - Band size & platform defaults: findings/band-size-platform-defaults.md
     - Pseudo-pooling priors vs error model: findings/pseudo-pooling-priors-vs-error-model.md
+    - Binned quality error model: findings/binned-quality-error-model.md
   - Diagnostics: diagnostics.md
   - Citation: citation.md
