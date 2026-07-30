@@ -122,11 +122,14 @@ gaps, in priority order.
    under-splitting, not denoising. The trimera question makes it doubly
    informative, since higher-order chimeras are exactly what a coarser error model
    might reclassify.
-2. **An errfun sweep on fixed reads** — `binned-qual` vs `loess` vs `pacbio` vs R's
-   `loessErrfun_mod4` (via `--errfun external`), all on the same derep inputs. This
-   isolates the errfun term exactly and is the only clean test of the ASV-inflation
-   report. Cheaper than a new sequencing arm: it needs only `learn-errors` + `dada`
-   re-runs.
+2. **An errfun sweep on fixed reads** ([#98]) — `binned-qual` vs `loess` vs
+   `pacbio` vs R's `loessErrfun_mod4` (via `--errfun external`), all on the same
+   derep inputs. Note the arms above vary binning *and* errfun together; a sweep on
+   one fixed binned input isolates the errfun term exactly, and is the only clean
+   test of the ASV-inflation report. Cheaper than a new sequencing arm: it needs
+   only `learn-errors` + `dada` re-runs.
+
+[#98]: https://github.com/HPCBio/dada2-rs/issues/98
 
 Illumina binned chemistries (i100 `{12,24,38}`, NovaSeq ~4 bins) remain untested and
 should not inherit this verdict — see also the binned-quality wildcard in
