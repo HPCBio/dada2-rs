@@ -1,16 +1,26 @@
 # Binned quality scores & the `binned-qual` error model
 
-**Verdict (PacBio, mock community):** collapsing PacBio quality scores to 7 binned
-levels and fitting with `--errfun binned-qual` **costs nothing in reference
-recovery and sharply reduces the residual error-variant tail**. On the *same reads*,
-binning cut ASVs 4× and non-chimeric near-variants 12×, while recovering the
-**identical** set of 43/52 truth alleles. The effect is **denoising, not filtering**.
+**Verdict (PacBio):** `--errfun binned-qual` on 7-level binned quality scores is
+**safe to use — it never cost reference recovery, and what it changes depends on
+the chemistry of the reads being binned, not on binning itself.**
 
-Scope: this is PacBio HiFi (SequelIIe + Revio Kinnex 16S) on a single mock
-community (ATCC MSA-1003), where truth is known. It is **not** yet evidence for
-Illumina binned chemistries (i100, NovaSeq), nor for real communities where
-"absorbed a near-variant" cannot be distinguished from "lost a real low-abundance
-strain." See *Path forward*.
+- On **SequelIIe** reads (mock community), binning the *same reads* cut ASVs 4× and
+  non-chimeric near-variants 12× while recovering the **identical** set of 43/52
+  truth alleles. The effect was **denoising, not filtering**.
+- On **Revio** reads (a real community, 237 samples), binning is close to a
+  **no-op**: ASV set Jaccard 0.97, 99.9% of reads in shared ASVs, ASV count within
+  0.3%. The learned error models agree to **2.1%** mass-weighted.
+
+The unifying explanation: binning absorbs a residual error-variant tail *when one
+exists*. SequelIIe's full-quality model carries such a tail; Revio's does not, so
+there is nothing left to absorb. Since Revio is the platform that actually emits
+binned data, the practical reading is that **working with binned qualities loses
+essentially nothing**.
+
+Scope: PacBio HiFi only, on two datasets — one mock community (ATCC MSA-1003,
+SequelIIe + Revio, truth known) and one real community (a 237-sample PacBio Kinnex
+16S library sequenced on a Revio in 2024). It is **not** evidence for Illumina
+binned chemistries (i100, NovaSeq). See *Path forward*.
 
 ## Setup
 
@@ -44,6 +54,14 @@ A wrinkle worth knowing before reading a `trans` matrix: the binned Revio model 
 **32 populated Q columns despite the FASTQ carrying only 7 distinct values**. That
 is derep quality-averaging partially *de-binning* the data, and it accounts for the
 0.94% of off-bin mass. It is not a failure of binned-quality detection.
+
+**Off-bin mass is much larger on real data: 7.7%, versus 0.94% on the mock** (Q40
+alone holds 90.8% rather than 98.9%). Off-bin values arise from averaging qualities
+across the reads collapsed into a unique, so they scale with how *abundant* the
+dominant uniques are. A mock community is close to evenly covered; the real dataset
+is dominated by a single taxon whose top ASV carries ~3.25M reads, producing far
+heavier averaging. Expect real communities with dominant taxa to de-bin
+substantially more than mocks.
 
 ## Evidence — arm C vs arm A (same reads, only the quality representation differs)
 
@@ -84,22 +102,68 @@ are easy to misread:
   1.5 → 32 moves the chimeric fraction under 1% on both arms (Revio 46.4%→45.7%,
   SequelIIe 15.0%→14.8%).
 
+## Real-community arm (Revio) — binning is close to a no-op
+
+The mock arms above all bin *SequelIIe* reads. Repeating the controlled A/B on
+**Revio** reads from a real community gives a very different magnitude — a
+237-sample PacBio Kinnex 16S library sequenced on a Revio in 2024, denoised with
+`dada-pseudo` (streaming), k=7, band 32. Both arms used the same reads and the same
+pinned `learn-errors` sample, so only the quality representation differs.
+
+**The learned error models agree to 2.1%.** Comparing each bin against the full
+model averaged over that bin's *source* Q range, weighted by observation mass:
+every bin falls within 0.06 log10, and the overall mass-weighted mean error rate is
+5.097e-4 (full) vs 4.988e-4 (binned). Per-transition, all 12 substitution types land
+in ratio 0.70–1.25 (median |log10 ratio| 0.047), so the aggregate agreement is not
+masking compensating per-transition errors.
+
+> **Comparison trap.** A naive same-Q comparison shows binned Q40 = 4.6e-4 against
+> full-model Q40 = 1.29e-3 — 2.8× apart, and an artifact. In the full model Q40 is a
+> *mediocre* quality (HiFi mass sits at Q83–93); in the binned model Q40 is the top
+> bin absorbing everything ≥40. A bin must be compared against its source Q range,
+> mass-weighted.
+
+**Inference is nearly unchanged:**
+
+| Metric | full (`pacbio`) | binned (`binned-qual`) |
+|---|---|---|
+| Distinct ASVs | 45,455 | 45,598 (+0.3%) |
+| Median ASVs/sample | 690 | 694 |
+| Total reads | 23,256,894 | 23,256,894 |
+| ASV set Jaccard | — | **0.9685** |
+| Reads in shared ASVs | 99.92% | 99.70% |
+
+Nothing like the 4× collapse seen on SequelIIe. The reconciliation is that binning
+absorbs a residual error-variant tail only where one exists: SequelIIe's
+full-quality arm carried 54.7 non-chimeric near-variants per 100k reads, native
+Revio only 9.7. Revio's full-quality model is already clean, so binning has little
+left to do.
+
+This also **retires the under-splitting concern** raised when the mock result stood
+alone. If binning were over-absorbing genuine low-abundance variation, a diverse
+real community would lose ASVs. Instead the binned arm has *more* run-specific ASVs
+than the full arm (800 vs 657), at a higher median abundance (33 vs 22).
+
 ## What this dictates
 
 1. **`binned-qual` is the right default for natively binned PacBio data.** It does
    not degrade recovery even when the fit is driven by essentially one quality
-   value, and it materially reduces the spurious-variant tail.
-2. **Never evaluate this on raw ASV counts.** Chimera removal does most of the work
-   and removes the excess preferentially — the binned Revio arm's extra ASVs were
-   69.8% chimeric. Use post-chimera non-chimeric near-variants per read plus truth
-   recovery. `n_asv` is a trap here twice over.
-3. **A community report that `binned-qual` inflates ASV counts is not reproduced
-   here** — on fixed reads, binning *cut* ASVs 4×. That report may have been
-   pre-chimera counts, a different errfun implementation, or Illumina data. The
-   clean test is an errfun sweep on fixed reads (below), which is a different
-   experiment from any arm run here.
-4. **Chimera removal can delete a real allele, independent of the error model.** In
-   the Revio arm, `NC_004461.1:1722239-1723890(-)` (*S. epidermidis* ATCC 12228) is
+   value, and on Revio it reproduces full-quality inference almost exactly.
+2. **Expect the magnitude to be chemistry-dependent, and do not quote the 4×.**
+   Binning cleans up a residual error-variant tail only where one exists. The large
+   SequelIIe effect says more about that platform's full-quality error model than
+   about binning. On Revio, expect a near-no-op.
+3. **Never evaluate this on raw ASV counts.** Chimera removal does most of the work
+   and removes the excess preferentially — the binned Revio mock arm's extra ASVs
+   were 69.8% chimeric. Use post-chimera non-chimeric near-variants per read plus
+   truth recovery. `n_asv` is a trap here twice over.
+4. **A community report that `binned-qual` inflates ASV counts is not reproduced
+   here** — binning fixed reads either cut ASVs 4× (SequelIIe) or left them within
+   0.3% (Revio). That report may have been pre-chimera counts, a different errfun
+   implementation, or Illumina data. The clean test is an errfun sweep on fixed
+   reads (below), which is a different experiment from any arm run here.
+5. **Chimera removal can delete a real allele, independent of the error model.** In
+   the Revio mock arm, `NC_004461.1:1722239-1723890(-)` (*S. epidermidis* ATCC 12228) is
    an exact truth match at 691 reads (rank 161/1345, p=1.8e-62) yet is flagged
    chimeric at **every** min-fold from 1.5 to 32. No threshold rescues it; raising
    min-fold makes chimera calls harder, so its putative parents clear even a 32×
@@ -109,19 +173,15 @@ are easy to misread:
 
 ## Path forward
 
-The result is strong but narrow: one mock community, one platform, truth known. Two
-gaps, in priority order.
+Two datasets, one platform family, one of them without truth. Remaining gaps, in
+priority order.
 
-1. **A real community, full-quality Revio run** — the nodule-based 16S dataset
-   behind the trimera question. Being full-quality, it supports the same controlled
-   `pacbio` vs `binned-qual` A/B as arm C. Without a truth set the endpoint must
-   change — no TP/near/FP — so use ASV set-identity, abundance-weighted read
-   retention, and the pre/post-chimera split. This is the test that distinguishes
-   "absorbs noise" from "under-splits genuine low-abundance variation": if binning
-   removes ASVs that are *abundant and non-chimeric* in a real community, that is
-   under-splitting, not denoising. The trimera question makes it doubly
-   informative, since higher-order chimeras are exactly what a coarser error model
-   might reclassify.
+1. **Chimera removal on the binned real-community arm.** The full-quality arm ran
+   45,455 → 23,022 ASVs (49.4% chimeric, 95.12% of reads retained); the binned arm's
+   post-chimera table is still outstanding. Given the two ASV sets agree at Jaccard
+   0.97 this is expected to be uneventful, but it closes the comparison and tests
+   whether a coarser error model shifts chimera calling on real data — the mock said
+   it does not (114/114 agreement on shared ASVs).
 2. **An errfun sweep on fixed reads** ([#98]) — `binned-qual` vs `loess` vs
    `pacbio` vs R's `loessErrfun_mod4` (via `--errfun external`), all on the same
    derep inputs. Note the arms above vary binning *and* errfun together; a sweep on
