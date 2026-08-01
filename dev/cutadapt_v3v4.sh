@@ -139,7 +139,7 @@ for R1 in "$IN_DIR"/*"$SUF1"; do
     cutadapt \
         -g "$FWD" -G "$REV" \
         -a "$REV_RC" -A "$FWD_RC" \
-        -e "$ERROR_RATE" -n 2 \
+        -e "$ERROR_RATE" -n 2 --max-n 0 \
         --minimum-length "$MIN_LEN" \
         $DISCARD_FLAG \
         -j "$THREADS" \
