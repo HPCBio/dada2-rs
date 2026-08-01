@@ -44,9 +44,11 @@ here is the evidence, and here is the path it opens or closes."
       on chemistry (4× ASV cut on SequelIIe, near-no-op on Revio). Choosing the
       wrong errfun is real at the model level but washes out downstream.
     - [Illumina NovaSeq 6000](binned-quality-illumina-novaseq.md) — the same
-      mismatch **changes the published table**: −26.1% ASVs, post-chimera Jaccard
-      0.43, ~29% abundance churn, and chimera removal *widens* rather than absorbs
-      it. Measures disagreement, not accuracy (no truth set). NovaSeq X untested.
+      mismatch **changes the published table**: −16.7% ASVs, post-chimera Jaccard
+      0.58, ~27% abundance churn, surviving chimera removal. Measures disagreement,
+      not accuracy (no truth set). Also documents two prep artifacts in the source
+      data — a wrong NCBI primer annotation and retained spacers inflating ASVs
+      39–46%. NovaSeq X untested.
 - [Band size & platform-aware defaults](band-size-platform-defaults.md) — the
   16/32 Illumina/HiFi band default is vindicated; the two platforms fail
   band-tightening through opposite mechanisms, so a single global band would be

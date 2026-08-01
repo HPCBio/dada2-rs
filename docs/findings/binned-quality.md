@@ -18,7 +18,7 @@ are split by platform rather than merged into one verdict.
 | Platform | Effect of choosing the wrong errfun on binned input |
 |---|---|
 | **PacBio HiFi** (SequelIIe, Revio) | Small, and largely concealed by chimera removal. Post-chimera ASV sets agree to within 0.7%; the mismatched arm ends up **31 fewer** ASVs (−0.13%). |
-| **Illumina NovaSeq 6000** | **Large, and it survives chimera removal.** Final tables differ by **−26.1%** in ASV count with post-chimera Jaccard **0.43** and ~29% abundance churn. |
+| **Illumina NovaSeq 6000** | **Large, and it survives chimera removal.** Final tables differ by **−16.7%** in ASV count with post-chimera Jaccard **0.58** and ~27% abundance churn. |
 
 Do not generalise either result to the other platform. A reader who takes the
 PacBio null as reassurance will make a materially wrong table on NovaSeq.
