@@ -1,51 +1,40 @@
 # Binned quality on Illumina — NovaSeq 6000
 
-!!! danger "Superseded — do not quote the figures below"
-    This page originally reported that the errfun choice changes the final ASV
-    count by −26.1% on binned Illumina. **That was overwhelmingly a library-prep
-    artifact, not an error-model effect.** Both PCR primers were retained, both
-    are IUPAC-degenerate, and each sits behind a heterogeneity spacer — synthetic
-    variation at both ends of every read, multiplying together.
+**Verdict: on binned NovaSeq 6000 data, choosing the wrong `--errfun` is an
+*abundance* error, not a richness error.** The two models find nearly the same
+number of ASVs (+3.4%) but disagree substantially on *which* ones (Jaccard 0.706)
+and heavily on *how much of each* (29.0% L1), and one arm carries 17% more reads
+into the final table than the other.
 
-    Collapsing ASVs to the **insert only** (between 341F and 805R-revcomp)
-    removes **65.7% / 74.5%** of them as primer/spacer duplicates, and the arms
-    then agree to **0.33%**:
-
-    | post-chimera | `loess` | `binned-qual` | Δ | Jaccard | shared L1 |
-    |---|---|---|---|---|---|
-    | as-is (originally published) | 26,097 | 35,314 | −26.1% | 0.433 | 29.4% |
-    | 5' strip only | 15,849 | 19,019 | −16.7% | 0.577 | 27.2% |
-    | **insert only** | **8,960** | **8,990** | **−0.33%** | **0.714** | **16.3%** |
-
-    **Corrected verdict:** on this dataset the errfun choice does **not**
-    materially change the ASV *count*. It does still change *composition*
-    (Jaccard 0.714, ~3% of reads in arm-specific ASVs) and *abundance* (16.3% L1
-    on shared ASVs). That is a real effect, but a much smaller one, and closer to
-    the [PacBio result](binned-quality-error-model.md) than first reported.
-
-    These corrected numbers are a **post-hoc collapse, not a re-analysis**. A
-    re-run on cutadapt-trimmed reads is in progress and supersedes this page.
+!!! warning "This page was rewritten after a full retraction"
+    An earlier version reported a −26.1% ASV difference. **That was library-prep
+    artifact**, as was a subsequent −16.7% partial correction. All figures here
+    are from a clean re-run on `cutadapt`-trimmed reads. The failure is worth
+    reading on its own account — see [Reading the prep before the
+    result](reading-the-prep.md), which is the methodological companion to this
+    page.
 
 ## Scope and provenance
 
 Public data, **BioProject [PRJNA1504839]** — soil bacterial and fungal
 communities in *Quercus liaotungensis* and *Pinus tabuliformis* forests in
-Lanzhou; Illumina NovaSeq 6000, 16S rRNA V4 (bacteria) and ITS2 (fungi), topsoil
-and subsoil. This page covers the **bacterial 16S** arm only.
+Lanzhou; Illumina NovaSeq 6000, topsoil and subsoil. This page covers the
+**bacterial 16S** arm only; 30 samples, 2,445,276 read pairs.
 
 Qualifications:
 
-- **Documented sampling, undocumented library prep.** The sampling design is
-  published, but PCR cycle counts, template quality, and index strategy are not.
-  Absolute error rates and chimera rates should not be read as typical for soil,
-  and should not be compared across datasets. The **within-dataset A/B survives
-  this** — everything but the errfun is held fixed.
-- **The NCBI design annotation is wrong.** BioProject metadata states
-  `Design: 515F-806R (V4)`. The data are **V3–V4 (341F/805R, ~444 bp)**, shown
-  by direct primer search: 341F is present in **99.96%** of merged reads at the
-  5' end, and the 515F site sits ~150 bp *internally*. If these were V4, 515F
-  would be at position 0 and 341F absent. See
-  [Prep artifacts](#prep-artifacts-read-this-before-the-numbers).
+- **The amplicon is V3–V4 (341F/805R), not V4.** The NCBI BioProject metadata
+  states `Design: 515F-806R (V4)` and is **wrong** — established by direct primer
+  search. Reads were trimmed with `cutadapt` against the actual primers
+  (`dev/cutadapt_v3v4.sh`, `--discard-untrimmed`) before this analysis. See
+  [Reading the prep](reading-the-prep.md).
+- **Documented sampling, undocumented library prep.** PCR cycle counts, template
+  quality, and index strategy are not published. Absolute error and chimera rates
+  should not be read as typical for soil or compared across datasets. The
+  **within-dataset A/B survives this** — everything but the errfun is held fixed.
+- **No truth set.** This measures *disagreement between two models*, not the
+  accuracy of either. Deciding which arm is right needs a mock community on
+  binned Illumina — the same dependency blocking [#44].
 - **NovaSeq 6000 specifically.** Illumina has since released the **NovaSeq X**,
   whose quality behaviour differs. If its mass is less spread across bins, the
   effect measured here should shrink toward the PacBio picture. **This result
@@ -53,9 +42,10 @@ Qualifications:
 
 ## Setup
 
-Two arms over **identical** derep inputs — 30 samples, 898,604 merged uniques,
-1,750,945 reads, k=5, band 16, NW backend, `dada-pooled`. `learn-errors` used the
-same 8 pinned samples in both arms (nq=38, bins `{2, 11, 25, 37}`).
+Two arms over **identical** derep inputs — 1,225,523 (R1) / 1,304,044 (R2) merged
+uniques from 2,445,276 reads, k=5, band 16, NW backend, `dada-pooled`.
+`learn-errors` used the same pinned samples in both arms (nq=38, bins
+`{2, 11, 25, 37}`).
 
 | Arm | `--errfun` | Correct for binned input? |
 |---|---|---|
@@ -67,241 +57,144 @@ same chimera settings.
 
 ## The error model, before any inference
 
-Off-bin mass is **15.0% (R1) / 16.3% (R2)**, with 26 of 38 quality columns
-populated — far more spread than PacBio's ~8%. (As on PacBio, off-bin values come
-from derep quality-averaging across the reads collapsed into a unique; they are
-not a binning-detection failure.)
+All four `learn-errors` runs converge (7, 5, 9, 8 iterations), so this compares
+two well-defined models. Off-bin mass is **25.4% (R1) / 23.9% (R2)** across 27 of
+38 populated quality columns — far more spread than PacBio's ~8%. (As on PacBio,
+off-bin values arise from derep quality-averaging across the reads collapsed into
+a unique; they are not a binning-detection failure.)
 
 Against `binned-qual`, the `loess` fit is:
 
 | | R1 | R2 | PacBio HiFi (for contrast) |
 |---|---|---|---|
-| Mass-weighted mean error rate | **23.4% low** | **26.6% low** | 17.8% low |
-| Ratio at the **top** (dominant) bin | **0.85** | **0.83** | 0.92 |
-| Worst trough | — | **25× at Q32** | 16× at Q35 |
-| Mass in the trough region | 13.9% | 15.1% | ~8.4% |
+| Mass-weighted mean error rate | **31.2% low** | **29.0% low** | 17.8% low |
+| Ratio at the **dominant** bin (Q37) | **0.685** | **0.668** | 0.92 |
+| Share of mass in that bin | 65.3% | 62.8% | ~91% |
+| Worst trough | 86× at Q32 | 113× at Q32 | 16× at Q35 |
+| Mass in the trough | 0.69% | 0.75% | ~8.4% |
 
-The decisive row is the second. On PacBio the error is small where the data is
-dense; here it reaches the dominant bin directly.
+**The decisive row is the second.** On PacBio the `loess` error is small where the
+data is dense, so the mismatch has nowhere to express itself. Here it lands
+squarely on the dominant bin: `loess` underestimates the error rate by ~32%
+exactly where two thirds of all observations sit. The 86–113× troughs are
+attention-grabbing and nearly irrelevant — they carry under 1% of the mass.
 
-### Non-convergence
-
-| Arm | R1 | R2 |
-|---|---|---|
-| `loess` | did not converge (`max_consist` 10) | **did not converge**, oscillating non-monotonically (1.05e-4 → 2.86e-4, *rising*) |
-| `binned-qual` | did not converge, but residual 10–20× smaller | **converged to exactly 0 in 6 iterations** |
-
-Every PacBio run in this investigation converged in 4–5 iterations under both
-errfuns. The `loess` arm's final iterate is therefore not a well-behaved model,
-which is part of why its *direction* of effect resists explanation (below).
-
-## Prep artifacts — read this before the numbers
-
-Two properties of this library, both discovered from the merge output, affect
-every absolute count on this page. Both are shared by the two arms, so the A/B
-survives; neither should be ignored when reading magnitudes.
-
-**1. The amplicon is V3–V4, not V4.** Primer search across merged reads:
-
-| motif | found in | median position |
-|---|---|---|
-| **341F** `CCTACGGGNGGCWGCAG` | **99.96%** | position 2 |
-| **515F** `GTGYCAGCMGCCGCGGTAA` | 98.08% | **position 152** (internal) |
-| 806R / 805R (rev-comp) | 0.00% | — |
-
-The geometry is fully self-consistent: V3–V4 is ~464 bp with primers; less the
-21 bp reverse primer gives 443 bp, the observed modal merged length. Reads are
-uniformly 240+240 (`R1len + R2len = 480` for every merge), so 480 − 443 = **37 bp
-expected overlap**, matching the observed median of 35.
-
-**2. Heterogeneity spacers and the forward primer are retained.** 341F appears at
-**5 distinct offsets (0–4 nt)** — Fadrosh-style spacers that boost base diversity
-on patterned flow cells. The reverse primer *was* trimmed; the forward was not.
-Consequently the same biological sequence appears at several offsets as several
-distinct ASVs. Stripping spacer + 341F collapses **39.3%** (`loess`) / **46.1%**
-(`binned-qual`) of post-chimera ASVs.
-
-!!! danger "`filter-and-trim` cannot fix this — use cutadapt"
-    `filter-and-trim` removes leading bases by **fixed offset only**
-    (`--trim-left`); it does not match primer sequence. With the primer at 5
-    different offsets there is no correct value: too small leaves spacer bases,
-    too large eats real bases, and both split one biological sequence into
-    several ASVs. Primer removal for designs like this must happen upstream with
-    `cutadapt` (or R's `removePrimers()`), with `filter-and-trim` used for
-    quality filtering only. Tracked in [#113].
-
-!!! warning "All headline figures on this page are the corrected ones"
-    Comparisons below are computed on **spacer- and primer-stripped** sequences.
-    This is a *post-hoc* collapse, not a re-run: properly, the reads should be
-    re-trimmed and re-denoised, which would not give identical results. Treat the
-    corrected numbers as a close approximation, not an exact re-analysis.
-
-    | post-chimera | as-is | **stripped** |
-    |---|---|---|
-    | ASV Δ | −26.1% | **−16.7%** |
-    | Jaccard | 0.433 | **0.577** |
-    | binned-only reads | 31.3% | **16.8%** |
-    | shared-ASV L1 | 29.4% | **27.2%** |
-
-    About a third of the apparent errfun effect was prep artifact. The remainder
-    is large and real.
+This is the **mass-concentration** mechanism described in the
+[series overview](binned-quality.md), and NovaSeq 6000 is the case where it
+predicts trouble.
 
 ## Inference — four endpoints
 
-| endpoint | `loess` ASVs | `binned-qual` ASVs | Δ | Jaccard | binned-only reads | shared-ASV L1 |
+| endpoint | `loess` | `binned-qual` | Δ | Jaccard | L1 | reads |
 |---|---|---|---|---|---|---|
-| R1 | 8,186 | 9,120 | −10.2% | 0.735 | 13.4% | 19.9% |
-| R2 | 11,890 | 14,574 | −18.4% | 0.716 | 13.3% | 14.7% |
-| merged | 47,763 | 62,892 | −24.1% | 0.545 | 25.2% | 31.0% |
-| non-chimeric (as-is) | 26,097 | 35,314 | −26.1% | 0.433 | 31.3% | 29.4% |
-| **non-chimeric (corrected)** | **15,849** | **19,019** | **−16.7%** | **0.577** | **16.8%** | **27.2%** |
+| R1 | 10,541 | 9,701 | +8.7% | 0.817 | 27.8% | +11.9% |
+| R2 | 11,851 | 11,283 | +5.0% | 0.869 | 10.4% | +3.1% |
+| merged (uniques) | 37,355 | 36,315 | +2.9% | 0.741 | 28.1% | +18.1% |
+| **non-chimeric** | **22,498** | **21,754** | **+3.4%** | **0.706** | **29.0%** | **+17.0%** |
 
-The divergence **grows monotonically down the pipeline**. It is not a
-low-abundance tail: at R1 and R2 the arm-specific ASVs contain **zero
-singletons**, with medians of 48–96 reads.
+Length distributions are identical in both arms (median 426 bp, range 143–447),
+so none of this is geometry.
 
-The corrected row strips spacer + forward primer (see
-[Prep artifacts](#prep-artifacts-read-this-before-the-numbers)); **the bolded row
-is the one to quote.** The R1, R2 and merged rows are as-is and are inflated by
-the same artifact — the correction was computed only at the post-chimera
-endpoint, so the intermediate magnitudes are upper bounds, though the monotonic
-trend holds regardless.
+> The merged row counts merged-pair uniques, not a denoised table — singletons
+> appear there (12,034 / 11,884) where the denoised rows have none. It is not
+> comparable *in kind* to the rows around it, though both arms are counted
+> identically so the comparison across it is valid.
 
-### The merge rate is amplicon geometry, not library quality
+**Richness barely moves.** At +3.4% post-chimera the ASV-count difference is
+close to a non-event, and lands near the ~0.3% predicted by the insert-only
+collapse performed during the retraction. Anyone reading this A/B through `n_asv`
+alone would conclude the errfun does not matter.
 
-Both arms merge at essentially the same rate — **44.09%** (`loess`) vs **42.95%**
-(`binned-qual`), same per-sample spread (min 35.3%, max 51.7%). So the loss is
-**upstream of the error model** and shared by both arms.
+**Composition and abundance move a lot.** Jaccard 0.706 means roughly 30% of the
+union of the two tables is arm-specific — 3.3% of `loess` reads and 4.7% of
+`binned-qual` reads sit in ASVs the other arm never produced. And 29.0% L1
+divergence means the two tables disagree on relative abundance at a scale that
+would change ordination, differential-abundance testing, and any diversity metric
+weighted by abundance.
 
-With only ~37 bp of nominal overlap on a 443 bp product, quality trimming eats
-directly into the margin and pairs fall under `minOverlap`'s floor of 12. **A
-~44% merge rate is unremarkable for V3–V4 on 2×250.**
+**Read retention differs more than anything else.** Of 2,445,276 input reads, the
+`loess` arm carries **97.9%** into the R1 table against `binned-qual`'s **87.5%** —
+a **10.4-point** gap, and 17.0% more reads in the final table. The binned arm is
+not merely partitioning the same reads differently; it is **declining to place
+reads the `loess` arm places**. This is a distinct axis from ASV count and is the
+largest single difference between the arms.
 
-Library background is **disconfirmed**: 99.97% of merges have overlap < 50 bp in
-a tight unimodal distribution, merged lengths are unimodal at 443–449 bp with a
-hard floor at 277 bp and **0.00% below 200 bp**, and **100.0%** of accepted
-merges carry **zero mismatches** in the overlap. Primer dimer and mis-amplification
-would produce short fragments and a multimodal profile. Neither is present.
+### Direction
 
-!!! tip "Screen read overlap *before* the pipeline, not after"
-    Everything in this section was recovered retrospectively from merge output.
-    A per-sample overlap/fragment-length heatmap against the **expected amplicon
-    size**, run as QC ahead of denoising, would have surfaced all of it up front:
-    the wrong primer pair, the retained spacers, and the thin overlap budget. It
-    applies to every paired run, independent of the binned-quality question.
+`loess` fits lower error rates, so variants are harder to explain away as
+sequencing error, so it splits more and produces **more** ASVs. That is what
+happens here at every endpoint, and it matches PacBio.
 
-But merging **amplifies** the divergence: Jaccard drops 0.716 → 0.545. A merged
-sequence is determined by *both* its R1 and R2 ASV, so the two independent
-disagreements compose rather than average.
-
-> Note the merged row counts merged-pair uniques, not a denoised table —
-> singletons appear there (3,911 / 6,874) where R1 and R2 had none. It is not
-> comparable *in kind* to the rows above it, though both arms are counted
-> identically so the trend across it is real.
+This is worth stating explicitly because the **pre-trimming analysis showed the
+opposite** — `loess` produced consistently *fewer* ASVs, an inversion recorded at
+the time as an unexplained anomaly. It was prep artifact. The direction now
+agrees with the model across both platforms, and there is no anomaly left to
+explain.
 
 ### Chimera removal does not rescue it
 
 | | `loess` | `binned-qual` |
 |---|---|---|
-| ASVs removed as chimeric | 45.4% | 43.8% |
-| Reads retained | 78.4% | 78.7% |
-| Final ASVs | 26,097 | 35,314 |
+| Merge rate | 83.8% | 81.7% |
+| Uniques removed as chimeric | 39.8% | 40.1% |
+| Reads retained through chimera removal | 95.0% | 95.9% |
+| Final ASVs | 22,498 | 21,754 |
 
-The two arms are pruned at **nearly the same rate** — chimera removal is not
+The arms are pruned at **nearly identical rates**, so chimera removal is not
 treating one arm harshly. It removes a comparable fraction from each and leaves
-the disagreement standing, because the sequences the arms disagree about are
-largely *not* the ones it calls chimeric. On as-is sequences post-chimera Jaccard
-(0.433) is even *lower* than pre-chimera (0.545); on corrected sequences the
-post-chimera figure is 0.577.
-
-On PacBio, chimera removal reduced a +0.21% pre-chimera effect to −0.13%. Here
-the difference persists at −16.7% (corrected) after removal.
-
-## Two observations without explanations
-
-Recorded because they are real and reproducible, not because they are understood.
-
-**1. The direction is unexplained.** `loess` fits *lower* error rates, which
-should make variants harder to explain as sequencing error and therefore produce
-*more* ASVs — the direction seen on PacBio. Instead `loess` produces
-**consistently fewer** ASVs at every endpoint. A mass-weighted average is the
-wrong statistic for predicting this: the abundance p-value depends on the error
-rate at the specific transition and quality of the differing position, not on the
-average. Combined with the `loess` arm's non-convergence, there is no basis here
-for a directional rule.
-
-**2. `loess` under-splits *and* retains more reads.**
-
-| | reads in table | % of 1,750,945 |
-|---|---|---|
-| R1 `loess` | 1,703,269 | 97.28% |
-| R1 `binned-qual` | 1,605,329 | 91.68% |
-| R2 `loess` | 1,702,811 | 97.25% |
-| R2 `binned-qual` | 1,684,125 | 96.18% |
-
-The binned arm makes more ASVs *and* discards more reads (5.6 points more at R1).
-It is therefore not merely partitioning the same reads more finely — it is
-dropping reads the `loess` arm keeps. This is a distinct axis from the ASV count.
+the disagreement standing: Jaccard moves only 0.741 → 0.706 across the step. The
+sequences the arms disagree about are largely not the ones being called chimeric.
 
 ## What this dictates
 
-0. **Check the amplicon and primer handling before trusting any absolute count.**
-   This dataset's NCBI annotation names the wrong primer pair, and retained
-   spacers plus forward primer inflate ASV counts by 39–46%. Both were invisible
-   until the merge output was examined, and `--trim-left` cannot remove a
-   variable-offset primer ([#113]). See
-   [Prep artifacts](#prep-artifacts-read-this-before-the-numbers).
-1. **On binned Illumina, the errfun is a result-changing parameter, not a
-   diagnostic detail.** It must be chosen deliberately and reported in methods.
-   The PacBio null does not transfer.
+1. **On binned Illumina, report the errfun in methods.** It is a
+   result-changing parameter. The PacBio null does not transfer — but note *what*
+   it changes: richness is nearly stable, so an errfun mismatch will pass a review
+   that only checks ASV counts while corrupting every abundance-weighted
+   downstream result.
 2. **The [#98] guard should fire here, and its message should name binned
    Illumina.** This is the first measured case where warning the user prevents a
    real error rather than an invisible one. Detection is available from
    `count == 1` uniques, whose `qual_sum` is the raw unaveraged quality vector.
    Per the project's stated preference this stays a **strong warning, not an
-   error**, so users can still experiment deliberately.
-3. **Treat `loess` non-convergence as a reportable condition.** Both `loess` arms
-   hit `max_consist` with R2 oscillating upward, while `binned-qual` R2 converged
-   cleanly. Non-convergence is currently recorded in the artifact
-   (`stop_reason`) but is easy to miss; it deserves surfacing, and it is an
-   argument for the guard independent of which arm one considers correct.
-4. **A community report that `binned-qual` inflates ASV counts is *consistent
-   with* this run** — `binned-qual` yields 10–26% more ASVs than `loess` at every
-   endpoint here, whereas on PacBio binning fixed reads either cut ASVs 4× or left
-   them within 0.3%. This raises Illumina from one of three hypotheses to the
-   likely setting for that report. It is **not confirmation**: this A/B is not the
-   clean test, which is the fixed-reads errfun sweep in [#98].
+   error**, so users can experiment deliberately.
+3. **Predict the effect from mass concentration, not from platform.** The single
+   statistic that separates the PacBio null from the NovaSeq effect is the
+   fraction of observation mass in the dominant bin and whether the `loess` error
+   reaches it. "Illumina" is the wrong unit of generalisation — i100 is *more*
+   concentrated than PacBio (98.9% in one bin) and should behave like it.
+4. **Do not treat `loess` non-convergence as the signal.** An earlier version of
+   this page proposed exactly that, on the basis that 3 of 4 runs hit
+   `max_consist`. After correct trimming all four converge, so non-convergence
+   tracked prep quality, not errfun suitability. Retracted.
+5. **Verify the prep before trusting any absolute count on unfamiliar data.**
+   See [Reading the prep before the result](reading-the-prep.md) — this analysis
+   was fully corrupted, and briefly *sign-reversed*, by an untrimmed library that
+   raised no warnings anywhere in the pipeline.
 
 ## Path forward
 
 1. **The ITS2 arm of the same BioProject.** Same study, same sequencer, same
    library prep — so a difference there is amplicon-driven, not study-to-study
-   variation. This is the cheapest test of whether the result generalises past
-   bacterial 16S.
+   variation. The cheapest test of whether this generalises past bacterial 16S.
+   (Note it will need its own primer verification.)
 2. **NovaSeq X.** The most consequential gap. If its quality mass is less spread,
-   the effect should shrink toward PacBio's. Until measured, this page's verdict
-   is scoped to the 6000.
+   the effect should shrink toward PacBio's. Until measured, this verdict is
+   scoped to the 6000.
 3. **i100 at inference.** i100 was characterised at the model level only —
-   **98.9% of mass at Q38**, *more* concentrated than PacBio, against the
-   prediction that Illumina would spread. i100 may therefore behave like HiFi and
-   not like NovaSeq, which would make "Illumina" the wrong unit of generalisation
-   entirely — the right one being mass concentration. Worth running to inference.
+   **98.9% of mass at Q38**, *more* concentrated than PacBio. If mass
+   concentration is the governing statistic, i100 should show the PacBio null.
+   That is a clean, falsifiable prediction and worth running.
 4. **The fixed-reads errfun sweep** ([#98]) — `binned-qual` vs `loess` vs
    `pacbio` vs R's `loessErrfun_mod4` on one binned input. Isolates the errfun
-   term exactly and is the clean test of the ASV-inflation report.
+   term exactly.
 5. **A truth-anchored binned Illumina dataset.** Everything here measures
    disagreement. Deciding *which* arm is right needs a mock community on binned
    Illumina — the same dependency blocking [#44].
-6. **A read-overlap QC screen ahead of the pipeline.** The merge rate here was
-   diagnosed retrospectively, from merge output, and was initially misread as a
-   possible library-quality problem before the length distribution showed it was
-   amplicon geometry. A per-sample overlap/fragment-length heatmap against the
-   expected amplicon size answers that up front, and would also have caught the
-   V3-V4/V4 metadata discrepancy before denoising rather than after. Worth having
-   as tooling regardless of the binned-quality question, since it applies to
-   every paired run.
+6. **A read-overlap QC screen ahead of the pipeline.** Tooling worth having
+   regardless of the binned-quality question; see
+   [Reading the prep](reading-the-prep.md).
 
 [PRJNA1504839]: https://www.ncbi.nlm.nih.gov/bioproject/PRJNA1504839
 [#98]: https://github.com/HPCBio/dada2-rs/issues/98
 [#44]: https://github.com/HPCBio/dada2-rs/issues/44
-[#113]: https://github.com/HPCBio/dada2-rs/issues/113

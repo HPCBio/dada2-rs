@@ -18,13 +18,20 @@ are split by platform rather than merged into one verdict.
 | Platform | Effect of choosing the wrong errfun on binned input |
 |---|---|
 | **PacBio HiFi** (SequelIIe, Revio) | Small, and largely concealed by chimera removal. Post-chimera ASV sets agree to within 0.7%; the mismatched arm ends up **31 fewer** ASVs (−0.13%). |
-| **Illumina NovaSeq 6000** | **Under revision.** An apparent −26% ASV difference proved to be library-prep artifact (retained degenerate primers + spacers at both ends). Corrected, ASV counts agree to **0.33%**; composition (Jaccard 0.71) and abundance (16% L1) still differ. A re-run on properly trimmed reads is pending. |
+| **Illumina NovaSeq 6000** | Richness barely moves (**+3.4%** ASVs) but composition and abundance do: Jaccard **0.706**, **29.0%** L1 divergence, and one arm carries **17% more reads** into the final table. An *abundance* error, not a richness error. |
 
-Do not generalise either result to the other platform — but note the Illumina
-arm is **provisional**. Its headline effect shrank by two orders of magnitude
-once the library prep was properly characterised, which is itself the most
-transferable lesson here: **characterise primers and spacers before attributing
-anything to the error model.**
+Do not generalise either result to the other platform. And note **which axis
+moves**: on NovaSeq an errfun mismatch would pass any review that checks only ASV
+counts, while corrupting every abundance-weighted downstream analysis.
+
+!!! warning "The Illumina result was retracted once before"
+    Its first version reported a −26% ASV difference that proved to be
+    library-prep artifact — retained degenerate primers behind heterogeneity
+    spacers at both ends, inflating the table 3–4× and *reversing the direction*
+    of the effect. The current figures are from a clean re-run on trimmed reads.
+    The most transferable lesson in this whole series is the methodological one:
+    **characterise primers and spacers before attributing anything to the error
+    model.** See [Reading the prep before the result](reading-the-prep.md).
 
 ## Why the platforms differ
 
@@ -40,9 +47,11 @@ much observation mass actually sits in the interpolated region:
   barely reaches the likelihood computation. The mismatch mostly *cannot express
   itself*.
 - **Illumina** quality declines along the read, so mass is spread across bins.
-  On the NovaSeq run measured here, **15–16% of mass is off-bin** and the error
-  reaches the *dominant* bin (top-bin ratio 0.83–0.85, versus 0.92 on PacBio).
-  The fitting error lands where the reads actually are.
+  On the NovaSeq run measured here, **24–25% of mass is off-bin**, the dominant
+  bin holds only ~63–65% of mass, and the error reaches that dominant bin
+  directly (top-bin ratio **0.67–0.69**, versus 0.92 on PacBio). The fitting
+  error lands where the reads actually are. Conversely the worst troughs — 86–113×
+  — carry under 1% of the mass and are nearly irrelevant.
 
 So the rule of thumb is: **the errfun choice matters in proportion to how much
 quality mass sits away from a single dominant bin.**
@@ -66,8 +75,13 @@ results and hidden real effects that resurface under a different platform.
   at the model level but washes out downstream. Includes the truth-anchored mock
   community arms.
 - [**Illumina NovaSeq 6000**](binned-quality-illumina-novaseq.md) — the errfun
-  mismatch reaches the final table intact. Measures disagreement, not accuracy:
-  there is no truth set on this dataset.
+  mismatch reaches the final table intact, as an abundance and read-retention
+  effect rather than a richness one. Measures disagreement, not accuracy: there
+  is no truth set on this dataset.
+- [**Reading the prep before the result**](reading-the-prep.md) — the
+  methodological companion to the NovaSeq page: how untrimmed degenerate primers
+  produced a confident, reproducible, sign-reversed wrong answer, and the checks
+  that catch it.
 
 ## A caveat that applies to both
 
