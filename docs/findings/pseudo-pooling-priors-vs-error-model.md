@@ -8,6 +8,14 @@ axis we can measure: **3,118 fewer reads recovered, 709 more ASVs, and 72× more
 ASVs that prior flagging cannot account for**. R emulation is available behind
 `--reestimate-err-between-rounds` but is **not** the default.
 
+**The re-fit is unintended, confirmed with DADA2's author.** Re-estimating error
+rates *within* a `dada()` call is intended `selfConsist` behaviour; carrying that
+re-estimated model out of pseudo-pooling's first step and into its second is not —
+the error model supplied by the caller is meant to hold across both steps. So our
+priors-only default is not merely a defensible reading of the published
+definition, it is the intended semantics, and `--reestimate-err-between-rounds`
+emulates a behaviour its author does not intend.
+
 **R's behaviour is confirmed, both by direct observation and at the table level.**
 Tracing R's own `dada_uniques` shows `pool="pseudo"` denoising its second round
 with an error model the caller never supplied, while `pool=FALSE` uses the supplied
@@ -247,25 +255,30 @@ than rescued signal.
 1. **Keep priors-only as the default.** Every measured axis supports it: more
    reads recovered, fewer ASVs, ~1/72nd the unexplained ASVs. It is also what the
    published definition of pseudo-pooling describes.
-2. **Keep R emulation opt-in.** `--reestimate-err-between-rounds` exists to
-   compare behaviours, and records itself in the output's `params` block
-   (`reestimated_err_between_rounds`) because `--error-model` alone no longer
-   describes what round 2 used. Flag-off output is byte-identical to before the
-   flag existed.
-3. **A decision is now on the table: concordance with R, or the documented
-   design?** These pull in opposite directions, and it is a judgement call rather
-   than a measurement. Our default is better on every metric we can compute
-   (reads recovered, ASV count, prior-explained provenance) and matches the
-   published description of pseudo-pooling; matching R's behaviour instead would
-   close a known ~4% pseudo-mode ASV gap (~1.5% post-chimera). The current
-   position is to keep the documented behaviour as the default and expose the
-   other via flag.
-4. **This is reportable upstream now.** The chain is complete: a mechanism in
-   `dada.R`, the code path observed executing, the predicted output direction, the
-   specific ASVs, and both controls verified. The remaining question for upstream
-   is whether the re-fit is intended — the documented description of pseudo-pooling
-   does not mention it, and it is invisible in `dada()`'s return value, which
-   reports only round 1's `err_in`.
+2. **Keep R emulation opt-in, and document what it emulates.**
+   `--reestimate-err-between-rounds` exists to compare behaviours, and records
+   itself in the output's `params` block (`reestimated_err_between_rounds`) because
+   `--error-model` alone no longer describes what round 2 used. Flag-off output is
+   byte-identical to before the flag existed. Its help text should say it
+   reproduces R's *unintended* propagation, not an alternative definition of
+   pseudo-pooling — otherwise it reads as a legitimate choice between two designs.
+3. **The concordance-vs-design tension is resolved, not balanced.** This was
+   previously framed as a judgement call: our default is better on every metric we
+   can compute (reads recovered, ASV count, prior-explained provenance) and matches
+   the published description, while matching R would close a known ~4% pseudo-mode
+   ASV gap (~1.5% post-chimera). That framing assumed R's behaviour was a
+   legitimate alternative definition. It is not — it is unintended. So the residual
+   ASV gap against R in pseudo mode is **expected and correct**, and should be
+   documented as such rather than treated as a defect to close. Concordance testing
+   in pseudo mode should compare against R *with the re-fit suppressed*, or accept
+   a known offset.
+4. **The upstream question is answered; a report is now optional.** The chain was
+   already complete — a mechanism in `dada.R`, the code path observed executing,
+   the predicted output direction, the specific ASVs, both controls verified. The
+   one open question was whether the re-fit is intended, and it is not. What
+   remains is a decision about whether to file, not further evidence-gathering.
+   Worth noting the behaviour is invisible from R: it is a single `dada()` call,
+   and the return value reports only round 1's `err_in`.
 5. **Bound, do not assert, the provenance check.** See above.
 6. **Cover pseudo mode in the concordance guardrail**, which currently exercises
    per-sample and pooled.
