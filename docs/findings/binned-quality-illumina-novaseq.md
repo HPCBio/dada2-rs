@@ -1,27 +1,30 @@
 # Binned quality on Illumina — NovaSeq 6000
 
-**Verdict:** on binned Illumina NovaSeq 6000 reads, the choice of `--errfun`
-**changes the published table**. `loess` and `binned-qual` on identical inputs
-produce final non-chimeric tables that differ by **−16.7% in ASV count**, share
-only **58%** of their ASVs (Jaccard 0.577), and disagree by **~27% in abundance
-even on the ASVs they share**. Chimera removal does **not** absorb the
-difference.
+!!! danger "Superseded — do not quote the figures below"
+    This page originally reported that the errfun choice changes the final ASV
+    count by −26.1% on binned Illumina. **That was overwhelmingly a library-prep
+    artifact, not an error-model effect.** Both PCR primers were retained, both
+    are IUPAC-degenerate, and each sits behind a heterogeneity spacer — synthetic
+    variation at both ends of every read, multiplying together.
 
-Those figures are after correcting for a library-prep artifact in this dataset
-(retained heterogeneity spacers + forward primer, which alone inflate ASV counts
-by 39–46%). Uncorrected the gap looks larger still — −26.1%, Jaccard 0.43 — but
-that is not all errfun. See [Prep artifacts](#prep-artifacts-read-this-before-the-numbers).
+    Collapsing ASVs to the **insert only** (between 341F and 805R-revcomp)
+    removes **65.7% / 74.5%** of them as primer/spacer duplicates, and the arms
+    then agree to **0.33%**:
 
-This is the opposite of the [PacBio result](binned-quality-error-model.md), where
-the same mismatch was small and concealed downstream. See
-[the overview](binned-quality.md) for why the platforms diverge.
+    | post-chimera | `loess` | `binned-qual` | Δ | Jaccard | shared L1 |
+    |---|---|---|---|---|---|
+    | as-is (originally published) | 26,097 | 35,314 | −26.1% | 0.433 | 29.4% |
+    | 5' strip only | 15,849 | 19,019 | −16.7% | 0.577 | 27.2% |
+    | **insert only** | **8,960** | **8,990** | **−0.33%** | **0.714** | **16.3%** |
 
-!!! warning "This measures disagreement, not accuracy"
-    There is no truth set for this dataset, and the `loess` arm **failed to
-    converge**. Nothing here establishes which arm is closer to the true
-    community — only that the two arms cannot both be right, and that the choice
-    is not absorbed downstream. Do not read the ASV counts as one arm
-    "over-calling."
+    **Corrected verdict:** on this dataset the errfun choice does **not**
+    materially change the ASV *count*. It does still change *composition*
+    (Jaccard 0.714, ~3% of reads in arm-specific ASVs) and *abundance* (16.3% L1
+    on shared ASVs). That is a real effect, but a much smaller one, and closer to
+    the [PacBio result](binned-quality-error-model.md) than first reported.
+
+    These corrected numbers are a **post-hoc collapse, not a re-analysis**. A
+    re-run on cutadapt-trimmed reads is in progress and supersedes this page.
 
 ## Scope and provenance
 
