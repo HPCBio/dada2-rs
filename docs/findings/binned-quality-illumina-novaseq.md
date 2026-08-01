@@ -31,7 +31,9 @@ Two important qualifications:
   published, but PCR cycle counts, template quality, and index strategy are not.
   Absolute error rates and chimera rates should not be read as typical for soil,
   and should not be compared across datasets. The **within-dataset A/B survives
-  this** — everything but the errfun is held fixed.
+  this** — everything but the errfun is held fixed. The low merge rate suggests
+  these libraries may carry substantial background; see
+  [the merge section](#the-merge-compounds-it).
 - **NovaSeq 6000 specifically.** Illumina has since released the **NovaSeq X**,
   whose quality behaviour differs. If its mass is less spread across bins, the
   effect measured here should shrink toward the PacBio picture. **This result
@@ -97,10 +99,29 @@ singletons**, with medians of 48–96 reads.
 ### The merge compounds it
 
 Both arms merge at essentially the same rate — **44.09%** (`loess`) vs **42.95%**
-(`binned-qual`), same per-sample spread. So the ~44% merge loss is **upstream of
-the error model**, shared by both arms, and is a property of the reads or
-trimming rather than the errfun. (Low for V4; consistent with the undocumented
-library prep. Not investigated further.)
+(`binned-qual`), same per-sample spread (min 35.3%, max 51.7%). So the ~44% merge
+loss is **upstream of the error model**, shared by both arms, and is a property
+of the reads rather than the errfun.
+
+!!! warning "That rate is low for V4, and sample quality is not ruled out"
+    16S V4 on 2×250 should overlap generously; losing over half the pairs is not
+    normal. Because these are SRA data with **undocumented library prep**, we
+    cannot distinguish sequencing quality from library background — primer dimer,
+    mis-amplification, or off-target product would all present as pairs that fail
+    to overlap at the expected insert size.
+
+    A **read-overlap QC step before the pipeline proper** is the right way to
+    catch this: a per-sample heatmap of observed overlap/fragment length, where
+    the dense region should coincide with the expected amplicon size. Samples
+    whose mass sits away from that size carry background rather than target. This
+    run had no such screen available, so **the possibility that these libraries
+    are simply poor cannot be excluded.**
+
+    This does **not** undermine the errfun A/B — both arms received identical
+    reads, and the merge rates differ by 1.1 points. But it does mean the
+    *absolute* ASV counts, chimera fractions, and read-retention figures on this
+    page should not be read as characteristic of soil, or of NovaSeq 6000, or of
+    binned data generally.
 
 But merging **amplifies** the divergence: Jaccard drops 0.716 → 0.545. A merged
 sequence is determined by *both* its R1 and R2 ASV, so the two independent
@@ -197,6 +218,14 @@ dropping reads the `loess` arm keeps. This is a distinct axis from the ASV count
 5. **A truth-anchored binned Illumina dataset.** Everything here measures
    disagreement. Deciding *which* arm is right needs a mock community on binned
    Illumina — the same dependency blocking [#44].
+6. **A read-overlap QC screen ahead of the pipeline.** The 44% merge rate should
+   have been caught and characterised *before* denoising, not noticed afterwards.
+   A per-sample overlap/fragment-length heatmap against the expected amplicon
+   size separates "these libraries carry background" from "this dataset is hard,"
+   and would let a run like this be qualified up front. Worth having as tooling
+   regardless of the binned-quality question, since it applies to every paired
+   run — and it is the missing control that keeps this page's absolute numbers
+   uninterpretable.
 
 [PRJNA1504839]: https://www.ncbi.nlm.nih.gov/bioproject/PRJNA1504839
 [#98]: https://github.com/HPCBio/dada2-rs/issues/98
