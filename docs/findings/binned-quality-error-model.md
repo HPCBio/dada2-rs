@@ -164,6 +164,61 @@ ASVs have a *higher* median abundance (28) than retained ones (22), because chim
 formation requires abundant parents. Abundance thresholds are therefore a poor
 proxy for chimera filtering on data like this.
 
+## Choosing the wrong errfun for binned input — and how chimera removal hides it
+
+A user who reaches for `--errfun pacbio` on binned PacBio data does not get an
+error, a warning, or the PacBio model. `pacbio_errfun` tests whether the last
+quality column is Q93; on binned input it is not, so the function silently falls
+back to plain LOESS. R's `PacBioErrfun` at least emits a `message()`; dada2-rs
+prints nothing. The run's artifacts are indistinguishable from a legitimate
+`pacbio` run.
+
+Tested end to end on the real dataset, same reads and same pinned `learn-errors`
+sample, varying only the errfun. **The full chain is worth reading in order,
+because the endpoint alone is misleading:**
+
+1. **The fitted model is wrong, measurably.** Mass-weighted mean error rate
+   4.10e-4 against 4.99e-4 for `binned-qual` — **17.8% low**, and 0.80× the
+   full-quality reference fit from the same sample.
+2. **The error is concentrated in a spurious trough.** Across Q31–Q39 LOESS
+   underestimates by up to **16×** (Q35: 8.10e-5 vs 1.30e-3). That region is not
+   empty — it holds ~8.4% of observation mass, the off-bin values created by derep
+   quality-averaging. There are real anchors at Q27/Q35/Q40 with sparse support
+   between them, and the local fit dives into the gap.
+3. **Inference shifts in the predicted direction.** A low error model makes
+   variants harder to explain as errors, so the mismatched arm **over-splits:
+   +96 ASVs (+0.21%)**, 45,694 vs 45,598. Of the 479 arm-specific ASVs, **98%
+   appear in exactly one sample** — the rare, near-threshold population a slightly
+   low model would tip. They are spread across the run (median 2 per sample; 61
+   samples have none) rather than confined to a few pathological samples.
+4. **Chimera removal then conceals it.** 59% of those extra ASVs are chimeric.
+   Post-chimera the mismatched arm has **31 *fewer*** ASVs (−0.13%) — the effect
+   reverses sign and rounds away. All three arms land within 0.7% of each other,
+   with read retention identical to two decimals.
+
+| arm | pre-chimera | post-chimera | chimeric | reads retained |
+|---|---|---|---|---|
+| full quality, `pacbio` (reference) | 45,455 | 23,022 | 49.4% | 95.12% |
+| binned, `binned-qual` (correct) | 45,598 | 23,174 | 49.2% | 95.15% |
+| binned, `pacbio` (**mismatched**) | 45,694 | 23,143 | 49.4% | 95.16% |
+
+**Read step 4 as concealment, not correction.** Chimera removal discarding those
+ASVs does not establish that they were chimeric, nor that the error model handled
+them correctly — two errors happened to cancel. The cancellation is contingent on
+things this finding does not control:
+
+- It requires chimera removal to be run at all, at settings that catch them.
+- It is chemistry-dependent. ~91% of HiFi observation mass sits in the top bin,
+  where the mismatched model is only 8% low, so the badly-wrong interpolated region
+  barely reaches the likelihood computation. **That offset is a property of HiFi,
+  not of binning** (see *Path forward*).
+- Nothing informs the user any of it happened.
+
+Why the mass concentration matters is worth stating plainly: the mismatch is large
+where the data is sparse and small where the data is dense, so on this platform it
+mostly cannot express itself. On a platform whose quality mass is spread across its
+bins, the same fitting error would land where the reads actually are.
+
 ## What this dictates
 
 1. **`binned-qual` is the right default for natively binned PacBio data.** It does
@@ -173,16 +228,26 @@ proxy for chimera filtering on data like this.
    Binning cleans up a residual error-variant tail only where one exists. The large
    SequelIIe effect says more about that platform's full-quality error model than
    about binning. On Revio, expect a near-no-op.
-3. **Never evaluate this on raw ASV counts.** Chimera removal does most of the work
-   and removes the excess preferentially — the binned Revio mock arm's extra ASVs
-   were 69.8% chimeric. Use post-chimera non-chimeric near-variants per read plus
-   truth recovery. `n_asv` is a trap here twice over.
-4. **A community report that `binned-qual` inflates ASV counts is not reproduced
+3. **Report both endpoints — pre- and post-chimera — not just the one that
+   matters.** Post-chimera answers "does this change my results?"; pre-chimera is
+   where the mechanism is *visible*. Three times in this investigation a real
+   pre-chimera difference vanished downstream (the mock ASV counts, an R
+   comparison, and the errfun mismatch above). Collapsing to the endpoint would
+   have reported three null results and hidden three real effects, each of which
+   could resurface under a different downstream configuration or platform. Raw
+   `n_asv` on its own remains a trap in both directions.
+4. **Do not use `--errfun pacbio` on binned input, and do not rely on chimera
+   removal to cover it if you do.** The fallback is silent, the resulting model is
+   ~18% low with a 16× trough, and the fact that the consequence washes out here is
+   a HiFi-specific accident (see the section above). A warning belongs in the tool —
+   tracked in [#98], with the detection available exactly from `count == 1`
+   uniques, whose `qual_sum` is the raw unaveraged quality vector.
+5. **A community report that `binned-qual` inflates ASV counts is not reproduced
    here** — binning fixed reads either cut ASVs 4× (SequelIIe) or left them within
    0.3% (Revio). That report may have been pre-chimera counts, a different errfun
    implementation, or Illumina data. The clean test is an errfun sweep on fixed
    reads (below), which is a different experiment from any arm run here.
-5. **Chimera removal can delete a real allele, independent of the error model.** In
+6. **Chimera removal can delete a real allele, independent of the error model.** In
    the Revio mock arm, `NC_004461.1:1722239-1723890(-)` (*S. epidermidis* ATCC 12228) is
    an exact truth match at 691 reads (rank 161/1345, p=1.8e-62) yet is flagged
    chimeric at **every** min-fold from 1.5 to 32. No threshold rescues it; raising
@@ -193,9 +258,21 @@ proxy for chimera filtering on data like this.
 
 ## Path forward
 
-Two datasets, one platform family, one of them without truth. Remaining gap:
+Two datasets, one platform family, one of them without truth. Remaining gaps:
 
-1. **An errfun sweep on fixed reads** ([#98]) — `binned-qual` vs `loess` vs
+1. **Binned Illumina — where the offset above should not hold.** The reason the
+   errfun mismatch washes out on HiFi is that ~91% of observation mass sits in one
+   bin, so a fit that is badly wrong between bins lands where almost no data is.
+   Illumina does not have that structure: quality declines along the read, so i100's
+   `{12, 24, 38}` and NovaSeq's ~4 levels each carry substantial mass, much more of
+   it in the interpolated region. Two things compound it — with only 3 anchors stock
+   LOESS fits an exact quadratic through three points (the oscillation case in
+   [#98]), and the #95 graceful-degradation guard triggers at ≤ 5 populated columns,
+   so on Illumina it may actually fire, putting the fallback in genuinely degenerate
+   territory rather than merely mis-shaped. **Prediction: the mismatched-errfun
+   penalty is larger on binned Illumina than on binned PacBio.** The PacBio null
+   should not be read as reassurance here.
+2. **An errfun sweep on fixed reads** ([#98]) — `binned-qual` vs `loess` vs
    `pacbio` vs R's `loessErrfun_mod4` (via `--errfun external`), all on the same
    derep inputs. Note the arms above vary binning *and* errfun together; a sweep on
    one fixed binned input isolates the errfun term exactly, and is the only clean
