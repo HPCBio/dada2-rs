@@ -22,6 +22,8 @@
 
 set -euo pipefail
 
+module load cutadapt/3.7-IGB-gcc-8.2.0-Python-3.7.2
+
 IN_DIR=${1:?usage: cutadapt_v3v4.sh <in_dir> <out_dir> [threads]}
 OUT_DIR=${2:?usage: cutadapt_v3v4.sh <in_dir> <out_dir> [threads]}
 THREADS=${3:-8}
