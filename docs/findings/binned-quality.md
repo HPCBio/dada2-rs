@@ -18,7 +18,7 @@ are split by platform rather than merged into one verdict.
 | Platform | Effect of choosing the wrong errfun on binned input |
 |---|---|
 | **PacBio HiFi** (SequelIIe, Revio) | Small, and largely concealed by chimera removal. Post-chimera ASV sets agree to within 0.7%; the mismatched arm ends up **31 fewer** ASVs (−0.13%). |
-| **Illumina NovaSeq 6000** | Richness barely moves (**+3.4%** ASVs) but composition and abundance do: Jaccard **0.706**, **29.0%** L1 divergence, and one arm carries **17% more reads** into the final table. An *abundance* error, not a richness error. |
+| **Illumina NovaSeq 6000** | Richness barely moves (**+3.4%** ASVs) but composition and abundance do: Jaccard **0.706**, **22.2%** L1 abundance divergence on shared ASVs, and one arm carries **17% more reads** into the final table. An *abundance* error, not a richness error. |
 
 Do not generalise either result to the other platform. And note **which axis
 moves**: on NovaSeq an errfun mismatch would pass any review that checks only ASV
