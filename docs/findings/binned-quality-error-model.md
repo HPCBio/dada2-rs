@@ -1,4 +1,13 @@
-# Binned quality scores & the `binned-qual` error model
+# Binned quality on PacBio — SequelIIe & Revio
+
+!!! info "Part of the [binned quality scores](binned-quality.md) series"
+    This page is **PacBio HiFi only**. Its central downstream result — that
+    choosing the wrong errfun washes out by the time you reach the final table —
+    **does not hold on Illumina**. On a NovaSeq 6000 run the same mismatch
+    changes the final table by −26% in ASV count and *survives* chimera removal;
+    see [Illumina NovaSeq 6000](binned-quality-illumina-novaseq.md). The
+    difference is mass concentration, explained in
+    [the overview](binned-quality.md).
 
 **Verdict (PacBio):** `--errfun binned-qual` on 7-level binned quality scores is
 **safe to use — it never cost reference recovery, and what it changes depends on
@@ -239,14 +248,18 @@ bins, the same fitting error would land where the reads actually are.
 4. **Do not use `--errfun pacbio` on binned input, and do not rely on chimera
    removal to cover it if you do.** The fallback is silent, the resulting model is
    ~18% low with a 16× trough, and the fact that the consequence washes out here is
-   a HiFi-specific accident (see the section above). A warning belongs in the tool —
-   tracked in [#98], with the detection available exactly from `count == 1`
-   uniques, whose `qual_sum` is the raw unaveraged quality vector.
+   a HiFi-specific accident (see the section above) — **now confirmed by
+   counter-example**: on [NovaSeq 6000](binned-quality-illumina-novaseq.md) the
+   same class of mismatch changes the final table by −26%. A warning belongs in
+   the tool — tracked in [#98], with the detection available exactly from
+   `count == 1` uniques, whose `qual_sum` is the raw unaveraged quality vector.
 5. **A community report that `binned-qual` inflates ASV counts is not reproduced
    here** — binning fixed reads either cut ASVs 4× (SequelIIe) or left them within
    0.3% (Revio). That report may have been pre-chimera counts, a different errfun
-   implementation, or Illumina data. The clean test is an errfun sweep on fixed
-   reads (below), which is a different experiment from any arm run here.
+   implementation, or Illumina data. **The Illumina hypothesis is now the leading
+   one**: on NovaSeq 6000, `binned-qual` yields 10–26% *more* ASVs than `loess` at
+   every endpoint. That is still not the clean test — an errfun sweep on fixed
+   reads (below) is, and it is a different experiment from any arm run here.
 6. **Chimera removal can delete a real allele, independent of the error model.** In
    the Revio mock arm, `NC_004461.1:1722239-1723890(-)` (*S. epidermidis* ATCC 12228) is
    an exact truth match at 691 reads (rank 161/1345, p=1.8e-62) yet is flagged
@@ -260,18 +273,15 @@ bins, the same fitting error would land where the reads actually are.
 
 Two datasets, one platform family, one of them without truth. Remaining gaps:
 
-1. **Binned Illumina — where the offset above should not hold.** The reason the
-   errfun mismatch washes out on HiFi is that ~91% of observation mass sits in one
-   bin, so a fit that is badly wrong between bins lands where almost no data is.
-   Illumina does not have that structure: quality declines along the read, so i100's
-   `{12, 24, 38}` and NovaSeq's ~4 levels each carry substantial mass, much more of
-   it in the interpolated region. Two things compound it — with only 3 anchors stock
-   LOESS fits an exact quadratic through three points (the oscillation case in
-   [#98]), and the #95 graceful-degradation guard triggers at ≤ 5 populated columns,
-   so on Illumina it may actually fire, putting the fallback in genuinely degenerate
-   territory rather than merely mis-shaped. **Prediction: the mismatched-errfun
-   penalty is larger on binned Illumina than on binned PacBio.** The PacBio null
-   should not be read as reassurance here.
+1. ~~**Binned Illumina — where the offset above should not hold.**~~ **Tested, and
+   the prediction held.** On a NovaSeq 6000 run, off-bin mass is 15–16% (versus
+   ~8% here), the fitting error reaches the *dominant* bin, and the mismatch
+   changes the final non-chimeric table by **−26.1%** with Jaccard 0.43 — it
+   survives chimera removal rather than washing out. Full result:
+   [Illumina NovaSeq 6000](binned-quality-illumina-novaseq.md). One correction
+   worth carrying: **i100 does *not* fit the "Illumina spreads its mass" story** —
+   it sits at 98.9% mass in one bin, *more* concentrated than HiFi. The predictive
+   variable is mass concentration, not vendor.
 2. **An errfun sweep on fixed reads** ([#98]) — `binned-qual` vs `loess` vs
    `pacbio` vs R's `loessErrfun_mod4` (via `--errfun external`), all on the same
    derep inputs. Note the arms above vary binning *and* errfun together; a sweep on
@@ -281,6 +291,8 @@ Two datasets, one platform family, one of them without truth. Remaining gaps:
 
 [#98]: https://github.com/HPCBio/dada2-rs/issues/98
 
-Illumina binned chemistries (i100 `{12,24,38}`, NovaSeq ~4 bins) remain untested and
-should not inherit this verdict — see also the binned-quality wildcard in
+Illumina binned chemistries no longer inherit this verdict by default —
+[NovaSeq 6000 has been measured](binned-quality-illumina-novaseq.md) and behaves
+very differently. i100 remains untested *at inference*, and **NovaSeq X** is
+untested entirely. See also the binned-quality wildcard in
 [Band size & platform defaults](band-size-platform-defaults.md).

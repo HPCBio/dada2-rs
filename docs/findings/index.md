@@ -37,12 +37,16 @@ here is the evidence, and here is the path it opens or closes."
   re-fit on every axis (+3,118 reads recovered, 709 fewer ASVs, 72× fewer ASVs
   unexplained by priors); R emulation stays opt-in, and confirming R's actual
   behaviour is still the open gate.
-- [Binned quality & the `binned-qual` error model](binned-quality-error-model.md)
-  — binning PacBio quality to 7 levels never cost reference recovery (identical
-  43/52 alleles), but what it *changes* depends on the chemistry: a 4× ASV cut on
-  SequelIIe, close to a no-op on Revio (Jaccard 0.97, error models within 2.1%).
-  It absorbs a residual error-variant tail only where one exists. PacBio only;
-  Illumina binned chemistries untested.
+- [**Binned quality scores**](binned-quality.md) — a series, because the answer is
+  **platform-dependent** and the platforms disagree sharply:
+    - [PacBio (SequelIIe & Revio)](binned-quality-error-model.md) — binning never
+      cost reference recovery (identical 43/52 alleles); what it *changes* depends
+      on chemistry (4× ASV cut on SequelIIe, near-no-op on Revio). Choosing the
+      wrong errfun is real at the model level but washes out downstream.
+    - [Illumina NovaSeq 6000](binned-quality-illumina-novaseq.md) — the same
+      mismatch **changes the published table**: −26.1% ASVs, post-chimera Jaccard
+      0.43, ~29% abundance churn, and chimera removal *widens* rather than absorbs
+      it. Measures disagreement, not accuracy (no truth set). NovaSeq X untested.
 - [Band size & platform-aware defaults](band-size-platform-defaults.md) — the
   16/32 Illumina/HiFi band default is vindicated; the two platforms fail
   band-tightening through opposite mechanisms, so a single global band would be
