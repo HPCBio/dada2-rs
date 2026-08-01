@@ -3,8 +3,8 @@
 **Verdict: on binned NovaSeq 6000 data, choosing the wrong `--errfun` is an
 *abundance* error, not a richness error.** The two models find nearly the same
 number of ASVs (+3.4%) but disagree substantially on *which* ones (Jaccard 0.706)
-and heavily on *how much of each* (29.0% L1), and one arm carries 17% more reads
-into the final table than the other.
+and heavily on *how much of each* (22.2% L1 on shared ASVs, 29.0% over the
+union), and one arm carries 17% more reads into the final table than the other.
 
 !!! warning "This page was rewritten after a full retraction"
     An earlier version reported a −26.1% ASV difference. **That was library-prep
@@ -85,12 +85,29 @@ predicts trouble.
 
 ## Inference — four endpoints
 
-| endpoint | `loess` | `binned-qual` | Δ | Jaccard | L1 | reads |
-|---|---|---|---|---|---|---|
-| R1 | 10,541 | 9,701 | +8.7% | 0.817 | 27.8% | +11.9% |
-| R2 | 11,851 | 11,283 | +5.0% | 0.869 | 10.4% | +3.1% |
-| merged (uniques) | 37,355 | 36,315 | +2.9% | 0.741 | 28.1% | +18.1% |
-| **non-chimeric** | **22,498** | **21,754** | **+3.4%** | **0.706** | **29.0%** | **+17.0%** |
+| endpoint | `loess` | `binned-qual` | Δ | Jaccard | L1 (union) | L1 (shared) | reads |
+|---|---|---|---|---|---|---|---|
+| R1 | 10,541 | 9,701 | +8.7% | 0.817 | 27.8% | 19.1% | +11.9% |
+| R2 | 11,851 | 11,283 | +5.0% | 0.869 | 10.4% | 6.8% | +3.1% |
+| merged (uniques) | 37,355 | 36,315 | +2.9% | 0.741 | 28.1% | 22.2% | +18.1% |
+| **non-chimeric** | **22,498** | **21,754** | **+3.4%** | **0.706** | **29.0%** | **22.2%** | **+17.0%** |
+
+!!! note "Two L1 variants, because they answer different questions"
+    L1 is the summed absolute difference in **relative** abundance per ASV, each
+    table normalised to 1. It ranges 0–2, and **half of it is the total variation
+    distance** — the fraction of community mass that would have to move to turn
+    one table into the other.
+
+    **Union L1** sums over all ASVs in either arm, scoring arm-specific ones as
+    zero in the other. It is the honest "how different are these two tables"
+    number, but it partly re-counts the composition difference already in
+    Jaccard. **Shared L1** restricts to ASVs both arms found, renormalised within
+    that subset, isolating *pure abundance* disagreement on the ASVs they agree
+    exist. Shared mass is 96.7% / 95.4% of each arm, so the two are measuring
+    nearly the same reads, differently attributed.
+
+    Earlier versions of this page reported shared-only L1. Quote the variant you
+    mean.
 
 Length distributions are identical in both arms (median 426 bp, range 143–447),
 so none of this is geometry.
@@ -107,10 +124,16 @@ alone would conclude the errfun does not matter.
 
 **Composition and abundance move a lot.** Jaccard 0.706 means roughly 30% of the
 union of the two tables is arm-specific — 3.3% of `loess` reads and 4.7% of
-`binned-qual` reads sit in ASVs the other arm never produced. And 29.0% L1
-divergence means the two tables disagree on relative abundance at a scale that
-would change ordination, differential-abundance testing, and any diversity metric
-weighted by abundance.
+`binned-qual` reads sit in ASVs the other arm never produced. Restricting to the
+ASVs *both* arms found, they still disagree by **22.2% L1** on relative
+abundance — an 11.1% total variation distance, on sequences whose existence is
+not in dispute. That is a scale that changes ordination, differential-abundance
+testing, and any abundance-weighted diversity metric.
+
+For comparison, the post-hoc insert-only collapse during the retraction estimated
+16.3% shared L1. The clean re-run puts it at **22.2%** on the same statistic — so
+the abundance effect is somewhat *larger* than the collapse suggested, even as the
+ASV-count effect vanished.
 
 **Read retention differs more than anything else.** Of 2,445,276 input reads, the
 `loess` arm carries **97.9%** into the R1 table against `binned-qual`'s **87.5%** —

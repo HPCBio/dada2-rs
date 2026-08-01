@@ -5,7 +5,7 @@
     choosing the wrong errfun washes out by the time you reach the final table —
     **does not hold on Illumina**. On a NovaSeq 6000 run the same mismatch
     *survives* chimera removal — not as an ASV-count difference (+3.4%) but as a
-    composition and abundance one (Jaccard 0.706, 29% L1, 17% more reads
+    composition and abundance one (Jaccard 0.706, 22% shared-ASV L1, 17% more reads
     retained in one arm); see
     [Illumina NovaSeq 6000](binned-quality-illumina-novaseq.md). The
     difference is mass concentration, explained in
@@ -253,7 +253,7 @@ bins, the same fitting error would land where the reads actually are.
    a HiFi-specific accident (see the section above) — **now confirmed by
    counter-example**: on [NovaSeq 6000](binned-quality-illumina-novaseq.md) the
    same class of mismatch changes the final table's composition and abundance
-   (Jaccard 0.706, 29% L1) while leaving ASV counts nearly intact — so it would
+   (Jaccard 0.706, 22% shared-ASV L1) while leaving ASV counts nearly intact — so it would
    pass an ASV-count check and still be wrong. A warning belongs in
    the tool — tracked in [#98], with the detection available exactly from
    `count == 1` uniques, whose `qual_sum` is the raw unaveraged quality vector.
@@ -285,7 +285,7 @@ Two datasets, one platform family, one of them without truth. Remaining gaps:
    ~8% here), only ~63–65% of mass sits in the dominant bin, and the fitting error
    reaches that bin directly (ratio 0.67–0.69 versus 0.92 here). The mismatch
    survives chimera removal rather than washing out — though as a **composition
-   and abundance** effect (Jaccard 0.706, 29% L1, 17% more reads retained in one
+   and abundance** effect (Jaccard 0.706, 22% shared-ASV L1, 17% more reads retained in one
    arm) rather than an ASV-count one (+3.4%). Full result:
    [Illumina NovaSeq 6000](binned-quality-illumina-novaseq.md). Two corrections
    worth carrying: **i100 does *not* fit the "Illumina spreads its mass" story** —

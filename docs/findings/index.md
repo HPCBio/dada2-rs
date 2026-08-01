@@ -46,8 +46,8 @@ here is the evidence, and here is the path it opens or closes."
     - [Illumina NovaSeq 6000](binned-quality-illumina-novaseq.md) — the errfun
       mismatch reaches the final table, but as an **abundance** error rather than
       a richness one: ASV counts agree to +3.4% while Jaccard is 0.706, abundance
-      L1 is 29.0%, and one arm retains 17% more reads. It would pass a review
-      that checks only ASV counts.
+      L1 is 22.2% on shared ASVs, and one arm retains 17% more reads. It would
+      pass a review that checks only ASV counts.
     - [Reading the prep before the result](reading-the-prep.md) — the NovaSeq
       analysis was first published, then retracted twice: untrimmed degenerate
       primers behind heterogeneity spacers inflated the table 3–4× and *reversed
