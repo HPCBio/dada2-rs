@@ -43,12 +43,12 @@ here is the evidence, and here is the path it opens or closes."
       cost reference recovery (identical 43/52 alleles); what it *changes* depends
       on chemistry (4× ASV cut on SequelIIe, near-no-op on Revio). Choosing the
       wrong errfun is real at the model level but washes out downstream.
-    - [Illumina NovaSeq 6000](binned-quality-illumina-novaseq.md) — the same
-      mismatch **changes the published table**: −16.7% ASVs, post-chimera Jaccard
-      0.58, ~27% abundance churn, surviving chimera removal. Measures disagreement,
-      not accuracy (no truth set). Also documents two prep artifacts in the source
-      data — a wrong NCBI primer annotation and retained spacers inflating ASVs
-      39–46%. NovaSeq X untested.
+    - [Illumina NovaSeq 6000](binned-quality-illumina-novaseq.md) — **provisional.**
+      An apparent −26% ASV effect was overwhelmingly library-prep artifact: both
+      degenerate primers retained behind heterogeneity spacers, accounting for
+      65–75% of reported ASVs. Corrected, ASV counts agree to 0.33%; composition
+      and abundance still differ. A cautionary case in attributing differences to
+      the error model before characterising the prep.
 - [Band size & platform-aware defaults](band-size-platform-defaults.md) — the
   16/32 Illumina/HiFi band default is vindicated; the two platforms fail
   band-tightening through opposite mechanisms, so a single global band would be
