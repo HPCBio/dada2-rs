@@ -22,7 +22,10 @@
 
 set -euo pipefail
 
-module load cutadapt/3.7-IGB-gcc-8.2.0-Python-3.7.2
+# Cluster module load; skipped silently off-cluster so the script stays testable.
+if type module &>/dev/null; then
+    module load cutadapt/3.7-IGB-gcc-8.2.0-Python-3.7.2
+fi
 
 IN_DIR=${1:?usage: cutadapt_v3v4.sh <in_dir> <out_dir> [threads]}
 OUT_DIR=${2:?usage: cutadapt_v3v4.sh <in_dir> <out_dir> [threads]}
@@ -54,28 +57,58 @@ echo "cutadapt: $(cutadapt --version)"
 # was retained and the reverse was not; running with --discard-untrimmed on
 # both reads would throw away nearly everything. Measure first.
 # ---------------------------------------------------------------------------
-probe() {  # probe <fastq.gz> <pattern-name> <iupac-regex>
-    local f=$1 name=$2 rx=$3
-    local n hit
-    n=$(zcat < "$f" | head -n 200000 | awk 'NR%4==2' | wc -l)
-    hit=$(zcat < "$f" | head -n 200000 | awk 'NR%4==2' | grep -cE "^.{0,8}$rx" || true)
-    printf '    %-8s %6d / %6d  (%.1f%%)\n' "$name" "$hit" "$n" \
-        "$(awk -v a="$hit" -v b="$n" 'BEGIN{print (b?100*a/b:0)}')"
+# One pass per file, counting both primers and the 341F offset distribution.
+#
+# NOTE: `head` closing the pipe makes zcat exit on SIGPIPE, which `set -o
+# pipefail` turns into a script-killing failure. pipefail is disabled around
+# the read and restored afterwards -- do not "simplify" this away.
+probe() {  # probe <fastq.gz> <label>
+    local f=$1 label=$2
+    set +o pipefail
+    zcat -f -- "$f" 2>/dev/null | head -n 200000 | awk -v label="$label" '
+        NR % 4 == 2 {
+            n++
+            if (match($0, /CCTACGGG.GGC[AT]GCAG/) && RSTART <= 9) {
+                f341++; off[RSTART - 1]++
+            }
+            if (match($0, /GACTAC[ACT][ACG]GGGTATCTAATCC/) && RSTART <= 9) r805++
+        }
+        END {
+            if (n == 0) { printf "  %s: NO READS READ (bad path or not gzipped?)\n", label; exit }
+            printf "  %s: %d reads sampled\n", label, n
+            printf "     341F  %7d  (%5.1f%%)\n", f341, 100 * f341 / n
+            printf "     805R  %7d  (%5.1f%%)\n", r805, 100 * r805 / n
+            if (f341 > 0) {
+                printf "     341F start offsets:"
+                for (o = 0; o <= 9; o++)
+                    if (o in off) printf " %d:%.0f%%", o, 100 * off[o] / f341
+                printf "\n"
+            }
+        }'
+    local rc=${PIPESTATUS[2]}
+    set -o pipefail
+    return "$rc"
 }
 
-FWD_RX="CCTACGGG.GGC[AT]GCAG"
-REV_RX="GACTAC[ACT][ACG]GGGTATCTAATCC"
-
 FIRST_R1=$(find "$IN_DIR" -name "*$SUF1" | sort | head -1)
+[[ -n "$FIRST_R1" ]] || { echo "ERROR: no *$SUF1 files under $IN_DIR" >&2; exit 1; }
 FIRST_R2=${FIRST_R1%$SUF1}$SUF2
-echo "=== Primer diagnostic on $(basename "$FIRST_R1") (first 50k reads)"
-echo "  R1:"; probe "$FIRST_R1" "341F" "$FWD_RX"; probe "$FIRST_R1" "805R" "$REV_RX"
-echo "  R2:"; probe "$FIRST_R2" "341F" "$FWD_RX"; probe "$FIRST_R2" "805R" "$REV_RX"
+[[ -f "$FIRST_R2" ]] || { echo "ERROR: no mate $FIRST_R2" >&2; exit 1; }
+
+echo "=== Primer diagnostic on $(basename "${FIRST_R1%$SUF1}") (first 50k reads)"
+probe "$FIRST_R1" "R1"
+probe "$FIRST_R2" "R2"
 echo
 echo "  Interpretation:"
-echo "    both high      -> primers retained on both reads; set DISCARD_UNTRIMMED=1"
-echo "    R1 only high   -> asymmetric (this dataset); leave DISCARD_UNTRIMMED=0"
-echo "    both near zero -> already trimmed; skip this script entirely"
+echo "    341F high on R1, 805R high on R2  -> primers retained on both reads;"
+echo "                                         re-run with DISCARD_UNTRIMMED=1"
+echo "    341F high on R1, 805R ~0 on R2    -> asymmetric (as previously measured"
+echo "                                         on this dataset); leave the default"
+echo "    both near zero                    -> already trimmed; skip this script"
+echo "    341F high on R2 instead of R1     -> R1/R2 are swapped; fix SUF1/SUF2"
+echo
+echo "  Multiple 341F start offsets confirm heterogeneity spacers, i.e. a fixed"
+echo "  --trim-left cannot remove this primer correctly (see #113)."
 echo
 
 # Set to 1 ONLY if the diagnostic shows both primers present at high rates.
