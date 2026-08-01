@@ -144,6 +144,26 @@ alone. If binning were over-absorbing genuine low-abundance variation, a diverse
 real community would lose ASVs. Instead the binned arm has *more* run-specific ASVs
 than the full arm (800 vs 657), at a higher median abundance (33 vs 22).
 
+**Chimera removal is likewise unaffected:**
+
+| | full (`pacbio`) | binned (`binned-qual`) |
+|---|---|---|
+| ASVs post-chimera | 45,455 → 23,022 (49.4% chim) | 45,598 → 23,174 (49.2%) |
+| Reads retained | 95.12% | 95.15% |
+| Non-chimeric ASV Jaccard | — | 0.9701 |
+
+On the 44,798 ASVs present in *both* pre-chimera sets, the two arms agree on
+**99.833%** of chimera calls — 21,975 agree chimeric, 22,748 agree clean, 75
+disagreements total. That reproduces the mock's 114/114 agreement at roughly 600×
+the scale. Across both datasets, **chimera calling is independent of the error
+model**, so a coarser error model does not shift what gets removed.
+
+Note ~49% of ASVs are chimeric here while carrying under 5% of reads — the same
+large-but-low-mass tail seen in the mock. A counterintuitive corollary: chimeric
+ASVs have a *higher* median abundance (28) than retained ones (22), because chimera
+formation requires abundant parents. Abundance thresholds are therefore a poor
+proxy for chimera filtering on data like this.
+
 ## What this dictates
 
 1. **`binned-qual` is the right default for natively binned PacBio data.** It does
@@ -173,16 +193,9 @@ than the full arm (800 vs 657), at a higher median abundance (33 vs 22).
 
 ## Path forward
 
-Two datasets, one platform family, one of them without truth. Remaining gaps, in
-priority order.
+Two datasets, one platform family, one of them without truth. Remaining gap:
 
-1. **Chimera removal on the binned real-community arm.** The full-quality arm ran
-   45,455 → 23,022 ASVs (49.4% chimeric, 95.12% of reads retained); the binned arm's
-   post-chimera table is still outstanding. Given the two ASV sets agree at Jaccard
-   0.97 this is expected to be uneventful, but it closes the comparison and tests
-   whether a coarser error model shifts chimera calling on real data — the mock said
-   it does not (114/114 agreement on shared ASVs).
-2. **An errfun sweep on fixed reads** ([#98]) — `binned-qual` vs `loess` vs
+1. **An errfun sweep on fixed reads** ([#98]) — `binned-qual` vs `loess` vs
    `pacbio` vs R's `loessErrfun_mod4` (via `--errfun external`), all on the same
    derep inputs. Note the arms above vary binning *and* errfun together; a sweep on
    one fixed binned input isolates the errfun term exactly, and is the only clean
