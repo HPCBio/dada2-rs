@@ -70,6 +70,10 @@ nav:
     - K-mer screen size: findings/kmer-size-screening.md
     - Band size & platform defaults: findings/band-size-platform-defaults.md
     - Pseudo-pooling priors vs error model: findings/pseudo-pooling-priors-vs-error-model.md
-    - Binned quality error model: findings/binned-quality-error-model.md
+    - Binned quality scores:
+      - Overview: findings/binned-quality.md
+      - PacBio (SequelIIe & Revio): findings/binned-quality-error-model.md
+      - Illumina NovaSeq 6000: findings/binned-quality-illumina-novaseq.md
+      - Reading the prep first: findings/reading-the-prep.md
   - Diagnostics: diagnostics.md
   - Citation: citation.md
