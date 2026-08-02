@@ -25,7 +25,7 @@
 # filter-and-trim is for quality filtering afterwards.
 #
 # Usage:
-#   ./cutadapt_v3v4.sh <in_dir> <out_dir> [threads]
+#   ./cutadapt_ITS.sh <in_dir> <out_dir> [threads]
 #
 # Expects paired files named <sample>_1.fastq.gz / <sample>_2.fastq.gz
 # (SRA fasterq-dump convention). Adjust SUF1/SUF2 below if yours differ.
@@ -37,8 +37,8 @@ if type module &>/dev/null; then
     module load cutadapt/3.7-IGB-gcc-8.2.0-Python-3.7.2
 fi
 
-IN_DIR=${1:?usage: cutadapt_v3v4.sh <in_dir> <out_dir> [threads]}
-OUT_DIR=${2:?usage: cutadapt_v3v4.sh <in_dir> <out_dir> [threads]}
+IN_DIR=${1:?usage: cutadapt_ITS.sh <in_dir> <out_dir> [threads]}
+OUT_DIR=${2:?usage: cutadapt_ITS.sh <in_dir> <out_dir> [threads]}
 THREADS=${3:-8}
 
 SUF1="_1.fastq.gz"
