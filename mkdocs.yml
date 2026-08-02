@@ -73,7 +73,8 @@ nav:
     - Binned quality scores:
       - Overview: findings/binned-quality.md
       - PacBio (SequelIIe & Revio): findings/binned-quality-error-model.md
-      - Illumina NovaSeq 6000: findings/binned-quality-illumina-novaseq.md
+      - Illumina NovaSeq 6000 (16S): findings/binned-quality-illumina-novaseq.md
+      - Illumina NovaSeq 6000 (ITS2): findings/binned-quality-illumina-its2.md
       - Reading the prep first: findings/reading-the-prep.md
   - Diagnostics: diagnostics.md
   - Citation: citation.md
