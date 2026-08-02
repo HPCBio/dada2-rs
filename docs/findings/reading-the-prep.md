@@ -4,7 +4,8 @@
 records a case where public metadata named the wrong primer pair, the library
 retained both primers behind variable-length spacers, and the resulting analysis
 produced a confident, reproducible, **completely misleading** result — three
-times in a row, each retraction moving in the same direction.
+times in a row, each retraction moving in the same direction. The same deposit's
+other amplicon arm is *also* mis-annotated, in the opposite direction.
 
 Nothing in any artifact flagged it. The spurious ASVs were real sequences at real
 abundances, the error models fit, the pipeline reported no warnings. It surfaced
@@ -96,6 +97,55 @@ The sign flip is the sharpest indictment. On untrimmed data `loess` produced
 the time as an unexplained anomaly. On trimmed data it produces *more*, which is
 what the model predicts. **The artifact was strong enough to reverse the
 direction of the effect**, not merely inflate its magnitude.
+
+## The ITS arm fails the opposite way
+
+The same BioProject has a fungal ITS arm, annotated:
+
+```
+Design: ITS1FI2-ITS2 (ITS2)
+```
+
+Scanning a panel of candidate ITS primers against the raw reads (50k reads,
+5' end):
+
+| primer | R1 | R2 |
+|---|---|---|
+| **gITS7** `GTGARTCATCGARTCTTTG` | **92.5%** (offset 0) | 0% |
+| **ITS4** `TCCTCCGCTTATTGATATGC` | 0% | **90.9%** (offset 4) |
+| ITS1F, ITS1FI2, ITS1, ITS1F_KYO2 | 0% | 0% |
+| ITS86F | 49.3% | 0% |
+
+The named primers are absent. The real pair is **gITS7 + ITS4**. (ITS86F is the
+non-degenerate form of gITS7 and matches only the subset where the degenerate
+base happens to be A — confirmed by the base composition at that position: 53.4%
+A, 46.6% G, i.e. genuine degenerate synthesis.)
+
+**But gITS7 + ITS4 amplifies the ITS2 region — so here the *region* label is
+correct and the *primer names* are wrong.** That is the exact inverse of the 16S
+arm, in the same deposit.
+
+The trap is that **"ITS2" names both a region and a primer.** `ITS1FI2` + the
+`ITS2` *primer* would amplify the **ITS1** region, contradicting the deposit's
+own `(ITS2)` region annotation. The metadata is not merely wrong; it is
+internally inconsistent, and reading either half of it as authoritative sends you
+somewhere different.
+
+Two structural differences from the 16S arm are worth recording, because they
+change what the correct handling is:
+
+- **The offsets are constant**, not spread — R1 at 0 with no pad, R2 at 4 behind
+  a fixed `GATA` linker (97.1%). A fixed `--trim-left` *would* work here. The
+  spacer problem is a property of a prep, not of a platform, so it must be
+  measured per dataset rather than assumed either way.
+- **ITS length varies by hundreds of nt across taxa**, which makes fixed-length
+  truncation a *taxonomic* filter: any `--trunc-len` systematically deletes
+  every fungus whose amplicon exceeds it. The same asymmetry cuts the other way
+  at the short end, where sub-read-length amplicons read through into the far
+  primer and need 3' removal. Neither hazard exists on a fixed-insert 16S
+  amplicon, so 16S habits do not transfer.
+
+`dev/cutadapt_ITS.sh` carries the corrected primers and both diagnostics.
 
 ## What this dictates
 
