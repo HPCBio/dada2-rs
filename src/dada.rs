@@ -719,22 +719,20 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     let (mut shuf_calls, mut shuf_moves, mut shuf_zero_move_calls) = (0u64, 0u64, 0u64);
     let mut shuf_comps_scanned = 0u64;
     // Split of the scan work: the per-call full build vs the affected-raw
-    // reconcile. Only the build is removable by carrying compmax across buds
-    // (#87), so this split is what sizes that change.
+    // reconcile. The two have different access patterns, so this split (with
+    // the timings below) is the starting point for sizing any change to the
+    // shuffle — see #124.
     let (mut shuf_comps_build, mut shuf_comps_reconcile) = (0u64, 0u64);
     // b_shuffle_converge invocations (one per bud round) = number of full
     // builds paid; the per-build average is the useful unit here.
     let mut shuf_converge_calls = 0u64;
     // Wall time in each scan phase. Divided by the comp counts above these give
     // ns/comp for the sequential (build) vs scattered (reconcile) access
-    // patterns — the ratio that decides whether #87 is worth building.
+    // patterns. That ratio is the thing to model before betting on any
+    // access-pattern change here: comparison counts alone overstated one such
+    // bet ~2x (#87), because a scattered comp costs ~2x a sequential one.
     let (mut t_shuf_build, mut t_shuf_reconcile) =
         (std::time::Duration::ZERO, std::time::Duration::ZERO);
-    // Post-bud reconcile volume: the work #87 would relocate rather than
-    // remove. Compared against the build volume this gives the relocation
-    // fraction `f` directly, instead of inferring it from the average
-    // reconcile (which understates it).
-    let (mut shuf_comps_first_rec, mut shuf_first_rec_calls) = (0u64, 0u64);
     // b_bud scan-redundancy accounting (verbose-only diagnostics).
     let (mut bud_calls, mut bud_success, mut bud_raws_scanned) = (0u64, 0u64, 0u64);
     // p-update churn: raws whose p was recomputed per round (see issue #85).
@@ -868,8 +866,6 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         shuf_comps_reconcile += st.comps_reconcile as u64;
         t_shuf_build += st.build_time;
         t_shuf_reconcile += st.reconcile_time;
-        shuf_comps_first_rec += st.comps_first_reconcile as u64;
-        shuf_first_rec_calls += st.first_reconcile_calls as u64;
         shuf_zero_move_calls += st.zero_move_calls as u64;
         if params.verbose {
             eprint!("{}", "S".repeat(st.calls));
@@ -952,9 +948,10 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         // Where that scan work actually goes. Zero-move iterations break before
         // the reconcile, so they scan nothing — the zero-move percentage above
         // is NOT a measure of wasted scanning. The removable work is the full
-        // build, re-paid once per bud round; the reconcile is irreducible.
-        // build_pct is therefore the ceiling on what #87 (carrying compmax
-        // across buds) can save from the shuffle phase.
+        // build, re-paid once per bud round; the reconcile is only incurred by
+        // raws whose best cluster may actually have changed. `comps/build` also
+        // tracks cluster structure, which is what made #87's payoff flip sign
+        // between amplicons.
         let build_pct = if shuf_comps_scanned > 0 {
             100.0 * shuf_comps_build as f64 / shuf_comps_scanned as f64
         } else {
@@ -976,10 +973,10 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         );
         // Time split, and the ns/comp each access pattern actually costs. The
         // build is a contiguous cluster-major walk; the reconcile walks the
-        // raw-major inverted index (scattered). If reconcile ns/comp is well
-        // above build ns/comp, #87 would relocate work from the cheap pattern
-        // to the expensive one — the comp-count split alone would overstate
-        // its payoff, and the change could be a net loss.
+        // raw-major inverted index (scattered). Measured at ~2x apart, so any
+        // scheme that shifts work between the two must be priced in ns/comp
+        // rather than comparisons — that gap is what made #87 a much smaller
+        // win than its comp counts implied.
         let ns_per = |d: std::time::Duration, n: u64| {
             if n > 0 {
                 d.as_secs_f64() * 1e9 / n as f64
@@ -998,34 +995,6 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             } else {
                 0.0
             },
-        );
-        // The #87 decision, stated directly. Carrying compmax across buds
-        // removes the build but forces the post-bud state through the
-        // reconcile instead. So it saves build_time and pays
-        //     f × comps_build × reconcile_ns_per_comp
-        // where f = post-bud reconcile volume ÷ build volume. Net gain is
-        // positive only when f is below the ns/comp ratio's inverse.
-        let build_ns = ns_per(t_shuf_build, shuf_comps_build);
-        let rec_ns = ns_per(t_shuf_reconcile, shuf_comps_reconcile);
-        let f = if shuf_comps_build > 0 && shuf_first_rec_calls > 0 {
-            let per_build = shuf_comps_build as f64 / shuf_converge_calls.max(1) as f64;
-            let per_first_rec = shuf_comps_first_rec as f64 / shuf_first_rec_calls as f64;
-            per_first_rec / per_build
-        } else {
-            0.0
-        };
-        let breakeven = if rec_ns > 0.0 { build_ns / rec_ns } else { 0.0 };
-        // Projected net change in shuffle time, negative = faster.
-        let projected = f * shuf_comps_build as f64 * rec_ns * 1e-9 - t_shuf_build.as_secs_f64();
-        eprintln!(
-            "[dada] #87 projection: post-bud reconcile={} over {} buds, f={:.2} vs break-even {:.2} → {} (projected {:+.1}s on shuffle={:.1}s)",
-            shuf_comps_first_rec,
-            shuf_first_rec_calls,
-            f,
-            breakeven,
-            if f < breakeven { "WIN" } else { "LOSS" },
-            projected,
-            t_shuffle.as_secs_f64(),
         );
         // b_bud combine cost: with the incremental candidate cache (#85) each
         // bud combines per-cluster minima in O(nclusters) instead of rescanning
