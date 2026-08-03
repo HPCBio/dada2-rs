@@ -725,6 +725,11 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // b_shuffle_converge invocations (one per bud round) = number of full
     // builds paid; the per-build average is the useful unit here.
     let mut shuf_converge_calls = 0u64;
+    // Wall time in each scan phase. Divided by the comp counts above these give
+    // ns/comp for the sequential (build) vs scattered (reconcile) access
+    // patterns — the ratio that decides whether #87 is worth building.
+    let (mut t_shuf_build, mut t_shuf_reconcile) =
+        (std::time::Duration::ZERO, std::time::Duration::ZERO);
     // b_bud scan-redundancy accounting (verbose-only diagnostics).
     let (mut bud_calls, mut bud_success, mut bud_raws_scanned) = (0u64, 0u64, 0u64);
     // p-update churn: raws whose p was recomputed per round (see issue #85).
@@ -856,6 +861,8 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         shuf_comps_scanned += st.comps_scanned as u64;
         shuf_comps_build += st.comps_build as u64;
         shuf_comps_reconcile += st.comps_reconcile as u64;
+        t_shuf_build += st.build_time;
+        t_shuf_reconcile += st.reconcile_time;
         shuf_zero_move_calls += st.zero_move_calls as u64;
         if params.verbose {
             eprint!("{}", "S".repeat(st.calls));
@@ -959,6 +966,31 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             per_build,
             shuf_comps_reconcile,
             100.0 - build_pct,
+        );
+        // Time split, and the ns/comp each access pattern actually costs. The
+        // build is a contiguous cluster-major walk; the reconcile walks the
+        // raw-major inverted index (scattered). If reconcile ns/comp is well
+        // above build ns/comp, #87 would relocate work from the cheap pattern
+        // to the expensive one — the comp-count split alone would overstate
+        // its payoff, and the change could be a net loss.
+        let ns_per = |d: std::time::Duration, n: u64| {
+            if n > 0 {
+                d.as_secs_f64() * 1e9 / n as f64
+            } else {
+                0.0
+            }
+        };
+        eprintln!(
+            "[dada] shuffle scan time: build={:.2}s ({:.2} ns/comp)  reconcile={:.2}s ({:.2} ns/comp)  build={:.0}% of shuffle time",
+            t_shuf_build.as_secs_f64(),
+            ns_per(t_shuf_build, shuf_comps_build),
+            t_shuf_reconcile.as_secs_f64(),
+            ns_per(t_shuf_reconcile, shuf_comps_reconcile),
+            if t_shuffle.as_secs_f64() > 0.0 {
+                100.0 * t_shuf_build.as_secs_f64() / t_shuffle.as_secs_f64()
+            } else {
+                0.0
+            },
         );
         // b_bud combine cost: with the incremental candidate cache (#85) each
         // bud combines per-cluster minima in O(nclusters) instead of rescanning

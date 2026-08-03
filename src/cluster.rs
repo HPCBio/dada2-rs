@@ -238,9 +238,29 @@ pub struct ShuffleStats {
     /// candidate index after a move pass. This is the irreducible part: it
     /// survives any cross-bud carry, since those raws genuinely changed.
     pub comps_reconcile: usize,
+    /// Wall time in the initial full build.
+    ///
+    /// Paired with `comps_build` this gives ns/comp for the sequential,
+    /// cluster-major access pattern. Comparing that against the reconcile's
+    /// ns/comp is what turns the comp-count split into a time split — the
+    /// comp counts alone overstate the build's share if, as expected, the
+    /// contiguous scan is cheaper per comparison than the scattered one.
+    pub build_time: std::time::Duration,
+    /// Wall time in the affected-raw reconcile, summed over iterations.
+    ///
+    /// This walks the raw-major inverted index, so its reads are scattered.
+    /// If its ns/comp is far above the build's, carrying `compmax` across buds
+    /// (#87) would move work from the cheap access pattern to the expensive
+    /// one and could be a net loss despite scanning fewer comparisons.
+    pub reconcile_time: std::time::Duration,
     /// Cluster count at this call (context for the scan cost).
     pub nclusters: usize,
     /// Move-pass iterations that relocated no raws (pure convergence checks).
+    ///
+    /// NOTE: for `b_shuffle_converge` this is exactly the number of calls —
+    /// every converge call ends in one zero-move iteration. It is not a
+    /// measure of wasted work: a zero-move iteration breaks before the
+    /// reconcile and scans nothing.
     pub zero_move_calls: usize,
     /// Move-pass iterations run.
     pub calls: usize,
@@ -315,6 +335,10 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
         // The serial scan is all build, by construction — it has no reconcile.
         comps_build: comps_scanned,
         comps_reconcile: 0,
+        // Not instrumented on the serial path: it is the historical baseline,
+        // not the thing #87 would change.
+        build_time: std::time::Duration::ZERO,
+        reconcile_time: std::time::Duration::ZERO,
         nclusters: b.clusters.len(),
         zero_move_calls: usize::from(moves == 0),
         calls: 1,
@@ -401,6 +425,7 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
     // index is reserved for the reconcile, where the touched-raw volume is
     // small. Byte-identical to b_shuffle2's build: ascending ci + strict `>`
     // keeps the lowest-ci max.
+    let t_build = std::time::Instant::now();
     let mut compmax = vec![Comparison::default(); nraw];
     let mut emax = vec![f64::NEG_INFINITY; nraw];
     let mut comps_scanned = 0usize;
@@ -417,6 +442,10 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         comps_scanned += bi.comp.len();
     }
     let comps_build = comps_scanned;
+    // Includes the compmax/emax allocation above: #87 would have to keep that
+    // buffer alive across buds anyway, so it belongs in the build's cost.
+    let build_time = t_build.elapsed();
+    let mut reconcile_time = std::time::Duration::ZERO;
     // emax was only needed to build compmax; the reconcile recomputes affected
     // raws from the index, so it is not carried forward.
 
@@ -463,6 +492,7 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         // have a new best. Collect those raws (dedup) and recompute each from
         // its candidates — provably correct at the current reads regardless of
         // increase/decrease, avoiding stale-max ordering hazards.
+        let t_rec = std::time::Instant::now();
         for (ci, ru) in reads_used.iter_mut().enumerate() {
             if b.clusters[ci].reads != *ru {
                 for comp in &b.clusters[ci].comp {
@@ -481,6 +511,7 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
             in_affected[raw] = false;
         }
         affected.clear();
+        reconcile_time += t_rec.elapsed();
     }
 
     ShuffleStats {
@@ -488,6 +519,8 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         comps_scanned,
         comps_build,
         comps_reconcile: comps_scanned - comps_build,
+        build_time,
+        reconcile_time,
         nclusters: b.clusters.len(),
         zero_move_calls,
         calls: nshuffle,
