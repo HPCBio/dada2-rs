@@ -69,6 +69,7 @@ nav:
     - KDIST cutoff decoupling: findings/kdist-cutoff-decoupling.md
     - K-mer screen size: findings/kmer-size-screening.md
     - Band size & platform defaults: findings/band-size-platform-defaults.md
+    - Carrying compmax across buds: findings/shuffle-compmax-carry.md
     - Pseudo-pooling priors vs error model: findings/pseudo-pooling-priors-vs-error-model.md
     - Binned quality scores:
       - Overview: findings/binned-quality.md
