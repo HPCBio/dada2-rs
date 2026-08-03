@@ -253,6 +253,23 @@ pub struct ShuffleStats {
     /// (#87) would move work from the cheap access pattern to the expensive
     /// one and could be a net loss despite scanning fewer comparisons.
     pub reconcile_time: std::time::Duration,
+    /// Comparisons scanned by the *first* reconcile of this call — the one
+    /// immediately following the post-bud move pass.
+    ///
+    /// This is the direct measurement of #87's relocated work. Carrying
+    /// `compmax` across buds removes the build but forces the newly-budded
+    /// state to be reconciled instead, and this first reconcile is that
+    /// reconcile. Averaged reconcile volume understates it, because a bud both
+    /// adds a cluster and steals raws from many others, perturbing more of the
+    /// comp volume than a mid-loop iteration does.
+    ///
+    /// `comps_first_reconcile / comps_build` is the fraction `f` of build work
+    /// that relocates; #87 wins only if `f < build_ns/comp ÷ reconcile_ns/comp`.
+    pub comps_first_reconcile: usize,
+    /// Calls that reached at least one reconcile (denominator for
+    /// `comps_first_reconcile`). Below `calls` because a converge call that
+    /// moves nothing breaks before reconciling.
+    pub first_reconcile_calls: usize,
     /// Cluster count at this call (context for the scan cost).
     pub nclusters: usize,
     /// Move-pass iterations that relocated no raws (pure convergence checks).
@@ -339,6 +356,8 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
         // not the thing #87 would change.
         build_time: std::time::Duration::ZERO,
         reconcile_time: std::time::Duration::ZERO,
+        comps_first_reconcile: 0,
+        first_reconcile_calls: 0,
         nclusters: b.clusters.len(),
         zero_move_calls: usize::from(moves == 0),
         calls: 1,
@@ -459,6 +478,8 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
     let mut total_moves = 0usize;
     let mut nshuffle = 0usize;
     let mut zero_move_calls = 0usize;
+    let mut comps_first_reconcile = 0usize;
+    let mut first_reconcile_calls = 0usize;
     loop {
         // Move pass — identical to b_shuffle2's, using the current compmax.
         let mut moves = 0usize;
@@ -493,6 +514,7 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         // its candidates — provably correct at the current reads regardless of
         // increase/decrease, avoiding stale-max ordering hazards.
         let t_rec = std::time::Instant::now();
+        let comps_before_rec = comps_scanned;
         for (ci, ru) in reads_used.iter_mut().enumerate() {
             if b.clusters[ci].reads != *ru {
                 for comp in &b.clusters[ci].comp {
@@ -512,6 +534,12 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         }
         affected.clear();
         reconcile_time += t_rec.elapsed();
+        // nshuffle == 1 here means this is the first reconcile of the call,
+        // i.e. the one settling the state the bud just created.
+        if nshuffle == 1 {
+            comps_first_reconcile = comps_scanned - comps_before_rec;
+            first_reconcile_calls = 1;
+        }
     }
 
     ShuffleStats {
@@ -521,6 +549,8 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         comps_reconcile: comps_scanned - comps_build,
         build_time,
         reconcile_time,
+        comps_first_reconcile,
+        first_reconcile_calls,
         nclusters: b.clusters.len(),
         zero_move_calls,
         calls: nshuffle,
