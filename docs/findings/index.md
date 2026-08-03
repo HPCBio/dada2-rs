@@ -38,16 +38,21 @@ here is the evidence, and here is the path it opens or closes."
   unexplained by priors); R emulation stays opt-in, and confirming R's actual
   behaviour is still the open gate.
 - [**Binned quality scores**](binned-quality.md) — a series, because the answer is
-  **platform-dependent** and the platforms disagree sharply:
+  **dataset-dependent** and we cannot yet predict which datasets are sensitive:
     - [PacBio (SequelIIe & Revio)](binned-quality-error-model.md) — binning never
       cost reference recovery (identical 43/52 alleles); what it *changes* depends
       on chemistry (4× ASV cut on SequelIIe, near-no-op on Revio). Choosing the
       wrong errfun is real at the model level but washes out downstream.
-    - [Illumina NovaSeq 6000](binned-quality-illumina-novaseq.md) — the errfun
-      mismatch reaches the final table, but as an **abundance** error rather than
-      a richness one: ASV counts agree to +3.4% while Jaccard is 0.706, abundance
-      L1 is 22.2% on shared ASVs, and one arm retains 17% more reads. It would
-      pass a review that checks only ASV counts.
+    - [Illumina NovaSeq 6000 — soil 16S](binned-quality-illumina-novaseq.md) —
+      the errfun mismatch reaches the final table, but as an **abundance** error
+      rather than a richness one: ASV counts agree to +3.4% while Jaccard is
+      0.706, abundance L1 is 22.2% on shared ASVs, and one arm retains 17% more
+      reads. It would pass a review that checks only ASV counts.
+    - [Illumina NovaSeq 6000 — soil ITS2](binned-quality-illumina-its2.md) — the
+      same instrument at **a third the sensitivity**, and the page that refutes
+      both proposed mechanisms: mass concentration predicts the wrong sign, and a
+      depth ladder shows coverage-per-variant predicts the wrong direction.
+      A negative result, and the most decision-relevant page in the series.
     - [Reading the prep before the result](reading-the-prep.md) — the NovaSeq
       analysis was first published, then retracted twice: untrimmed degenerate
       primers behind heterogeneity spacers inflated the table 3–4× and *reversed

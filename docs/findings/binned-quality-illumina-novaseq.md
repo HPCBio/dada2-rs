@@ -73,15 +73,22 @@ Against `binned-qual`, the `loess` fit is:
 | Worst trough | 86× at Q32 | 113× at Q32 | 16× at Q35 |
 | Mass in the trough | 0.69% | 0.75% | ~8.4% |
 
-**The decisive row is the second.** On PacBio the `loess` error is small where the
-data is dense, so the mismatch has nowhere to express itself. Here it lands
-squarely on the dominant bin: `loess` underestimates the error rate by ~32%
-exactly where two thirds of all observations sit. The 86–113× troughs are
-attention-grabbing and nearly irrelevant — they carry under 1% of the mass.
+The second row was long treated as decisive. On PacBio the `loess` error is small
+where the data is dense, so the mismatch has nowhere to express itself; here it
+lands squarely on the dominant bin, with `loess` underestimating the error rate
+by ~32% exactly where two thirds of all observations sit. The 86–113× troughs
+are attention-grabbing and nearly irrelevant — they carry under 1% of the mass.
 
-This is the **mass-concentration** mechanism described in the
-[series overview](binned-quality.md), and NovaSeq 6000 is the case where it
-predicts trouble.
+!!! danger "This is a description of the model, not a working explanation"
+    The **mass-concentration** account above is consistent with everything on
+    this page, and it is nonetheless **not a predictor of errfun sensitivity**.
+    The [ITS2 arm](binned-quality-illumina-its2.md) of this same deposit is *less*
+    concentrated and its two error models disagree *twice as hard*, yet its
+    inference diverges about a third as much. A replacement hypothesis —
+    coverage per variant — was refuted by a depth ladder in the wrong direction.
+
+    Read the model-level numbers here as a characterisation of what the two fits
+    do, not as the reason the effect is large. The reason is unknown.
 
 ## Inference — four endpoints
 
@@ -181,11 +188,15 @@ sequences the arms disagree about are largely not the ones being called chimeric
    `count == 1` uniques, whose `qual_sum` is the raw unaveraged quality vector.
    Per the project's stated preference this stays a **strong warning, not an
    error**, so users can experiment deliberately.
-3. **Predict the effect from mass concentration, not from platform.** The single
-   statistic that separates the PacBio null from the NovaSeq effect is the
-   fraction of observation mass in the dominant bin and whether the `loess` error
-   reaches it. "Illumina" is the wrong unit of generalisation — i100 is *more*
-   concentrated than PacBio (98.9% in one bin) and should behave like it.
+3. **Do not predict the effect from mass concentration.** *(Revised.)* This page
+   previously recommended exactly that, on the grounds that the fraction of mass
+   in the dominant bin separates the PacBio null from the effect here. The
+   [ITS2 arm](binned-quality-illumina-its2.md) refutes it: less concentrated,
+   error models disagreeing twice as hard, a third the effect. The derived
+   prediction that **i100 should behave like PacBio** (98.9% single-bin) is
+   therefore an open question, not an expectation. "Illumina" is still the wrong
+   unit of generalisation — but so, on current evidence, is every other unit we
+   have tried.
 4. **Do not treat `loess` non-convergence as the signal.** An earlier version of
    this page proposed exactly that, on the basis that 3 of 4 runs hit
    `max_consist`. After correct trimming all four converge, so non-convergence
@@ -197,17 +208,18 @@ sequences the arms disagree about are largely not the ones being called chimeric
 
 ## Path forward
 
-1. **The ITS2 arm of the same BioProject.** Same study, same sequencer, same
-   library prep — so a difference there is amplicon-driven, not study-to-study
-   variation. The cheapest test of whether this generalises past bacterial 16S.
-   (Note it will need its own primer verification.)
-2. **NovaSeq X.** The most consequential gap. If its quality mass is less spread,
-   the effect should shrink toward PacBio's. Until measured, this verdict is
+1. **The ITS2 arm of the same BioProject — DONE**, and it changed the series.
+   The effect is about a third the size, and it refuted the mechanism this page
+   used to assert. See [Illumina NovaSeq 6000 — soil
+   ITS2](binned-quality-illumina-its2.md). Note the arms are **separate PCRs**,
+   so the difference is not cleanly attributable to the amplicon.
+2. **NovaSeq X.** The most consequential gap. Until measured, this verdict is
    scoped to the 6000.
 3. **i100 at inference.** i100 was characterised at the model level only —
-   **98.9% of mass at Q38**, *more* concentrated than PacBio. If mass
-   concentration is the governing statistic, i100 should show the PacBio null.
-   That is a clean, falsifiable prediction and worth running.
+   **98.9% of mass at Q38**, *more* concentrated than PacBio. This was previously
+   listed as a clean falsifiable prediction that i100 would show the PacBio null;
+   with mass concentration refuted as a predictor, it is now simply **unmeasured**
+   and worth running on its own account.
 4. **The fixed-reads errfun sweep** ([#98]) — `binned-qual` vs `loess` vs
    `pacbio` vs R's `loessErrfun_mod4` on one binned input. Isolates the errfun
    term exactly.

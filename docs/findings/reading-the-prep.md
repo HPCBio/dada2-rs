@@ -209,8 +209,17 @@ buys less protection than it appears to.
 ## Scope
 
 This is a methods page, not a result. It carries no claim about error models,
-binned quality, or this dataset's biology — for those see the [NovaSeq 6000
+binned quality, or this dataset's biology — for those see the [NovaSeq 6000 16S
 finding](binned-quality-illumina-novaseq.md), which is the corrected analysis
-that emerged once the prep was understood.
+that emerged once the prep was understood, and the [ITS2
+arm](binned-quality-illumina-its2.md), which is the corrected analysis of the
+amplicon described above.
+
+One further caution this page's history earns: because the library preparation
+here is undocumented — cycle counts, amplification consistency across samples,
+index strategy all unknown — and because the 16S and ITS2 arms are **separate
+PCRs**, differences *between* the arms are confounded with PCR conditions. The
+deposit has already concealed two distinct prep traps. Treat any cross-arm
+comparison from it as real but not cleanly attributable.
 
 [#113]: https://github.com/HPCBio/dada2-rs/issues/113
