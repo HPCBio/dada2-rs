@@ -407,6 +407,7 @@ fn run() -> io::Result<()> {
             report,
             expected_bins,
         } => {
+            check_input_paths("input", &inputs)?;
             use std::collections::BTreeMap;
 
             /// Only the fields we need out of a `summary` JSON.
@@ -767,6 +768,7 @@ fn run() -> io::Result<()> {
             gzip,
             verbose,
         } => {
+            check_input_paths("input", &input)?;
             // ---- Load uniques from FASTQ or a derep/sample JSON ----
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
@@ -1284,6 +1286,7 @@ fn run() -> io::Result<()> {
             gzip,
             verbose,
         } => {
+            check_input_paths("input", &input)?;
             use std::collections::{HashMap, HashSet};
 
             let n_samples = input.len();
@@ -1777,6 +1780,7 @@ fn run() -> io::Result<()> {
             gzip,
             verbose,
         } => {
+            check_input_paths("input", &input)?;
             use std::collections::{HashMap, HashSet};
             use std::sync::Mutex;
 
@@ -2211,6 +2215,20 @@ fn run() -> io::Result<()> {
             compact,
             verbose,
         } => {
+            // ---- Validate that every input path actually exists ----
+            // An unmatched shell glob is passed through literally (bash/zsh
+            // without `nullglob`/`failglob`), so a wrong directory shows up as
+            // a single bogus entry rather than zero. Catching that here keeps
+            // the length mismatch below from blaming the wrong flag.
+            for (flag, paths) in [
+                ("--fwd-dada", &fwd_dada),
+                ("--rev-dada", &rev_dada),
+                ("--fwd-fastq", &fwd_fastq),
+                ("--rev-fastq", &rev_fastq),
+            ] {
+                check_input_paths(flag, paths)?;
+            }
+
             // ---- Validate that all four lists have the same length ----
             let n = fwd_dada.len();
             for (flag, len) in [
@@ -2631,6 +2649,7 @@ fn run() -> io::Result<()> {
             output,
             compact,
         } => {
+            check_input_paths("input", &input)?;
             if !sample_names.is_empty() && sample_names.len() != input.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -2936,6 +2955,7 @@ fn run() -> io::Result<()> {
             gzip,
             verbose,
         } => {
+            check_input_paths("input", &input)?;
             std::fs::create_dir_all(&output_dir)?;
 
             let pool = rayon::ThreadPoolBuilder::new()
@@ -3137,6 +3157,7 @@ fn run() -> io::Result<()> {
             trace_min_abund,
             verbose,
         } => {
+            check_input_paths("input", &input)?;
             // R's HOMOPOLYMER_GAP_PENALTY = NULL tracks GAP_PENALTY. R also
             // normalizes a positive penalty to negative before comparing them
             // (dada.R:223-227), so `--homo-gap-p 1` means the same as `-1`.
@@ -3815,6 +3836,7 @@ fn run() -> io::Result<()> {
             trace_min_abund,
             verbose,
         } => {
+            check_input_paths("input", &input)?;
             // R's HOMOPOLYMER_GAP_PENALTY = NULL tracks GAP_PENALTY. R also
             // normalizes a positive penalty to negative before comparing them
             // (dada.R:223-227), so `--homo-gap-p 1` means the same as `-1`.
@@ -4037,6 +4059,7 @@ fn run() -> io::Result<()> {
             output,
             verbose,
         } => {
+            check_input_paths("input", &inputs)?;
             kdist_calibrate::run(
                 &inputs,
                 &kdist_calibrate::Params {
@@ -4190,6 +4213,47 @@ fn match_genera(gen_tax: &str, gen_binom: &str) -> bool {
         return true;
     }
     false
+}
+
+/// Verify that every path given for `flag` exists on disk.
+///
+/// A shell glob that matches nothing is handed to us verbatim (bash and zsh
+/// only drop it under `nullglob`/`failglob`), so "no files here" arrives as one
+/// entry whose name still contains `*`, `?`, or `[`. Say so explicitly, rather
+/// than letting a downstream count comparison blame some other flag.
+fn check_input_paths(flag: &str, paths: &[std::path::PathBuf]) -> io::Result<()> {
+    let missing: Vec<&std::path::PathBuf> = paths.iter().filter(|p| !p.exists()).collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let unexpanded = missing
+        .iter()
+        .any(|p| p.to_string_lossy().contains(['*', '?', '[']));
+    let list: Vec<String> = missing
+        .iter()
+        .take(5)
+        .map(|p| p.display().to_string())
+        .collect();
+    let more = if missing.len() > 5 {
+        format!(" (and {} more)", missing.len() - 5)
+    } else {
+        String::new()
+    };
+    let hint = if unexpanded {
+        "; the pattern looks like a shell glob that matched no files, \
+         so it was passed through literally — check the directory path"
+    } else {
+        ""
+    };
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+            "{flag}: {} of {} path(s) do not exist: {}{more}{hint}",
+            missing.len(),
+            paths.len(),
+            list.join(", ")
+        ),
+    ))
 }
 
 /// `true` when `path` looks like a JSON file (`.json` or `.json.gz`).
