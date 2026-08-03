@@ -58,6 +58,11 @@ here is the evidence, and here is the path it opens or closes."
       primers behind heterogeneity spacers inflated the table 3–4× and *reversed
       the direction* of the effect, with no warning anywhere in the pipeline.
       The checks that catch it, for any dataset you did not prepare yourself.
+- [Carrying `compmax` across buds](shuffle-compmax-carry.md) — the remaining
+  serial lever in pooled `dada` is worth −7.5% wall on 16S and a +10.5%
+  *regression* on ITS2 from the same NovaSeq run; comparison counts overstate
+  the prize ~2× because the scattered reconcile costs ~2× per comparison. Any
+  implementation must be gated and off by default. Low priority, not closed.
 - [Band size & platform-aware defaults](band-size-platform-defaults.md) — the
   16/32 Illumina/HiFi band default is vindicated; the two platforms fail
   band-tightening through opposite mechanisms, so a single global band would be
