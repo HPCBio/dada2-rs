@@ -718,6 +718,13 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // Shuffle rescan-redundancy accounting (verbose-only diagnostics).
     let (mut shuf_calls, mut shuf_moves, mut shuf_zero_move_calls) = (0u64, 0u64, 0u64);
     let mut shuf_comps_scanned = 0u64;
+    // Split of the scan work: the per-call full build vs the affected-raw
+    // reconcile. Only the build is removable by carrying compmax across buds
+    // (#87), so this split is what sizes that change.
+    let (mut shuf_comps_build, mut shuf_comps_reconcile) = (0u64, 0u64);
+    // b_shuffle_converge invocations (one per bud round) = number of full
+    // builds paid; the per-build average is the useful unit here.
+    let mut shuf_converge_calls = 0u64;
     // b_bud scan-redundancy accounting (verbose-only diagnostics).
     let (mut bud_calls, mut bud_success, mut bud_raws_scanned) = (0u64, 0u64, 0u64);
     // p-update churn: raws whose p was recomputed per round (see issue #85).
@@ -843,9 +850,12 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         // baseline's counts shows the reduction directly.
         let t = Instant::now();
         let st = b_shuffle_converge(&mut bb, &cand_index, MAX_SHUFFLE);
+        shuf_converge_calls += 1;
         shuf_calls += st.calls as u64;
         shuf_moves += st.moves as u64;
         shuf_comps_scanned += st.comps_scanned as u64;
+        shuf_comps_build += st.comps_build as u64;
+        shuf_comps_reconcile += st.comps_reconcile as u64;
         shuf_zero_move_calls += st.zero_move_calls as u64;
         if params.verbose {
             eprint!("{}", "S".repeat(st.calls));
@@ -924,6 +934,31 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             scanned_per_move,
             shuf_zero_move_calls,
             zero_pct,
+        );
+        // Where that scan work actually goes. Zero-move iterations break before
+        // the reconcile, so they scan nothing — the zero-move percentage above
+        // is NOT a measure of wasted scanning. The removable work is the full
+        // build, re-paid once per bud round; the reconcile is irreducible.
+        // build_pct is therefore the ceiling on what #87 (carrying compmax
+        // across buds) can save from the shuffle phase.
+        let build_pct = if shuf_comps_scanned > 0 {
+            100.0 * shuf_comps_build as f64 / shuf_comps_scanned as f64
+        } else {
+            0.0
+        };
+        let per_build = if shuf_converge_calls > 0 {
+            shuf_comps_build as f64 / shuf_converge_calls as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "[dada] shuffle scan split: build={} ({:.0}% of scanned) over {} builds ({:.0} comps/build), reconcile={} ({:.0}%)",
+            shuf_comps_build,
+            build_pct,
+            shuf_converge_calls,
+            per_build,
+            shuf_comps_reconcile,
+            100.0 - build_pct,
         );
         // b_bud combine cost: with the incremental candidate cache (#85) each
         // bud combines per-cluster minima in O(nclusters) instead of rescanning

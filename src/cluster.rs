@@ -229,6 +229,15 @@ pub struct ShuffleStats {
     /// incremental driver it is the realised work (one build + the per-iteration
     /// recomputes), so the reduction is directly measurable.
     pub comps_scanned: usize,
+    /// Portion of `comps_scanned` spent on the initial full build — the
+    /// cluster-major rescan of every comp vec, paid fresh on every call (i.e.
+    /// once per bud round). This is the work that carrying `compmax` across
+    /// buds would eliminate (issue #87), so it bounds that change's payoff.
+    pub comps_build: usize,
+    /// Portion of `comps_scanned` spent recomputing affected raws from the
+    /// candidate index after a move pass. This is the irreducible part: it
+    /// survives any cross-bud carry, since those raws genuinely changed.
+    pub comps_reconcile: usize,
     /// Cluster count at this call (context for the scan cost).
     pub nclusters: usize,
     /// Move-pass iterations that relocated no raws (pure convergence checks).
@@ -303,6 +312,9 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
     ShuffleStats {
         moves,
         comps_scanned,
+        // The serial scan is all build, by construction — it has no reconcile.
+        comps_build: comps_scanned,
+        comps_reconcile: 0,
         nclusters: b.clusters.len(),
         zero_move_calls: usize::from(moves == 0),
         calls: 1,
@@ -404,6 +416,7 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         }
         comps_scanned += bi.comp.len();
     }
+    let comps_build = comps_scanned;
     // emax was only needed to build compmax; the reconcile recomputes affected
     // raws from the index, so it is not carried forward.
 
@@ -473,6 +486,8 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
     ShuffleStats {
         moves: total_moves,
         comps_scanned,
+        comps_build,
+        comps_reconcile: comps_scanned - comps_build,
         nclusters: b.clusters.len(),
         zero_move_calls,
         calls: nshuffle,
