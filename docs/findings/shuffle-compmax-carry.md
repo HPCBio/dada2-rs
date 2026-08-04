@@ -8,9 +8,10 @@ NovaSeq soil 16S run it projects to **−6.4% to −7.5% wall** on R1 and only
 to a **+10.4% to +10.5% wall penalty**. Because the sign of the result flips
 between two amplicons of one sequencing run, any implementation must be
 **optional and gated, off by default**. Given a modest and uncertain upside
-against a nontrivial correctness risk, this is filed as **low priority** — but
-explicitly **not ruled out**, since prior optimizations in this codebase have
-outperformed their projections.
+against a nontrivial correctness risk, [#87][87] was **closed as not planned** on
+this evidence, and the phase is instead being reconsidered as a whole in
+[#124][124]. The result is recorded rather than discarded: if a future workload
+changes the arithmetic, the cost model below is what to re-run.
 
 The error model (binned vs. default quality) has **no meaningful effect** on this
 result — the deciding statistic shifts by at most 0.02 across all four arms.
@@ -138,23 +139,33 @@ bud perturbs more than a mid-loop iteration does. The proxy would have called
   keeping `compmax` exactly equal to a full rebuild at current reads. Carrying it
   across buds is a strictly harder invariant with more stale-max hazards. Any
   attempt must clear the ASV-level concordance guardrail, not just wall time.
-- **Priority: low, but not closed.** Realistic upside is ~5–7% wall on
-  16S-R1-like workloads and ~0 on R2 — materially smaller than #86's −16%, and
-  workload-conditional. Kept open because optimizations here have surprised us
-  before (the k-mer memory work in [#32][32]/[#43][43] most notably), so a future
-  evaluation is warranted rather than a closed door.
+- **Closed, but recoverable.** Realistic upside is ~5–7% wall on 16S-R1-like
+  workloads and ~0 on R2 — materially smaller than #86's −16%, and
+  workload-conditional. [#87][87] is closed as not planned on that basis. It is
+  worth noting that optimizations here have beaten their projections before (the
+  k-mer memory work in [#32][32]/[#43][43] most notably), so this is a judgement
+  about expected value, not a proof that the idea cannot work.
+- **The phase is still the target.** `b_shuffle` is 46–55% of pooled wall, so the
+  conclusion is not "leave the shuffle alone" — it is that *incremental* refinement
+  of the current design is near its limit. See [#124][124].
 
 ## Reproducing
 
-Run pooled `dada` with `--verbose` and collect:
+Run pooled `dada` with `--verbose`. The scan split and per-phase timings are
+still reported, and are the general-purpose diagnostics for any shuffle work
+([#124][124]):
 
 ```
 [dada] shuffle scan split: build=… (…% of scanned) over … builds …
 [dada] shuffle scan time: build=…s (… ns/comp)  reconcile=…s (… ns/comp)  …
-[dada] #87 projection: post-bud reconcile=… over … buds, f=… vs break-even … → WIN|LOSS …
 ```
 
-Then `dev/compare_shuffle_87.py <run_dirs...> [--csv out.csv]` for the table.
+The two pieces specific to *this* experiment have been **retired from `main`**
+now that #87 is closed: a `#87 projection` line (which measured the post-bud
+reconcile and printed `f`, the break-even and a WIN/LOSS verdict) and
+`dev/compare_shuffle_87.py`, which collected the lines across runs into the
+table above. Both are retrievable at commit [`d543265`][d543265] — the last
+commit where they were present — if this ever needs re-measuring.
 
 [86]: https://github.com/HPCBio/dada2-rs/pull/86
 [87]: https://github.com/HPCBio/dada2-rs/issues/87
@@ -162,3 +173,5 @@ Then `dev/compare_shuffle_87.py <run_dirs...> [--csv out.csv]` for the table.
 [123]: https://github.com/HPCBio/dada2-rs/pull/123
 [32]: https://github.com/HPCBio/dada2-rs/issues/32
 [43]: https://github.com/HPCBio/dada2-rs/issues/43
+[124]: https://github.com/HPCBio/dada2-rs/issues/124
+[d543265]: https://github.com/HPCBio/dada2-rs/commit/d543265
