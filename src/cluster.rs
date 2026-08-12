@@ -238,14 +238,6 @@ pub struct ShuffleStats {
     /// candidate index after a move pass — raws whose best cluster may
     /// genuinely have changed, so this part does not go away by caching.
     pub comps_reconcile: usize,
-    /// Candidates the build's bound skipped without evaluating (#124).
-    ///
-    /// `comps_build + comps_build_pruned` is the volume the old unbounded
-    /// cluster-major scan would have evaluated, so the ratio is the prune rate
-    /// realised on this workload. Note `comps_build` charges the hot clusters'
-    /// comparisons twice when a raw's bounded pass re-touches them, which is
-    /// real work — so the two do not sum to exactly the stored comp count.
-    pub comps_build_pruned: usize,
     /// Wall time in the initial full build.
     ///
     /// Paired with `comps_build` this gives ns/comp for the sequential,
@@ -342,7 +334,6 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
         comps_scanned,
         // The serial scan is all build, by construction — it has no reconcile.
         comps_build: comps_scanned,
-        comps_build_pruned: 0,
         comps_reconcile: 0,
         // Not instrumented on the serial path: it is the historical baseline,
         // superseded by the incremental driver.
@@ -357,23 +348,6 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
 // ---------------------------------------------------------------------------
 // b_shuffle_converge — incremental shuffle-to-convergence
 // ---------------------------------------------------------------------------
-
-/// Number of highest-abundance clusters the shuffle build scans cluster-major
-/// before switching to the bounded raw-major pass (#124).
-///
-/// The modelled optimum is flat between 8 and 32 and degrades above it (at 128
-/// pass 1 starts scanning clusters the bound would have pruned anyway), so 32
-/// is chosen for margin rather than as a tuned value. Override with
-/// `DADA2RS_SHUFFLE_HOT_CLUSTERS` to sweep it; it changes only the bound's
-/// tightness, never the resulting partition.
-const HOT_CLUSTERS: usize = 32;
-
-fn hot_cluster_count() -> usize {
-    std::env::var("DADA2RS_SHUFFLE_HOT_CLUSTERS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(HOT_CLUSTERS)
-}
 
 /// One candidate cluster for a raw: (cluster index, lambda, hamming) — the
 /// fields the shuffle scan needs from a stored `Comparison`.
@@ -391,60 +365,32 @@ pub struct Cand {
 /// crucially it is built incrementally (O(new comps) per bud) rather than
 /// rebuilt per shuffle loop, which is what makes the incremental driver a net
 /// win rather than a wash.
-/// Each raw's candidates are held **lambda-descending** (ties broken by
-/// ascending `ci`). `lambda` is fixed by `b_compare` and never changes
-/// afterwards — only the per-cluster scalar `reads` moves — so this order is
-/// static and can be established once per candidate. It is what makes the
-/// bounded build in [`b_shuffle_converge`] possible: a scan in this order can
-/// stop as soon as `lambda × reads_bound` falls below the best `e` found so
-/// far, because no later candidate can beat it.
-///
-/// Note this is *no longer* ascending-`ci` order, so scans over it cannot rely
-/// on strict `>` for the lowest-`ci` tie-break and must compare `ci` explicitly
-/// (see [`best_from_cands`]).
 pub type CandIndex = Vec<Vec<Cand>>;
 
-/// Insert cluster `ci`'s stored comparisons into the per-raw candidate index.
+/// Append cluster `ci`'s stored comparisons to the per-raw candidate index.
 /// Must be called once per cluster, immediately after `b_compare`/
 /// `b_compare_parallel` populates `clusters[ci].comp`, and in ascending `ci`
-/// order (cluster 0 first, then each bud's new cluster).
-///
-/// Each candidate is placed so the raw's list stays lambda-descending. A full
-/// re-sort (or a flat CSR rebuild) per bud would cost O(all comps) — exactly
-/// the full-scan cost the bounded build exists to avoid — so instead each new
-/// candidate is inserted at its position, O(list length) per candidate and only
-/// for the raws this cluster actually compared against.
-///
-/// Ties: `ci` is the largest cluster index so far, and the insertion point is
-/// the first entry with a *strictly smaller* lambda, so an equal-lambda
-/// candidate lands after the ones already present — preserving ascending `ci`
-/// within a run of equal lambdas.
+/// order (cluster 0 first, then each bud's new cluster). Ascending order means
+/// each raw's candidate list stays cluster-ascending, so a strict-`>` scan keeps
+/// the lowest cluster index on ties — matching the serial scan's tie-break.
 pub fn index_add_cluster(index: &mut CandIndex, b: &B, ci: usize) {
     for comp in &b.clusters[ci].comp {
-        let cands = &mut index[comp.index as usize];
-        let at = cands.partition_point(|c| c.lambda >= comp.lambda);
-        cands.insert(
-            at,
-            Cand {
-                ci: ci as u32,
-                lambda: comp.lambda,
-                hamming: comp.hamming,
-            },
-        );
+        index[comp.index as usize].push(Cand {
+            ci: ci as u32,
+            lambda: comp.lambda,
+            hamming: comp.hamming,
+        });
     }
 }
 
 /// Raw's best cluster over its candidate list at the clusters' current reads.
-///
-/// The list is lambda-descending, not `ci`-ascending, so the lowest-`ci`
-/// tie-break is applied explicitly rather than falling out of strict `>`. The
-/// resulting argmax is order-independent and identical to the serial scan's.
+/// Ascending-ci order + strict `>` reproduces the serial lowest-ci tie-break.
 fn best_from_cands(cands: &[Cand], raw: usize, clusters: &[Bi]) -> Comparison {
     let mut best_e = f64::NEG_INFINITY;
     let mut best = Comparison::default();
     for c in cands {
         let e = c.lambda * clusters[c.ci as usize].reads as f64;
-        if e > best_e || (e == best_e && c.ci < best.i) {
+        if e > best_e {
             best_e = e;
             best = Comparison {
                 i: c.ci,
@@ -455,105 +401,6 @@ fn best_from_cands(cands: &[Cand], raw: usize, clusters: &[Bi]) -> Comparison {
         }
     }
     best
-}
-
-/// Build every raw's best cluster (`compmax`) and its expected read count
-/// at the clusters' current `reads`, using the two-level bounded scan (#124).
-/// Returns `(compmax, comps_examined, comps_pruned)`. `emax` is scratch — only
-/// needed to resolve the max while scanning — so it is not returned; the
-/// reconcile recomputes affected raws from the index instead.
-///
-/// `n_hot` is the number of highest-abundance clusters scanned cluster-major
-/// before the bounded raw-major pass. It is a pure **performance** parameter:
-/// the result is identical for every value of `n_hot`, which is what the
-/// `bounded_build_matches_full_scan` test pins down. `n_hot >= nclusters`
-/// degenerates to exactly the old unbounded cluster-major scan.
-fn build_compmax(b: &B, index: &CandIndex, n_hot: usize) -> (Vec<Comparison>, usize, usize) {
-    let nraw = b.raws.len();
-    let mut compmax = vec![Comparison::default(); nraw];
-    let mut emax = vec![f64::NEG_INFINITY; nraw];
-    let mut comps_scanned = 0usize;
-
-    let nclusters = b.clusters.len();
-    let n_hot = n_hot.min(nclusters);
-    // Sorted by reads descending; `ci` breaks ties so the choice of hot set is
-    // deterministic run to run (it does not affect the result, only the bound).
-    let mut hot: Vec<u32> = (0..nclusters as u32).collect();
-    hot.sort_unstable_by_key(|&c| (std::cmp::Reverse(b.clusters[c as usize].reads), c));
-    let reads_hot_min = if n_hot < nclusters {
-        b.clusters[hot[n_hot] as usize].reads as f64
-    } else {
-        // Every cluster is hot: pass 2 has nothing left to find.
-        0.0
-    };
-    let mut is_hot = vec![false; nclusters];
-    for &c in &hot[..n_hot] {
-        is_hot[c as usize] = true;
-    }
-
-    // Pass 1: hot clusters, cluster-major (contiguous).
-    for &ci in &hot[..n_hot] {
-        let bi = &b.clusters[ci as usize];
-        let ci_reads = bi.reads as f64;
-        for comp in &bi.comp {
-            let idx = comp.index as usize;
-            let e = comp.lambda * ci_reads;
-            if e > emax[idx] || (e == emax[idx] && ci < compmax[idx].i) {
-                emax[idx] = e;
-                compmax[idx] = comp.clone();
-            }
-        }
-        comps_scanned += bi.comp.len();
-    }
-
-    // Pass 2: cold candidates, raw-major, with the exact bound.
-    //
-    // Skipped entirely when every cluster was hot: pass 1 then already
-    // evaluated every candidate exactly, so this pass could only re-touch them.
-    // That is the common case for small pools (per-sample `dada`, where a B has
-    // far fewer than HOT_CLUSTERS clusters), which therefore keep exactly the
-    // old build's cost rather than paying a pass that can find nothing.
-    let mut comps_pruned = 0usize;
-    if n_hot < nclusters {
-        for (raw, cands) in index.iter().enumerate() {
-            let mut best_e = emax[raw];
-            let mut examined = 0usize;
-            for c in cands {
-                // `cands` is lambda-descending, so once the bound fails here it
-                // fails for every remaining candidate.
-                //
-                // Strictly `<`, not `<=`. A candidate whose bound merely *equals*
-                // `best_e` can still tie it exactly, and a tie is won by the
-                // lower `ci` — which, because the list is ordered by lambda and
-                // not by `ci`, may be this later candidate. Exiting on `<=`
-                // prunes it away and silently returns the wrong cluster (see
-                // `bounded_build_keeps_lowest_ci_on_cross_lambda_ties`). The
-                // pruning cost of this is nil: it only scans on through an
-                // exact-equality run.
-                if c.lambda * reads_hot_min < best_e {
-                    break;
-                }
-                examined += 1;
-                if is_hot[c.ci as usize] {
-                    continue; // already evaluated exactly in pass 1
-                }
-                let e = c.lambda * b.clusters[c.ci as usize].reads as f64;
-                if e > best_e || (e == best_e && c.ci < compmax[raw].i) {
-                    best_e = e;
-                    compmax[raw] = Comparison {
-                        i: c.ci,
-                        index: raw as u32,
-                        lambda: c.lambda,
-                        hamming: c.hamming,
-                    };
-                }
-            }
-            emax[raw] = best_e;
-            comps_scanned += examined;
-            comps_pruned += cands.len() - examined;
-        }
-    }
-    (compmax, comps_scanned, comps_pruned)
 }
 
 /// Incremental equivalent of looping [`b_shuffle2`] to convergence (or
@@ -569,33 +416,31 @@ fn build_compmax(b: &B, index: &CandIndex, n_hot: usize) -> (Vec<Comparison>, us
 pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> ShuffleStats {
     let nraw = b.raws.len();
 
-    // Initial build: every raw's true best at the current reads.
-    //
-    // Two-level bounded scan (#124). The full cluster-major scan this replaces
-    // evaluated every stored comparison — ~9.6e6 per build on a pooled 16S run
-    // — to discover ~550 moves. Since `lambda` is fixed and only `reads`
-    // changes, a raw's candidate list can be held lambda-descending once and
-    // scanned with an exact early exit: if `lambda × reads_bound <= best_e`, no
-    // later candidate can win.
-    //
-    // A single global `max_reads` bound is useless on real data, because
-    // cluster abundances are power-law skewed and one huge cluster inflates the
-    // bound for every raw (modelled in dev/shuffle-model: it regresses to
-    // 0.83x). But the huge clusters are *few*, so:
-    //
-    //   pass 1 — the top HOT_CLUSTERS by reads, scanned cluster-major, the
-    //            contiguous access pattern the old build used, seeding the map;
-    //   pass 2 — everything else, raw-major over the candidate index, bounded
-    //            by `reads_hot_min`, the smallest read count in pass 1's set,
-    //            which under skew is orders of magnitude below max_reads.
-    //
-    // Exactness: both passes take the max with an explicit lowest-`ci`
-    // tie-break, which is order-independent, so the result equals the serial
-    // scan's `compmax` exactly — same max, same tie-break — and the move
-    // decisions are unchanged.
+    // Initial build: every raw's true best at the current reads. Done the
+    // serial way — a contiguous, cache-friendly scan of the per-cluster comp
+    // vecs (cluster-major), NOT the raw-major inverted index. This is the bulk
+    // of the work each loop, and sequential access here is far cheaper per
+    // comparison than the index's scattered reads (which is what made a
+    // fully-index-based build a net wall loss despite fewer comparisons). The
+    // index is reserved for the reconcile, where the touched-raw volume is
+    // small. Byte-identical to b_shuffle2's build: ascending ci + strict `>`
+    // keeps the lowest-ci max.
     let t_build = std::time::Instant::now();
-    let (mut compmax, mut comps_scanned, comps_pruned) =
-        build_compmax(b, index, hot_cluster_count());
+    let mut compmax = vec![Comparison::default(); nraw];
+    let mut emax = vec![f64::NEG_INFINITY; nraw];
+    let mut comps_scanned = 0usize;
+    for bi in &b.clusters {
+        let ci_reads = bi.reads as f64;
+        for comp in &bi.comp {
+            let idx = comp.index as usize;
+            let e = comp.lambda * ci_reads;
+            if e > emax[idx] {
+                emax[idx] = e;
+                compmax[idx] = comp.clone();
+            }
+        }
+        comps_scanned += bi.comp.len();
+    }
     let comps_build = comps_scanned;
     // Includes the compmax/emax allocation above: a scheme that reused the map
     // across buds would keep that buffer alive anyway, so it belongs here.
@@ -673,7 +518,6 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         moves: total_moves,
         comps_scanned,
         comps_build,
-        comps_build_pruned: comps_pruned,
         comps_reconcile: comps_scanned - comps_build,
         build_time,
         reconcile_time,
@@ -1001,208 +845,4 @@ pub fn b_bud_incremental(
         );
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::containers::Raw;
-
-    /// Synthetic partition with a skewed cluster-abundance distribution and a
-    /// wide lambda spectrum — the regime the bounded build is designed for, and
-    /// the one where a wrong bound would actually change the argmax.
-    ///
-    /// Returns the partition plus its candidate index (built exactly as
-    /// `run_dada` builds it: `index_add_cluster` once per cluster, ascending).
-    fn synthetic(nraw: usize, nclusters: usize) -> (B, CandIndex) {
-        // Deterministic LCG — the test must not depend on rand.
-        let mut state = 0x2545_F491_4F6C_DD1Du64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
-
-        let raws: Vec<Raw> = (0..nraw)
-            .map(|i| Raw::new(vec![1, 2, 3, 4], None, 1 + (i as u32 % 7), false))
-            .collect();
-        let mut b = B::new(raws, 1e-40, 1e-4, false);
-
-        b.clusters.clear();
-        for ci in 0..nclusters {
-            let mut bi = Bi::new(nraw as u32);
-            bi.i = ci as u32;
-            // Power-law abundances: cluster 0 dwarfs the tail, which is what
-            // makes a single global max_reads bound useless.
-            // A band of clusters shares an identical read count so that, paired
-            // with the duplicated lambdas below, raws hit exact `e` ties across
-            // clusters. Without this the lowest-ci tie-break is never exercised
-            // and a wrong tie-break would pass the test silently.
-            bi.reads = if (10..20).contains(&ci) {
-                50_000
-            } else {
-                1 + (1_000_000.0 / ((ci + 1) as f64)) as u32
-            };
-            for raw in 0..nraw {
-                // Cluster 0 holds a comparison for every raw (b_compare runs
-                // unscreened on it); the rest are sparse.
-                if ci == 0 || next() % 8 == 0 {
-                    // Lambda spanning many orders of magnitude, plus exact
-                    // duplicates (the `% 5` bucket) so the lowest-ci tie-break
-                    // is genuinely exercised rather than assumed unreachable.
-                    // Within the equal-reads band, force a shared lambda often
-                    // enough that ties in `e = lambda * reads` actually arise
-                    // across those clusters.
-                    let lambda = if (10..20).contains(&ci) && raw % 3 == 0 {
-                        1e-3
-                    } else if next() % 5 == 0 {
-                        1e-3
-                    } else {
-                        ((next() % 1000) as f64 / -50.0).exp()
-                    };
-                    bi.comp.push(Comparison {
-                        i: ci as u32,
-                        index: raw as u32,
-                        lambda,
-                        hamming: (next() % 8) as u32,
-                    });
-                }
-            }
-            b.clusters.push(bi);
-        }
-
-        let mut index: CandIndex = vec![Vec::new(); nraw];
-        for ci in 0..nclusters {
-            index_add_cluster(&mut index, &b, ci);
-        }
-        (b, index)
-    }
-
-    /// The unbounded cluster-major scan the bounded build replaces: ascending
-    /// `ci` with strict `>`, which keeps the lowest `ci` on ties. This is the
-    /// reference semantics, taken straight from `b_shuffle2`.
-    fn full_scan(b: &B) -> Vec<Comparison> {
-        let mut compmax = vec![Comparison::default(); b.raws.len()];
-        let mut emax = vec![f64::NEG_INFINITY; b.raws.len()];
-        for bi in &b.clusters {
-            let ci_reads = bi.reads as f64;
-            for comp in &bi.comp {
-                let idx = comp.index as usize;
-                let e = comp.lambda * ci_reads;
-                if e > emax[idx] {
-                    emax[idx] = e;
-                    compmax[idx] = comp.clone();
-                }
-            }
-        }
-        compmax
-    }
-
-    /// The bounded build must be *exact*: identical to the full scan for every
-    /// `n_hot`, including the lowest-`ci` tie-break. `n_hot` may only change how
-    /// much work is done, never the answer — if it can change the answer, the
-    /// ASV-concordance guardrail is live and the optimization is invalid.
-    #[test]
-    fn bounded_build_matches_full_scan() {
-        let (b, index) = synthetic(2000, 60);
-        let want = full_scan(&b);
-
-        for n_hot in [0usize, 1, 2, 8, 32, 59, 60, 128] {
-            let (got, examined, pruned) = build_compmax(&b, &index, n_hot);
-            assert_eq!(got.len(), want.len());
-            for (raw, (g, w)) in got.iter().zip(want.iter()).enumerate() {
-                assert_eq!(
-                    (g.i, g.index, g.lambda, g.hamming),
-                    (w.i, w.index, w.lambda, w.hamming),
-                    "n_hot={n_hot}: raw {raw} got cluster {}, want {}",
-                    g.i,
-                    w.i,
-                );
-            }
-            // n_hot >= nclusters degenerates to the full scan, so it prunes
-            // nothing; below that the bound must actually be doing work, or the
-            // whole change is cost without benefit.
-            if n_hot < b.clusters.len() {
-                assert!(pruned > 0, "n_hot={n_hot}: bound pruned nothing");
-            }
-            assert!(examined > 0);
-        }
-    }
-
-    /// The candidate index must stay lambda-descending as clusters are added,
-    /// since the build's early exit is only sound on a sorted list. Ties must
-    /// keep ascending `ci`, which is what preserves the lowest-`ci` tie-break.
-    #[test]
-    fn candidate_index_is_lambda_descending() {
-        let (_b, index) = synthetic(500, 40);
-        for (raw, cands) in index.iter().enumerate() {
-            for w in cands.windows(2) {
-                assert!(
-                    w[0].lambda > w[1].lambda || (w[0].lambda == w[1].lambda && w[0].ci < w[1].ci),
-                    "raw {raw}: candidates out of order ({}, ci {}) then ({}, ci {})",
-                    w[0].lambda,
-                    w[0].ci,
-                    w[1].lambda,
-                    w[1].ci,
-                );
-            }
-        }
-    }
-
-    /// Cross-lambda ties: two clusters can reach the *same* `e` from different
-    /// `lambda × reads` pairs. The candidate list is ordered by lambda, so the
-    /// tied candidate with the lower `ci` — the one the full scan keeps — can
-    /// sit *after* the higher-`ci` one. The bound must not prune it away, which
-    /// is why the early exit tests `<` and not `<=`.
-    ///
-    /// Regression test for a real bug: with a `<=` exit this returned cluster 3
-    /// where the full scan returns cluster 1.
-    #[test]
-    fn bounded_build_keeps_lowest_ci_on_cross_lambda_ties() {
-        let raws = vec![Raw::new(vec![1, 2, 3, 4], None, 1, false)];
-        let mut b = B::new(raws, 1e-40, 1e-4, false);
-        b.clusters.clear();
-
-        // e = lambda * reads:  c0 -> ~0, c2 -> ~0, and c1/c3/c4 all tie at 2.0.
-        // The full scan keeps c1 (lowest ci). The tie is reached from three
-        // different lambda/reads pairs, which pins both passes' tie-breaks:
-        //   - c3 has the largest lambda, so it sorts FIRST in the
-        //     lambda-descending index -> exercises pass 2's tie-break;
-        //   - c4 has the largest reads, so pass 1 (which walks clusters in
-        //     reads-descending order) visits it FIRST -> exercises pass 1's.
-        for (ci, reads, lambda) in [
-            (0u32, 1u32, 1e-9),
-            (1, 200, 0.01),
-            (2, 1, 1e-9),
-            (3, 100, 0.02),
-            (4, 400, 0.005),
-        ] {
-            let mut bi = Bi::new(1);
-            bi.i = ci;
-            bi.reads = reads;
-            bi.comp.push(Comparison {
-                i: ci,
-                index: 0,
-                lambda,
-                hamming: 0,
-            });
-            b.clusters.push(bi);
-        }
-        assert_eq!(0.01 * 200.0, 0.02 * 100.0, "fixture must tie exactly");
-        assert_eq!(0.01 * 200.0, 0.005 * 400.0, "fixture must tie exactly");
-
-        let mut index: CandIndex = vec![Vec::new(); 1];
-        for ci in 0..b.clusters.len() {
-            index_add_cluster(&mut index, &b, ci);
-        }
-        assert_eq!(index[0][0].ci, 3, "c3 must sort first (larger lambda)");
-
-        let want = full_scan(&b);
-        assert_eq!(want[0].i, 1, "reference: lowest ci wins the tie");
-        for n_hot in [0usize, 1, 2, 3, 4, 5] {
-            let (got, _, _) = build_compmax(&b, &index, n_hot);
-            assert_eq!(got[0].i, 1, "n_hot={n_hot}: tie must resolve to cluster 1");
-        }
-    }
 }
