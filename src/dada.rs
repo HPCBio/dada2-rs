@@ -733,6 +733,13 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // bet ~2x (#87), because a scattered comp costs ~2x a sequential one.
     let (mut t_shuf_build, mut t_shuf_reconcile) =
         (std::time::Duration::ZERO, std::time::Duration::ZERO);
+    // The move pass — the third phase, and the one build+reconcile left
+    // unaccounted for (#124). Plus the reconcile's internals: how many raws it
+    // recomputed and how many of those recomputes actually changed the raw's
+    // best cluster, which is what bounds any future reconcile optimization.
+    let mut t_shuf_move = std::time::Duration::ZERO;
+    let (mut shuf_move_raws, mut shuf_rec_affected, mut shuf_rec_changed) = (0u64, 0u64, 0u64);
+    let mut shuf_nraw = 0usize;
     // b_bud scan-redundancy accounting (verbose-only diagnostics).
     let (mut bud_calls, mut bud_success, mut bud_raws_scanned) = (0u64, 0u64, 0u64);
     // p-update churn: raws whose p was recomputed per round (see issue #85).
@@ -866,6 +873,11 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         shuf_comps_reconcile += st.comps_reconcile as u64;
         t_shuf_build += st.build_time;
         t_shuf_reconcile += st.reconcile_time;
+        t_shuf_move += st.move_time;
+        shuf_move_raws += st.move_raws_scanned as u64;
+        shuf_rec_affected += st.reconcile_affected as u64;
+        shuf_rec_changed += st.reconcile_changed as u64;
+        shuf_nraw = st.nraw;
         shuf_zero_move_calls += st.zero_move_calls as u64;
         if params.verbose {
             eprint!("{}", "S".repeat(st.calls));
@@ -984,6 +996,74 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 0.0
             }
         };
+        // Full phase accounting for the shuffle (#124). build + reconcile
+        // alone left 15-19% of shuffle time unexplained; the move pass is that
+        // remainder. `other` should now be near zero — if it is not, there is
+        // still an unmeasured phase and any optimization here is being sized
+        // against an incomplete denominator.
+        //
+        // The three columns to compare across platforms: each phase's share of
+        // shuffle, its ns per unit of work, and its redundancy (work done per
+        // outcome produced). A phase with a high share AND high redundancy is
+        // the only kind worth attacking.
+        let shuf_s = t_shuffle.as_secs_f64();
+        let other = shuf_s
+            - t_shuf_build.as_secs_f64()
+            - t_shuf_reconcile.as_secs_f64()
+            - t_shuf_move.as_secs_f64();
+        let pct = |d: f64| {
+            if shuf_s > 0.0 {
+                100.0 * d / shuf_s
+            } else {
+                0.0
+            }
+        };
+        eprintln!(
+            "[dada] shuffle phases ({:.2}s total over {} converge calls, nraw={}, nclusters={}):",
+            shuf_s,
+            shuf_converge_calls,
+            shuf_nraw,
+            bb.clusters.len(),
+        );
+        eprintln!(
+            "[dada]   build     {:>8.2}s ({:>4.1}%)  {:>13} comps  {:>6.2} ns/comp",
+            t_shuf_build.as_secs_f64(),
+            pct(t_shuf_build.as_secs_f64()),
+            shuf_comps_build,
+            ns_per(t_shuf_build, shuf_comps_build),
+        );
+        eprintln!(
+            "[dada]   reconcile {:>8.2}s ({:>4.1}%)  {:>13} comps  {:>6.2} ns/comp  over {} raws, {} ({:.1}%) actually changed cluster",
+            t_shuf_reconcile.as_secs_f64(),
+            pct(t_shuf_reconcile.as_secs_f64()),
+            shuf_comps_reconcile,
+            ns_per(t_shuf_reconcile, shuf_comps_reconcile),
+            shuf_rec_affected,
+            shuf_rec_changed,
+            if shuf_rec_affected > 0 {
+                100.0 * shuf_rec_changed as f64 / shuf_rec_affected as f64
+            } else {
+                0.0
+            },
+        );
+        eprintln!(
+            "[dada]   move      {:>8.2}s ({:>4.1}%)  {:>13} raws   {:>6.2} ns/raw   for {} moves ({:.0} raws scanned/move)",
+            t_shuf_move.as_secs_f64(),
+            pct(t_shuf_move.as_secs_f64()),
+            shuf_move_raws,
+            ns_per(t_shuf_move, shuf_move_raws),
+            shuf_moves,
+            if shuf_moves > 0 {
+                shuf_move_raws as f64 / shuf_moves as f64
+            } else {
+                f64::INFINITY
+            },
+        );
+        eprintln!(
+            "[dada]   other     {:>8.2}s ({:>4.1}%)  (loop bookkeeping; large = an unmeasured phase)",
+            other,
+            pct(other),
+        );
         eprintln!(
             "[dada] shuffle scan time: build={:.2}s ({:.2} ns/comp)  reconcile={:.2}s ({:.2} ns/comp)  build={:.0}% of shuffle time",
             t_shuf_build.as_secs_f64(),

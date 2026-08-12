@@ -255,6 +255,35 @@ pub struct ShuffleStats {
     pub reconcile_time: std::time::Duration,
     /// Cluster count at this call (context for the scan cost).
     pub nclusters: usize,
+    /// Raw count at this call. With `nclusters` this normalises every other
+    /// counter here, which is what makes the numbers comparable across
+    /// platforms (a PacBio pool has far fewer, far longer raws than a MiSeq
+    /// one, so absolute comparison counts alone say little).
+    pub nraw: usize,
+    /// Wall time in the move passes.
+    ///
+    /// The third phase of a shuffle, and the one that went unmeasured until
+    /// #124's build arm closed: `shuffle - build - reconcile` was a consistent
+    /// 15-19% of shuffle time with nothing accounting for it. A move pass walks
+    /// every cluster's membership list — O(nraw) per iteration, with a
+    /// scattered `compmax[raw]` read each — to discover a few hundred moves.
+    pub move_time: std::time::Duration,
+    /// Raws visited by the move passes, summed over iterations. Against
+    /// `moves`, this is the move pass's redundancy ratio — the same
+    /// scanned-per-outcome figure that sized the build.
+    pub move_raws_scanned: usize,
+    /// Raws collected into the affected set and recomputed by the reconcile,
+    /// summed over iterations. `comps_reconcile / reconcile_affected` is the
+    /// mean candidate-list length actually walked.
+    pub reconcile_affected: usize,
+    /// Of those recomputes, how many actually changed the raw's best cluster.
+    ///
+    /// This is the sizing number for any reconcile optimization: the rest of
+    /// the recomputes returned the value already in `compmax`, so a scheme that
+    /// could predict them is bidding for that fraction — exactly the way
+    /// `comps_build` bounded #87's payoff. A low ratio means the reconcile is
+    /// mostly re-deriving what it already knew.
+    pub reconcile_changed: usize,
     /// Move-pass iterations that relocated no raws (pure convergence checks).
     ///
     /// NOTE: for `b_shuffle_converge` this is exactly the number of calls —
@@ -340,6 +369,13 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
         build_time: std::time::Duration::ZERO,
         reconcile_time: std::time::Duration::ZERO,
         nclusters: b.clusters.len(),
+        nraw,
+        // Not instrumented on the serial path (superseded by the incremental
+        // driver); it has no reconcile and its move pass is not split out.
+        move_time: std::time::Duration::ZERO,
+        move_raws_scanned: 0,
+        reconcile_affected: 0,
+        reconcile_changed: 0,
         zero_move_calls: usize::from(moves == 0),
         calls: 1,
     }
@@ -459,10 +495,18 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
     let mut total_moves = 0usize;
     let mut nshuffle = 0usize;
     let mut zero_move_calls = 0usize;
+    let mut move_time = std::time::Duration::ZERO;
+    let mut move_raws_scanned = 0usize;
+    let mut reconcile_affected = 0usize;
+    let mut reconcile_changed = 0usize;
     loop {
         // Move pass — identical to b_shuffle2's, using the current compmax.
+        // Timed separately (#124): build + reconcile left 15-19% of shuffle
+        // time unaccounted for, and this is where it goes.
+        let t_move = std::time::Instant::now();
         let mut moves = 0usize;
         for ci in 0..b.clusters.len() {
+            move_raws_scanned += b.clusters[ci].raws.len();
             let mut r = b.clusters[ci].raws.len();
             while r > 0 {
                 r -= 1;
@@ -479,6 +523,7 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
                 }
             }
         }
+        move_time += t_move.elapsed();
         total_moves += moves;
         if moves == 0 {
             zero_move_calls += 1;
@@ -505,8 +550,17 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
                 *ru = b.clusters[ci].reads;
             }
         }
+        reconcile_affected += affected.len();
         for &raw in &affected {
-            compmax[raw] = best_from_cands(&index[raw], raw, &b.clusters);
+            let new_best = best_from_cands(&index[raw], raw, &b.clusters);
+            // Did this recompute actually learn anything? A recompute that
+            // returns the cluster already in `compmax` was redundant, and the
+            // redundant fraction is what bounds any future reconcile scheme.
+            // Observational only — `compmax` is assigned either way.
+            if new_best.i != compmax[raw].i {
+                reconcile_changed += 1;
+            }
+            compmax[raw] = new_best;
             comps_scanned += index[raw].len();
             in_affected[raw] = false;
         }
@@ -522,6 +576,11 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         build_time,
         reconcile_time,
         nclusters: b.clusters.len(),
+        nraw,
+        move_time,
+        move_raws_scanned,
+        reconcile_affected,
+        reconcile_changed,
         zero_move_calls,
         calls: nshuffle,
     }
