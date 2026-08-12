@@ -723,6 +723,11 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // the timings below) is the starting point for sizing any change to the
     // shuffle — see #124.
     let (mut shuf_comps_build, mut shuf_comps_reconcile) = (0u64, 0u64);
+    // Candidates the build's bound skipped without evaluating (#124). With
+    // shuf_comps_build this gives the prune rate realised on this workload —
+    // the number to compare against the 9-24% modelled in
+    // docs/findings/shuffle-build-scan.md.
+    let mut shuf_comps_pruned = 0u64;
     // b_shuffle_converge invocations (one per bud round) = number of full
     // builds paid; the per-build average is the useful unit here.
     let mut shuf_converge_calls = 0u64;
@@ -863,6 +868,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         shuf_moves += st.moves as u64;
         shuf_comps_scanned += st.comps_scanned as u64;
         shuf_comps_build += st.comps_build as u64;
+        shuf_comps_pruned += st.comps_build_pruned as u64;
         shuf_comps_reconcile += st.comps_reconcile as u64;
         t_shuf_build += st.build_time;
         t_shuf_reconcile += st.reconcile_time;
@@ -970,6 +976,23 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             per_build,
             shuf_comps_reconcile,
             100.0 - build_pct,
+        );
+        // Prune rate of the two-level bounded build (#124). `unbounded` is the
+        // volume the old full cluster-major scan evaluated, so `examined` is
+        // the fraction of it this build actually touched. A figure near 100%
+        // means the bound is not biting — check the cluster count against
+        // DADA2RS_SHUFFLE_HOT_CLUSTERS before reading anything into the timings.
+        let unbounded = shuf_comps_build + shuf_comps_pruned;
+        eprintln!(
+            "[dada] shuffle build prune: examined {} of {} candidates ({:.1}%), {} pruned by the bound",
+            shuf_comps_build,
+            unbounded,
+            if unbounded > 0 {
+                100.0 * shuf_comps_build as f64 / unbounded as f64
+            } else {
+                0.0
+            },
+            shuf_comps_pruned,
         );
         // Time split, and the ns/comp each access pattern actually costs. The
         // build is a contiguous cluster-major walk; the reconcile walks the
