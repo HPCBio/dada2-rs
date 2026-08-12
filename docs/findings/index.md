@@ -64,13 +64,16 @@ here is the evidence, and here is the path it opens or closes."
   the prize ~2× because the scattered reconcile costs ~2× per comparison. Any
   implementation must be gated and off by default. #87 closed on this evidence;
   the phase itself is reconsidered as a whole in #124.
-- [Pruning the shuffle build scan](shuffle-build-scan.md) — the build is
-  volume-bound, not layout-bound: narrower records and SoA streams are worth
-  0–9% and usually a regression, but a two-level bounded scan examines only
-  9–24% of candidates for 1.06–4.24×, bit-identical, never a loss across a
-  24-cell sweep. The naive `lambda × max_reads` bound collapses under real
-  abundance skew — the fix is to scan the few large clusters separately. First
-  #124 direction to clear the gate.
+- [Pruning the shuffle build scan](shuffle-build-scan.md) — **negative result.**
+  A two-level bounded scan pruned 56% of the shuffle build's comparisons and
+  still cost +4.8% wall, because the surviving comparisons ran at the scattered
+  rate (6.83 → 14.09 ns/comp): break-even needed pruning below ~35%, so no
+  implementation could have won. Data-layout rework of the same phase is
+  separately falsified, closing the build scan and re-pointing #124 at the
+  reconcile. The model failed by pricing access with a laptop's constants
+  instead of the ones #87 had already measured here — and the byte-identical
+  discipline, though the change was discarded, caught a latent tie-break bug and
+  is what makes the verdict final rather than ambiguous.
 - [Band size & platform-aware defaults](band-size-platform-defaults.md) — the
   16/32 Illumina/HiFi band default is vindicated; the two platforms fail
   band-tightening through opposite mechanisms, so a single global band would be
