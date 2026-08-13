@@ -70,7 +70,7 @@ nav:
     - K-mer screen size: findings/kmer-size-screening.md
     - Band size & platform defaults: findings/band-size-platform-defaults.md
     - Carrying compmax across buds: findings/shuffle-compmax-carry.md
-    - Pruning the shuffle build scan: findings/shuffle-build-scan.md
+    - Redesigning b_shuffle (closed): findings/shuffle-build-scan.md
     - Pseudo-pooling priors vs error model: findings/pseudo-pooling-priors-vs-error-model.md
     - Binned quality scores:
       - Overview: findings/binned-quality.md
