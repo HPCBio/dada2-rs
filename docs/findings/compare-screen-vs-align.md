@@ -140,8 +140,27 @@ Measured on the benchmark node, per-thread ns, full-matrix → rolling:
 
 **Flat at every thread count, and PacBio — the 199 KB case, the one that does not
 fit L2 — benefits *least*.** A bandwidth mechanism predicts the ratio rising with
-contention and the large matrix gaining most; neither happened. The full pooled
-A/B agreed: within noise, marginally positive on MiSeq. Corroborating evidence
+contention and the large matrix gaining most; neither happened.
+
+The full pooled A/B agrees, and supplies its own control. Because the change
+touches only the DP, the **k-mer screen is an untouched channel in the same
+runs** — anything it does is pure run-to-run drift:
+
+| | prior → rolling | Δ | screen (untouched) | Δ |
+|---|---|---|---|---|
+| MiSeq R1 dp ns/comp | 14,377 → 14,654 | +1.9% | 843 → 898 | **+6.5%** |
+| MiSeq R2 dp ns/comp | 8,903 → 9,092 | +2.1% | 757 → 797 | **+5.3%** |
+| PacBio dp ns/comp | 113,834 → 110,667 | −2.8% | 2,659 → 2,700 | +1.5% |
+
+`run_dada` moves +1.1% / +1.5% / −2.4% respectively. **The drift channel moves as
+much as or more than the signal channel in every run**, so the noise floor on
+this benchmark is ~2–6% — wider than the ~1.04× the microbenchmark predicted.
+MiSeq's apparent regression and PacBio's apparent gain are both inside it. The
+change is not measurable in production, in either direction.
+
+Worth keeping as a technique: when a change touches one phase, the untimed
+phases in the same run are a free null channel, and they calibrate the noise
+floor far better than repeat runs would. Corroborating evidence
 from the other direction: an Apple-silicon laptop, with an entirely different
 memory system, reproduces the production ns/cell within 10% (1.75 vs 1.76 on
 MiSeq R1) — which a DRAM-bound kernel would not do.
@@ -158,9 +177,14 @@ cells *per alignment*, not layout:
   nothing. Band 32 (~33 cells, four vectors) amortises better — consistent with
   PacBio's *lower* ns/cell despite its far larger matrix.
 
+Byte-identity was confirmed on the production data, not just the fixtures: all
+97 PacBio outputs identical, and 726/728 MiSeq, where the two exceptions are the
+`seqtab` files whose row order is per-process `HashMap` nondeterminism — the ASV
+sets are identical and the per-sample counts match under the column permutation
+across all 362 samples in both reads.
+
 The rolling-`d16` change is retained on the `perf/dp-rolling-d16-127` branch,
-unmerged: byte-identical and never a regression, but ~1.04× is not worth the
-extra machinery on its own.
+**unmerged**: byte-identical and harmless, but below the measurement floor.
 
 ### Threading saturates at 12, not 24
 
