@@ -704,7 +704,11 @@ mod tests {
             assert!(warn.is_none(), "spurious warning: {warn:?}");
             let (_, warn_many) = cpu_allocation_repr(p + 1);
             assert!(warn_many.is_some(), "missing warning at {} threads", p + 1);
-            assert!(warn_many.unwrap().contains("SLURM_CPUS_PER_TASK"));
+            // Only the scheduler-independent half can be asserted here: this
+            // reads the real environment, and scheduler-specific advice is
+            // appended only when one is detected (it is not, in CI).
+            let w = warn_many.unwrap();
+            assert!(w.contains("physical cores"), "{w}");
         }
     }
 }
