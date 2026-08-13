@@ -98,13 +98,16 @@ in use — HiFi reads sit under the 3,500 bp `i16` guard and take
 But **1.2–1.8 ns/cell is 5–10× off what an 8-lane `i16` SIMD kernel should
 achieve**, and the two platforms appear to miss for different reasons.
 
-### The memory traffic is fixed at 6 bytes per cell
+### It is not memory traffic — a falsified hypothesis
 
-`align_vectorized_with_buf` allocates the **full** compressed matrix — `d16`
+The first explanation tried was memory bandwidth, and it was wrong. Recording it
+because the refutation is the useful part.
+
+`align_vectorized_with_buf` allocated the **full** compressed matrix — `d16`
 (`i16` scores) *and* `p8` (traceback pointers), both `ncol × nrow` — and
-`reset_buf` zero-fills both on every call. Each cell is therefore touched twice
-(zeroed, then written) across 3 bytes: **6 bytes of write traffic per cell**,
-independent of platform.
+zero-filled both on every call. Each cell was therefore touched twice (zeroed,
+then written) across 3 bytes: **6 bytes of write traffic per cell**, independent
+of platform. That produced an apparent signature:
 
 | | matrix (`d16` + `p8`) | traffic/align | GB/s/thread | × 24 threads |
 |---|---|---|---|---|
@@ -112,31 +115,81 @@ independent of platform.
 | MiSeq R2 | 12 KB + 6 KB | 36 KB | 4.1 | 99 GB/s |
 | PacBio | 199 KB + 99 KB | 597 KB | 5.4 | **129 GB/s** |
 
-All three land in the same 91–129 GB/s band despite a **12× spread in matrix
-size**. On PacBio that is a bandwidth-bound signature: a 298 KB working set per
-alignment, streamed, 24 threads deep. On MiSeq the 27 KB matrix is L2-resident,
-so DRAM bandwidth cannot be binding there — and yet MiSeq's ns/cell is *worse*.
-The likely mechanism there is per-anti-diagonal overhead: at band 16 the inner
-loop runs ~17 cells, or two `i16` vectors plus a remainder, so loop
-prologue/epilogue is amortised over very little work. PacBio's band-32
-diagonals (~33 cells, four vectors) amortise it better, which is consistent with
-its lower ns/cell despite the larger matrix.
+All three land in the same 91–129 GB/s band despite a 12× spread in matrix size,
+which reads like a bandwidth wall. **It is not.** The three figures agree because
+traffic-per-cell is *fixed at 6 bytes by construction*, so dividing it by a
+roughly constant ns/cell necessarily gives a roughly constant GB/s. The
+convergence restates the ratio; it is not evidence about the bottleneck.
 
-Different mechanisms, same target, and one structural observation applies to
-both: **`d16` is write-only outside a 3-row window.** The DP reads rows
-`row`, `row-1` and `row-2`; the traceback reads `p8` only and never touches
-`d16`. The full `d16` matrix — 199 KB per alignment on PacBio — is allocated,
-zeroed and written for nothing. The zero-fill is redundant in the same way: the
-sentinel columns are written explicitly and the active cells are all overwritten
-before they are read.
+The structural observation was nonetheless sound: **`d16` is write-only outside a
+3-row window.** The DP reads rows `row`, `row-1`, `row-2`; the traceback reads
+`p8` alone and never touches `d16`. So the experiment was run — `d16` reduced to
+three rotating one-row slots and its zero-fill dropped (199 KB → 210 B per
+alignment on PacBio), holding `p8` full and byte-identity intact, verified by a
+5,808-case fuzz against the retained pre-change implementation. If traffic were
+binding, per-cell traffic falling 6 bytes → ~1 should have moved PacBio most.
 
-That suggests a cheap experiment before any redesign: keep `p8` full (the
-traceback genuinely needs it), reduce `d16` to a 3-row rolling buffer, and drop
-both zero-fills. If the bandwidth reading is right, per-cell traffic falls from
-6 bytes to ~1 and PacBio should move a lot. It is a pure-mechanics change with
-no effect on the DP recurrence, so the byte-identical invariant should be
-straightforward to hold — but it must still be *held*, not assumed: #124's
-pruning arm hid a real tie-break bug that only exactness testing surfaced.
+Measured on the benchmark node, per-thread ns, full-matrix → rolling:
+
+| threads | MiSeq R1 (240 bp, band 16) | PacBio (1455 bp, band 32) |
+|---|---|---|
+| 1 | 32,025 → 30,382 (1.05×) | 204,542 → 201,632 (1.01×) |
+| 4 | 34,840 → 32,522 (1.07×) | 222,708 → 219,277 (1.02×) |
+| 12 | 34,765 → 33,253 (1.05×) | 221,698 → 219,012 (1.01×) |
+| 24 | 70,990 → 68,348 (1.04×) | 416,960 → 404,454 (1.03×) |
+
+**Flat at every thread count, and PacBio — the 199 KB case, the one that does not
+fit L2 — benefits *least*.** A bandwidth mechanism predicts the ratio rising with
+contention and the large matrix gaining most; neither happened. The full pooled
+A/B agreed: within noise, marginally positive on MiSeq. Corroborating evidence
+from the other direction: an Apple-silicon laptop, with an entirely different
+memory system, reproduces the production ns/cell within 10% (1.75 vs 1.76 on
+MiSeq R1) — which a DRAM-bound kernel would not do.
+
+The kernel is **execution-bound**. `dploop` does vectorise (`sqadd.8h` is present
+in the emitted assembly), so the remaining candidates are work *per cell* and
+cells *per alignment*, not layout:
+
+- The **diag-fill is a second full pass** over every cell of the anti-diagonal,
+  walking `s1` in reverse — a pattern much less likely to vectorise than
+  `dploop` itself.
+- **Short anti-diagonals**: at band 16 the inner loop runs ~17 cells, two `i16`
+  vectors plus a scalar remainder, so prologue/epilogue is amortised over almost
+  nothing. Band 32 (~33 cells, four vectors) amortises better — consistent with
+  PacBio's *lower* ns/cell despite its far larger matrix.
+
+The rolling-`d16` change is retained on the `perf/dp-rolling-d16-127` branch,
+unmerged: byte-identical and never a regression, but ~1.04× is not worth the
+extra machinery on its own.
+
+### Threading saturates at 12, not 24
+
+The thread ladder above carries a second result, visible in aggregate throughput
+(threads ÷ per-thread ns) rather than per-thread latency:
+
+| threads | 1 | 4 | 8 | 12 | 16 | 24 |
+|---|---|---|---|---|---|---|
+| MiSeq R1 | 0.031 | 0.115 | 0.230 | **0.345** | **0.347** | **0.338** |
+| PacBio | 0.0049 | 0.0180 | 0.0362 | **0.0541** | **0.0544** | **0.0576** |
+
+Scaling is near-perfect to 12 threads (per-thread cost 32.0 → 34.8 µs — note no
+bandwidth degradation whatsoever), then **aggregate throughput stops dead** while
+per-thread cost doubles by 24. Consistent with 12 physical cores plus SMT, or
+with all-core clock throttling under sustained vector load; `lscpu` separates
+the two. Either way it is a compute-side limit, independently confirming the
+paragraph above.
+
+!!! warning "This inflates every absolute constant on this page"
+
+    All production figures here were measured at 24 threads on a node whose
+    kernel throughput saturates at 12. Per-unit costs are therefore roughly
+    **2× what a dedicated core would show**, and `map parallel efficiency: 99%`
+    is not the reassurance it looks like — that statistic is
+    `busy ÷ (map × nthreads)`, so threads each running at half speed still
+    report as fully efficient. The *ratios* on this page are unaffected
+    (everything was measured under identical conditions), and they carry the
+    conclusions. The absolutes are upper bounds. Worth checking whether pooled
+    runs get the same throughput from 12 threads as from 24.
 
 ## Design constants
 
@@ -150,8 +203,12 @@ For costing any future change without re-running (24 threads, pinned node;
 | DP kernel | 1.63–1.76 ns/cell | 1.19 ns/cell |
 | `al2subs` + qual mapping | 830–1,132 ns/align | 5,502 ns/align |
 | `compute_lambda` + overhead | 5.9–7.4% of compare | 3.2% of compare |
-| DP write traffic | 6 bytes/cell | 6 bytes/cell |
 | comparisons per unique | 1,350–1,771 | 1,410 |
+
+Measured at 24 threads on a node that saturates at 12, so treat these as ~2×
+a dedicated core (see the warning above); model *relative* changes against them,
+which is what they are reliable for. DP write traffic is a fixed 6 bytes/cell on
+both platforms and is **not** a useful cost term — see the falsification above.
 
 Note the last row: `b_compare` is the `O(nraw × nclusters)` term, and at ~1,400
 comparisons per unique on both platforms it is the reason pooled runs scale the
@@ -167,11 +224,15 @@ constant in front of it is worth attacking.
    only if the aligner gets fast enough to change the ratio.
 3. **The DP kernel is the target** — 30–63% of `run_dada`, the largest single
    share this project has measured.
-4. **The first thing to try is not a new algorithm.** The kernel moves 6 bytes
-   of memory traffic per DP cell, ~5/6 of it for a matrix that is never read
-   back. Test the rolling-buffer change before considering anything that
-   perturbs the alignment itself; per
-   [cost-model-before-build](shuffle-build-scan.md), model it against the
-   ns/cell constants above and not against a laptop.
+4. **The kernel is execution-bound, so memory layout is not the lever.** Tested
+   and falsified: eliminating 5/6 of the DP's memory traffic bought ~1.04×, and
+   *least* on the platform with the largest matrix. What remains is work per
+   cell — the diag-fill's second pass over every cell, with its reverse `s1`
+   walk — and cells per alignment, i.e. band width or a different algorithm.
 5. **`al2subs` is not the problem** (3.8–6.0%), which retires the hypothesis
    that post-processing explained the per-pair cost.
+6. **Re-check the thread count before any further perf work.** Kernel
+   throughput saturates at 12 of the 24 threads, which means every constant
+   here is ~2× a dedicated core's and that `map parallel efficiency` cannot
+   detect the ceiling. Establishing the node's real topology is a
+   prerequisite for costing anything against these numbers.

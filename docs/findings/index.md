@@ -83,9 +83,12 @@ here is the evidence, and here is the path it opens or closes."
   7.7× more. The k-mer screen closes as a perf target — it returns 3–7× on what
   it costs, and a perfect free replacement caps out at 15–23%. What is left is
   the banded NW **DP kernel at 30–63% of `run_dada`**, the largest single share
-  measured in this project, running at 1.2–1.8 ns/cell against 6 bytes of memory
-  traffic per cell — ~5/6 of it for a score matrix that is never read back.
-  Includes per-unit ns constants for costing any future design.
+  measured in this project. Also carries a falsified hypothesis — the kernel is
+  *not* memory-bound: eliminating 5/6 of its memory traffic bought ~1.04×, and
+  least on the platform with the largest matrix — and the discovery that kernel
+  throughput saturates at **12 of the node's 24 threads**, which inflates every
+  absolute per-unit constant we have measured and which
+  `map parallel efficiency` is structurally unable to detect.
 - [Band size & platform-aware defaults](band-size-platform-defaults.md) — the
   16/32 Illumina/HiFi band default is vindicated; the two platforms fail
   band-tightening through opposite mechanisms, so a single global band would be
