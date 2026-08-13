@@ -85,10 +85,12 @@ here is the evidence, and here is the path it opens or closes."
   the banded NW **DP kernel at 30–63% of `run_dada`**, the largest single share
   measured in this project. Also carries a falsified hypothesis — the kernel is
   *not* memory-bound: eliminating 5/6 of its memory traffic bought ~1.04×, and
-  least on the platform with the largest matrix — and the discovery that kernel
-  throughput saturates at **12 of the node's 24 threads**, which inflates every
-  absolute per-unit constant we have measured and which
-  `map parallel efficiency` is structurally unable to detect.
+  least on the platform with the largest matrix. Ends where it did not expect
+  to: the largest available win was **running wider** (48 threads beats 24 by
+  20–28%, output-identical), and the screen and the DP scale *differently*
+  (+41% vs flat), so the right target depends on the machine. Includes a
+  section on which of these numbers travel to other hardware and which do
+  not.
 - [Band size & platform-aware defaults](band-size-platform-defaults.md) — the
   16/32 Illumina/HiFi band default is vindicated; the two platforms fail
   band-tightening through opposite mechanisms, so a single global band would be

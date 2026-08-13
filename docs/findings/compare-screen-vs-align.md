@@ -229,48 +229,57 @@ Both CPUs report `CORE 0`, so the pairing is confirmed outright. The newer
 128-core node follows the same convention with the offset at 128 (CPU 0 and
 CPU 128 are both `CORE 0`).
 
-Two cautions when repeating this. The check is only meaningful **inside a job**:
-run from a plain shell on the node it reports the whole machine
-(`Cpus_allowed_list: 0-255`) and says nothing about what an allocation would
-grant. And where a job is *not* CPU-restricted, the Linux scheduler will
-generally spread threads across distinct physical cores first — so the same
-`--threads 24` can behave quite differently depending on whether the allocation
-confines it to SMT-paired cores.
+Two cautions when repeating this, and the second one caught us out.
 
-Both allocations have now been checked and both are 12 cores, so the ladder and
-the production benchmarks share this topology. It is also worth carrying back to
-earlier results —
-absolute wall times here have been attributed to node generation
-([#124's runs](shuffle-build-scan.md) were ~1.5–2× slower on an older node) — but
-allocation topology is a competing explanation for part of that gap. Both are
-untested, and the same in-job command settles them.
+The check is only meaningful **inside a job** — from a plain shell on the node
+it reports the whole machine and says nothing about an allocation. And it must
+be read in the *same context* as the run being explained: an interactive
+`srun --pty bash` binds its shell to the allocation, whereas a batch script
+invoking the binary directly typically runs **unconfined**, because a SLURM
+allocation is only enforced by affinity or a cpuset cgroup when the site sets
+`ConstrainCores` or the step is launched under `srun`.
 
-The cause is the job request rather than the code. `-n 24` asks for 24 *tasks*,
-which the scheduler is free to satisfy with 12 SMT-paired cores. For a
-single-process threaded program the shape to ask for is cores, and it works:
+That distinction is the whole story here. The 12-core readings above come from
+interactive `srun` sessions. **The production benchmarks are batch jobs and were
+never confined**, which a four-way A/B makes unambiguous (362-sample MiSeq, R1):
 
-```console
-$ srun -N 1 -n 1 -c 24 --threads-per-core=1 -p hpcbioamd --pty bash
-$ grep Cpus_allowed_list /proc/self/status
-Cpus_allowed_list:    0-23,128-151
-```
+| job request | `--threads` | `run_dada` | map | DP ns/comp | screen ns/comp |
+|---|---|---|---|---|---|
+| `-n 24` | 24 | 165.0 s | 104.0 s | 14,377 | 843 |
+| `-c 24 --threads-per-core=1` | 24 | 165.5 s | 104.3 s | 14,373 | 849 |
+| `-n 48` | 48 | 120.7 s | 58.3 s | 14,601 | 1,201 |
+| `-c 48 --threads-per-core=1` | 48 | **118.6 s** | **58.2 s** | 14,521 | 1,200 |
 
-`0-23,128-151` is the pairs (0,128) … (23,151) — **24 distinct physical cores**,
-both siblings of each exposed — against 12 cores for the same nominal "24"
-before. As a batch script:
+**`--ntasks` and `--cpus-per-task` are indistinguishable**, because with nothing
+enforced both merely set a thread count. And 24 threads show no sign of SMT
+contention: per-comparison DP cost is flat from 24 to 48 threads, and the map
+scales 1.79×, neither of which is possible on 12 shared cores. Outputs are
+bit-identical across thread counts (362/362 per-sample files).
 
-```bash
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=24
-#SBATCH --threads-per-core=1      # or: --hint=nomultithread
-...
-dada2-rs dada-pooled --threads "${SLURM_CPUS_PER_TASK}" ...
-```
+So the constants elsewhere on this page stand as measured — an earlier version
+of this page claimed they were ~2× inflated by a 12-core allocation, and that
+claim is **withdrawn**. The lesson is narrower and more portable: *a topology
+reading describes the context it was taken in*, and an interactive shell is not
+the context your batch jobs run in.
 
-`$SLURM_NTASKS` is the wrong variable to drive `--threads`: it counts tasks
-(MPI ranks), not the cores one process may use. `$SLURM_CPUS_PER_TASK` is the
-threading budget.
+What remains true is that the two phases scale differently, which is a result in
+its own right:
+
+- **DP kernel: flat** (14,373 → 14,521 ns/comp from 24 to 48 threads).
+- **k-mer screen: +41%** (849 → 1,200 ns/comp).
+
+The screen streams k-mer vectors and contends for bandwidth; the DP is
+execution-bound and does not. This is a direct experimental separation of the
+two, and it independently corroborates the falsification above. It also means
+**the screen's share of `b_compare` grows with thread count**, so a screen-side
+optimisation is worth more on wider machines while a DP-side one is worth the
+same everywhere.
+
+Practical upshot for these benchmarks: **48 threads is worth −20 to −28% of
+`run_dada` over 24**, free and output-identical, and on a 128-core node there is
+room above that. Whether to run wider than the allocation is a policy question
+for the site, not a code one — `--verbose` now reports the allocation, the
+reachable core count, and flags when they disagree.
 
 !!! tip "Check this from `srun`, not `salloc`"
 
@@ -280,37 +289,15 @@ threading budget.
     node's cpuset and looks fine no matter what the job got. Read it from
     `srun --pty bash`, and confirm the hostname changed before trusting it.
 
-**Expected effect: ~2× on the parallel portion of `run_dada`** — which is
-63–88% of it — for a job-script change and no code change. On nodes of 72 and
-128 cores there is a great deal more headroom above 24.
+!!! warning "`map parallel efficiency` cannot detect any of this"
 
-!!! warning "Every absolute constant on this page was measured on 12 cores"
-
-    Confirmed on the node that ran the production benchmarks (`-N 1 -n 24`,
-    128-core node):
-
-    ```console
-    $ grep Cpus_allowed_list /proc/self/status
-    Cpus_allowed_list:    0-11,128-139
-    $ echo $SLURM_NTASKS $SLURM_CPUS_ON_NODE $SLURM_TASKS_PER_NODE
-    24 24 24
-    ```
-
-    CPU *n* and *n+128* are the same physical core, so that allocation is
-    **cores 0–11: 12 physical cores presented as 24 logical CPUs**. Every
-    per-unit cost quoted here is therefore roughly **2× what a dedicated core
-    would show**, and the pooled runs were using about a tenth of a 128-core
-    node.
-
-    Note that all three SLURM variables report `24`, and none of them can
-    distinguish cores from threads — which is how a recommendation to drive
-    `--threads` from `$SLURM_NTASKS` produces this. Nor could
-    `map parallel efficiency`: it is `busy ÷ (map × nthreads)`, so threads each
-    running at half speed report as fully efficient. It measures whether the
-    threads were *busy*, never whether they had cores to be busy on.
-
-    The **ratios** on this page are unaffected — every run shared these
-    conditions — and they carry all of its conclusions.
+    The statistic is `busy ÷ (map × nthreads)`, so threads each running at half
+    speed on shared SMT siblings still report as fully efficient. It measures
+    whether the threads were *busy*, never whether they had cores to be busy
+    on. #127 was opened on the reading that 99% efficiency meant zero threading
+    headroom and therefore that any win had to be algorithmic — which is not
+    something that statistic can establish. It happens to have been true here,
+    but only by luck.
 
 ## Design constants
 
@@ -326,15 +313,66 @@ For costing any future change without re-running (24 threads, pinned node;
 | `compute_lambda` + overhead | 5.9–7.4% of compare | 3.2% of compare |
 | comparisons per unique | 1,350–1,771 | 1,410 |
 
-Measured at `--threads 24` on an allocation confirmed to be 12 physical cores
-(see the warning above), so as absolutes these run ~2× a dedicated core; they
-are reliable for modelling *relative* changes. DP write traffic is a fixed 6 bytes/cell on
+Measured at `--threads 24` on an unconfined batch job (see above): the threads
+had real cores, so these are not SMT-deflated. They remain machine-specific —
+see [How far these numbers travel](#how-far-these-numbers-travel). DP write traffic is a fixed 6 bytes/cell on
 both platforms and is **not** a useful cost term — see the falsification above.
 
 Note the last row: `b_compare` is the `O(nraw × nclusters)` term, and at ~1,400
 comparisons per unique on both platforms it is the reason pooled runs scale the
 way they do. Nothing in this page changes that shape — it identifies which
 constant in front of it is worth attacking.
+
+## How far these numbers travel
+
+Everything above was measured on one machine class (AMD, 128 physical cores,
+24–48 threads). `dada2-rs` also runs on laptops and other schedulers, so it is
+worth being explicit about which of these results are properties of the
+*algorithm*, which are properties of *this hardware*, and which depend on both.
+
+**Invariant — determined by the data and parameters alone.** Portable
+anywhere, and safe to design against:
+
+- comparison counts (482.6 M / 400.9 M / 771.7 M) and comparisons per unique
+  (~1,400 on both platforms)
+- screen pass rates (25.0% / 25.5% / 11.9%) and shrouded fractions
+- DP cells per alignment (`nrow × (band+1)`) and k-mer vector size (4^k bytes)
+- the outputs themselves: bit-identical across thread counts (verified
+  362/362 per-sample files at 24 vs 48 threads)
+
+**Machine-dependent — rates.** Every `ns/comp`, `ns/cell` and GB/s figure
+scales with clock, vector width and memory system. Use them for *relative*
+modelling on comparable hardware, and recalibrate before trusting them
+elsewhere — `bench_rolling_d16` (`--ignored`) re-derives the DP constant on any
+machine in seconds. This repo has been burned once already by pricing a design
+against laptop numbers ([#124](shuffle-build-scan.md)).
+
+**Conditional — depends on machine balance *and* concurrency.** The important
+category, because these are conclusions rather than measurements:
+
+- *"`b_compare` is align-dominated."* The margin is wide (70–82% align vs
+  15–23% screen) so the ordering is unlikely to flip, but it is not fixed:
+  going from 24 to 48 threads on the same node left the DP flat (14,373 →
+  14,521 ns/comp) while the screen slowed 41% (849 → 1,200 ns/comp). **The
+  screen is bandwidth-sensitive and the DP is not**, so the screen's share
+  grows with core count and on any machine with less bandwidth per core. A
+  screen-side optimisation is therefore worth *more* at high thread counts; a
+  DP-side one is worth the same everywhere.
+- *"The DP kernel is execution-bound, not memory-bound."* Established on this
+  hardware, by three independent lines of evidence. It is a statement about the
+  balance between this kernel and these cores, not a universal property — on a
+  bandwidth-starved machine, or at much higher thread counts, the 6-bytes-per-cell
+  traffic could become binding and the
+  [rolling-`d16` change](#it-is-not-memory-traffic-a-falsified-hypothesis)
+  could start to pay. That branch is kept rather than deleted for exactly this
+  reason.
+- The best thread count. 48 beat 24 by 20–28% here; the right number elsewhere
+  depends on cores, bandwidth and what else shares the node.
+
+**Site-specific.** All SLURM flags and confinement behaviour above describe one
+cluster's configuration. The portable part is the *question* — how many
+physical cores can this process actually use, and does that match what the
+scheduler granted — which is why `--verbose` now reports both.
 
 ## What this dictates
 
@@ -352,9 +390,14 @@ constant in front of it is worth attacking.
    walk — and cells per alignment, i.e. band width or a different algorithm.
 5. **`al2subs` is not the problem** (3.8–6.0%), which retires the hypothesis
    that post-processing explained the per-pair cost.
-6. **Check the SLURM allocation's topology before any further perf work.**
-   Kernel throughput saturates at 12 of the 24 allocated threads on a 72-core
-   node, which means every constant here is ~2× a dedicated core's and that
-   `map parallel efficiency` cannot detect the ceiling. If the allocation is
-   12 cores × 2 SMT siblings, fixing the request is worth more than anything
-   else on this page — and it is a job-script change, not a code change.
+6. **Run wider before optimising anything.** 48 threads is worth −20 to −28%
+   of `run_dada` against 24, output-identical, and a 128-core node has room
+   above that — more than any code change on this page has returned. Confirm
+   what the job actually gets from `--verbose` rather than from the scheduler's
+   variables, none of which distinguish cores from threads.
+7. **Weight the next target by where it will run.** The screen is
+   bandwidth-sensitive and the DP is not (+41% vs flat, 24 → 48 threads), so
+   the screen's share grows on wider machines while the DP's does not. Both the
+   ranking here and the ns constants are properties of this hardware — see
+   [How far these numbers travel](#how-far-these-numbers-travel) before
+   carrying them elsewhere.
