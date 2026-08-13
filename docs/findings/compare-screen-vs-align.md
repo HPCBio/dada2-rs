@@ -174,22 +174,39 @@ The thread ladder above carries a second result, visible in aggregate throughput
 
 Scaling is near-perfect to 12 threads (per-thread cost 32.0 → 34.8 µs — note no
 bandwidth degradation whatsoever), then **aggregate throughput stops dead** while
-per-thread cost doubles by 24. Consistent with 12 physical cores plus SMT, or
-with all-core clock throttling under sustained vector load; `lscpu` separates
-the two. Either way it is a compute-side limit, independently confirming the
-paragraph above.
+per-thread cost doubles by 24.
+
+The node itself is not the constraint: it has 72 physical cores (144 SMT
+threads). The runs are SLURM jobs allocated `--threads 24`, and the ladder's
+shape is what you get when those 24 logical CPUs are **12 physical cores plus
+their 12 SMT siblings** — a common allocation outcome when the scheduler counts
+CPUs rather than cores. Half the threads then share execution units with the
+other half, which is exactly the observed doubling at constant throughput. To
+confirm inside a job:
+
+```bash
+# logical CPUs the job may use
+grep Cpus_allowed_list /proc/self/status
+# how many *physical* cores those map to
+lscpu -p=CPU,CORE | grep -v '^#' | sort -t, -k2 -u | wc -l
+```
+
+If that second number is 12 rather than 24, the allocation — not the code — is
+the ceiling, and requesting cores explicitly (`--threads-per-core=1`, or
+`--hint=nomultithread`) should roughly double throughput on a 72-core node.
+That would dwarf any kernel-level change discussed on this page.
 
 !!! warning "This inflates every absolute constant on this page"
 
-    All production figures here were measured at 24 threads on a node whose
-    kernel throughput saturates at 12. Per-unit costs are therefore roughly
-    **2× what a dedicated core would show**, and `map parallel efficiency: 99%`
-    is not the reassurance it looks like — that statistic is
-    `busy ÷ (map × nthreads)`, so threads each running at half speed still
-    report as fully efficient. The *ratios* on this page are unaffected
-    (everything was measured under identical conditions), and they carry the
-    conclusions. The absolutes are upper bounds. Worth checking whether pooled
-    runs get the same throughput from 12 threads as from 24.
+    All production figures here were measured at `--threads 24` on an allocation
+    whose kernel throughput saturates at 12. Per-unit costs are therefore
+    roughly **2× what a dedicated core would show**, and
+    `map parallel efficiency: 99%` is not the reassurance it looks like — that
+    statistic is `busy ÷ (map × nthreads)`, so threads each running at half
+    speed still report as fully efficient. It measures whether the threads were
+    *busy*, never whether they had cores to be busy on. The *ratios* on this
+    page are unaffected (everything was measured under identical conditions),
+    and they carry the conclusions. The absolutes are upper bounds.
 
 ## Design constants
 
@@ -231,8 +248,9 @@ constant in front of it is worth attacking.
    walk — and cells per alignment, i.e. band width or a different algorithm.
 5. **`al2subs` is not the problem** (3.8–6.0%), which retires the hypothesis
    that post-processing explained the per-pair cost.
-6. **Re-check the thread count before any further perf work.** Kernel
-   throughput saturates at 12 of the 24 threads, which means every constant
-   here is ~2× a dedicated core's and that `map parallel efficiency` cannot
-   detect the ceiling. Establishing the node's real topology is a
-   prerequisite for costing anything against these numbers.
+6. **Check the SLURM allocation's topology before any further perf work.**
+   Kernel throughput saturates at 12 of the 24 allocated threads on a 72-core
+   node, which means every constant here is ~2× a dedicated core's and that
+   `map parallel efficiency` cannot detect the ceiling. If the allocation is
+   12 cores × 2 SMT siblings, fixing the request is worth more than anything
+   else on this page — and it is a job-script change, not a code change.
