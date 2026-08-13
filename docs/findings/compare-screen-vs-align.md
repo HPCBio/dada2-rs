@@ -193,9 +193,29 @@ threads share execution units with the other half, which is exactly the
 doubling-at-constant-throughput the ladder shows. To check the sibling mapping
 directly:
 
-```bash
-lscpu -p=CPU,CORE | grep -v '^#' | awk -F, '$1==0 || $1==72'   # same CORE id?
+```console
+$ lscpu -p=CPU,CORE | grep -v '^#' | awk -F, '$1==0 || $1==72'
+0,0
+72,0
 ```
+
+Both CPUs report `CORE 0`, so the pairing is confirmed outright. The newer
+128-core node follows the same convention with the offset at 128 (CPU 0 and
+CPU 128 are both `CORE 0`).
+
+Two cautions when repeating this. The check is only meaningful **inside a job**:
+run from a plain shell on the node it reports the whole machine
+(`Cpus_allowed_list: 0-255`) and says nothing about what an allocation would
+grant. And where a job is *not* CPU-restricted, the Linux scheduler will
+generally spread threads across distinct physical cores first — so the same
+`--threads 24` can behave quite differently depending on whether the allocation
+confines it to SMT-paired cores.
+
+That last point is worth carrying back to earlier results: absolute wall times on
+this project have been attributed to node generation
+([#124's runs](shuffle-build-scan.md) were ~1.5–2× slower on an older node), and
+part of that gap may be allocation topology rather than the hardware. Untested,
+but it would be checked by the same in-job command.
 
 The cause is the job request rather than the code. `--ntasks=24` (or any request
 counted in *tasks*/CPUs) buys 24 logical CPUs, which the scheduler is free to
