@@ -87,10 +87,12 @@ here is the evidence, and here is the path it opens or closes."
   *not* memory-bound: eliminating 5/6 of its memory traffic bought ~1.04×, and
   least on the platform with the largest matrix. Ends where it did not expect
   to: the largest available win was **running wider** (48 threads beats 24 by
-  20–28%, output-identical), and the screen and the DP scale *differently*
-  (+41% vs flat), so the right target depends on the machine. Includes a
-  section on which of these numbers travel to other hardware and which do
-  not.
+  28%, output-identical), and a 24/48/96/128 sweep then found a **flat ~62 s
+  serial floor** — which flips the ranking. At 48 threads the serial block is
+  over half of `run_dada` and `b_shuffle` is two-thirds of it, so
+  [#124's closure](shuffle-build-scan.md) turns out to have been conditional on
+  thread count. Includes a section on which of these numbers travel to other
+  hardware and which do not.
 - [Band size & platform-aware defaults](band-size-platform-defaults.md) — the
   16/32 Illumina/HiFi band default is vindicated; the two platforms fail
   band-tightening through opposite mechanisms, so a single global band would be

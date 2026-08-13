@@ -186,7 +186,7 @@ across all 362 samples in both reads.
 The rolling-`d16` change is retained on the `perf/dp-rolling-d16-127` branch,
 **unmerged**: byte-identical and harmless, but below the measurement floor.
 
-### Threading saturates at 12, not 24
+### A false alarm: SMT, and what the topology reading actually described
 
 The thread ladder above carries a second result, visible in aggregate throughput
 (threads ÷ per-thread ns) rather than per-thread latency:
@@ -272,12 +272,16 @@ The screen streams k-mer vectors and contends for bandwidth; the DP is
 execution-bound and does not. This is a direct experimental separation of the
 two, and it independently corroborates the falsification above. It also means
 **the screen's share of `b_compare` grows with thread count**, so a screen-side
-optimisation is worth more on wider machines while a DP-side one is worth the
-same everywhere.
+optimisation is worth more on wider machines.
+
+This holds **up to 48 threads only** — past that the DP contends as well
+(+34% by 128). See
+[Thread scaling](#thread-scaling-and-the-ranking-it-overturns).
 
 Practical upshot for these benchmarks: **48 threads is worth −20 to −28% of
-`run_dada` over 24**, free and output-identical, and on a 128-core node there is
-room above that. Whether to run wider than the allocation is a policy question
+`run_dada` over 24**, free and output-identical. There turns out to be little
+room above that — see
+[Thread scaling](#thread-scaling-and-the-ranking-it-overturns). Whether to run wider than the allocation is a policy question
 for the site, not a code one — `--verbose` now reports the allocation, the
 reachable core count, and flags when they disagree.
 
@@ -314,14 +318,101 @@ For costing any future change without re-running (24 threads, pinned node;
 | comparisons per unique | 1,350–1,771 | 1,410 |
 
 Measured at `--threads 24` on an unconfined batch job (see above): the threads
-had real cores, so these are not SMT-deflated. They remain machine-specific —
-see [How far these numbers travel](#how-far-these-numbers-travel). DP write traffic is a fixed 6 bytes/cell on
+had real cores, so these are not SMT-deflated. They are **thread-count
+specific** as well as machine-specific — the DP is +34% and the screen +180% at
+128 threads — so recalibrate at whatever thread count a design will run at. See
+[Thread scaling](#thread-scaling-and-the-ranking-it-overturns) and
+[How far these numbers travel](#how-far-these-numbers-travel). DP write traffic is a fixed 6 bytes/cell on
 both platforms and is **not** a useful cost term — see the falsification above.
 
 Note the last row: `b_compare` is the `O(nraw × nclusters)` term, and at ~1,400
 comparisons per unique on both platforms it is the reason pooled runs scale the
 way they do. Nothing in this page changes that shape — it identifies which
 constant in front of it is worth attacking.
+
+## Thread scaling, and the ranking it overturns
+
+A four-point sweep on the 362-sample MiSeq set (R1, 128-core node) run after the
+measurements above, because the 24-vs-48 comparison raised the question of where
+this stops.
+
+| threads | `run_dada` | map (parallel) | **serial remainder** | `shuffle` | `store` | DP ns/comp | screen ns/comp |
+|---|---|---|---|---|---|---|---|
+| 24 | 165.5 s | 104.3 s | **61.2 s** | 31.7 s | 13.0 s | 14,373 | 849 |
+| 48 | 118.6 s | 58.1 s | **60.4 s** | 31.9 s | 12.1 s | 14,521 | 1,200 |
+| 96 | 104.7 s | 42.3 s | **62.4 s** | 33.7 s | 11.9 s | 18,996 | 1,917 |
+| 128 | 101.0 s | 37.2 s | **63.8 s** | 34.1 s | 12.2 s | 19,468 | 2,379 |
+
+### The serial floor is real
+
+The serial remainder is flat at **61–64 s across a 5.3× thread range**. `store`
+does not move at all; `shuffle` drifts up 7.5% (31.7 → 34.1 s), consistent with
+a wider `compare` map evicting more of the cache its scattered raw-major access
+depends on, but far too small to matter.
+
+`run_dada` therefore has an Amdahl floor near **62 s**, against 101 s at 128
+threads. Everything remaining in thread count is worth at most ~1.6×, and most
+of that is already spent.
+
+### Returns fall off a cliff after 48
+
+| step | wall gain | threads spent | map efficiency |
+|---|---|---|---|
+| 24 → 48 | **−28.4%** | 2× | 90% |
+| 48 → 96 | −11.7% | 2× | 62% |
+| 96 → 128 | −3.5% | 1.33× | 53% |
+
+In core-seconds: 3,972 at 24 threads, 5,693 at 48, 12,928 at 128 — **3.3× the
+compute for 39% less wall**. Where core-hours are charged, 24 threads remains
+the most efficient and **48 is the reasonable turnaround/cost tradeoff**; 96 and
+128 buy little.
+
+### The DP kernel is only execution-bound up to ~48 threads
+
+The claim earlier on this page that the DP is flat while the screen degrades
+holds to 48 threads and **not beyond**:
+
+| | 24 → 48 | 48 → 128 |
+|---|---|---|
+| DP ns/comp | +1.0% (flat) | **+34%** |
+| screen ns/comp | +41% | +98% |
+
+The screen degrades worse throughout — its share of screen-plus-DP time grows
+from 19% to 33% — but past 48 threads the DP is contending too. This does not
+resurrect the
+[falsified bandwidth hypothesis](#it-is-not-memory-traffic-a-falsified-hypothesis)
+at the thread counts it was tested at, but it does mark the boundary: that test
+ran at 24 threads, in the regime where the DP *is* execution-bound. **The
+rolling-`d16` change should be re-tested at 128 threads before being written
+off**, which is the concrete form of the caveat in
+[How far these numbers travel](#how-far-these-numbers-travel).
+
+### What this overturns
+
+`b_shuffle` is serial, so its share of `run_dada` grows with every thread added:
+
+| threads | 24 | 48 | 96 | 128 |
+|---|---|---|---|---|
+| `b_shuffle` share of `run_dada` | 19.2% | 26.9% | 32.2% | **33.8%** |
+
+[#124 closed `b_shuffle`](shuffle-build-scan.md) partly on the grounds that no
+remaining phase in it was worth more than ~3% of `run_dada`. That was measured
+at 24 threads and **does not survive running wider**: at 48 threads the serial
+block is already over half of `run_dada` and `shuffle` is two-thirds of it. The
+move pass — the one phase with a favourable cost shape, sized at 1.8–2.9% and
+deliberately not built — is worth roughly double that at 48 threads.
+
+So the ranking has flipped. **At the thread counts these runs will actually use,
+the serial phases outrank the DP kernel**, and #124's closure should be re-read
+as conditional on thread count rather than final.
+
+!!! warning "Do not tune for 48 threads at the expense of fewer"
+
+    `dada2-rs` is also run on laptops and small allocations. Any change
+    motivated by this table must be checked across the ladder — 4, 8, 24 as
+    well as 48 — because a serial-phase optimisation that helps at 48 threads
+    can trade against per-core work that dominates at 4. The thread count is a
+    property of the deployment, not of the algorithm.
 
 ## How far these numbers travel
 
@@ -390,14 +481,22 @@ scheduler granted — which is why `--verbose` now reports both.
    walk — and cells per alignment, i.e. band width or a different algorithm.
 5. **`al2subs` is not the problem** (3.8–6.0%), which retires the hypothesis
    that post-processing explained the per-pair cost.
-6. **Run wider before optimising anything.** 48 threads is worth −20 to −28%
-   of `run_dada` against 24, output-identical, and a 128-core node has room
-   above that — more than any code change on this page has returned. Confirm
-   what the job actually gets from `--verbose` rather than from the scheduler's
-   variables, none of which distinguish cores from threads.
-7. **Weight the next target by where it will run.** The screen is
-   bandwidth-sensitive and the DP is not (+41% vs flat, 24 → 48 threads), so
-   the screen's share grows on wider machines while the DP's does not. Both the
-   ranking here and the ns constants are properties of this hardware — see
-   [How far these numbers travel](#how-far-these-numbers-travel) before
-   carrying them elsewhere.
+6. **Run at 48 threads.** Worth −28% of `run_dada` against 24,
+   output-identical — more than any code change on this page returned. Returns
+   collapse after that (−11.7% for 2× threads at 96, −3.5% at 128), and
+   `run_dada` has an Amdahl floor near 62 s regardless. Confirm what the job
+   actually gets from `--verbose` rather than the scheduler's variables, none
+   of which distinguish cores from threads.
+7. **The serial phases now outrank the DP kernel.** At 48 threads the serial
+   remainder is over half of `run_dada` and `b_shuffle` is two-thirds of it
+   (26.9% of `run_dada`, rising to 33.8% at 128). #124's closure was measured
+   at 24 threads and should be re-read as conditional on thread count; its
+   declined move-pass lever is worth roughly double there.
+8. **Re-test the rolling-`d16` change at 128 threads.** It was falsified at 24,
+   where the DP is genuinely execution-bound; by 128 the DP is +34% and
+   contending. Cheap, and the branch already exists.
+9. **Weight the next target by where it will run, and do not tune for 48
+   threads alone.** The ranking here and every ns constant are properties of
+   this hardware and this thread count — see
+   [How far these numbers travel](#how-far-these-numbers-travel), and check any
+   change across the ladder (4, 8, 24 as well as 48) before adopting it.
