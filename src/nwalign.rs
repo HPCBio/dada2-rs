@@ -2793,7 +2793,19 @@ mod tests {
             (1455, 32, "PacBio    (1455bp, band 32)"),
         ] {
             println!("  {label}");
-            for &nthreads in &[1usize, 2, 4, 8] {
+            // Ladder defaults to 1..=8 but should be taken up to the node's
+            // full core count — bandwidth contention is the whole hypothesis,
+            // and it does not appear until the cores are saturated:
+            //   DADA2RS_BENCH_THREADS=1,2,4,8,12,24 cargo test --release ...
+            let ladder: Vec<usize> = match std::env::var("DADA2RS_BENCH_THREADS") {
+                Ok(v) => v
+                    .split(',')
+                    .filter_map(|x| x.trim().parse().ok())
+                    .filter(|&n: &usize| n > 0)
+                    .collect(),
+                Err(_) => vec![1, 2, 4, 8],
+            };
+            for &nthreads in &ladder {
                 let mut out = Vec::new();
                 for reference in [true, false] {
                     let elapsed: f64 = std::thread::scope(|sc| {
