@@ -99,15 +99,54 @@ pub fn b_compare(
 // b_compare_parallel
 // ---------------------------------------------------------------------------
 
+/// Per-comparison cost, in nanoseconds, split into the two halves that matter
+/// for #127. `screen` is the k-mer prefilter, paid on every comparison;
+/// `align` is the DP alignment and its post-processing, paid only by pairs the
+/// screen lets through. `total - screen - align` is `compute_lambda` plus
+/// per-item overhead.
+#[derive(Clone, Copy, Default)]
+struct CompCost {
+    total: u64,
+    screen: u64,
+    align: u64,
+}
+
+/// Timing breakdown returned by [`b_compare_parallel`].
+///
+/// `busy / (map × nthreads)` is the map's parallel efficiency — if well below
+/// 1, threads idle inside the parallel region (tail load-imbalance); near 1
+/// with low OS-level utilization points to memory-bandwidth stalls instead.
+/// Returned (not global-accumulated) so it stays correct under nested
+/// per-sample parallelism.
+#[derive(Clone, Copy, Default)]
+pub struct CompareTiming {
+    /// Parallel-pass wall time.
+    pub map: std::time::Duration,
+    /// Post-processing store-loop wall time (serial).
+    pub serial: std::time::Duration,
+    /// Summed per-item compute time across all worker threads.
+    pub busy: std::time::Duration,
+    /// Portion of `busy` in the k-mer screen (zero unless `measure`).
+    ///
+    /// The screen runs on 100% of comparisons while the aligner runs only on
+    /// the 12-25% that pass it, so this ratio decides where `b_compare`'s cost
+    /// actually lives — and therefore whether the lever is a better index or a
+    /// better aligner (#127).
+    pub screen: std::time::Duration,
+    /// Portion of `busy` in DP alignment + `al2subs` + quality mapping.
+    pub align: std::time::Duration,
+    /// Comparisons that reached the k-mer screen (i.e. were not greedy-skipped).
+    pub screened: u64,
+    /// Comparisons that passed the screen and were aligned.
+    pub aligned: u64,
+}
+
 /// Parallel version of `b_compare` using Rayon.
 /// Equivalent to C++ `b_compare_parallel`.
-/// Returns `(map, serial, busy)` durations: `map` is the parallel-pass wall
-/// time, `serial` the post-processing store-loop wall time, and `busy` the
-/// summed per-item compute time across all worker threads. `busy / (map ×
-/// nthreads)` is the map's parallel efficiency — if well below 1, threads idle
-/// inside the parallel region (tail load-imbalance); near 1 with low OS-level
-/// utilization points to memory-bandwidth stalls instead. Returned (not
-/// global-accumulated) so it stays correct under nested per-sample parallelism.
+///
+/// Under `measure` the returned [`CompareTiming`] also carries the screen/align
+/// split; the extra timer pair is verbose-only because it is not free relative
+/// to a sub-microsecond k-mer screen.
 pub fn b_compare_parallel(
     b: &mut B,
     i: usize,
@@ -116,11 +155,7 @@ pub fn b_compare_parallel(
     params: &AlignParams,
     greedy: bool,
     measure: bool,
-) -> (
-    std::time::Duration,
-    std::time::Duration,
-    std::time::Duration,
-) {
+) -> CompareTiming {
     let center_idx = b.clusters[i]
         .center
         .expect("b_compare_parallel: cluster has no center");
@@ -150,34 +185,69 @@ pub fn b_compare_parallel(
     // `DADA2_RS_PAR_GRAIN` env var to tune for your workload.
     // Per-item compute time (4th tuple field, nanos) is summed after collect to
     // get total worker-busy time without cross-thread atomic contention.
-    let comps: Vec<(f64, u32, bool, u64)> = (0..nraw)
+    let comps: Vec<(f64, u32, bool, CompCost)> = (0..nraw)
         .into_par_iter()
         .with_max_len(par_max_len())
-        .map_init(AlignBuffers::new, |buf, index| {
-            // Per-item timing only under `measure` (verbose) — keeps the hot
-            // alignment loop allocation/Instant-free in production runs.
-            let t0 = measure.then(std::time::Instant::now);
-            let raw = &raws[index];
-            let (lambda, hamming, skipped) = if greedy && (raw.reads > center_reads || raw.lock) {
-                let lambda = compute_lambda(raw, None, err_mat, ncol, use_quals);
-                (lambda, u32::MAX, true)
-            } else {
-                let sub = sub_new_with_buf(&raws[center_idx], raw, params, buf);
-                let lambda = compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
-                let hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
-                (lambda, hamming, false)
-            };
-            let nanos = t0.map_or(0, |t| t.elapsed().as_nanos() as u64);
-            (lambda, hamming, skipped, nanos)
-        })
+        .map_init(
+            || {
+                if measure {
+                    AlignBuffers::measuring()
+                } else {
+                    AlignBuffers::new()
+                }
+            },
+            |buf, index| {
+                // Per-item timing only under `measure` (verbose) — keeps the hot
+                // alignment loop allocation/Instant-free in production runs.
+                let t0 = measure.then(std::time::Instant::now);
+                let raw = &raws[index];
+                let (lambda, hamming, skipped) = if greedy && (raw.reads > center_reads || raw.lock)
+                {
+                    let lambda = compute_lambda(raw, None, err_mat, ncol, use_quals);
+                    (lambda, u32::MAX, true)
+                } else {
+                    let sub = sub_new_with_buf(&raws[center_idx], raw, params, buf);
+                    let lambda = compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
+                    let hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
+                    (lambda, hamming, false)
+                };
+                // A greedy skip runs neither half, so leave both at zero rather
+                // than reading the buffer's stale values from the previous item.
+                let (screen, align) = if skipped || !measure {
+                    (0, 0)
+                } else {
+                    (buf.last_screen_nanos, buf.last_align_nanos)
+                };
+                let nanos = t0.map_or(0, |t| t.elapsed().as_nanos() as u64);
+                (
+                    lambda,
+                    hamming,
+                    skipped,
+                    CompCost {
+                        total: nanos,
+                        screen,
+                        align,
+                    },
+                )
+            },
+        )
         .collect();
     let map_dur = t_map.elapsed();
-    let busy_dur = std::time::Duration::from_nanos(comps.iter().map(|c| c.3).sum());
+    let cost = CompCost {
+        total: comps.iter().map(|c| c.3.total).sum(),
+        screen: comps.iter().map(|c| c.3.screen).sum(),
+        align: comps.iter().map(|c| c.3.align).sum(),
+    };
+    let busy_dur = std::time::Duration::from_nanos(cost.total);
+    // Denominators for the ns/comp figures: the screen runs on every
+    // non-greedy-skipped comparison, the aligner only on those it passes.
+    let screened = comps.iter().filter(|c| !c.2).count() as u64;
+    let aligned = comps.iter().filter(|c| !c.2 && c.1 != u32::MAX).count() as u64;
 
     // Serial post-processing: selectively store comparisons.
     let t_serial = std::time::Instant::now();
     let total_reads = b.reads as f64;
-    for (index, (lambda, hamming, skipped, _busy)) in comps.into_iter().enumerate() {
+    for (index, (lambda, hamming, skipped, _cost)) in comps.into_iter().enumerate() {
         // Match serial b_compare counting: only count non-skipped raws.
         if !skipped {
             b.nalign += 1;
@@ -208,7 +278,15 @@ pub fn b_compare_parallel(
             }
         }
     }
-    (map_dur, t_serial.elapsed(), busy_dur)
+    CompareTiming {
+        map: map_dur,
+        serial: t_serial.elapsed(),
+        busy: busy_dur,
+        screen: std::time::Duration::from_nanos(cost.screen),
+        align: std::time::Duration::from_nanos(cost.align),
+        screened,
+        aligned,
+    }
 }
 
 // ---------------------------------------------------------------------------

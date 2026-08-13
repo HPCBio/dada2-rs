@@ -133,11 +133,34 @@ pub struct AlignBuffers {
     // Traceback output. See struct doc.
     pub al0: Vec<u8>,
     pub al1: Vec<u8>,
+    /// When true, [`raw_align_with_buf`] and [`sub_new_with_buf`] record the
+    /// k-mer-screen and alignment times of their most recent call into
+    /// `last_screen_nanos` / `last_align_nanos` (issue #127).
+    ///
+    /// Off in production runs: the timer pair costs ~40-50 ns against a k-mer
+    /// screen that can itself be under a microsecond, so leaving it always-on
+    /// would distort the very ratio it exists to measure. Enabled only under
+    /// `--verbose`, where the reported numbers carry that overhead explicitly.
+    pub measure: bool,
+    /// Nanos in the k-mer screen of the last call. Paid on *every* comparison.
+    pub last_screen_nanos: u64,
+    /// Nanos in DP alignment + `al2subs` + quality mapping of the last call.
+    /// Zero when the screen shrouded the pair, which is the whole point of the
+    /// split: the screen's cost is unavoidable, the aligner's is what it buys.
+    pub last_align_nanos: u64,
 }
 
 impl AlignBuffers {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Enable per-call screen/align timing (see [`AlignBuffers::measure`]).
+    pub fn measuring() -> Self {
+        Self {
+            measure: true,
+            ..Self::default()
+        }
     }
 
     /// Borrow the most recent alignment output as a pair of slices.
@@ -1177,6 +1200,14 @@ pub fn raw_align_with_buf(
     buf: &mut AlignBuffers,
 ) -> Option<()> {
     // --- K-mer screening ---
+    // Timed under `buf.measure` (#127). The screen and the alignment are the
+    // two halves of a comparison's cost, and only the second is avoidable —
+    // the screen runs on all of them, the aligner only on those it passes.
+    let t_screen = buf.measure.then(std::time::Instant::now);
+    if buf.measure {
+        buf.last_screen_nanos = 0;
+        buf.last_align_nanos = 0;
+    }
     let mut kdist = 0.0f64;
     let mut kodist = -1.0f64; // sentinel: different from kdist when use_kmers=false
 
@@ -1211,10 +1242,33 @@ pub fn raw_align_with_buf(
         }
     }
 
+    if let Some(t) = t_screen {
+        buf.last_screen_nanos = t.elapsed().as_nanos() as u64;
+    }
+
     if p.use_kmers && kdist > p.kdist_cutoff {
         return None; // Outside k-mer distance threshold → NULL alignment.
     }
 
+    let t_align = buf.measure.then(std::time::Instant::now);
+    let r = raw_align_dp(raw1, raw2, p, buf, kdist, kodist);
+    if let Some(t) = t_align {
+        buf.last_align_nanos = t.elapsed().as_nanos() as u64;
+    }
+    r
+}
+
+/// The alignment half of [`raw_align_with_buf`], split out so the k-mer screen
+/// and the DP can be timed separately (#127). Behaviour is unchanged: this is
+/// the body that followed the screen's early return.
+fn raw_align_dp(
+    raw1: &Raw,
+    raw2: &Raw,
+    p: &AlignParams,
+    buf: &mut AlignBuffers,
+    kdist: f64,
+    kodist: f64,
+) -> Option<()> {
     // --- Method selection ---
     if p.band == 0 || (p.gapless && (kodist - kdist).abs() < f64::EPSILON) {
         align_gapless_with_buf(&raw1.seq, &raw2.seq, buf);
@@ -1328,6 +1382,10 @@ pub fn sub_new_with_buf(
     buf: &mut AlignBuffers,
 ) -> Option<Sub> {
     raw_align_with_buf(raw0, raw1, params, buf)?;
+    // Post-alignment work is charged to the alignment half (#127): it is paid
+    // only by pairs the screen let through, so it belongs to what the aligner
+    // costs, not to the screen's unavoidable baseline.
+    let t_post = buf.measure.then(std::time::Instant::now);
     let mut sub = al2subs(&buf.al0, &buf.al1);
 
     if let (Some(q0), Some(q1)) = (&raw0.qual, &raw1.qual) {
@@ -1337,6 +1395,9 @@ pub fn sub_new_with_buf(
             .iter()
             .map(|&pos| q1[sub.map[pos as usize] as usize])
             .collect();
+    }
+    if let Some(t) = t_post {
+        buf.last_align_nanos += t.elapsed().as_nanos() as u64;
     }
     Some(sub)
 }

@@ -715,6 +715,13 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // plus summed worker-busy time to derive the map's parallel efficiency.
     let (mut t_cmp_map, mut t_cmp_serial, mut t_cmp_busy) =
         (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+    // Split of the map's worker-busy time into the k-mer screen (paid on every
+    // comparison) vs. the DP alignment (paid only by pairs the screen passes),
+    // with the matching denominators. This ratio is what #127 exists to
+    // measure: it decides whether `b_compare`'s lever is a cheaper screen or a
+    // cheaper aligner.
+    let (mut t_cmp_screen, mut t_cmp_align) = (Duration::ZERO, Duration::ZERO);
+    let (mut n_cmp_screened, mut n_cmp_aligned) = (0u64, 0u64);
     // Shuffle rescan-redundancy accounting (verbose-only diagnostics).
     let (mut shuf_calls, mut shuf_moves, mut shuf_zero_move_calls) = (0u64, 0u64, 0u64);
     let mut shuf_comps_scanned = 0u64;
@@ -757,7 +764,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
 
     let t = Instant::now();
     if params.multithread {
-        let (m, s, busy) = b_compare_parallel(
+        let ct = b_compare_parallel(
             &mut bb,
             0,
             &params.err_mat,
@@ -766,9 +773,13 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             params.greedy,
             params.verbose,
         );
-        t_cmp_map += m;
-        t_cmp_serial += s;
-        t_cmp_busy += busy;
+        t_cmp_map += ct.map;
+        t_cmp_serial += ct.serial;
+        t_cmp_busy += ct.busy;
+        t_cmp_screen += ct.screen;
+        t_cmp_align += ct.align;
+        n_cmp_screened += ct.screened;
+        n_cmp_aligned += ct.aligned;
     } else {
         b_compare(
             &mut bb,
@@ -831,7 +842,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
 
         let t = Instant::now();
         if params.multithread {
-            let (m, s, busy) = b_compare_parallel(
+            let ct = b_compare_parallel(
                 &mut bb,
                 newi,
                 &params.err_mat,
@@ -840,9 +851,13 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 params.greedy,
                 params.verbose,
             );
-            t_cmp_map += m;
-            t_cmp_serial += s;
-            t_cmp_busy += busy;
+            t_cmp_map += ct.map;
+            t_cmp_serial += ct.serial;
+            t_cmp_busy += ct.busy;
+            t_cmp_screen += ct.screen;
+            t_cmp_align += ct.align;
+            n_cmp_screened += ct.screened;
+            n_cmp_aligned += ct.aligned;
         } else {
             b_compare(
                 &mut bb,
@@ -934,6 +949,51 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             t_cmp_map.as_secs_f64(),
             nthreads,
         );
+        // Screen-vs-align split of the map's worker-busy time (#127).
+        //
+        // Read it against the shroud rate: the screen's share is what the
+        // aligner never gets to avoid. A screen-dominated profile points at
+        // replacing the prefilter (an index that skips comparisons outright);
+        // an align-dominated one points back at the aligner, which is already
+        // well-explored. `other` is compute_lambda plus per-item overhead,
+        // including this instrumentation's own timer cost.
+        {
+            let busy = t_cmp_busy.as_secs_f64();
+            let screen = t_cmp_screen.as_secs_f64();
+            let align = t_cmp_align.as_secs_f64();
+            let pct = |x: f64| if busy > 0.0 { 100.0 * x / busy } else { 0.0 };
+            let per = |x: f64, n: u64| {
+                if n > 0 { x * 1e9 / n as f64 } else { 0.0 }
+            };
+            eprintln!(
+                "[dada] compare split (of {:.2}s busy over {} comparisons):",
+                busy, n_cmp_screened,
+            );
+            eprintln!(
+                "[dada]   kmer screen  {:8.2}s ({:4.1}%)  {:>13} comps  {:6.0} ns/comp  (every comparison)",
+                screen,
+                pct(screen),
+                n_cmp_screened,
+                per(screen, n_cmp_screened),
+            );
+            eprintln!(
+                "[dada]   align+subs   {:8.2}s ({:4.1}%)  {:>13} comps  {:6.0} ns/comp  ({:.1}% passed the screen)",
+                align,
+                pct(align),
+                n_cmp_aligned,
+                per(align, n_cmp_aligned),
+                if n_cmp_screened > 0 {
+                    100.0 * n_cmp_aligned as f64 / n_cmp_screened as f64
+                } else {
+                    0.0
+                },
+            );
+            eprintln!(
+                "[dada]   other        {:8.2}s ({:4.1}%)  (compute_lambda + per-item overhead)",
+                busy - screen - align,
+                pct(busy - screen - align),
+            );
+        }
         // Shuffle rescan redundancy: how much of the full-rescan work each
         // b_shuffle2 call actually translated into moves. High scanned/move and
         // a high zero-move-call fraction bound the headroom for an incremental
