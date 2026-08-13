@@ -144,7 +144,20 @@ pub struct AlignBuffers {
     pub measure: bool,
     /// Nanos in the k-mer screen of the last call. Paid on *every* comparison.
     pub last_screen_nanos: u64,
-    /// Nanos in DP alignment + `al2subs` + quality mapping of the last call.
+    /// Nanos in the DP alignment kernel proper (traceback included, `al2subs`
+    /// excluded) of the last call.
+    ///
+    /// Split out from `last_align_nanos` because the first MiSeq measurement put
+    /// `align+subs` at ~15.4 us per aligned pair — around 1.9 ns per DP cell for
+    /// a ~250 bp band-16 alignment, far above what a vectorized i16 kernel
+    /// should cost. Without this split the cause is ambiguous between a slow
+    /// kernel and expensive post-processing, so the number cannot be acted on.
+    pub last_dp_nanos: u64,
+    /// Nanos in `al2subs` + quality mapping of the last call — the
+    /// post-alignment work in [`sub_new_with_buf`].
+    pub last_post_nanos: u64,
+    /// Nanos in DP alignment + `al2subs` + quality mapping of the last call,
+    /// i.e. `last_dp_nanos + last_post_nanos`.
     /// Zero when the screen shrouded the pair, which is the whole point of the
     /// split: the screen's cost is unavoidable, the aligner's is what it buys.
     pub last_align_nanos: u64,
@@ -1206,6 +1219,8 @@ pub fn raw_align_with_buf(
     let t_screen = buf.measure.then(std::time::Instant::now);
     if buf.measure {
         buf.last_screen_nanos = 0;
+        buf.last_dp_nanos = 0;
+        buf.last_post_nanos = 0;
         buf.last_align_nanos = 0;
     }
     let mut kdist = 0.0f64;
@@ -1253,7 +1268,8 @@ pub fn raw_align_with_buf(
     let t_align = buf.measure.then(std::time::Instant::now);
     let r = raw_align_dp(raw1, raw2, p, buf, kdist, kodist);
     if let Some(t) = t_align {
-        buf.last_align_nanos = t.elapsed().as_nanos() as u64;
+        buf.last_dp_nanos = t.elapsed().as_nanos() as u64;
+        buf.last_align_nanos = buf.last_dp_nanos;
     }
     r
 }
@@ -1397,7 +1413,8 @@ pub fn sub_new_with_buf(
             .collect();
     }
     if let Some(t) = t_post {
-        buf.last_align_nanos += t.elapsed().as_nanos() as u64;
+        buf.last_post_nanos = t.elapsed().as_nanos() as u64;
+        buf.last_align_nanos += buf.last_post_nanos;
     }
     Some(sub)
 }

@@ -108,7 +108,8 @@ pub fn b_compare(
 struct CompCost {
     total: u64,
     screen: u64,
-    align: u64,
+    dp: u64,
+    post: u64,
 }
 
 /// Timing breakdown returned by [`b_compare_parallel`].
@@ -133,8 +134,11 @@ pub struct CompareTiming {
     /// actually lives — and therefore whether the lever is a better index or a
     /// better aligner (#127).
     pub screen: std::time::Duration,
-    /// Portion of `busy` in DP alignment + `al2subs` + quality mapping.
-    pub align: std::time::Duration,
+    /// Portion of `busy` in the DP alignment kernel proper.
+    pub dp: std::time::Duration,
+    /// Portion of `busy` in `al2subs` + quality mapping, i.e. the
+    /// post-alignment work paid only by pairs the screen passed.
+    pub post: std::time::Duration,
     /// Comparisons that reached the k-mer screen (i.e. were not greedy-skipped).
     pub screened: u64,
     /// Comparisons that passed the screen and were aligned.
@@ -213,10 +217,14 @@ pub fn b_compare_parallel(
                 };
                 // A greedy skip runs neither half, so leave both at zero rather
                 // than reading the buffer's stale values from the previous item.
-                let (screen, align) = if skipped || !measure {
-                    (0, 0)
+                let (screen, dp, post) = if skipped || !measure {
+                    (0, 0, 0)
                 } else {
-                    (buf.last_screen_nanos, buf.last_align_nanos)
+                    (
+                        buf.last_screen_nanos,
+                        buf.last_dp_nanos,
+                        buf.last_post_nanos,
+                    )
                 };
                 let nanos = t0.map_or(0, |t| t.elapsed().as_nanos() as u64);
                 (
@@ -226,7 +234,8 @@ pub fn b_compare_parallel(
                     CompCost {
                         total: nanos,
                         screen,
-                        align,
+                        dp,
+                        post,
                     },
                 )
             },
@@ -236,7 +245,8 @@ pub fn b_compare_parallel(
     let cost = CompCost {
         total: comps.iter().map(|c| c.3.total).sum(),
         screen: comps.iter().map(|c| c.3.screen).sum(),
-        align: comps.iter().map(|c| c.3.align).sum(),
+        dp: comps.iter().map(|c| c.3.dp).sum(),
+        post: comps.iter().map(|c| c.3.post).sum(),
     };
     let busy_dur = std::time::Duration::from_nanos(cost.total);
     // Denominators for the ns/comp figures: the screen runs on every
@@ -283,7 +293,8 @@ pub fn b_compare_parallel(
         serial: t_serial.elapsed(),
         busy: busy_dur,
         screen: std::time::Duration::from_nanos(cost.screen),
-        align: std::time::Duration::from_nanos(cost.align),
+        dp: std::time::Duration::from_nanos(cost.dp),
+        post: std::time::Duration::from_nanos(cost.post),
         screened,
         aligned,
     }

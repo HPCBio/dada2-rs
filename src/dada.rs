@@ -720,7 +720,8 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // with the matching denominators. This ratio is what #127 exists to
     // measure: it decides whether `b_compare`'s lever is a cheaper screen or a
     // cheaper aligner.
-    let (mut t_cmp_screen, mut t_cmp_align) = (Duration::ZERO, Duration::ZERO);
+    let (mut t_cmp_screen, mut t_cmp_dp, mut t_cmp_post) =
+        (Duration::ZERO, Duration::ZERO, Duration::ZERO);
     let (mut n_cmp_screened, mut n_cmp_aligned) = (0u64, 0u64);
     // Shuffle rescan-redundancy accounting (verbose-only diagnostics).
     let (mut shuf_calls, mut shuf_moves, mut shuf_zero_move_calls) = (0u64, 0u64, 0u64);
@@ -777,7 +778,8 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         t_cmp_serial += ct.serial;
         t_cmp_busy += ct.busy;
         t_cmp_screen += ct.screen;
-        t_cmp_align += ct.align;
+        t_cmp_dp += ct.dp;
+        t_cmp_post += ct.post;
         n_cmp_screened += ct.screened;
         n_cmp_aligned += ct.aligned;
     } else {
@@ -855,7 +857,8 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             t_cmp_serial += ct.serial;
             t_cmp_busy += ct.busy;
             t_cmp_screen += ct.screen;
-            t_cmp_align += ct.align;
+            t_cmp_dp += ct.dp;
+            t_cmp_post += ct.post;
             n_cmp_screened += ct.screened;
             n_cmp_aligned += ct.aligned;
         } else {
@@ -960,7 +963,9 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         {
             let busy = t_cmp_busy.as_secs_f64();
             let screen = t_cmp_screen.as_secs_f64();
-            let align = t_cmp_align.as_secs_f64();
+            let dp = t_cmp_dp.as_secs_f64();
+            let post = t_cmp_post.as_secs_f64();
+            let align = dp + post;
             let pct = |x: f64| if busy > 0.0 { 100.0 * x / busy } else { 0.0 };
             let per = |x: f64, n: u64| {
                 if n > 0 { x * 1e9 / n as f64 } else { 0.0 }
@@ -977,7 +982,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 per(screen, n_cmp_screened),
             );
             eprintln!(
-                "[dada]   align+subs   {:8.2}s ({:4.1}%)  {:>13} comps  {:6.0} ns/comp  ({:.1}% passed the screen)",
+                "[dada]   align total  {:8.2}s ({:4.1}%)  {:>13} comps  {:6.0} ns/comp  ({:.1}% passed the screen)",
                 align,
                 pct(align),
                 n_cmp_aligned,
@@ -987,6 +992,23 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 } else {
                     0.0
                 },
+            );
+            // DP-vs-post split (#127): a high align total is ambiguous between a
+            // slow kernel and expensive post-processing, and the two point at
+            // completely different fixes.
+            eprintln!(
+                "[dada]     dp kernel  {:8.2}s ({:4.1}%)  {:>13} comps  {:6.0} ns/comp",
+                dp,
+                pct(dp),
+                n_cmp_aligned,
+                per(dp, n_cmp_aligned),
+            );
+            eprintln!(
+                "[dada]     al2subs    {:8.2}s ({:4.1}%)  {:>13} comps  {:6.0} ns/comp  (+ qual mapping)",
+                post,
+                pct(post),
+                n_cmp_aligned,
+                per(post, n_cmp_aligned),
             );
             eprintln!(
                 "[dada]   other        {:8.2}s ({:4.1}%)  (compute_lambda + per-item overhead)",
