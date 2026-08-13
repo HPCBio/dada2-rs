@@ -64,6 +64,17 @@ here is the evidence, and here is the path it opens or closes."
   the prize ~2× because the scattered reconcile costs ~2× per comparison. Any
   implementation must be gated and off by default. #87 closed on this evidence;
   the phase itself is reconsidered as a whole in #124.
+- [Redesigning `b_shuffle`](shuffle-build-scan.md) — **negative result, and the
+  phase is closed.** Two build-scan redesigns were falsified: data layout, then
+  an exact bounded scan that pruned 56% of comparisons and *still* cost +4.8%
+  wall because the survivors ran at the scattered rate (6.83 → 14.09 ns/comp).
+  Completing the phase accounting then removed the reason to keep looking —
+  `b_shuffle` is 5.6–27% of `run_dada`, not the 46–55% of pooled wall that
+  motivated #124, and no remaining phase is worth more than 3%. The lesson that
+  generalises beyond the arithmetic: re-measure an optimisation's *premise*, not
+  only its design. Also the page on why exactness is worth enforcing on a change
+  you throw away — it caught a latent tie-break bug and is what makes the verdict
+  final rather than ambiguous.
 - [Band size & platform-aware defaults](band-size-platform-defaults.md) — the
   16/32 Illumina/HiFi band default is vindicated; the two platforms fail
   band-tightening through opposite mechanisms, so a single global band would be

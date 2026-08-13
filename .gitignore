@@ -14,3 +14,4 @@ __pycache__/
 # Local-only cargo override (points wfa2lib-rs at a local fork checkout; must
 # not reach CI, where that path does not exist). See .cargo/config.toml.
 /.cargo/config.toml
+.Rhistory
