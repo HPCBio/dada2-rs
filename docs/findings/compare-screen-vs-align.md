@@ -177,24 +177,47 @@ bandwidth degradation whatsoever), then **aggregate throughput stops dead** whil
 per-thread cost doubles by 24.
 
 The node itself is not the constraint: it has 72 physical cores (144 SMT
-threads). The runs are SLURM jobs allocated `--threads 24`, and the ladder's
-shape is what you get when those 24 logical CPUs are **12 physical cores plus
-their 12 SMT siblings** — a common allocation outcome when the scheduler counts
-CPUs rather than cores. Half the threads then share execution units with the
-other half, which is exactly the observed doubling at constant throughput. To
-confirm inside a job:
+threads); the newer node in the queue has 128 cores / 256 threads. The runs are
+SLURM jobs asking for 24 threads, and the allocation turns out to be **12
+physical cores plus their 12 SMT siblings** — confirmed from inside a job:
 
-```bash
-# logical CPUs the job may use
-grep Cpus_allowed_list /proc/self/status
-# how many *physical* cores those map to
-lscpu -p=CPU,CORE | grep -v '^#' | sort -t, -k2 -u | wc -l
+```console
+$ grep Cpus_allowed_list /proc/self/status
+Cpus_allowed_list:      0-11,72-83
 ```
 
-If that second number is 12 rather than 24, the allocation — not the code — is
-the ceiling, and requesting cores explicitly (`--threads-per-core=1`, or
-`--hint=nomultithread`) should roughly double throughput on a 72-core node.
-That would dwarf any kernel-level change discussed on this page.
+Linux enumerates each core's first SMT sibling as CPU 0–71 and its second as
+72–143, so CPU *n* and CPU *n+72* are the same physical core. `0-11,72-83` is
+precisely the pairs (0,72) … (11,83): 24 logical CPUs on 12 cores. Half the
+threads share execution units with the other half, which is exactly the
+doubling-at-constant-throughput the ladder shows. To check the sibling mapping
+directly:
+
+```bash
+lscpu -p=CPU,CORE | grep -v '^#' | awk -F, '$1==0 || $1==72'   # same CORE id?
+```
+
+The cause is the job request rather than the code. `--ntasks=24` (or any request
+counted in *tasks*/CPUs) buys 24 logical CPUs, which the scheduler is free to
+satisfy with 12 SMT-paired cores. For a single-process threaded program like
+this one the shape to ask for is cores:
+
+```bash
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=24
+#SBATCH --threads-per-core=1      # or: --hint=nomultithread
+...
+dada2-rs dada-pooled --threads "${SLURM_CPUS_PER_TASK}" ...
+```
+
+Note `$SLURM_NTASKS` is the wrong variable to drive `--threads` here: it counts
+tasks (MPI ranks), not the cores one process may use. `$SLURM_CPUS_PER_TASK` is
+the threading budget.
+
+**Expected effect: ~2× on the parallel portion of `run_dada`** — which is
+63–88% of it — for a job-script change and no code change. On nodes of 72 and
+128 cores there is a great deal more headroom above 24.
 
 !!! warning "This inflates every absolute constant on this page"
 
