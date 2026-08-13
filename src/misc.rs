@@ -386,9 +386,16 @@ pub fn cpu_allocation() -> (Option<usize>, Option<usize>) {
     (Some(cpus.len()), Some(cores.len()))
 }
 
+/// Non-Linux fallback. The logical CPU count is available everywhere, but
+/// there is no portable core-topology source, so physical cores are reported
+/// as unknown rather than guessed — an undercount would fire a spurious SMT
+/// warning, which is worse than saying nothing.
 #[cfg(not(target_os = "linux"))]
 pub fn cpu_allocation() -> (Option<usize>, Option<usize>) {
-    (None, None)
+    (
+        std::thread::available_parallelism().ok().map(|n| n.get()),
+        None,
+    )
 }
 
 /// One-line `--verbose` description of the CPU allocation the run actually got,
@@ -414,29 +421,70 @@ pub fn cpu_allocation_repr(threads: usize) -> (String, Option<String>) {
         logical,
         physical,
         host.as_deref(),
-        std::env::var("SLURM_JOB_ID").ok().as_deref(),
-        slurm_allocated_cpus(),
+        scheduler_job_id().as_deref(),
+        scheduler_allocation(),
     )
 }
 
-/// CPUs SLURM says it allocated on this node, or `None` outside a SLURM job.
+/// CPUs the batch scheduler says it allocated on this node, with the scheduler's
+/// name — or `None` when not running under a recognised one (a laptop, a
+/// workstation, an unrecognised scheduler).
 ///
-/// `SLURM_JOB_CPUS_PER_NODE` is the authoritative figure but can be written in
-/// run-length form (`"48"`, `"48(x2)"`, `"24,48"`); we take the first count,
-/// which is this node's. Falls back to `cpus-per-task × ntasks`.
-fn slurm_allocated_cpus() -> Option<usize> {
-    if let Ok(v) = std::env::var("SLURM_JOB_CPUS_PER_NODE") {
-        let head: String = v.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if let Ok(n) = head.parse() {
-            return Some(n);
+/// Covers the common HPC schedulers rather than SLURM alone, since `dada2-rs`
+/// is also run on PBS/LSF/SGE sites and on ordinary machines.
+fn scheduler_allocation() -> Option<(&'static str, usize)> {
+    // SLURM. SLURM_JOB_CPUS_PER_NODE is authoritative but can be written in
+    // run-length form ("48", "48(x2)", "24,48"); take the first count, which
+    // is this node's. Fall back to cpus-per-task × ntasks.
+    if std::env::var_os("SLURM_JOB_ID").is_some() {
+        if let Ok(v) = std::env::var("SLURM_JOB_CPUS_PER_NODE") {
+            let head: String = v.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = head.parse() {
+                return Some(("SLURM", n));
+            }
+        }
+        if let Some(cpt) = std::env::var("SLURM_CPUS_PER_TASK")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            let ntasks = std::env::var("SLURM_NTASKS")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(1);
+            return Some(("SLURM", cpt * ntasks));
         }
     }
-    let cpt: usize = std::env::var("SLURM_CPUS_PER_TASK").ok()?.parse().ok()?;
-    let ntasks: usize = std::env::var("SLURM_NTASKS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1);
-    Some(cpt * ntasks)
+    // PBS Pro / OpenPBS / TORQUE: NCPUS is set from the select statement.
+    if std::env::var_os("PBS_JOBID").is_some() {
+        for k in ["NCPUS", "PBS_NP"] {
+            if let Some(n) = std::env::var(k).ok().and_then(|v| v.parse().ok()) {
+                return Some(("PBS", n));
+            }
+        }
+    }
+    // LSF.
+    if std::env::var_os("LSB_JOBID").is_some()
+        && let Some(n) = std::env::var("LSB_DJOB_NUMPROC")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    {
+        return Some(("LSF", n));
+    }
+    // Grid Engine (SGE/UGE/OGE).
+    if std::env::var_os("JOB_ID").is_some()
+        && let Some(n) = std::env::var("NSLOTS").ok().and_then(|v| v.parse().ok())
+    {
+        return Some(("Grid Engine", n));
+    }
+    None
+}
+
+/// The scheduler's job id, for tying an archived log to an allocation.
+fn scheduler_job_id() -> Option<String> {
+    ["SLURM_JOB_ID", "PBS_JOBID", "LSB_JOBID", "JOB_ID"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok())
+        .filter(|v| !v.is_empty())
 }
 
 /// Formatting half of [`cpu_allocation_repr`], split out so the Linux-only
@@ -446,8 +494,8 @@ fn format_allocation(
     logical: Option<usize>,
     physical: Option<usize>,
     host: Option<&str>,
-    slurm_job: Option<&str>,
-    slurm_cpus: Option<usize>,
+    job_id: Option<&str>,
+    allocation: Option<(&str, usize)>,
 ) -> (String, Option<String>) {
     let mut desc = format!("{threads} threads");
     match (logical, physical) {
@@ -455,42 +503,55 @@ fn format_allocation(
         (Some(l), None) => desc.push_str(&format!(" on {l} logical CPUs (core topology unknown)")),
         _ => desc.push_str(" (allocation topology unavailable)"),
     }
-    if let Some(n) = slurm_cpus {
-        desc.push_str(&format!("; SLURM allocated {n} CPUs"));
+    if let Some((sched, n)) = allocation {
+        desc.push_str(&format!("; {sched} allocated {n} CPUs"));
     }
     if let Some(h) = host {
         desc.push_str(&format!(" [host {h}"));
-        if let Some(job) = slurm_job {
-            desc.push_str(&format!(", SLURM job {job}"));
+        if let Some(job) = job_id {
+            desc.push_str(&format!(", job {job}"));
         }
         desc.push(']');
     }
 
-    // Two distinct hazards, and the reachable one is *not* the obvious one.
-    //
-    // Oversubscription: more threads than cores this process may use.
-    //
-    // Unconfined: SLURM allocated fewer CPUs than the process is actually
-    // free to run on. Cores are only enforced by affinity or a cpuset cgroup
-    // when the site configures it (`ConstrainCores`) or the step is launched
-    // under `srun`; a batch script invoking the binary directly frequently
-    // runs unconfined, so `Cpus_allowed_list` reports the whole node and the
-    // job silently competes with anything co-scheduled on it. This is
-    // reported rather than corrected: running wider than the allocation is
-    // usually faster for the job and worse for the node.
-    let warn = match (physical, slurm_cpus) {
-        (Some(p), _) if threads > p => Some(format!(
-            "WARNING: {threads} threads share {p} physical cores (SMT siblings), so \
-             throughput may not exceed {p} cores' worth. Under SLURM request cores, \
-             not tasks: --ntasks=1 --cpus-per-task=N --threads-per-core=1, and set \
-             --threads from $SLURM_CPUS_PER_TASK (not $SLURM_NTASKS, which cannot \
-             distinguish the two)."
-        )),
-        (Some(p), Some(n)) if p > n => Some(format!(
-            "NOTE: SLURM allocated {n} CPUs but this process is not confined to them \
-             ({p} physical cores are reachable). Threads may land on cores allocated \
-             to other jobs, and timings are not attributable to the allocation. Launch \
-             the step under srun, or have the site set ConstrainCores, to bind it."
+    // Two distinct hazards. Both messages are written to be true off a batch
+    // scheduler as well as on one — a laptop can oversubscribe SMT siblings
+    // just as a compute node can — so scheduler-specific advice is appended
+    // only when a scheduler was actually detected.
+    let sched_hint = |sched: &str| match sched {
+        "SLURM" => " Under SLURM, request cores rather than tasks: \
+                    --ntasks=1 --cpus-per-task=N --threads-per-core=1, and set --threads \
+                    from $SLURM_CPUS_PER_TASK (not $SLURM_NTASKS, which cannot \
+                    distinguish the two)."
+            .to_string(),
+        "PBS" => " Under PBS, select cores explicitly (e.g. -l select=1:ncpus=N) and set \
+                  --threads from $NCPUS."
+            .to_string(),
+        other => format!(" Set --threads from the CPU count {other} allocated, not the node's."),
+    };
+
+    let warn = match (physical, allocation) {
+        // More threads than cores this process may use: SMT oversubscription.
+        (Some(p), alloc) if threads > p => {
+            let mut w = format!(
+                "WARNING: {threads} threads share {p} physical cores (SMT siblings), so \
+                 throughput may not exceed {p} cores' worth."
+            );
+            if let Some((sched, _)) = alloc {
+                w.push_str(&sched_hint(sched));
+            }
+            Some(w)
+        }
+        // The scheduler granted fewer CPUs than the process can actually reach.
+        // Cores are only enforced by affinity or a cpuset cgroup when the site
+        // configures it or the step is launched through the scheduler's
+        // launcher; a batch script invoking the binary directly frequently runs
+        // unconfined. Reported, not corrected: running wider is usually faster
+        // for the job and worse for the node, so it is the operator's call.
+        (Some(p), Some((sched, n))) if p > n => Some(format!(
+            "NOTE: {sched} allocated {n} CPUs but this process is not confined to them \
+             ({p} physical cores are reachable). Threads may land on cores allocated to \
+             other jobs, and timings are not attributable to the allocation."
         )),
         _ => None,
     };
@@ -534,18 +595,26 @@ mod tests {
             Some(12),
             Some("compute-5-6"),
             Some("2352266"),
-            Some(24),
+            Some(("SLURM", 24)),
         );
         assert_eq!(
             desc,
             "24 threads on 24 logical CPUs / 12 physical cores; SLURM allocated 24 CPUs \
-             [host compute-5-6, SLURM job 2352266]"
+             [host compute-5-6, job 2352266]"
         );
-        assert!(warn.unwrap().contains("24 threads share 12 physical cores"));
+        let w = warn.unwrap();
+        assert!(w.contains("24 threads share 12 physical cores"), "{w}");
+        assert!(w.contains("$SLURM_CPUS_PER_TASK"), "{w}");
 
         // Interactive under -c 24 --threads-per-core=1: 24 cores, both siblings.
-        let (desc, warn) =
-            format_allocation(24, Some(48), Some(24), Some("compute-5-6"), None, Some(24));
+        let (desc, warn) = format_allocation(
+            24,
+            Some(48),
+            Some(24),
+            Some("compute-5-6"),
+            None,
+            Some(("SLURM", 24)),
+        );
         assert!(desc.starts_with("24 threads on 48 logical CPUs / 24 physical cores"));
         assert!(warn.is_none(), "threads <= cores must not warn: {warn:?}");
 
@@ -558,26 +627,64 @@ mod tests {
             Some(128),
             Some("compute-5-6"),
             Some("2352276"),
-            Some(48),
+            Some(("SLURM", 48)),
         );
         assert_eq!(
             desc,
             "48 threads on 256 logical CPUs / 128 physical cores; SLURM allocated 48 CPUs \
-             [host compute-5-6, SLURM job 2352276]"
+             [host compute-5-6, job 2352276]"
         );
         let w = warn.expect("unconfined job must be flagged");
         assert!(w.contains("SLURM allocated 48 CPUs"), "{w}");
         assert!(w.contains("not confined"), "{w}");
     }
 
+    /// Off a batch scheduler the output must stay generic: no allocation
+    /// clause, no scheduler-specific advice, and no unattributable-allocation
+    /// NOTE (there is no allocation to be unconfined from).
     #[test]
-    fn format_allocation_no_note_when_confined_to_the_allocation() {
-        // Confined exactly: no warning of either kind.
-        let (_, warn) = format_allocation(24, Some(24), Some(24), None, None, Some(24));
+    fn format_allocation_is_generic_without_a_scheduler() {
+        // Laptop, sane thread count.
+        let (desc, warn) = format_allocation(8, Some(16), Some(8), None, None, None);
+        assert_eq!(desc, "8 threads on 16 logical CPUs / 8 physical cores");
         assert!(warn.is_none(), "{warn:?}");
-        // Outside SLURM entirely: nothing to compare against.
-        let (_, warn) = format_allocation(8, Some(128), Some(64), None, None, None);
+
+        // Laptop oversubscribing SMT: warn, but with no scheduler advice.
+        let (_, warn) = format_allocation(16, Some(16), Some(8), None, None, None);
+        let w = warn.expect("must warn when threads exceed cores");
+        assert!(w.contains("16 threads share 8 physical cores"), "{w}");
+        assert!(
+            !w.contains("SLURM"),
+            "leaked SLURM advice off-scheduler: {w}"
+        );
+        assert!(!w.contains("--cpus-per-task"), "leaked SLURM advice: {w}");
+
+        // A wide machine with a small thread count is not "unconfined".
+        let (_, warn) = format_allocation(8, Some(256), Some(128), None, None, None);
         assert!(warn.is_none(), "{warn:?}");
+    }
+
+    #[test]
+    fn format_allocation_handles_other_schedulers() {
+        let (desc, warn) = format_allocation(
+            64,
+            Some(64),
+            Some(32),
+            Some("nid001"),
+            Some("12345.pbs"),
+            Some(("PBS", 64)),
+        );
+        assert!(desc.contains("PBS allocated 64 CPUs"), "{desc}");
+        assert!(desc.contains("[host nid001, job 12345.pbs]"), "{desc}");
+        let w = warn.unwrap();
+        assert!(w.contains("$NCPUS"), "{w}");
+        assert!(!w.contains("SLURM"), "{w}");
+
+        // An unrecognised scheduler still gets a usable, non-SLURM hint.
+        let (_, warn) = format_allocation(8, Some(8), Some(4), None, None, Some(("LSF", 8)));
+        let w = warn.unwrap();
+        assert!(w.contains("LSF"), "{w}");
+        assert!(!w.contains("--cpus-per-task"), "{w}");
     }
 
     #[test]
