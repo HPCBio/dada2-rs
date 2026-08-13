@@ -203,7 +203,9 @@ per-thread cost doubles by 24.
 The node itself is not the constraint: it has 72 physical cores (144 SMT
 threads); the newer node in the queue has 128 cores / 256 threads. The runs are
 SLURM jobs asking for 24 threads, and the allocation turns out to be **12
-physical cores plus their 12 SMT siblings** — confirmed from inside a job:
+physical cores plus their 12 SMT siblings** — confirmed from inside a job on
+both nodes (`0-11,72-83` on the 72-core node; `0-11,128-139` on the 128-core
+node that ran the production benchmarks):
 
 ```console
 $ grep Cpus_allowed_list /proc/self/status
@@ -235,9 +237,9 @@ generally spread threads across distinct physical cores first — so the same
 `--threads 24` can behave quite differently depending on whether the allocation
 confines it to SMT-paired cores.
 
-That last point matters for reading this page: the thread ladder was run on a
-*separate* allocation from the production benchmarks, and only the ladder's
-allocation has been checked. It is also worth carrying back to earlier results —
+Both allocations have now been checked and both are 12 cores, so the ladder and
+the production benchmarks share this topology. It is also worth carrying back to
+earlier results —
 absolute wall times here have been attributed to node generation
 ([#124's runs](shuffle-build-scan.md) were ~1.5–2× slower on an older node) — but
 allocation topology is a competing explanation for part of that gap. Both are
@@ -265,25 +267,33 @@ the threading budget.
 63–88% of it — for a job-script change and no code change. On nodes of 72 and
 128 cores there is a great deal more headroom above 24.
 
-!!! warning "Which runs this applies to is not yet established"
+!!! warning "Every absolute constant on this page was measured on 12 cores"
 
-    The thread ladder above was measured on an allocation **confirmed** to be
-    12 physical cores. Whether the production runs in this page's main table
-    shared that topology is **unverified**: they were run on the newer
-    128-core node, and only the ladder is known to have been confined to 12
-    cores. So the per-unit constants below are *either* representative of a
-    dedicated core *or* roughly 2× it, depending on an allocation detail
-    nobody has checked. Resolving it needs one command inside the production
-    job — `grep Cpus_allowed_list /proc/self/status` — not a re-run.
+    Confirmed on the node that ran the production benchmarks (`-N 1 -n 24`,
+    128-core node):
 
-    Two things are unaffected either way. The **ratios** on this page (screen
-    vs align, DP vs `al2subs`, phase shares) come from runs measured under
-    identical conditions, and they carry every conclusion drawn here. And the
-    caution about `map parallel efficiency` stands regardless: that statistic
-    is `busy ÷ (map × nthreads)`, so threads each running at half speed report
-    as fully efficient. It measures whether the threads were *busy*, never
-    whether they had cores to be busy on — which is why it could not have
-    detected this on any node.
+    ```console
+    $ grep Cpus_allowed_list /proc/self/status
+    Cpus_allowed_list:    0-11,128-139
+    $ echo $SLURM_NTASKS $SLURM_CPUS_ON_NODE $SLURM_TASKS_PER_NODE
+    24 24 24
+    ```
+
+    CPU *n* and *n+128* are the same physical core, so that allocation is
+    **cores 0–11: 12 physical cores presented as 24 logical CPUs**. Every
+    per-unit cost quoted here is therefore roughly **2× what a dedicated core
+    would show**, and the pooled runs were using about a tenth of a 128-core
+    node.
+
+    Note that all three SLURM variables report `24`, and none of them can
+    distinguish cores from threads — which is how a recommendation to drive
+    `--threads` from `$SLURM_NTASKS` produces this. Nor could
+    `map parallel efficiency`: it is `busy ÷ (map × nthreads)`, so threads each
+    running at half speed report as fully efficient. It measures whether the
+    threads were *busy*, never whether they had cores to be busy on.
+
+    The **ratios** on this page are unaffected — every run shared these
+    conditions — and they carry all of its conclusions.
 
 ## Design constants
 
@@ -299,9 +309,9 @@ For costing any future change without re-running (24 threads, pinned node;
 | `compute_lambda` + overhead | 5.9–7.4% of compare | 3.2% of compare |
 | comparisons per unique | 1,350–1,771 | 1,410 |
 
-Measured at `--threads 24`; whether that allocation was 24 cores or 12
-SMT-paired cores is unverified (see the warning above), so these are reliable
-for modelling *relative* changes and provisional as absolutes. DP write traffic is a fixed 6 bytes/cell on
+Measured at `--threads 24` on an allocation confirmed to be 12 physical cores
+(see the warning above), so as absolutes these run ~2× a dedicated core; they
+are reliable for modelling *relative* changes. DP write traffic is a fixed 6 bytes/cell on
 both platforms and is **not** a useful cost term — see the falsification above.
 
 Note the last row: `b_compare` is the `O(nraw × nclusters)` term, and at ~1,400
