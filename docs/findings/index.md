@@ -75,6 +75,17 @@ here is the evidence, and here is the path it opens or closes."
   only its design. Also the page on why exactness is worth enforcing on a change
   you throw away — it caught a latent tie-break bug and is what makes the verdict
   final rather than ambiguous.
+- [Inside `b_compare`: screen vs align](compare-screen-vs-align.md) — the phase
+  that is 63–88% of `run_dada`, split by time for the first time. **Both
+  platforms are align-dominated**, PacBio most of all, refuting the prediction
+  that k=7's 16× larger k-mer vectors would make HiFi screen-bound: the screen
+  does cost 3.1× more per comparison there, but the alignment it guards costs
+  7.7× more. The k-mer screen closes as a perf target — it returns 3–7× on what
+  it costs, and a perfect free replacement caps out at 15–23%. What is left is
+  the banded NW **DP kernel at 30–63% of `run_dada`**, the largest single share
+  measured in this project, running at 1.2–1.8 ns/cell against 6 bytes of memory
+  traffic per cell — ~5/6 of it for a score matrix that is never read back.
+  Includes per-unit ns constants for costing any future design.
 - [Band size & platform-aware defaults](band-size-platform-defaults.md) — the
   16/32 Illumina/HiFi band default is vindicated; the two platforms fail
   band-tightening through opposite mechanisms, so a single global band would be

@@ -71,6 +71,7 @@ nav:
     - Band size & platform defaults: findings/band-size-platform-defaults.md
     - Carrying compmax across buds: findings/shuffle-compmax-carry.md
     - Redesigning b_shuffle (closed): findings/shuffle-build-scan.md
+    - Inside b_compare — screen vs align: findings/compare-screen-vs-align.md
     - Pseudo-pooling priors vs error model: findings/pseudo-pooling-priors-vs-error-model.md
     - Binned quality scores:
       - Overview: findings/binned-quality.md
