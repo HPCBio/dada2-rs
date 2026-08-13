@@ -4476,6 +4476,11 @@ fn resolve_dada_params(
 
     if verbose {
         eprintln!("[dada] {}", nwalign::backend_repr(&align_params));
+        let (alloc, alloc_warn) = misc::cpu_allocation_repr(threads);
+        eprintln!("[dada] cpu allocation: {alloc}");
+        if let Some(w) = alloc_warn {
+            eprintln!("[dada] {w}");
+        }
     }
 
     let params = dada::DadaParams {

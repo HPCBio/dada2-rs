@@ -315,3 +315,227 @@ pub fn err_print(err: &[[f64; 4]; 4]) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// CPU allocation topology (issue #127)
+// ---------------------------------------------------------------------------
+
+/// Parse a Linux CPU list (`Cpus_allowed_list` / sysfs style) such as
+/// `"0-11,128-139"` or `"0,2,4-7"` into individual CPU ids.
+///
+/// Returns `None` if any element fails to parse, so a malformed file degrades
+/// to "unknown" rather than to a confidently wrong core count.
+pub fn parse_cpu_list(s: &str) -> Option<Vec<usize>> {
+    let mut out = Vec::new();
+    for part in s.trim().split(',').filter(|p| !p.is_empty()) {
+        match part.split_once('-') {
+            Some((lo, hi)) => {
+                let (lo, hi) = (lo.trim().parse().ok()?, hi.trim().parse::<usize>().ok()?);
+                if hi < lo {
+                    return None;
+                }
+                out.extend(lo..=hi);
+            }
+            None => out.push(part.trim().parse().ok()?),
+        }
+    }
+    Some(out)
+}
+
+/// Logical CPUs this process may run on, and how many *physical* cores they
+/// map to.
+///
+/// The second number is the one that matters and the one no environment
+/// variable reports: a SLURM allocation of "24" can be 24 cores or 12 cores
+/// with both SMT siblings of each, and `$SLURM_NTASKS`, `$SLURM_CPUS_ON_NODE`
+/// and `$SLURM_TASKS_PER_NODE` all read `24` either way. Cores are counted as
+/// distinct `(physical_package_id, core_id)` pairs from sysfs.
+///
+/// Returns `(logical, physical)`; `physical` is `None` when sysfs topology is
+/// unavailable (containers, non-Linux, restricted mounts).
+#[cfg(target_os = "linux")]
+pub fn cpu_allocation() -> (Option<usize>, Option<usize>) {
+    use std::collections::HashSet;
+
+    let status = match std::fs::read_to_string("/proc/self/status") {
+        Ok(s) => s,
+        Err(_) => return (None, None),
+    };
+    let list = status
+        .lines()
+        .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+        .and_then(parse_cpu_list);
+    let Some(cpus) = list else {
+        return (None, None);
+    };
+
+    let mut cores = HashSet::new();
+    for &c in &cpus {
+        let base = format!("/sys/devices/system/cpu/cpu{c}/topology");
+        let core = std::fs::read_to_string(format!("{base}/core_id"));
+        let pkg = std::fs::read_to_string(format!("{base}/physical_package_id"));
+        match (core, pkg) {
+            (Ok(core), Ok(pkg)) => {
+                cores.insert((pkg.trim().to_string(), core.trim().to_string()));
+            }
+            // Topology unreadable for even one CPU: report logical only rather
+            // than an undercount that would read as a false SMT warning.
+            _ => return (Some(cpus.len()), None),
+        }
+    }
+    (Some(cpus.len()), Some(cores.len()))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn cpu_allocation() -> (Option<usize>, Option<usize>) {
+    (None, None)
+}
+
+/// One-line `--verbose` description of the CPU allocation the run actually got,
+/// so archived logs are self-describing about it (issue #127).
+///
+/// Motivation: pooled benchmarks were run for months at `--threads 24` on
+/// allocations that were 12 physical cores, which halved throughput invisibly.
+/// Nothing in the environment revealed it — and the in-process
+/// `map parallel efficiency` statistic cannot either, being
+/// `busy / (map × nthreads)`: threads each running at half speed on shared SMT
+/// siblings still report as fully efficient.
+///
+/// Returns the description plus an optional warning when `threads` exceeds the
+/// physical cores available.
+pub fn cpu_allocation_repr(threads: usize) -> (String, Option<String>) {
+    let (logical, physical) = cpu_allocation();
+    let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty());
+    format_allocation(
+        threads,
+        logical,
+        physical,
+        host.as_deref(),
+        std::env::var("SLURM_JOB_ID").ok().as_deref(),
+    )
+}
+
+/// Formatting half of [`cpu_allocation_repr`], split out so the Linux-only
+/// output can be tested from any platform.
+fn format_allocation(
+    threads: usize,
+    logical: Option<usize>,
+    physical: Option<usize>,
+    host: Option<&str>,
+    slurm_job: Option<&str>,
+) -> (String, Option<String>) {
+    let mut desc = format!("{threads} threads");
+    match (logical, physical) {
+        (Some(l), Some(p)) => desc.push_str(&format!(" on {l} logical CPUs / {p} physical cores")),
+        (Some(l), None) => desc.push_str(&format!(" on {l} logical CPUs (core topology unknown)")),
+        _ => desc.push_str(" (allocation topology unavailable)"),
+    }
+    if let Some(h) = host {
+        desc.push_str(&format!(" [host {h}"));
+        if let Some(job) = slurm_job {
+            desc.push_str(&format!(", SLURM job {job}"));
+        }
+        desc.push(']');
+    }
+
+    let warn = physical.filter(|&p| threads > p).map(|p| {
+        format!(
+            "WARNING: {threads} threads share {p} physical cores (SMT siblings), so \
+             throughput may not exceed {p} cores' worth. Under SLURM request cores, \
+             not tasks: --ntasks=1 --cpus-per-task=N --threads-per-core=1, and set \
+             --threads from $SLURM_CPUS_PER_TASK (not $SLURM_NTASKS, which cannot \
+             distinguish the two)."
+        )
+    });
+    (desc, warn)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_cpu_list_ranges_and_singletons() {
+        // The two real allocations from issue #127: 12 cores presented as 24
+        // logical CPUs, and the corrected 24-core request.
+        assert_eq!(parse_cpu_list("0-11,128-139").unwrap().len(), 24);
+        assert_eq!(parse_cpu_list("0-23,128-151").unwrap().len(), 48);
+        assert_eq!(parse_cpu_list("0-31").unwrap().len(), 32);
+        assert_eq!(parse_cpu_list("0,2,4-7").unwrap(), vec![0, 2, 4, 5, 6, 7]);
+        assert_eq!(parse_cpu_list("  3  ").unwrap(), vec![3]);
+        assert_eq!(parse_cpu_list("").unwrap(), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn parse_cpu_list_rejects_malformed() {
+        // Must return None, never a partial list: an undercount would surface
+        // as a spurious SMT warning.
+        assert!(parse_cpu_list("0-").is_none());
+        assert!(parse_cpu_list("7-3").is_none());
+        assert!(parse_cpu_list("abc").is_none());
+        assert!(parse_cpu_list("0-11,x").is_none());
+    }
+
+    /// The two real allocations from issue #127, so the Linux output is
+    /// pinned from any platform.
+    #[test]
+    fn format_allocation_matches_the_issue_127_cases() {
+        // -n 24 on the 128-core node: Cpus_allowed_list 0-11,128-139
+        let (desc, warn) =
+            format_allocation(24, Some(24), Some(12), Some("compute-5-6"), Some("2352266"));
+        assert_eq!(
+            desc,
+            "24 threads on 24 logical CPUs / 12 physical cores [host compute-5-6, SLURM job 2352266]"
+        );
+        let w = warn.expect("must warn: 24 threads on 12 cores");
+        assert!(w.contains("24 threads share 12 physical cores"), "{w}");
+
+        // -c 24 --threads-per-core=1: Cpus_allowed_list 0-23,128-151
+        let (desc, warn) = format_allocation(24, Some(48), Some(24), Some("compute-5-6"), None);
+        assert_eq!(
+            desc,
+            "24 threads on 48 logical CPUs / 24 physical cores [host compute-5-6]"
+        );
+        assert!(
+            warn.is_none(),
+            "must not warn when threads <= cores: {warn:?}"
+        );
+    }
+
+    #[test]
+    fn format_allocation_degrades_without_topology() {
+        let (desc, warn) = format_allocation(8, None, None, None, None);
+        assert_eq!(desc, "8 threads (allocation topology unavailable)");
+        assert!(warn.is_none());
+        let (desc, warn) = format_allocation(8, Some(16), None, Some("h"), None);
+        assert_eq!(
+            desc,
+            "8 threads on 16 logical CPUs (core topology unknown) [host h]"
+        );
+        assert!(warn.is_none(), "unknown core count must not warn");
+    }
+
+    #[test]
+    fn cpu_allocation_repr_is_always_printable() {
+        // Must degrade gracefully wherever topology is unreadable (macOS,
+        // containers) rather than panicking or omitting the thread count.
+        let (desc, _) = cpu_allocation_repr(8);
+        assert!(desc.starts_with("8 threads"), "unexpected: {desc}");
+    }
+
+    #[test]
+    fn cpu_allocation_repr_warns_only_when_oversubscribed() {
+        let (_, warn) = cpu_allocation_repr(1);
+        if let (_, Some(p)) = cpu_allocation() {
+            assert!(p >= 1);
+            // One thread can never oversubscribe.
+            assert!(warn.is_none(), "spurious warning: {warn:?}");
+            let (_, warn_many) = cpu_allocation_repr(p + 1);
+            assert!(warn_many.is_some(), "missing warning at {} threads", p + 1);
+            assert!(warn_many.unwrap().contains("SLURM_CPUS_PER_TASK"));
+        }
+    }
+}
