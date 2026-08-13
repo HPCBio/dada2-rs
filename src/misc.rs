@@ -415,7 +415,28 @@ pub fn cpu_allocation_repr(threads: usize) -> (String, Option<String>) {
         physical,
         host.as_deref(),
         std::env::var("SLURM_JOB_ID").ok().as_deref(),
+        slurm_allocated_cpus(),
     )
+}
+
+/// CPUs SLURM says it allocated on this node, or `None` outside a SLURM job.
+///
+/// `SLURM_JOB_CPUS_PER_NODE` is the authoritative figure but can be written in
+/// run-length form (`"48"`, `"48(x2)"`, `"24,48"`); we take the first count,
+/// which is this node's. Falls back to `cpus-per-task × ntasks`.
+fn slurm_allocated_cpus() -> Option<usize> {
+    if let Ok(v) = std::env::var("SLURM_JOB_CPUS_PER_NODE") {
+        let head: String = v.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(n) = head.parse() {
+            return Some(n);
+        }
+    }
+    let cpt: usize = std::env::var("SLURM_CPUS_PER_TASK").ok()?.parse().ok()?;
+    let ntasks: usize = std::env::var("SLURM_NTASKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    Some(cpt * ntasks)
 }
 
 /// Formatting half of [`cpu_allocation_repr`], split out so the Linux-only
@@ -426,12 +447,16 @@ fn format_allocation(
     physical: Option<usize>,
     host: Option<&str>,
     slurm_job: Option<&str>,
+    slurm_cpus: Option<usize>,
 ) -> (String, Option<String>) {
     let mut desc = format!("{threads} threads");
     match (logical, physical) {
         (Some(l), Some(p)) => desc.push_str(&format!(" on {l} logical CPUs / {p} physical cores")),
         (Some(l), None) => desc.push_str(&format!(" on {l} logical CPUs (core topology unknown)")),
         _ => desc.push_str(" (allocation topology unavailable)"),
+    }
+    if let Some(n) = slurm_cpus {
+        desc.push_str(&format!("; SLURM allocated {n} CPUs"));
     }
     if let Some(h) = host {
         desc.push_str(&format!(" [host {h}"));
@@ -441,15 +466,34 @@ fn format_allocation(
         desc.push(']');
     }
 
-    let warn = physical.filter(|&p| threads > p).map(|p| {
-        format!(
+    // Two distinct hazards, and the reachable one is *not* the obvious one.
+    //
+    // Oversubscription: more threads than cores this process may use.
+    //
+    // Unconfined: SLURM allocated fewer CPUs than the process is actually
+    // free to run on. Cores are only enforced by affinity or a cpuset cgroup
+    // when the site configures it (`ConstrainCores`) or the step is launched
+    // under `srun`; a batch script invoking the binary directly frequently
+    // runs unconfined, so `Cpus_allowed_list` reports the whole node and the
+    // job silently competes with anything co-scheduled on it. This is
+    // reported rather than corrected: running wider than the allocation is
+    // usually faster for the job and worse for the node.
+    let warn = match (physical, slurm_cpus) {
+        (Some(p), _) if threads > p => Some(format!(
             "WARNING: {threads} threads share {p} physical cores (SMT siblings), so \
              throughput may not exceed {p} cores' worth. Under SLURM request cores, \
              not tasks: --ntasks=1 --cpus-per-task=N --threads-per-core=1, and set \
              --threads from $SLURM_CPUS_PER_TASK (not $SLURM_NTASKS, which cannot \
              distinguish the two)."
-        )
-    });
+        )),
+        (Some(p), Some(n)) if p > n => Some(format!(
+            "NOTE: SLURM allocated {n} CPUs but this process is not confined to them \
+             ({p} physical cores are reachable). Threads may land on cores allocated \
+             to other jobs, and timings are not attributable to the allocation. Launch \
+             the step under srun, or have the site set ConstrainCores, to bind it."
+        )),
+        _ => None,
+    };
     (desc, warn)
 }
 
@@ -479,43 +523,61 @@ mod tests {
         assert!(parse_cpu_list("0-11,x").is_none());
     }
 
-    /// The two real allocations from issue #127, so the Linux output is
-    /// pinned from any platform.
+    /// The real allocations from issue #127, so the Linux output is pinned
+    /// from any platform.
     #[test]
     fn format_allocation_matches_the_issue_127_cases() {
-        // -n 24 on the 128-core node: Cpus_allowed_list 0-11,128-139
-        let (desc, warn) =
-            format_allocation(24, Some(24), Some(12), Some("compute-5-6"), Some("2352266"));
+        // Interactive `srun --pty` under -n 24: bound to 12 cores.
+        let (desc, warn) = format_allocation(
+            24,
+            Some(24),
+            Some(12),
+            Some("compute-5-6"),
+            Some("2352266"),
+            Some(24),
+        );
         assert_eq!(
             desc,
-            "24 threads on 24 logical CPUs / 12 physical cores [host compute-5-6, SLURM job 2352266]"
+            "24 threads on 24 logical CPUs / 12 physical cores; SLURM allocated 24 CPUs \
+             [host compute-5-6, SLURM job 2352266]"
         );
-        let w = warn.expect("must warn: 24 threads on 12 cores");
-        assert!(w.contains("24 threads share 12 physical cores"), "{w}");
+        assert!(warn.unwrap().contains("24 threads share 12 physical cores"));
 
-        // -c 24 --threads-per-core=1: Cpus_allowed_list 0-23,128-151
-        let (desc, warn) = format_allocation(24, Some(48), Some(24), Some("compute-5-6"), None);
+        // Interactive under -c 24 --threads-per-core=1: 24 cores, both siblings.
+        let (desc, warn) =
+            format_allocation(24, Some(48), Some(24), Some("compute-5-6"), None, Some(24));
+        assert!(desc.starts_with("24 threads on 48 logical CPUs / 24 physical cores"));
+        assert!(warn.is_none(), "threads <= cores must not warn: {warn:?}");
+
+        // The batch case: unconfined, so the whole node is reachable. This is
+        // what the production runs actually look like, and it must be flagged
+        // as *unattributable* rather than reported as a 128-core allocation.
+        let (desc, warn) = format_allocation(
+            48,
+            Some(256),
+            Some(128),
+            Some("compute-5-6"),
+            Some("2352276"),
+            Some(48),
+        );
         assert_eq!(
             desc,
-            "24 threads on 48 logical CPUs / 24 physical cores [host compute-5-6]"
+            "48 threads on 256 logical CPUs / 128 physical cores; SLURM allocated 48 CPUs \
+             [host compute-5-6, SLURM job 2352276]"
         );
-        assert!(
-            warn.is_none(),
-            "must not warn when threads <= cores: {warn:?}"
-        );
+        let w = warn.expect("unconfined job must be flagged");
+        assert!(w.contains("SLURM allocated 48 CPUs"), "{w}");
+        assert!(w.contains("not confined"), "{w}");
     }
 
     #[test]
-    fn format_allocation_degrades_without_topology() {
-        let (desc, warn) = format_allocation(8, None, None, None, None);
-        assert_eq!(desc, "8 threads (allocation topology unavailable)");
-        assert!(warn.is_none());
-        let (desc, warn) = format_allocation(8, Some(16), None, Some("h"), None);
-        assert_eq!(
-            desc,
-            "8 threads on 16 logical CPUs (core topology unknown) [host h]"
-        );
-        assert!(warn.is_none(), "unknown core count must not warn");
+    fn format_allocation_no_note_when_confined_to_the_allocation() {
+        // Confined exactly: no warning of either kind.
+        let (_, warn) = format_allocation(24, Some(24), Some(24), None, None, Some(24));
+        assert!(warn.is_none(), "{warn:?}");
+        // Outside SLURM entirely: nothing to compare against.
+        let (_, warn) = format_allocation(8, Some(128), Some(64), None, None, None);
+        assert!(warn.is_none(), "{warn:?}");
     }
 
     #[test]
