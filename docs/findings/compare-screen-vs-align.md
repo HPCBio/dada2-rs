@@ -245,10 +245,19 @@ absolute wall times here have been attributed to node generation
 allocation topology is a competing explanation for part of that gap. Both are
 untested, and the same in-job command settles them.
 
-The cause is the job request rather than the code. `--ntasks=24` (or any request
-counted in *tasks*/CPUs) buys 24 logical CPUs, which the scheduler is free to
-satisfy with 12 SMT-paired cores. For a single-process threaded program like
-this one the shape to ask for is cores:
+The cause is the job request rather than the code. `-n 24` asks for 24 *tasks*,
+which the scheduler is free to satisfy with 12 SMT-paired cores. For a
+single-process threaded program the shape to ask for is cores, and it works:
+
+```console
+$ srun -N 1 -n 1 -c 24 --threads-per-core=1 -p hpcbioamd --pty bash
+$ grep Cpus_allowed_list /proc/self/status
+Cpus_allowed_list:    0-23,128-151
+```
+
+`0-23,128-151` is the pairs (0,128) … (23,151) — **24 distinct physical cores**,
+both siblings of each exposed — against 12 cores for the same nominal "24"
+before. As a batch script:
 
 ```bash
 #SBATCH --nodes=1
@@ -259,9 +268,17 @@ this one the shape to ask for is cores:
 dada2-rs dada-pooled --threads "${SLURM_CPUS_PER_TASK}" ...
 ```
 
-Note `$SLURM_NTASKS` is the wrong variable to drive `--threads` here: it counts
-tasks (MPI ranks), not the cores one process may use. `$SLURM_CPUS_PER_TASK` is
-the threading budget.
+`$SLURM_NTASKS` is the wrong variable to drive `--threads`: it counts tasks
+(MPI ranks), not the cores one process may use. `$SLURM_CPUS_PER_TASK` is the
+threading budget.
+
+!!! tip "Check this from `srun`, not `salloc`"
+
+    `salloc` grants the allocation but leaves the shell on the *login* node
+    unless the cluster configures `SallocDefaultCommand` to step onto the
+    compute node — so `Cpus_allowed_list` read after `salloc` reports the login
+    node's cpuset and looks fine no matter what the job got. Read it from
+    `srun --pty bash`, and confirm the hostname changed before trusting it.
 
 **Expected effect: ~2× on the parallel portion of `run_dada`** — which is
 63–88% of it — for a job-script change and no code change. On nodes of 72 and
