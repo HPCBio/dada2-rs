@@ -147,7 +147,34 @@ impl<T: Serialize> Tagged<T> {
 /// Transparently decompresses gzip — by `.gz` extension for real files, or by
 /// gzip-magic detection when reading stdin (`path == "-"`).
 pub fn read_tagged_json<T: DeserializeOwned>(path: &Path, expected: &[&str]) -> io::Result<T> {
+    read_tagged_json_timed(path, expected, &mut JsonReadCost::default())
+}
+
+/// Where the time went in a tagged-JSON read (issue #127).
+///
+/// `read` is I/O plus gunzip, `parse` is deserialization, `bytes` is the
+/// *uncompressed* size. Splitting them is what distinguishes a filesystem
+/// problem from a format problem: on a pooled run these loads are serial, so
+/// their share of wall grows with every thread added to the parallel phases.
+#[derive(Default, Clone, Copy)]
+pub struct JsonReadCost {
+    pub read: std::time::Duration,
+    pub parse: std::time::Duration,
+    pub bytes: u64,
+}
+
+/// [`read_tagged_json`], accumulating its cost breakdown into `cost`.
+pub fn read_tagged_json_timed<T: DeserializeOwned>(
+    path: &Path,
+    expected: &[&str],
+    cost: &mut JsonReadCost,
+) -> io::Result<T> {
+    let t = std::time::Instant::now();
     let bytes = read_all_maybe_gz(path)?;
+    cost.read += t.elapsed();
+    cost.bytes += bytes.len() as u64;
+
+    let t = std::time::Instant::now();
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
@@ -169,8 +196,10 @@ pub fn read_tagged_json<T: DeserializeOwned>(path: &Path, expected: &[&str]) -> 
         }
     }
 
-    serde_json::from_value(value)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{label}: {e}")))
+    let out = serde_json::from_value(value)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{label}: {e}")));
+    cost.parse += t.elapsed();
+    out
 }
 
 /// Open a JSON file and deserialize it, transparently decompressing gzip when
