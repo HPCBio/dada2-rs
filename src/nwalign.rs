@@ -786,61 +786,81 @@ pub fn align_vectorized_with_buf(
     let ncol = 2 + start_col + (band_usize + len2 - len1).min(len2) / 2;
     let nrow = len1 + len2 + 1;
 
-    reset_buf(&mut buf.d16, ncol * nrow, 0i16);
+    // The `d` score matrix is a **3-row rolling buffer**, not the full
+    // `ncol × nrow` matrix (issue #127). The DP recurrence for anti-diagonal
+    // `row` reads only rows `row-1` (left/up) and `row-2` (diag), and the
+    // traceback below reads `p` alone and never touches `d` — so every `d` row
+    // older than two is write-only. Keeping the full matrix cost 4 of the 6
+    // bytes of memory traffic per DP cell (a zeroing pass plus the write, over
+    // `i16` scores) for data that is never read back; on a 1.5 kbp HiFi pair at
+    // band 32 that is a 199 KB per-alignment allocation retired down to 210 B.
+    //
+    // `p` stays full-size: the traceback genuinely needs every pointer.
+    //
+    // Dropping the `d` zeroing pass is safe because no cell is read before it
+    // is written. Within a row, `dploop` writes exactly `[col_min, col_max]`;
+    // the only cells outside that range which the next two rows read are
+    // `col_min-1` and `col_max+1`, and each of those is *always* either an
+    // edge-fill cell (while the ends-free edges are still active) or one of the
+    // four sentinel columns `{0, 1, ncol-2, ncol-1}`. Both are rewritten for
+    // every row below, which the rolling buffer requires in any case since the
+    // slot carries stale values from three rows back.
+    const DROWS: usize = 3;
+    reset_buf(&mut buf.d16, ncol * DROWS, 0i16);
     reset_buf(&mut buf.p8, ncol * nrow, 0u8);
     reset_buf(&mut buf.diag_buf, ncol, 0i16);
-    let d = &mut buf.d16[..ncol * nrow];
     let p = &mut buf.p8[..ncol * nrow];
     let diag_buf = &mut buf.diag_buf[..ncol];
 
-    // Sentinel fill: columns 0,1 and ncol-2,ncol-1 in every row act as hard
-    // band boundaries.  fill_val is chosen so fill_val + gap_p doesn't overflow.
+    // Sentinel value for the hard band-boundary columns. Chosen so that
+    // fill_val + gap_p doesn't overflow.
     let min_score = mismatch.min(gap_p).min(match_score).min(0);
     let fill_val = i16::MIN.wrapping_sub(min_score);
-    for row in 0..nrow {
-        d[row * ncol] = fill_val;
-        d[row * ncol + 1] = fill_val;
-        d[row * ncol + ncol - 2] = fill_val;
-        d[row * ncol + ncol - 1] = fill_val;
-    }
 
-    // Starting cell (0,0) in compressed coordinates.
-    d[start_col] = 0;
+    // Rolling slots, held in DP order: `[diag (row-2), prev (row-1), cur]`.
+    // Rotating left by one after each anti-diagonal re-labels them for the next
+    // row (old `prev` → `diag`, old `cur` → `prev`, old `diag` → the slot about
+    // to be overwritten), which keeps the three borrows disjoint by position.
+    let (d_a, d_rest) = buf.d16[..ncol * DROWS].split_at_mut(ncol);
+    let (d_b, d_c) = d_rest.split_at_mut(ncol);
+    let mut slots: [&mut [i16]; DROWS] = [d_a, d_b, d_c];
+
+    // Per-row initialisation, applied to `cur` as each anti-diagonal is
+    // reached rather than in an up-front pass over the whole matrix.
+    // `row_free` is the accumulated ends-free edge score at this row; it is
+    // carried incrementally so that saturation matches the original repeated
+    // `saturating_add` exactly.
+    let left_fill_limit = 1 + band_usize.min(len1);
+    let top_fill_limit = 1 + (band_usize + len2 - len1).min(len2);
+    // Column of the left/top edge cell at `row`, matching the original
+    // decrement-after-even / increment-after-odd walks.
+    let left_col = |row: usize| (start_col - 1).saturating_sub((row - 1) / 2);
+    let top_col = |row: usize| start_col + row / 2;
+
+    // Rows 0 and 1 are consumed by the first main-loop iteration (row 2), so
+    // they are initialised here; rows ≥ 2 are initialised inside the loop.
+    for (row, slot) in slots.iter_mut().enumerate().take(2) {
+        slot[0] = fill_val;
+        slot[1] = fill_val;
+        slot[ncol - 2] = fill_val;
+        slot[ncol - 1] = fill_val;
+        if row == 0 {
+            // Starting cell (0,0) in compressed coordinates.
+            slot[start_col] = 0;
+        } else {
+            if row < left_fill_limit {
+                slot[left_col(row)] = end_gap_p;
+                p[row * ncol + left_col(row)] = 3;
+            }
+            if row < top_fill_limit {
+                slot[top_col(row)] = end_gap_p;
+                p[row * ncol + top_col(row)] = 2;
+            }
+        }
+    }
     p[start_col] = 0;
-
-    // Fill "left column" (gaps in s2 at the start of s1) — ends-free edge.
-    {
-        let mut row = 1usize;
-        let mut col = start_col - 1;
-        let mut d_free = end_gap_p;
-        let limit = 1 + band_usize.min(len1);
-        while row < limit {
-            d[row * ncol + col] = d_free;
-            p[row * ncol + col] = 3;
-            if row.is_multiple_of(2) {
-                col = col.saturating_sub(1);
-            }
-            row += 1;
-            d_free = d_free.saturating_add(end_gap_p);
-        }
-    }
-
-    // Fill "top row" (gaps in s1 at the start of s2) — ends-free edge.
-    {
-        let mut row = 1usize;
-        let mut col = start_col;
-        let mut d_free = end_gap_p;
-        let limit = 1 + (band_usize + len2 - len1).min(len2);
-        while row < limit {
-            d[row * ncol + col] = d_free;
-            p[row * ncol + col] = 2;
-            if row % 2 == 1 {
-                col += 1;
-            }
-            row += 1;
-            d_free = d_free.saturating_add(end_gap_p);
-        }
-    }
+    // Edge score for row 1; advanced once per row below.
+    let mut row_free = end_gap_p;
 
     // Main DP: iterate over anti-diagonals (row = i + j).
     let mut row = 2usize;
@@ -855,6 +875,29 @@ pub fn align_vectorized_with_buf(
     while row <= len1 + len2 {
         let n = col_max - col_min + 1;
 
+        // --- Initialise this row's slot ---
+        // The slot still holds row-3's values, so the sentinels and the
+        // ends-free edge cells are rewritten here. This replaces the original
+        // up-front passes over the full matrix; ordering within the row is
+        // preserved (sentinels first, then edge fills, then the DP), which
+        // matters where an edge cell lands on a sentinel column.
+        row_free = row_free.saturating_add(end_gap_p);
+        {
+            let cur = &mut slots[2];
+            cur[0] = fill_val;
+            cur[1] = fill_val;
+            cur[ncol - 2] = fill_val;
+            cur[ncol - 1] = fill_val;
+            if row < left_fill_limit {
+                cur[left_col(row)] = row_free;
+                p[row * ncol + left_col(row)] = 3;
+            }
+            if row < top_fill_limit {
+                cur[top_col(row)] = row_free;
+                p[row * ncol + top_col(row)] = 2;
+            }
+        }
+
         // --- Fill diag_buf for this anti-diagonal ---
         // Cell (i,j) in the original NW matrix uses s1[i-1] vs s2[j-1].
         // Here i_max / j_min are 0-indexed, so s1[i_max] vs s2[j_min].
@@ -865,8 +908,7 @@ pub fn align_vectorized_with_buf(
         // We guard with explicit bounds checks and use fill_val so the sentinel
         // columns in d suppress any influence on the traceback.
         {
-            let base = (row - 2) * ncol + col_min;
-            let d_prev2 = &d[base..base + n];
+            let d_prev2 = &slots[0][col_min..col_min + n];
             let diag_out = &mut diag_buf[col_min..col_min + n];
 
             // The in-bounds cells of this anti-diagonal form a contiguous range
@@ -915,33 +957,19 @@ pub fn align_vectorized_with_buf(
         // left  = d[(row-1)*ncol + col_min - even]
         // up    = d[(row-1)*ncol + col_min + 1 - even]
         // out   = d[row*ncol + col_min]
+        // Offsets are now *relative to the row*, since each rolling slot is
+        // exactly one row wide.
         let even_off = if even { 1 } else { 0 }; // even=true → subtract 1
-        let prev_base = (row - 1) * ncol;
-        let left_off = prev_base + col_min - even_off;
-        let up_off = prev_base + col_min + 1 - even_off;
-        let _out_off = row * ncol + col_min;
+        let left_off = col_min - even_off;
+        let up_off = col_min + 1 - even_off;
 
-        // Split d into previous-row (read) and current-row (write) slices.
-        let (d_prev_part, d_cur_part) = d.split_at_mut(row * ncol);
-        let d_prev = &d_prev_part[prev_base..];
-        let d_cur = &mut d_cur_part[..ncol];
+        let p_cur = &mut p[row * ncol..row * ncol + ncol];
 
-        let (p_prev_part, p_cur_part) = p.split_at_mut(row * ncol);
-        let _ = p_prev_part; // unused; p_cur accessed via index below
-        let p_cur = &mut p_cur_part[..ncol];
-
+        // `slots` is held as [diag(row-2), prev(row-1), cur]; destructuring
+        // gives the disjoint borrows `dploop` needs.
+        let [_, d_prev, d_cur] = &mut slots;
         dploop(
-            d_cur,
-            p_cur,
-            d_prev,
-            diag_buf,
-            left_off - prev_base, // relative to d_prev
-            up_off - prev_base,
-            col_min, // relative to d_cur / p_cur
-            col_min,
-            n,
-            gap_p,
-            swap,
+            d_cur, p_cur, d_prev, diag_buf, left_off, up_off, col_min, col_min, n, gap_p, swap,
         );
 
         // --- Band transition: widen active columns at wedge boundaries ---
@@ -959,15 +987,17 @@ pub fn align_vectorized_with_buf(
         }
 
         // --- End-gap recalculation (when end_gap_p > gap_p, e.g. ends-free) ---
-        // left_off and up_off are absolute indices into d (= prev_base + relative).
+        // `left_off`/`up_off` index the previous row (`slots[1]`); `col_min` and
+        // `col_max` may already have been advanced by the band transition
+        // above, matching the original absolute-index arithmetic.
         if end_gap_p > gap_p {
             // Left boundary: gap in s2 extending to end of s1
             if recalc_left {
-                let d_free = d[left_off].saturating_add(end_gap_p);
-                let cur = d[row * ncol + col_min];
+                let d_free = slots[1][left_off].saturating_add(end_gap_p);
+                let cur = slots[2][col_min];
                 let pcur = p[row * ncol + col_min];
                 if d_free > cur {
-                    d[row * ncol + col_min] = d_free;
+                    slots[2][col_min] = d_free;
                     p[row * ncol + col_min] = 2;
                 } else if !(d_free != cur || !swap && pcur != 1 || swap && pcur == 2) {
                     p[row * ncol + col_min] = 2;
@@ -979,11 +1009,11 @@ pub fn align_vectorized_with_buf(
 
             // Right boundary: gap in s1 extending to end of s2
             if recalc_right {
-                let d_free = d[up_off + col_max - col_min].saturating_add(end_gap_p);
-                let cur = d[row * ncol + col_max];
+                let d_free = slots[1][up_off + col_max - col_min].saturating_add(end_gap_p);
+                let cur = slots[2][col_max];
                 let pcur = p[row * ncol + col_max];
                 if d_free > cur {
-                    d[row * ncol + col_max] = d_free;
+                    slots[2][col_max] = d_free;
                     p[row * ncol + col_max] = 3;
                 } else if !(d_free != cur || !swap && pcur == 3 || swap && pcur != 1) {
                     p[row * ncol + col_max] = 3;
@@ -1047,6 +1077,11 @@ pub fn align_vectorized_with_buf(
         } else if even {
             col_max = col_max.saturating_sub(1);
         }
+
+        // Re-label the rolling slots for the next anti-diagonal: old `prev`
+        // becomes `diag`, old `cur` becomes `prev`, and old `diag` becomes the
+        // slot that row+1 overwrites.
+        slots.rotate_left(1);
 
         row += 1;
         even = !even;
@@ -2325,6 +2360,630 @@ mod tests {
         let s1 = encode("ACGTACGTACGT");
         let s2 = encode("ACGACGTACGT"); // one deletion (11 matches, 1 interior gap)
         check_endsfree_score(&s1, &s2, 11 * 5 + (-8), "one-gap");
+    }
+
+    // -----------------------------------------------------------------------
+    // Rolling-buffer differential test (issue #127)
+    // -----------------------------------------------------------------------
+    // Verbatim copy of the pre-#127 full-matrix `align_vectorized_with_buf`,
+    // kept as a byte-identity oracle for the 3-row rolling `d16` rewrite. The
+    // rolling version must produce the *same alignment strings*, not merely the
+    // same optimal score (which `sweep_vectorized_parity` already checks against
+    // `align_endsfree`) — a score-equal but differently-placed gap would change
+    // `al2subs` output and therefore the error model.
+    #[allow(clippy::needless_range_loop)]
+    fn align_vectorized_reference(
+        s1_in: &[u8],
+        s2_in: &[u8],
+        scores: &VectorizedAlignScores,
+        buf: &mut AlignBuffers,
+    ) {
+        let VectorizedAlignScores {
+            match_score,
+            mismatch,
+            gap_p,
+            end_gap_p,
+            band,
+        } = *scores;
+        // Ensure s1 is the shorter sequence; record whether we swapped.
+        let swap = s1_in.len() > s2_in.len();
+        let (s1, s2) = if swap { (s2_in, s1_in) } else { (s1_in, s2_in) };
+        let len1 = s1.len();
+        let len2 = s2.len();
+
+        let band = if band < 0 { len2 as i32 } else { band };
+        let band_usize = band as usize;
+
+        // Compressed matrix dimensions (diagonal layout).
+        // Column index for original cell (i,j): (2*start_col + j - i) / 2
+        let start_col = 1 + band_usize.min(len1).div_ceil(2);
+        let ncol = 2 + start_col + (band_usize + len2 - len1).min(len2) / 2;
+        let nrow = len1 + len2 + 1;
+
+        reset_buf(&mut buf.d16, ncol * nrow, 0i16);
+        reset_buf(&mut buf.p8, ncol * nrow, 0u8);
+        reset_buf(&mut buf.diag_buf, ncol, 0i16);
+        let d = &mut buf.d16[..ncol * nrow];
+        let p = &mut buf.p8[..ncol * nrow];
+        let diag_buf = &mut buf.diag_buf[..ncol];
+
+        // Sentinel fill: columns 0,1 and ncol-2,ncol-1 in every row act as hard
+        // band boundaries.  fill_val is chosen so fill_val + gap_p doesn't overflow.
+        let min_score = mismatch.min(gap_p).min(match_score).min(0);
+        let fill_val = i16::MIN.wrapping_sub(min_score);
+        for row in 0..nrow {
+            d[row * ncol] = fill_val;
+            d[row * ncol + 1] = fill_val;
+            d[row * ncol + ncol - 2] = fill_val;
+            d[row * ncol + ncol - 1] = fill_val;
+        }
+
+        // Starting cell (0,0) in compressed coordinates.
+        d[start_col] = 0;
+        p[start_col] = 0;
+
+        // Fill "left column" (gaps in s2 at the start of s1) — ends-free edge.
+        {
+            let mut row = 1usize;
+            let mut col = start_col - 1;
+            let mut d_free = end_gap_p;
+            let limit = 1 + band_usize.min(len1);
+            while row < limit {
+                d[row * ncol + col] = d_free;
+                p[row * ncol + col] = 3;
+                if row.is_multiple_of(2) {
+                    col = col.saturating_sub(1);
+                }
+                row += 1;
+                d_free = d_free.saturating_add(end_gap_p);
+            }
+        }
+
+        // Fill "top row" (gaps in s1 at the start of s2) — ends-free edge.
+        {
+            let mut row = 1usize;
+            let mut col = start_col;
+            let mut d_free = end_gap_p;
+            let limit = 1 + (band_usize + len2 - len1).min(len2);
+            while row < limit {
+                d[row * ncol + col] = d_free;
+                p[row * ncol + col] = 2;
+                if row % 2 == 1 {
+                    col += 1;
+                }
+                row += 1;
+                d_free = d_free.saturating_add(end_gap_p);
+            }
+        }
+
+        // Main DP: iterate over anti-diagonals (row = i + j).
+        let mut row = 2usize;
+        let mut col_min = start_col;
+        let mut col_max = start_col;
+        let mut i_max = 0i64; // 0-indexed into s1 (decrements along anti-diag)
+        let mut j_min = 0usize; // 0-indexed into s2 (increments along anti-diag)
+        let mut even = true;
+        let mut recalc_left = false;
+        let mut recalc_right = false;
+
+        while row <= len1 + len2 {
+            let n = col_max - col_min + 1;
+
+            // --- Fill diag_buf for this anti-diagonal ---
+            // Cell (i,j) in the original NW matrix uses s1[i-1] vs s2[j-1].
+            // Here i_max / j_min are 0-indexed, so s1[i_max] vs s2[j_min].
+            //
+            // The active band can extend one cell past the valid sequence range at
+            // the lower-right corner (equal-length sequences, banded mode).  The
+            // C++ reference reads s2[len2] in that case (null-terminator UB).
+            // We guard with explicit bounds checks and use fill_val so the sentinel
+            // columns in d suppress any influence on the traceback.
+            {
+                let base = (row - 2) * ncol + col_min;
+                let d_prev2 = &d[base..base + n];
+                let diag_out = &mut diag_buf[col_min..col_min + n];
+
+                // The in-bounds cells of this anti-diagonal form a contiguous range
+                // [k_lo, k_hi): `si = i_max - k` in [0, len1) and `sj = j_min + k`
+                // in [0, len2). Hoisting that bounds test out of the per-cell loop
+                // (computing the range once) lets the hot middle run guard-free with
+                // sequential `s1`/`s2` walks — matching R's branchless scalar
+                // diag-fill — while staying memory-safe (no null-terminator UB).
+                // Cells outside the range take `fill_val`; sentinel `d` columns then
+                // suppress any influence on the traceback.
+                let k_lo = (i_max - len1 as i64 + 1).clamp(0, n as i64) as usize;
+                let k_hi = (i_max + 1)
+                    .min(len2 as i64 - j_min as i64)
+                    .clamp(0, n as i64) as usize;
+                let k_hi = k_hi.max(k_lo);
+
+                // Boundary cells (si ≥ len1 below k_lo; si < 0 or sj ≥ len2 at/above
+                // k_hi): out of range.
+                for (dst, &prev) in diag_out[..k_lo].iter_mut().zip(&d_prev2[..k_lo]) {
+                    *dst = prev.saturating_add(fill_val);
+                }
+                for (dst, &prev) in diag_out[k_hi..].iter_mut().zip(&d_prev2[k_hi..]) {
+                    *dst = prev.saturating_add(fill_val);
+                }
+
+                // In-bounds middle, guard-free. `s2` is read forward; `s1` in reverse
+                // (si decreases as k increases). The slice bounds are provably valid
+                // because every k in [k_lo, k_hi) maps to an in-range si/sj.
+                if k_lo < k_hi {
+                    let s1_mid =
+                        &s1[(i_max - (k_hi as i64 - 1)) as usize..=(i_max - k_lo as i64) as usize];
+                    let s2_mid = &s2[j_min + k_lo..j_min + k_hi];
+                    for (((dst, &prev), &a), &b) in diag_out[k_lo..k_hi]
+                        .iter_mut()
+                        .zip(&d_prev2[k_lo..k_hi])
+                        .zip(s1_mid.iter().rev())
+                        .zip(s2_mid.iter())
+                    {
+                        let score = if a == b { match_score } else { mismatch };
+                        *dst = prev.saturating_add(score);
+                    }
+                }
+            }
+
+            // --- Compute d/p for this row using the previous row ---
+            // left  = d[(row-1)*ncol + col_min - even]
+            // up    = d[(row-1)*ncol + col_min + 1 - even]
+            // out   = d[row*ncol + col_min]
+            let even_off = if even { 1 } else { 0 }; // even=true → subtract 1
+            let prev_base = (row - 1) * ncol;
+            let left_off = prev_base + col_min - even_off;
+            let up_off = prev_base + col_min + 1 - even_off;
+            let _out_off = row * ncol + col_min;
+
+            // Split d into previous-row (read) and current-row (write) slices.
+            let (d_prev_part, d_cur_part) = d.split_at_mut(row * ncol);
+            let d_prev = &d_prev_part[prev_base..];
+            let d_cur = &mut d_cur_part[..ncol];
+
+            let (p_prev_part, p_cur_part) = p.split_at_mut(row * ncol);
+            let _ = p_prev_part; // unused; p_cur accessed via index below
+            let p_cur = &mut p_cur_part[..ncol];
+
+            dploop(
+                d_cur,
+                p_cur,
+                d_prev,
+                diag_buf,
+                left_off - prev_base, // relative to d_prev
+                up_off - prev_base,
+                col_min, // relative to d_cur / p_cur
+                col_min,
+                n,
+                gap_p,
+                swap,
+            );
+
+            // --- Band transition: widen active columns at wedge boundaries ---
+            // C++ decrements j_min unconditionally (unsigned underflow 0 → SIZE_MAX).
+            // The next main-update iteration increments it back to 0.  Using
+            // wrapping_sub matches this; the intervening diag_buf fill safely
+            // handles the out-of-range index via the bounds guard above.
+            if row == band_usize.min(len1) {
+                col_min = col_min.saturating_sub(1);
+                i_max += 1;
+                j_min = j_min.wrapping_sub(1);
+            }
+            if row == (band_usize + len2 - len1).min(len2) {
+                col_max += 1;
+            }
+
+            // --- End-gap recalculation (when end_gap_p > gap_p, e.g. ends-free) ---
+            // left_off and up_off are absolute indices into d (= prev_base + relative).
+            if end_gap_p > gap_p {
+                // Left boundary: gap in s2 extending to end of s1
+                if recalc_left {
+                    let d_free = d[left_off].saturating_add(end_gap_p);
+                    let cur = d[row * ncol + col_min];
+                    let pcur = p[row * ncol + col_min];
+                    if d_free > cur {
+                        d[row * ncol + col_min] = d_free;
+                        p[row * ncol + col_min] = 2;
+                    } else if !(d_free != cur || !swap && pcur != 1 || swap && pcur == 2) {
+                        p[row * ncol + col_min] = 2;
+                    }
+                }
+                if i_max == len1 as i64 - 1 {
+                    recalc_left = true;
+                }
+
+                // Right boundary: gap in s1 extending to end of s2
+                if recalc_right {
+                    let d_free = d[up_off + col_max - col_min].saturating_add(end_gap_p);
+                    let cur = d[row * ncol + col_max];
+                    let pcur = p[row * ncol + col_max];
+                    if d_free > cur {
+                        d[row * ncol + col_max] = d_free;
+                        p[row * ncol + col_max] = 3;
+                    } else if !(d_free != cur || !swap && pcur == 3 || swap && pcur != 1) {
+                        p[row * ncol + col_max] = 3;
+                    }
+                }
+                let j_max_1idx = row.div_ceil(2) + col_max - start_col;
+                if j_max_1idx == len2 {
+                    recalc_right = true;
+                }
+            }
+
+            // --- Update col_min, col_max, i_max, j_min for next anti-diagonal ---
+            // j_min uses wrapping arithmetic because the band transition above may
+            // set it to usize::MAX (matching C++ unsigned underflow); the increment
+            // here wraps it back to 0.
+            let band_mod2 = band % 2;
+            if (row as i32) < band && (row as i32) < len1 as i32 {
+                // Upper triangle for s1
+                if even {
+                    col_min = col_min.saturating_sub(1);
+                }
+                i_max += 1;
+            } else if i_max < (len1 as i64) - 1 {
+                // Banded area
+                if band_mod2 == 0 {
+                    if even {
+                        j_min = j_min.wrapping_add(1);
+                    } else {
+                        i_max += 1;
+                    }
+                } else if even {
+                    col_min = col_min.saturating_sub(1);
+                    i_max += 1;
+                } else {
+                    col_min += 1;
+                    j_min = j_min.wrapping_add(1);
+                }
+            } else {
+                // Lower triangle for s1
+                if !even {
+                    col_min += 1;
+                }
+                j_min = j_min.wrapping_add(1);
+            }
+
+            let top_limit = (band_usize + len2 - len1).min(len2);
+            if row < top_limit {
+                if !even {
+                    col_max += 1;
+                }
+            } else if row.div_ceil(2) + col_max - start_col < len2 {
+                let full_band = band_usize + len2 - len1;
+                if full_band.is_multiple_of(2) {
+                    if even {
+                        col_max = col_max.saturating_sub(1);
+                    } else {
+                        col_max += 1;
+                    }
+                }
+                // no action for odd full_band
+            } else if even {
+                col_max = col_max.saturating_sub(1);
+            }
+
+            row += 1;
+            even = !even;
+        }
+
+        // --- Traceback through compressed p matrix ---
+        // Reborrow via disjoint fields: p8 (shared) + al0/al1 (mutable each) are
+        // three distinct fields of `buf`, so NLL permits holding them simultaneously.
+        let p_ro = &buf.p8[..ncol * nrow];
+        let al0 = &mut buf.al0;
+        let al1 = &mut buf.al1;
+        al0.clear();
+        al1.clear();
+        al0.reserve(len1 + len2);
+        al1.reserve(len1 + len2);
+
+        let mut i = len1;
+        let mut j = len2;
+        while i > 0 || j > 0 {
+            // Compressed column: (2*start_col + j - i) / 2  (C-style truncating division).
+            // j - i can be odd, which is why C++ just truncates — the correct column
+            // for (i,j) in the anti-diagonal layout is floor((2*start_col + j - i) / 2).
+            let col_signed = 2 * start_col as i64 + j as i64 - i as i64;
+            debug_assert!(
+                col_signed >= 0,
+                "vectorized traceback: col_signed={col_signed} < 0 at i={i} j={j}"
+            );
+            let col = (col_signed / 2) as usize;
+            match p_ro[(i + j) * ncol + col] {
+                1 => {
+                    al0.push(s1[i - 1]);
+                    al1.push(s2[j - 1]);
+                    i -= 1;
+                    j -= 1;
+                }
+                2 => {
+                    al0.push(b'-');
+                    al1.push(s2[j - 1]);
+                    j -= 1;
+                }
+                3 => {
+                    al0.push(s1[i - 1]);
+                    al1.push(b'-');
+                    i -= 1;
+                }
+                v => panic!("vectorized traceback: invalid pointer {v} at i={i} j={j}"),
+            }
+        }
+        al0.reverse();
+        al1.reverse();
+
+        // Restore original input ordering if we swapped the DP inputs.
+        if swap {
+            std::mem::swap(&mut buf.al0, &mut buf.al1);
+        }
+    }
+
+    /// A/B the rolling-buffer DP against the retained full-matrix reference on
+    /// synthetic pairs at both platforms' geometries.
+    ///
+    ///     cargo test --release -- --ignored bench_rolling_d16 --nocapture
+    ///
+    /// NOTE: this machine is not the benchmark node. The change is a
+    /// memory-traffic reduction, so a laptop with large caches and high
+    /// per-core bandwidth will *understate* the win — especially for the
+    /// long-read geometry, whose 199 KB full matrix is the case that does not
+    /// fit L2 on the target. Treat the ratio as a lower bound; see
+    /// docs/findings/compare-screen-vs-align.md.
+    #[test]
+    #[ignore]
+    fn bench_rolling_d16() {
+        let mut state = 0x243F6A88_85A308D3u64;
+        for &(len, band, label) in &[
+            (240usize, 16i32, "MiSeq R1  (240bp, band 16)"),
+            (160, 16, "MiSeq R2  (160bp, band 16)"),
+            (1455, 32, "PacBio    (1455bp, band 32)"),
+        ] {
+            let s1: Vec<u8> = (0..len)
+                .map(|_| 1 + (rng_next(&mut state) % 4) as u8)
+                .collect();
+            let mut s2 = s1.clone();
+            for k in (0..len).step_by(50) {
+                s2[k] = 1 + (s2[k] % 4);
+            }
+            let scores = VectorizedAlignScores {
+                match_score: 5,
+                mismatch: -4,
+                gap_p: -8,
+                end_gap_p: 0,
+                band,
+            };
+            let iters = if len > 1000 { 2_000 } else { 20_000 };
+            let cells = (2 * len + 1) * (band as usize + 1);
+
+            let mut buf = AlignBuffers::new();
+            let mut time = |f: &mut dyn FnMut(&mut AlignBuffers)| {
+                for _ in 0..iters / 10 {
+                    f(&mut buf);
+                }
+                let t = std::time::Instant::now();
+                for _ in 0..iters {
+                    f(&mut buf);
+                }
+                t.elapsed().as_secs_f64() / iters as f64 * 1e9
+            };
+            let new_ns =
+                time(&mut |b: &mut AlignBuffers| align_vectorized_with_buf(&s1, &s2, &scores, b));
+            let old_ns =
+                time(&mut |b: &mut AlignBuffers| align_vectorized_reference(&s1, &s2, &scores, b));
+            println!(
+                "  {label}: full-matrix {old_ns:>8.0} ns ({:.2} ns/cell)  ->  rolling {new_ns:>8.0} ns ({:.2} ns/cell)   {:.2}x",
+                old_ns / cells as f64,
+                new_ns / cells as f64,
+                old_ns / new_ns
+            );
+        }
+    }
+
+    /// The same A/B run on N threads at once. The rolling buffer is a
+    /// *memory-traffic* change, so its effect should appear only when enough
+    /// cores contend for bandwidth — the condition on the 24-thread benchmark
+    /// node, which a single-threaded bench cannot reproduce at all.
+    ///
+    ///     cargo test --release -- --ignored bench_rolling_d16_threaded --nocapture
+    #[test]
+    #[ignore]
+    fn bench_rolling_d16_threaded() {
+        for &(len, band, label) in &[
+            (240usize, 16i32, "MiSeq R1  (240bp, band 16)"),
+            (1455, 32, "PacBio    (1455bp, band 32)"),
+        ] {
+            println!("  {label}");
+            // Ladder defaults to 1..=8 but should be taken up to the node's
+            // full core count — bandwidth contention is the whole hypothesis,
+            // and it does not appear until the cores are saturated:
+            //   DADA2RS_BENCH_THREADS=1,2,4,8,12,24 cargo test --release ...
+            let ladder: Vec<usize> = match std::env::var("DADA2RS_BENCH_THREADS") {
+                Ok(v) => v
+                    .split(',')
+                    .filter_map(|x| x.trim().parse().ok())
+                    .filter(|&n: &usize| n > 0)
+                    .collect(),
+                Err(_) => vec![1, 2, 4, 8],
+            };
+            for &nthreads in &ladder {
+                let mut out = Vec::new();
+                for reference in [true, false] {
+                    let elapsed: f64 = std::thread::scope(|sc| {
+                        let hs: Vec<_> = (0..nthreads)
+                            .map(|t| {
+                                sc.spawn(move || {
+                                    let mut st = 0x243F6A88_85A308D3u64 ^ (t as u64);
+                                    let s1: Vec<u8> = (0..len)
+                                        .map(|_| 1 + (rng_next(&mut st) % 4) as u8)
+                                        .collect();
+                                    let mut s2 = s1.clone();
+                                    for k in (0..len).step_by(50) {
+                                        s2[k] = 1 + (s2[k] % 4);
+                                    }
+                                    let scores = VectorizedAlignScores {
+                                        match_score: 5,
+                                        mismatch: -4,
+                                        gap_p: -8,
+                                        end_gap_p: 0,
+                                        band,
+                                    };
+                                    let iters = if len > 1000 { 1_000 } else { 10_000 };
+                                    let mut buf = AlignBuffers::new();
+                                    for _ in 0..iters / 10 {
+                                        align_vectorized_with_buf(&s1, &s2, &scores, &mut buf);
+                                    }
+                                    let t0 = std::time::Instant::now();
+                                    for _ in 0..iters {
+                                        if reference {
+                                            align_vectorized_reference(&s1, &s2, &scores, &mut buf);
+                                        } else {
+                                            align_vectorized_with_buf(&s1, &s2, &scores, &mut buf);
+                                        }
+                                    }
+                                    t0.elapsed().as_secs_f64() / iters as f64 * 1e9
+                                })
+                            })
+                            .collect();
+                        hs.into_iter().map(|h| h.join().unwrap()).sum::<f64>() / nthreads as f64
+                    });
+                    out.push(elapsed);
+                }
+                println!(
+                    "    {nthreads:>2} thread(s): full-matrix {:>8.0} ns  ->  rolling {:>8.0} ns   {:.2}x",
+                    out[0],
+                    out[1],
+                    out[0] / out[1]
+                );
+            }
+        }
+    }
+
+    /// Deterministic xorshift so failures are reproducible without a dep.
+    fn rng_next(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *state = x;
+        x
+    }
+
+    /// Fuzz the rolling-buffer DP against the full-matrix reference and require
+    /// byte-identical `al0`/`al1`.
+    #[test]
+    fn rolling_d16_matches_full_matrix() {
+        let mut state = 0x2545F491_4F6CDD1Du64;
+        let mut checked = 0usize;
+        // Length pairs cover equal, shorter-first, longer-first and the
+        // band-degenerate cases; bands cover both parities and unbanded (-1).
+        for &(l1, l2) in &[
+            (1usize, 1usize),
+            (1, 5),
+            (5, 1),
+            (2, 3),
+            (10, 10),
+            (10, 13),
+            (13, 10),
+            (17, 16),
+            (16, 17),
+            (33, 33),
+            (40, 40),
+            (40, 55),
+            (55, 40),
+            (64, 64),
+            (100, 97),
+            (97, 100),
+            (128, 128),
+            (240, 240),
+            (160, 160),
+            (240, 160),
+            (160, 240),
+            (300, 299),
+        ] {
+            for &band in &[-1i32, 1, 2, 3, 4, 8, 15, 16, 17, 32, 64] {
+                for trial in 0..12 {
+                    // Trial 0 makes the sequences identical (the common case in
+                    // production); later trials diverge progressively.
+                    let s1: Vec<u8> = (0..l1)
+                        .map(|_| 1 + (rng_next(&mut state) % 4) as u8)
+                        .collect();
+                    let s2: Vec<u8> = if trial == 0 && l1 == l2 {
+                        s1.clone()
+                    } else {
+                        let mut v = if l2 <= l1 {
+                            s1[..l2.min(l1)].to_vec()
+                        } else {
+                            s1.clone()
+                        };
+                        v.resize(l2, 1);
+                        // Mutate an increasing fraction of positions.
+                        for slot in v.iter_mut() {
+                            if rng_next(&mut state) % 16 < trial as u64 {
+                                *slot = 1 + (rng_next(&mut state) % 4) as u8;
+                            }
+                        }
+                        v
+                    };
+                    for &end_gap_p in &[0i16, -8] {
+                        let scores = VectorizedAlignScores {
+                            match_score: 5,
+                            mismatch: -4,
+                            gap_p: -8,
+                            end_gap_p,
+                            band,
+                        };
+                        let mut a = AlignBuffers::new();
+                        let mut b = AlignBuffers::new();
+                        align_vectorized_with_buf(&s1, &s2, &scores, &mut a);
+                        align_vectorized_reference(&s1, &s2, &scores, &mut b);
+                        assert_eq!(
+                            (&a.al0, &a.al1),
+                            (&b.al0, &b.al1),
+                            "rolling d16 diverged from the full-matrix reference: \
+                             l1={l1} l2={l2} band={band} end_gap_p={end_gap_p} trial={trial}\n\
+                             s1={s1:?}\ns2={s2:?}"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 5000, "fuzz coverage too thin: {checked}");
+    }
+
+    /// Buffers are reused across calls in production (`map_init` hands each
+    /// rayon worker one `AlignBuffers`). A rolling slot therefore carries stale
+    /// values from a *previous, longer* alignment — the case a fresh-buffer
+    /// test cannot reach. Replay a descending-length sequence through a single
+    /// reused buffer and require the same output as fresh buffers.
+    #[test]
+    fn rolling_d16_survives_buffer_reuse() {
+        let mut state = 0x9E3779B9_7F4A7C15u64;
+        let scores = VectorizedAlignScores {
+            match_score: 5,
+            mismatch: -4,
+            gap_p: -8,
+            end_gap_p: 0,
+            band: 16,
+        };
+        let mut reused = AlignBuffers::new();
+        for &len in &[400usize, 240, 239, 120, 33, 32, 7, 250, 3, 260] {
+            let s1: Vec<u8> = (0..len)
+                .map(|_| 1 + (rng_next(&mut state) % 4) as u8)
+                .collect();
+            let mut s2 = s1.clone();
+            for k in (0..len).step_by(7) {
+                s2[k] = 1 + (s2[k] % 4);
+            }
+            let mut fresh = AlignBuffers::new();
+            align_vectorized_with_buf(&s1, &s2, &scores, &mut fresh);
+            align_vectorized_with_buf(&s1, &s2, &scores, &mut reused);
+            assert_eq!(
+                (&reused.al0, &reused.al1),
+                (&fresh.al0, &fresh.al1),
+                "reused buffer diverged from a fresh one at len={len}"
+            );
+        }
     }
 
     #[test]
