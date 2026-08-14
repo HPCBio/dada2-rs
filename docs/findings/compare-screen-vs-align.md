@@ -451,23 +451,26 @@ against laptop numbers ([#124](shuffle-build-scan.md)).
 category, because these are conclusions rather than measurements:
 
 - *"`b_compare` is align-dominated."* The margin is wide (70–82% align vs
-  15–23% screen) so the ordering is unlikely to flip, but it is not fixed:
-  going from 24 to 48 threads on the same node left the DP flat (14,373 →
-  14,521 ns/comp) while the screen slowed 41% (849 → 1,200 ns/comp). **The
-  screen is bandwidth-sensitive and the DP is not**, so the screen's share
-  grows with core count and on any machine with less bandwidth per core. A
-  screen-side optimisation is therefore worth *more* at high thread counts; a
-  DP-side one is worth the same everywhere.
-- *"The DP kernel is execution-bound, not memory-bound."* Established on this
-  hardware, by three independent lines of evidence. It is a statement about the
-  balance between this kernel and these cores, not a universal property — on a
-  bandwidth-starved machine, or at much higher thread counts, the 6-bytes-per-cell
-  traffic could become binding and the
-  [rolling-`d16` change](#it-is-not-memory-traffic-a-falsified-hypothesis)
-  could start to pay. That branch is kept rather than deleted for exactly this
-  reason.
-- The best thread count. 48 beat 24 by 20–28% here; the right number elsewhere
-  depends on cores, bandwidth and what else shares the node.
+  15–23% screen) so the ordering is unlikely to flip, but the split is not
+  fixed: the screen degrades faster than the DP with thread count (+148% vs
+  +43% on PacBio, 24 → 128), so its share grows on wider machines and on any
+  machine with less bandwidth per core. A screen-side optimisation is worth
+  *more* at high thread counts.
+- *"The DP kernel is bandwidth-bound."* True above ~48 threads on this hardware,
+  and false below it — at 24 threads the kernel is execution-bound and the same
+  memory traffic is not the constraint. Which regime a given machine sits in
+  depends on its cores-to-bandwidth ratio, so the
+  [rolling-`d16` change](#memory-traffic-falsified-at-24-threads-then-confirmed-at-scale)
+  is worth 3.5% in the first regime and 6% in the second — a positive change
+  either way here, but the *size* is not transferable.
+- The best thread count. 48 beat 24 by 28% (MiSeq) and 41% (PacBio) here; the
+  right number elsewhere depends on cores, bandwidth and what else shares the
+  node.
+- **Measurement conditions, not just hardware.** Every number on this page
+  assumes fixed NUMA page placement. Under default placement the same rig
+  produced a 25% noise floor that hid a 5% effect — see
+  [Measuring on a NUMA node](measuring-on-numa.md). Re-deriving these constants
+  elsewhere means controlling that too, not only matching the hardware.
 
 **Site-specific.** All SLURM flags and confinement behaviour above describe one
 cluster's configuration. The portable part is the *question* — how many
