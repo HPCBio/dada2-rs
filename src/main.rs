@@ -878,8 +878,13 @@ fn run() -> io::Result<()> {
                     std::sync::Mutex::new(Vec::new());
                 for_each_sample_concurrent(input.len(), jobs, threads, |i, sub_pool| {
                     let path = &input[i];
-                    let (derep, json_sample) =
-                        load_derep_for_dada(path, phred_offset, sub_pool, verbose)?;
+                    let (derep, json_sample) = load_derep_for_dada(
+                        path,
+                        phred_offset,
+                        sub_pool,
+                        verbose,
+                        &mut DerepLoadCost::default(),
+                    )?;
                     let mut raw_inputs: Vec<dada::RawInput> = derep
                         .uniques
                         .into_iter()
@@ -962,7 +967,13 @@ fn run() -> io::Result<()> {
             }
             let input = &input[0];
 
-            let (derep, json_sample) = load_derep_for_dada(input, phred_offset, &pool, verbose)?;
+            let (derep, json_sample) = load_derep_for_dada(
+                input,
+                phred_offset,
+                &pool,
+                verbose,
+                &mut DerepLoadCost::default(),
+            )?;
 
             let mut raw_inputs: Vec<dada::RawInput> = derep
                 .uniques
@@ -1331,6 +1342,7 @@ fn run() -> io::Result<()> {
             // the merged table, and therefore every byte of output, is unchanged.
             let t_derep = std::time::Instant::now();
             let mut t_merge_acc = std::time::Duration::ZERO;
+            let mut derep_cost = DerepLoadCost::default();
 
             let mut json_samples: Vec<Option<String>> = vec![None; n_samples];
             let mut seq_to_merged: HashMap<Vec<u8>, usize> = HashMap::new();
@@ -1349,7 +1361,8 @@ fn run() -> io::Result<()> {
             let mut sample_unique_counts: Vec<Vec<u32>> = Vec::with_capacity(n_samples);
 
             for i in 0..n_samples {
-                let (derep, name) = load_derep_for_dada(&input[i], phred_offset, &pool, verbose)?;
+                let (derep, name) =
+                    load_derep_for_dada(&input[i], phred_offset, &pool, verbose, &mut derep_cost)?;
                 json_samples[i] = name;
 
                 let t_m = std::time::Instant::now();
@@ -1394,6 +1407,9 @@ fn run() -> io::Result<()> {
             let t_merge = t_merge_acc;
             let t_derep = t_derep.elapsed().saturating_sub(t_merge);
             if verbose {
+                if let Some(split) = derep_cost.report(t_derep) {
+                    eprintln!("{split}");
+                }
                 eprintln!(
                     "[dada-pooled] peak RSS after derep+merge: {} MB",
                     misc::peak_rss_kb() / 1024
@@ -4686,7 +4702,13 @@ fn load_sample_raws(
     pool: &rayon::ThreadPool,
     verbose: bool,
 ) -> io::Result<(Vec<dada::RawInput>, Option<String>)> {
-    let (derep, json_sample) = load_derep_for_dada(path, phred_offset, pool, verbose)?;
+    let (derep, json_sample) = load_derep_for_dada(
+        path,
+        phred_offset,
+        pool,
+        verbose,
+        &mut DerepLoadCost::default(),
+    )?;
     let raws: Vec<dada::RawInput> = derep
         .uniques
         .into_iter()
@@ -4900,11 +4922,48 @@ fn denoise_and_serialize(
 ///
 /// Returns the dereplicated table plus the JSON's embedded `sample` field
 /// when present; FASTQ inputs always return `None` for the name.
+/// Where a pooled run's serial load front spends its time (issue #127).
+///
+/// `derep` is serial by design (issue #41 streams one sample at a time to hold
+/// the pooled memory peak down), so its share of wall grows with every thread
+/// added to `run_dada` — 7% of pooled wall at 24 threads, 12.5% at 128. This
+/// splits it finely enough to tell a filesystem problem from a format one.
+#[derive(Default)]
+struct DerepLoadCost {
+    /// I/O + gunzip (JSON inputs only).
+    read: std::time::Duration,
+    /// serde deserialization (JSON inputs only).
+    parse: std::time::Duration,
+    /// Sorting + conversion to `Derep` (JSON), or the whole streaming
+    /// dereplication (FASTQ, where the stages cannot be separated).
+    build: std::time::Duration,
+    /// Uncompressed bytes read, for a throughput figure.
+    bytes: u64,
+    /// Per-sample totals, for the straggler spread.
+    per_sample: Vec<std::time::Duration>,
+    /// True if any input was FASTQ, whose `build` is not comparable to JSON's.
+    any_fastq: bool,
+}
+
 fn load_derep_for_dada(
     path: &Path,
     phred_offset: u8,
     pool: &rayon::ThreadPool,
     verbose: bool,
+    cost: &mut DerepLoadCost,
+) -> io::Result<(derep::Derep, Option<String>)> {
+    let t_sample = std::time::Instant::now();
+    let r = load_derep_for_dada_inner(path, phred_offset, pool, verbose, cost);
+    cost.per_sample.push(t_sample.elapsed());
+    r
+}
+
+fn load_derep_for_dada_inner(
+    path: &Path,
+    phred_offset: u8,
+    pool: &rayon::ThreadPool,
+    verbose: bool,
+    cost: &mut DerepLoadCost,
 ) -> io::Result<(derep::Derep, Option<String>)> {
     if is_json_path(path) {
         #[derive(serde::Deserialize)]
@@ -4922,7 +4981,13 @@ fn load_derep_for_dada(
             sort_order: Option<String>,
             uniques: Vec<UniqueEntryJson>,
         }
-        let parsed: SampleJson = read_tagged_json(path, &["derep", "sample"]).with_path(path)?;
+        let mut jc = misc::JsonReadCost::default();
+        let parsed: SampleJson =
+            misc::read_tagged_json_timed(path, &["derep", "sample"], &mut jc).with_path(path)?;
+        cost.read += jc.read;
+        cost.parse += jc.parse;
+        cost.bytes += jc.bytes;
+        let t_build = std::time::Instant::now();
         let sample_name = parsed.sample;
         let mut entries = parsed.uniques;
         // Skip the defensive sort when the producer has declared the order.
@@ -4947,6 +5012,7 @@ fn load_derep_for_dada(
             uniques.push((u.sequence.into_bytes(), u.count));
             quals.push(u.qual_sum);
         }
+        cost.build += t_build.elapsed();
         Ok((
             derep::Derep {
                 uniques,
@@ -4956,21 +5022,104 @@ fn load_derep_for_dada(
             sample_name,
         ))
     } else if path.extension().and_then(|e| e.to_str()) == Some("gz") {
+        // FASTQ is a single streaming pass — read, decompress and dereplicate
+        // are interleaved and cannot be attributed separately, so the whole
+        // cost lands in `build`.
+        cost.any_fastq = true;
+        cost.bytes += std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let t_build = std::time::Instant::now();
         let derep = dereplicate(
             MultiGzDecoder::new(File::open(path).with_path(path)?),
             phred_offset,
             pool,
             verbose,
         )?;
+        cost.build += t_build.elapsed();
         Ok((derep, None))
     } else {
+        cost.any_fastq = true;
+        cost.bytes += std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let t_build = std::time::Instant::now();
         let derep = dereplicate(
             File::open(path).with_path(path)?,
             phred_offset,
             pool,
             verbose,
         )?;
+        cost.build += t_build.elapsed();
         Ok((derep, None))
+    }
+}
+
+impl DerepLoadCost {
+    /// `--verbose` report, mirroring `compare split`. Returns `None` when
+    /// nothing was loaded.
+    ///
+    /// The throughput figure is the point of this: it separates a filesystem
+    /// problem (network storage, cold cache) from a format one (gzip + JSON),
+    /// which have different fixes. Note `read` is uncompressed bytes over
+    /// wall, so it understates the network rate for compressed inputs.
+    fn report(&self, total: std::time::Duration) -> Option<String> {
+        let n = self.per_sample.len();
+        if n == 0 {
+            return None;
+        }
+        let secs = total.as_secs_f64();
+        let pct = |d: std::time::Duration| {
+            if secs > 0.0 {
+                100.0 * d.as_secs_f64() / secs
+            } else {
+                0.0
+            }
+        };
+        let mb = self.bytes as f64 / 1_048_576.0;
+        let mut sorted = self.per_sample.clone();
+        sorted.sort_unstable();
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
+
+        let mut out = format!(
+            "[dada-pooled] derep split (of {secs:.2}s over {n} sample(s), {mb:.0} MB uncompressed):\n"
+        );
+        if !self.any_fastq {
+            out.push_str(&format!(
+                "[dada-pooled]   read+gunzip  {:7.2}s ({:4.1}%)   {:.0} MB/s\n",
+                self.read.as_secs_f64(),
+                pct(self.read),
+                if self.read.as_secs_f64() > 0.0 {
+                    mb / self.read.as_secs_f64()
+                } else {
+                    0.0
+                },
+            ));
+            out.push_str(&format!(
+                "[dada-pooled]   parse        {:7.2}s ({:4.1}%)   (serde_json)\n",
+                self.parse.as_secs_f64(),
+                pct(self.parse),
+            ));
+            out.push_str(&format!(
+                "[dada-pooled]   build        {:7.2}s ({:4.1}%)   (sort + convert)\n",
+                self.build.as_secs_f64(),
+                pct(self.build),
+            ));
+        } else {
+            out.push_str(&format!(
+                "[dada-pooled]   dereplicate  {:7.2}s ({:4.1}%)   {:.0} MB/s  (FASTQ: read+decompress+derep in one pass)\n",
+                self.build.as_secs_f64(),
+                pct(self.build),
+                if self.build.as_secs_f64() > 0.0 {
+                    mb / self.build.as_secs_f64()
+                } else {
+                    0.0
+                },
+            ));
+        }
+        out.push_str(&format!(
+            "[dada-pooled]   per-sample   min {:.0}ms  median {:.0}ms  max {:.0}ms",
+            ms(sorted[0]),
+            ms(sorted[n / 2]),
+            ms(sorted[n - 1]),
+        ));
+        Some(out)
     }
 }
 
