@@ -38,6 +38,15 @@
 #                          #   partition, so every arm must still show churn=0.
 #   PRIMER_FWD=/PRIMER_REV # required for pacbio (raw, primered reads)
 #   EXTRA=""               # extra args forwarded to bench_pooled.py verbatim
+#   NUMA_POLICY=interleave # interleave|bind|none — fix NUMA page placement for
+#                          #   both arms so replicates are reproducible (see
+#                          #   dev/numa_pin.sh). Default `interleave` is the
+#                          #   most reproducible AND stays within 3% of default
+#                          #   placement; `bind` is lower-latency for serial
+#                          #   scattered phases but slows the parallel map 21%.
+#                          #   Use `none` to compare against older results
+#                          #   measured under default placement.
+#   NUMA_NODE=0            # which domain, for NUMA_POLICY=bind
 #
 # Examples:
 #   # MiSeq, 3 reps per arm:
@@ -64,6 +73,15 @@ EXTRA="${EXTRA:-}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BENCH="$HERE/benchmark/bench_pooled.py"
 
+# Fix NUMA page placement for both arms. This is purely for measurement
+# reproducibility: under default first-touch, placement re-rolls every run and
+# replicates of the *same binary* disagree by 6-23%, which is wider than most
+# changes worth testing. Degrades to a no-op off NUMA hardware and without
+# numactl. See dev/numa_pin.sh for why interleave rather than bind.
+# shellcheck source=dev/numa_pin.sh
+. "$HERE/numa_pin.sh"
+numa_pin_init "$THREADS"
+
 platform_args=()
 if [ "$PLATFORM" = "pacbio" ]; then
     platform_args+=(--primer-fwd "${PRIMER_FWD:?pacbio needs PRIMER_FWD}")
@@ -83,7 +101,7 @@ run_arm() {
         # --verbose is what puts the `shuffle build prune` / `shuffle scan`
         # lines into the per-step logs; without it this run cannot be read.
         env ${hot:+DADA2RS_SHUFFLE_HOT_CLUSTERS="$hot"} \
-            python3 "$BENCH" "$PLATFORM" "$INPUT" \
+            $NUMA_PREFIX python3 "$BENCH" "$PLATFORM" "$INPUT" \
                 --outdir "$d" --threads "$THREADS" --verbose \
                 --dada2rs "$bin" ${platform_args[@]+"${platform_args[@]}"} $EXTRA \
             > "$d.stdout" 2>&1 || { echo "ARM $label rep $rep FAILED — see $d.stdout" >&2; tail -20 "$d.stdout" >&2; exit 1; }
