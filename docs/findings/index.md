@@ -83,16 +83,27 @@ here is the evidence, and here is the path it opens or closes."
   7.7× more. The k-mer screen closes as a perf target — it returns 3–7× on what
   it costs, and a perfect free replacement caps out at 15–23%. What is left is
   the banded NW **DP kernel at 30–63% of `run_dada`**, the largest single share
-  measured in this project. Also carries a falsified hypothesis — the kernel is
-  *not* memory-bound: eliminating 5/6 of its memory traffic bought ~1.04×, and
-  least on the platform with the largest matrix. Ends where it did not expect
+  measured in this project. It is execution-bound to ~48 threads and
+  **memory-bandwidth-bound above that**, which the rolling-`d16` change exploits
+  for 3.5–6% — a result that took three attempts to measure, see
+  [Measuring on a NUMA node](measuring-on-numa.md). Ends where it did not expect
   to: the largest available win was **running wider** (48 threads beats 24 by
-  28%, output-identical), and a 24/48/96/128 sweep then found a **flat ~62 s
-  serial floor** — which flips the ranking. At 48 threads the serial block is
+  28–41%, output-identical), and a 24/48/96/128 sweep on both platforms then
+  found a **flat serial floor** — which flips the ranking. At 48 threads the serial block is
   over half of `run_dada` and `b_shuffle` is two-thirds of it, so
   [#124's closure](shuffle-build-scan.md) turns out to have been conditional on
   thread count. Includes a section on which of these numbers travel to other
   hardware and which do not.
+- [Measuring on a NUMA node](measuring-on-numa.md) — **a methodology result that
+  reversed a verdict.** The benchmark node has two NUMA domains and nothing was
+  ever pinned, so page placement re-rolled every run and replicates of the *same
+  binary* disagreed by up to 25% on the serial scattered phases. A real 3.5–6%
+  DP improvement was twice measured as "flat, below the noise floor" and twice
+  recommended for closure; with placement fixed it is unambiguous, replicates
+  agreeing to 0.4 points. Also: the obvious fix (bind to one domain) is the
+  wrong one — it slows the parallel map 21% — and `--interleave=all` is both
+  more reproducible and closer to production. Includes which earlier results
+  this puts in question.
 - [Band size & platform-aware defaults](band-size-platform-defaults.md) — the
   16/32 Illumina/HiFi band default is vindicated; the two platforms fail
   band-tightening through opposite mechanisms, so a single global band would be
