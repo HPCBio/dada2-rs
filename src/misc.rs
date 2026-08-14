@@ -163,6 +163,69 @@ pub struct JsonReadCost {
     pub bytes: u64,
 }
 
+/// Validate a `dada2_rs_command` tag, with the same diagnostics
+/// [`read_tagged_json`] produces.
+///
+/// Split out so a caller that already carries the tag on its own deserialization
+/// target can check it without a second parse — see [`read_json_timed`].
+pub fn check_json_tag(path: &Path, cmd: Option<&str>, expected: &[&str]) -> io::Result<()> {
+    let label = display_input(path);
+    match cmd {
+        Some(c) if expected.contains(&c) => Ok(()),
+        Some(c) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{label}: dada2_rs_command={c:?}, expected one of {expected:?}"),
+        )),
+        None => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{label}: missing dada2_rs_command tag (expected one of {expected:?})"),
+        )),
+    }
+}
+
+/// Read and deserialize in a **single** parse pass, accumulating the cost split.
+///
+/// No tag validation: the caller is expected to carry `dada2_rs_command` on `T`
+/// and hand it to [`check_json_tag`]. That is the whole point — on the pooled
+/// derep load front, which streams hundreds of MB per run, a separate
+/// tag-checking pass is a second full scan of every byte and costs 37% of parse
+/// time (issue #133). Cold paths reading small JSONs should keep using
+/// [`read_tagged_json`], which is safer by construction.
+pub fn read_json_timed<T: DeserializeOwned>(
+    path: &Path,
+    expected: &[&str],
+    cost: &mut JsonReadCost,
+) -> io::Result<T> {
+    let t = std::time::Instant::now();
+    let bytes = read_all_maybe_gz(path)?;
+    cost.read += t.elapsed();
+    cost.bytes += bytes.len() as u64;
+
+    let t = std::time::Instant::now();
+    let label = display_input(path);
+    let out = serde_json::from_slice(&bytes).map_err(|e| {
+        // Diagnostic fallback, on the error path only. Deserialization fails
+        // before the caller can inspect the tag, so handing the wrong file type
+        // to this reader would otherwise report a confusing structural error
+        // ("missing field `uniques`") instead of naming the mismatch. Re-parse
+        // for the tag alone and, if it says this is the wrong kind of document,
+        // report that instead. Costs a second scan only when already failing.
+        #[derive(serde::Deserialize)]
+        struct TagOnly {
+            #[serde(default)]
+            dada2_rs_command: Option<String>,
+        }
+        if let Ok(tag) = serde_json::from_slice::<TagOnly>(&bytes)
+            && let Err(tag_err) = check_json_tag(path, tag.dada2_rs_command.as_deref(), expected)
+        {
+            return tag_err;
+        }
+        io::Error::new(io::ErrorKind::InvalidData, format!("{label}: {e}"))
+    });
+    cost.parse += t.elapsed();
+    out
+}
+
 /// [`read_tagged_json`], accumulating its cost breakdown into `cost`.
 pub fn read_tagged_json_timed<T: DeserializeOwned>(
     path: &Path,
@@ -174,13 +237,31 @@ pub fn read_tagged_json_timed<T: DeserializeOwned>(
     cost.read += t.elapsed();
     cost.bytes += bytes.len() as u64;
 
+    // Tag check without materialising the document (issue #133).
+    //
+    // This used to build a full `serde_json::Value` to read one string field,
+    // then walk that `Value` again via `from_value` to produce `T` — so every
+    // byte was parsed twice and the whole document was allocated as a tree of
+    // `Value` nodes first. On a 339 MB pooled derep JSON that made `parse` 75%
+    // of the serial load front, on warm cache and local disk, with gunzip
+    // running 3x faster than the parser.
+    //
+    // Instead: deserialize the tag alone (serde skips every other field via
+    // `IgnoredAny`, so this is a syntax scan that allocates nothing for the
+    // large `uniques` array), then deserialize `T` straight from the bytes.
+    // Both passes are streaming; neither builds a `Value`.
+    #[derive(serde::Deserialize)]
+    struct TagOnly {
+        #[serde(default)]
+        dada2_rs_command: Option<String>,
+    }
+
     let t = std::time::Instant::now();
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
+    let label = display_input(path);
+    let tag: TagOnly = serde_json::from_slice(&bytes)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    let label = display_input(path);
-    let cmd = value.get("dada2_rs_command").and_then(|v| v.as_str());
-    match cmd {
+    match tag.dada2_rs_command.as_deref() {
         Some(c) if expected.contains(&c) => {}
         Some(c) => {
             return Err(io::Error::new(
@@ -196,7 +277,7 @@ pub fn read_tagged_json_timed<T: DeserializeOwned>(
         }
     }
 
-    let out = serde_json::from_value(value)
+    let out = serde_json::from_slice(&bytes)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{label}: {e}")));
     cost.parse += t.elapsed();
     out

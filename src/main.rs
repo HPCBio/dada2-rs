@@ -4975,6 +4975,12 @@ fn load_derep_for_dada_inner(
         }
         #[derive(serde::Deserialize)]
         struct SampleJson {
+            /// Carried on the struct so the tag is validated from the *same*
+            /// parse that produces the data. Checking it separately means a
+            /// second full scan of the document, which on this path (hundreds
+            /// of MB per pooled run) costs 37% of parse time — see #133.
+            #[serde(default)]
+            dada2_rs_command: Option<String>,
             #[serde(default)]
             sample: Option<String>,
             #[serde(default)]
@@ -4983,7 +4989,13 @@ fn load_derep_for_dada_inner(
         }
         let mut jc = misc::JsonReadCost::default();
         let parsed: SampleJson =
-            misc::read_tagged_json_timed(path, &["derep", "sample"], &mut jc).with_path(path)?;
+            misc::read_json_timed(path, &["derep", "sample"], &mut jc).with_path(path)?;
+        misc::check_json_tag(
+            path,
+            parsed.dada2_rs_command.as_deref(),
+            &["derep", "sample"],
+        )
+        .with_path(path)?;
         cost.read += jc.read;
         cost.parse += jc.parse;
         cost.bytes += jc.bytes;
