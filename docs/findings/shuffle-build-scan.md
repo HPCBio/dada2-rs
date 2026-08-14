@@ -124,6 +124,15 @@ platforms re-run.
 
 362-sample pooled MiSeq (R1, R2) and the 95-sample PacBio HiFi set:
 
+!!! note "On the absolute seconds below"
+
+    These runs landed on an older node generation in the queue than the
+    [#127 `b_compare` measurements](compare-screen-vs-align.md), which were
+    pinned to a single node. Absolute wall times here are accordingly ~1.5–2×
+    slower and are **not** comparable across the two pages. Every conclusion on
+    this page rests on *within-run* phase ratios and on ns/comp constants that
+    reproduced across a 143× raw-count range, so none of it is affected.
+
 | | MiSeq R1 | MiSeq R2 | PacBio |
 | --- | ---: | ---: | ---: |
 | merged uniques | 272,574 | 296,893 | 547,273 |

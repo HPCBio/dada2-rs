@@ -75,6 +75,24 @@ here is the evidence, and here is the path it opens or closes."
   only its design. Also the page on why exactness is worth enforcing on a change
   you throw away — it caught a latent tie-break bug and is what makes the verdict
   final rather than ambiguous.
+- [Inside `b_compare`: screen vs align](compare-screen-vs-align.md) — the phase
+  that is 63–88% of `run_dada`, split by time for the first time. **Both
+  platforms are align-dominated**, PacBio most of all, refuting the prediction
+  that k=7's 16× larger k-mer vectors would make HiFi screen-bound: the screen
+  does cost 3.1× more per comparison there, but the alignment it guards costs
+  7.7× more. The k-mer screen closes as a perf target — it returns 3–7× on what
+  it costs, and a perfect free replacement caps out at 15–23%. What is left is
+  the banded NW **DP kernel at 30–63% of `run_dada`**, the largest single share
+  measured in this project. Also carries a falsified hypothesis — the kernel is
+  *not* memory-bound: eliminating 5/6 of its memory traffic bought ~1.04×, and
+  least on the platform with the largest matrix. Ends where it did not expect
+  to: the largest available win was **running wider** (48 threads beats 24 by
+  28%, output-identical), and a 24/48/96/128 sweep then found a **flat ~62 s
+  serial floor** — which flips the ranking. At 48 threads the serial block is
+  over half of `run_dada` and `b_shuffle` is two-thirds of it, so
+  [#124's closure](shuffle-build-scan.md) turns out to have been conditional on
+  thread count. Includes a section on which of these numbers travel to other
+  hardware and which do not.
 - [Band size & platform-aware defaults](band-size-platform-defaults.md) — the
   16/32 Illumina/HiFi band default is vindicated; the two platforms fail
   band-tightening through opposite mechanisms, so a single global band would be
