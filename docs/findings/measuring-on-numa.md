@@ -120,6 +120,35 @@ memory pressure of 96 threads across two** — independent confirmation that the
 DP kernel's degradation at high thread counts is bandwidth rather than anything
 about scheduling.
 
+## None of this was visible without the phase instrumentation
+
+Worth drawing out, because it is an argument for instrumenting phases you have
+already decided *not* to optimise.
+
+The variance was detectable only because every run reports timings for phases
+the change under test could not possibly have affected. For a DP-kernel change
+those controls are the k-mer screen (same parallel map, same data, different
+code path) and `b_shuffle` / `store` (serial, different phase entirely). A
+control that moves *more* than the signal is the cheapest possible refutation,
+and it fired twice here before anything wrong was published.
+
+Those channels exist as a side effect of two efforts that concluded elsewhere:
+
+- The `shuffle phases` table came from [#124](shuffle-build-scan.md), which
+  closed `b_shuffle` as a perf target. The instrumentation was kept anyway, and
+  became the control channel for a `b_compare` experiment with no connection to
+  `b_shuffle`.
+- The `compare split` came from [#127](compare-screen-vs-align.md) and supplies
+  the screen-vs-DP separation the A/Bs are read through.
+- The `cpu allocation` line was added late in #127 to make archived runs
+  self-describing about their allocation. It immediately caught a 128-thread run
+  binding into a 64-core domain — an SMT oversubscription that would otherwise
+  have looked like a regression in the change under test.
+
+The general form: **instrument phases you are not optimising**, because their
+only job in a later experiment is to stay still, and a still control is what
+converts "the number moved" into "the change did it".
+
 ## Which earlier results this puts in question
 
 Every A/B this project has run on that node carries the same uncontrolled term.
