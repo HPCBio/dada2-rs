@@ -253,6 +253,14 @@ first is what makes a negative result *final* rather than merely discouraging.
 - **Keep the instrumentation and the harnesses.** The `shuffle phases` verbose
   table is behaviour-neutral and is what produced Result 3;
   `dev/shuffle-model/` and `dev/run_shuffle_ab.sh` both survive the revert.
+  This paid off twice more, in work with no connection to `b_shuffle`. The phase
+  table is what let a later `b_compare` A/B use `b_shuffle` and `store` as
+  **untouched control channels** — phases the change under test provably could
+  not affect — and watching those controls is what exposed a 25% measurement
+  artifact that had been distorting results on this node all along (see
+  [Measuring on a NUMA node](measuring-on-numa.md)). Timing a phase you have
+  decided not to optimise is not wasted work: it becomes the null channel that
+  makes the next experiment readable.
 
 ## Reproducing
 
