@@ -455,14 +455,32 @@ pub struct ShuffleStats {
     /// best over its full candidate list. Scattered, raw-major, and the part
     /// `reconcile_rescan_raws` says is mostly unnecessary.
     pub reconcile_rescan_time: std::time::Duration,
-    /// Of those recomputes, how many actually changed the raw's best cluster.
+    /// Of those recomputes, how many changed the raw's best cluster.
     ///
     /// This is the sizing number for any reconcile optimization: the rest of
     /// the recomputes returned the value already in `compmax`, so a scheme that
     /// could predict them is bidding for that fraction — exactly the way
     /// `comps_build` bounded #87's payoff. A low ratio means the reconcile is
     /// mostly re-deriving what it already knew.
+    ///
+    /// NOTE the incremental path (#136) counts **promotions**, not net changes:
+    /// a raw can be promoted more than once within one reconcile as successive
+    /// changed clusters are visited, and could in principle return to where it
+    /// started. Measured drift against the full-rescan path is ~0.02% (55,289
+    /// vs 55,279 on MiSeq R1), far below anything this figure is used to decide.
+    /// The dirty-cluster marking is unaffected — it keys on the raw's *holder*,
+    /// which does not move during a reconcile, so repeated marking is
+    /// idempotent.
     pub reconcile_changed: usize,
+    /// Times the incremental reconcile's replacement decided on an **exact
+    /// tie** in `lambda × reads`, resolved to the lower `ci` (#136).
+    ///
+    /// Worth counting because a passing correctness run cannot distinguish
+    /// "the tie rule is right" from "ties never happen". They never happen on
+    /// any fixture in this repo — which is why dropping the tie clause passes
+    /// every fixture-based test — so this says whether the case is live on real
+    /// data, and therefore whether #124's latent-bug class is reachable here.
+    pub reconcile_tie_breaks: usize,
     /// Move-pass iterations that relocated no raws (pure convergence checks).
     ///
     /// NOTE: for `b_shuffle_converge` this is exactly the number of calls —
@@ -559,6 +577,7 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
         move_passes: 0,
         reconcile_affected: 0,
         reconcile_rescan_raws: 0,
+        reconcile_tie_breaks: 0,
         reconcile_comps_rescan: 0,
         reconcile_collect_time: std::time::Duration::ZERO,
         reconcile_rescan_time: std::time::Duration::ZERO,
@@ -813,6 +832,7 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
     let mut reads_fell = vec![false; b.clusters.len()];
     let mut reads_fell_list: Vec<u32> = Vec::new();
     let mut reconcile_rescan_raws = 0usize;
+    let mut reconcile_tie_breaks = 0usize;
     let mut reconcile_comps_rescan = 0usize;
     let mut reconcile_collect_time = std::time::Duration::ZERO;
     let mut reconcile_rescan_time = std::time::Duration::ZERO;
@@ -934,6 +954,9 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
                         // score is stale, so this is an assignment, not a test.
                         emax[raw] = e;
                     } else if beats(e, emax[raw], ci as u32, compmax[raw].i) {
+                        if e == emax[raw] {
+                            reconcile_tie_breaks += 1;
+                        }
                         emax[raw] = e;
                         record_change(
                             raw,
@@ -1037,6 +1060,7 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         move_passes,
         reconcile_affected,
         reconcile_rescan_raws,
+        reconcile_tie_breaks,
         reconcile_comps_rescan,
         reconcile_collect_time,
         reconcile_rescan_time,

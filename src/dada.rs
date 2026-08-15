@@ -755,6 +755,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     let (mut shuf_move_raws, mut shuf_rec_affected, mut shuf_rec_changed) = (0u64, 0u64, 0u64);
     // Reconcile rescan-necessity projection (#136).
     let (mut shuf_rec_rescan, mut shuf_rec_rescan_comps) = (0u64, 0u64);
+    let mut shuf_rec_ties: u64 = 0;
     let mut t_rec_collect = std::time::Duration::ZERO;
     let mut t_rec_rescan = std::time::Duration::ZERO;
     // #132 dirty-cluster move-pass diagnostics.
@@ -912,6 +913,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         shuf_move_passes += st.move_passes as u64;
         shuf_rec_affected += st.reconcile_affected as u64;
         shuf_rec_rescan += st.reconcile_rescan_raws as u64;
+        shuf_rec_ties += st.reconcile_tie_breaks as u64;
         shuf_rec_rescan_comps += st.reconcile_comps_rescan as u64;
         t_rec_collect += st.reconcile_collect_time;
         t_rec_rescan += st.reconcile_rescan_time;
@@ -1214,12 +1216,14 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             } else {
                 eprintln!(
                     "[dada]   reconcile incremental (#136): {} raws fully rescanned over {} \
-                     comps; collect {:.2}s + rescan {:.2}s of {:.2}s reconcile",
+                     comps; collect {:.2}s + rescan {:.2}s of {:.2}s reconcile; \
+                     {} exact-tie tie-breaks",
                     shuf_rec_rescan,
                     shuf_rec_rescan_comps,
                     t_rec_collect.as_secs_f64(),
                     t_rec_rescan.as_secs_f64(),
                     t_shuf_reconcile.as_secs_f64(),
+                    shuf_rec_ties,
                 );
             }
         }
