@@ -395,8 +395,7 @@ pub struct ShuffleStats {
     /// Total move passes, pruned or not.
     pub move_passes: usize,
     /// Affected raws whose full candidate rescan is *provably necessary*,
-    /// because their current best cluster's reads **decreased** (issue #132
-    /// follow-up).
+    /// because their current best cluster's reads **decreased** (issue #136).
     ///
     /// The reconcile currently rescans every affected raw's whole candidate
     /// list. Most of that is redundant — only 0.006-0.034% of recomputes change

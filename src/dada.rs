@@ -747,7 +747,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // best cluster, which is what bounds any future reconcile optimization.
     let mut t_shuf_move = std::time::Duration::ZERO;
     let (mut shuf_move_raws, mut shuf_rec_affected, mut shuf_rec_changed) = (0u64, 0u64, 0u64);
-    // Reconcile rescan-necessity projection (#132 follow-up).
+    // Reconcile rescan-necessity projection (#136).
     let (mut shuf_rec_rescan, mut shuf_rec_rescan_comps) = (0u64, 0u64);
     let mut t_rec_collect = std::time::Duration::ZERO;
     let mut t_rec_rescan = std::time::Duration::ZERO;
@@ -1156,7 +1156,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 f64::INFINITY
             },
         );
-        // Reconcile rescan-necessity (#132 follow-up, measurement only).
+        // Reconcile rescan-necessity (#136, measurement only).
         //
         // #124 called the reconcile's redundancy unreachable: 99.97% of
         // recomputes return the value already in `compmax`, and finding which
@@ -1172,7 +1172,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         // verdict stands as written.
         if shuf_rec_affected > 0 {
             eprintln!(
-                "[dada]   reconcile rescan-necessity (#132): {} of {} affected raws must rescan \
+                "[dada]   reconcile rescan-necessity (#136): {} of {} affected raws must rescan \
                  ({:.1}%), {} of {} comps ({:.1}%); collect {:.2}s + rescan {:.2}s, \
                  so ~{:.2}s of {:.2}s reconcile is avoidable",
                 shuf_rec_rescan,
