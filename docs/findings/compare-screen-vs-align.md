@@ -415,6 +415,19 @@ So the ranking has flipped. **At the thread counts these runs will actually use,
 the serial phases outrank the DP kernel**, and #124's closure should be re-read
 as conditional on thread count rather than final.
 
+!!! success "Acted on, and it paid"
+
+    [#132](https://github.com/HPCBio/dada2-rs/issues/132) took the one lever
+    #124 had sized and declined — the move-pass dirty set — and built it against
+    these numbers rather than the 24-thread ones. Measured at 64 threads: the
+    move pass falls **59–66%**, and `run_dada` **4.3% / 5.6% / 1.8%**
+    (MiSeq R1 / R2 / PacBio), byte-identical across 1,638 production files.
+
+    That is a larger return than anything the DP-kernel work produced on MiSeq,
+    from a phase this page had already established was 27% of `run_dada` at 48
+    threads. The re-ranking was the finding; the code change was the
+    consequence.
+
 !!! warning "Do not tune for 48 threads at the expense of fewer"
 
     `dada2-rs` is also run on laptops and small allocations. Any change
