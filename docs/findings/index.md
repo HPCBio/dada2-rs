@@ -72,8 +72,11 @@ here is the evidence, and here is the path it opens or closes."
   `b_shuffle` is 5.6–27% of `run_dada`, not the 46–55% of pooled wall that
   motivated #124, and no remaining phase is worth more than 3%. The lesson that
   generalises beyond the arithmetic: re-measure an optimisation's *premise*, not
-  only its design — and note that the one lever it sized and declined was later
-  built in #132, once a thread-count change made it worth 4.3–5.6%. Also the page on why exactness is worth enforcing on a change
+  only its design. Two of its three closures were later reopened and built —
+  the move pass in #132 (−4.3 to −5.6% of `run_dada`) and the reconcile in #136
+  (−5.2 to −15.3%) — both by finding a **cluster-major route** to information
+  the page had priced at the scattered rate. "Unreachable" turned out to be a
+  claim about a route, not a quantity. Also the page on why exactness is worth enforcing on a change
   you throw away — it caught a latent tie-break bug and is what makes the verdict
   final rather than ambiguous.
 - [Inside `b_compare`: screen vs align](compare-screen-vs-align.md) — the phase
