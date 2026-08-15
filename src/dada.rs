@@ -747,8 +747,8 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // best cluster, which is what bounds any future reconcile optimization.
     let mut t_shuf_move = std::time::Duration::ZERO;
     let (mut shuf_move_raws, mut shuf_rec_affected, mut shuf_rec_changed) = (0u64, 0u64, 0u64);
-    // #132 projection accumulators (behaviour-neutral).
-    let (mut shuf_move_projected, mut shuf_move_dirty) = (0u64, 0u64);
+    // #132 dirty-cluster move-pass diagnostics.
+    let (mut shuf_move_unpruned, mut shuf_move_dirty) = (0u64, 0u64);
     let (mut shuf_move_prunable, mut shuf_move_passes) = (0u64, 0u64);
     let mut shuf_nraw = 0usize;
     // b_bud scan-redundancy accounting (verbose-only diagnostics).
@@ -896,7 +896,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         t_shuf_reconcile += st.reconcile_time;
         t_shuf_move += st.move_time;
         shuf_move_raws += st.move_raws_scanned as u64;
-        shuf_move_projected += st.move_raws_projected as u64;
+        shuf_move_unpruned += st.move_raws_unpruned as u64;
         shuf_move_dirty += st.move_dirty_clusters as u64;
         shuf_move_prunable += st.move_passes_prunable as u64;
         shuf_move_passes += st.move_passes as u64;
@@ -1148,34 +1148,22 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 f64::INFINITY
             },
         );
-        // #132 projection: what a dirty-cluster move pass would have scanned.
-        // Behaviour-neutral — the real pass is what ran. `ns/raw` here is the
-        // measured sequential rate applied to the projected volume, so it is a
-        // lower bound on the pruned pass: it credits the same access pattern
-        // (whole clusters, cluster-major) and ignores per-pass bookkeeping.
+        // #132: how much the dirty-cluster pruning actually bought. The prune
+        // is workload-dependent (64-67% MiSeq, 57% PacBio), so it is reported
+        // rather than assumed — an erosion should be visible here, not inferred
+        // from wall time.
         if shuf_move_passes > 0 {
-            let saved_raws = shuf_move_raws.saturating_sub(shuf_move_projected);
-            let ns_raw = if shuf_move_raws > 0 {
-                t_shuf_move.as_secs_f64() / shuf_move_raws as f64
-            } else {
-                0.0
-            };
+            let pruned = shuf_move_unpruned.saturating_sub(shuf_move_raws);
             eprintln!(
-                "[dada]   move projection (#132): {} raws vs {} scanned = {:.1}% pruned, \
-                 ~{:.2}s of {:.2}s",
-                shuf_move_projected,
-                shuf_move_raws,
-                if shuf_move_raws > 0 {
-                    100.0 * saved_raws as f64 / shuf_move_raws as f64
+                "[dada]   move pruning (#132): {} of {} raws skipped ({:.1}%), \
+                 {} of {} passes pruned ({:.0}%), mean {:.1} dirty clusters/pass of {}",
+                pruned,
+                shuf_move_unpruned,
+                if shuf_move_unpruned > 0 {
+                    100.0 * pruned as f64 / shuf_move_unpruned as f64
                 } else {
                     0.0
                 },
-                ns_raw * shuf_move_projected as f64,
-                t_shuf_move.as_secs_f64(),
-            );
-            eprintln!(
-                "[dada]     {} of {} passes prunable ({:.0}%), mean {:.1} dirty clusters/pass \
-                 of {} ({:.2}% of clusters)",
                 shuf_move_prunable,
                 shuf_move_passes,
                 100.0 * shuf_move_prunable as f64 / shuf_move_passes as f64,
@@ -1185,12 +1173,6 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                     0.0
                 },
                 bb.clusters.len(),
-                if shuf_move_prunable > 0 && !bb.clusters.is_empty() {
-                    100.0 * (shuf_move_dirty as f64 / shuf_move_prunable as f64)
-                        / bb.clusters.len() as f64
-                } else {
-                    0.0
-                },
             );
         }
         eprintln!(
