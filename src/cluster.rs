@@ -664,6 +664,12 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
                     b.bi_pop_raw(ci, r);
                     b.bi_add_raw(best_ci, raw_idx);
                     b.raws[raw_idx].comp = compmax[raw_idx].clone();
+                    // #132: keep raw_cluster current. `swap_remove` relocates
+                    // the last raw into slot `r`, but that raw's *cluster* is
+                    // unchanged, so only the mover needs an update — one write
+                    // per move, which is also what the real implementation
+                    // would pay.
+                    raw_cluster[raw_idx] = best_ci as u32;
                     moves += 1;
                 }
             }
@@ -690,13 +696,11 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
             dirty_cluster[ci as usize] = false;
         }
         dirty_list.clear();
-        raw_cluster.resize(b.raws.len(), u32::MAX);
+        // `raw_cluster` is maintained incrementally by the move loop above, so
+        // no rebuild here: an O(nraw) pass per iteration would cost as much as
+        // the move pass it is measuring. `b_bud` can add clusters between
+        // converge calls, never within one, so only the length needs tracking.
         dirty_cluster.resize(b.clusters.len(), false);
-        for (ci, c) in b.clusters.iter().enumerate() {
-            for &raw in &c.raws {
-                raw_cluster[raw] = ci as u32;
-            }
-        }
         total_moves += moves;
         if moves == 0 {
             zero_move_calls += 1;
