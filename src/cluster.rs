@@ -365,6 +365,32 @@ pub struct ShuffleStats {
     /// summed over iterations. `comps_reconcile / reconcile_affected` is the
     /// mean candidate-list length actually walked.
     pub reconcile_affected: usize,
+    /// Projection for #132: raws a **dirty-cluster** move pass would have
+    /// scanned, summed over iterations, against `move_raws_scanned` for what it
+    /// actually scanned.
+    ///
+    /// The lever: after a reconcile, only raws whose `compmax` changed can
+    /// move, so a move pass needs to visit only the clusters *containing* those
+    /// raws — not all of them. Scanning whole dirty clusters (rather than the
+    /// changed raws individually) keeps the walk cluster-major and sequential,
+    /// which is the point: #124 established that a scattered pass at
+    /// 12.4-14.1 ns/comp loses to this 2.6-3.1 ns/raw sequential one unless it
+    /// prunes below ~35%.
+    ///
+    /// Projection only — the real pass is still what runs, and this counter
+    /// changes nothing. It exists because the modelled saving depends on *which*
+    /// clusters go dirty, and cluster sizes are power-law: a changed raw is
+    /// likelier to sit in a large cluster, so the mean cluster size is the wrong
+    /// statistic and the model could be badly optimistic.
+    pub move_raws_projected: usize,
+    /// Dirty clusters summed over the move passes that could use the projection
+    /// (i.e. those following a reconcile), for the mean dirty-cluster count.
+    pub move_dirty_clusters: usize,
+    /// Move passes that followed a reconcile, and so could have been pruned.
+    /// The remainder follow a build and must scan everything.
+    pub move_passes_prunable: usize,
+    /// Total move passes, prunable or not.
+    pub move_passes: usize,
     /// Of those recomputes, how many actually changed the raw's best cluster.
     ///
     /// This is the sizing number for any reconcile optimization: the rest of
@@ -463,6 +489,10 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
         // driver); it has no reconcile and its move pass is not split out.
         move_time: std::time::Duration::ZERO,
         move_raws_scanned: 0,
+        move_raws_projected: 0,
+        move_dirty_clusters: 0,
+        move_passes_prunable: 0,
+        move_passes: 0,
         reconcile_affected: 0,
         reconcile_changed: 0,
         zero_move_calls: usize::from(moves == 0),
@@ -581,6 +611,32 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
     let mut in_affected = vec![false; nraw];
     let mut affected: Vec<usize> = Vec::new();
 
+    // --- #132 projection scaffolding (behaviour-neutral) ---
+    // `raw_cluster[raw]` is the cluster that currently holds `raw`. Built once
+    // here and maintained by the move pass below. NOTE this cannot be derived
+    // from `b.raws[raw].comp.i`: the bud paths move raws between clusters via
+    // `bi_add_raw` without updating `comp` (they stash `birth_comp` instead),
+    // so that field goes stale after a bud.
+    let mut raw_cluster: Vec<u32> = vec![u32::MAX; nraw];
+    for (ci, c) in b.clusters.iter().enumerate() {
+        for &raw in &c.raws {
+            raw_cluster[raw] = ci as u32;
+        }
+    }
+    // Clusters holding a raw whose `compmax` changed in the last reconcile —
+    // the set a pruned move pass would visit. Empty on the first pass after a
+    // build, which must scan everything.
+    let mut dirty_cluster = vec![false; b.clusters.len()];
+    let mut dirty_list: Vec<u32> = Vec::new();
+    // False only on the first pass of the loop, which follows the build; every
+    // later pass is preceded by a reconcile, which sets it. Never reset — a
+    // dirty set once known stays known.
+    let mut after_reconcile = false;
+    let mut move_raws_projected = 0usize;
+    let mut move_dirty_clusters = 0usize;
+    let mut move_passes_prunable = 0usize;
+    let mut move_passes = 0usize;
+
     let mut total_moves = 0usize;
     let mut nshuffle = 0usize;
     let mut zero_move_calls = 0usize;
@@ -613,6 +669,34 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
             }
         }
         move_time += t_move.elapsed();
+
+        // --- #132 projection (behaviour-neutral; timed outside `move_time`) ---
+        // What a dirty-cluster pass *would* have scanned. `swap_remove` in
+        // `bi_pop_raw` relocates one other raw per move, so `raw_cluster` is
+        // rebuilt from the membership lists rather than patched incrementally —
+        // fine here because this is measurement, not the optimisation.
+        move_passes += 1;
+        if after_reconcile {
+            move_passes_prunable += 1;
+            move_dirty_clusters += dirty_list.len();
+            for &ci in &dirty_list {
+                move_raws_projected += b.clusters[ci as usize].raws.len();
+            }
+        } else {
+            // Post-build pass: no pruning possible, scans everything.
+            move_raws_projected += b.clusters.iter().map(|c| c.raws.len()).sum::<usize>();
+        }
+        for &ci in &dirty_list {
+            dirty_cluster[ci as usize] = false;
+        }
+        dirty_list.clear();
+        raw_cluster.resize(b.raws.len(), u32::MAX);
+        dirty_cluster.resize(b.clusters.len(), false);
+        for (ci, c) in b.clusters.iter().enumerate() {
+            for &raw in &c.raws {
+                raw_cluster[raw] = ci as u32;
+            }
+        }
         total_moves += moves;
         if moves == 0 {
             zero_move_calls += 1;
@@ -648,12 +732,25 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
             // Observational only — `compmax` is assigned either way.
             if new_best.i != compmax[raw].i {
                 reconcile_changed += 1;
+                // #132: this raw can move, so the cluster holding it must be
+                // visited by the next move pass. Its *current* cluster, not the
+                // new best — the move pass finds movers by walking membership.
+                let cur = raw_cluster[raw];
+                if cur != u32::MAX && !dirty_cluster[cur as usize] {
+                    dirty_cluster[cur as usize] = true;
+                    dirty_list.push(cur);
+                }
             }
             compmax[raw] = new_best;
             comps_scanned += index[raw].len();
             in_affected[raw] = false;
         }
         affected.clear();
+        // The next move pass follows a reconcile, so its dirty set is known —
+        // *even when nothing changed*, in which case the set is empty and the
+        // pass provably moves nothing. Setting this only on a change would
+        // credit a no-op pass with a full scan and understate the prune.
+        after_reconcile = true;
         reconcile_time += t_rec.elapsed();
     }
 
@@ -668,6 +765,10 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         nraw,
         move_time,
         move_raws_scanned,
+        move_raws_projected,
+        move_dirty_clusters,
+        move_passes_prunable,
+        move_passes,
         reconcile_affected,
         reconcile_changed,
         zero_move_calls,

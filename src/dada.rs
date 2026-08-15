@@ -747,6 +747,9 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // best cluster, which is what bounds any future reconcile optimization.
     let mut t_shuf_move = std::time::Duration::ZERO;
     let (mut shuf_move_raws, mut shuf_rec_affected, mut shuf_rec_changed) = (0u64, 0u64, 0u64);
+    // #132 projection accumulators (behaviour-neutral).
+    let (mut shuf_move_projected, mut shuf_move_dirty) = (0u64, 0u64);
+    let (mut shuf_move_prunable, mut shuf_move_passes) = (0u64, 0u64);
     let mut shuf_nraw = 0usize;
     // b_bud scan-redundancy accounting (verbose-only diagnostics).
     let (mut bud_calls, mut bud_success, mut bud_raws_scanned) = (0u64, 0u64, 0u64);
@@ -893,6 +896,10 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         t_shuf_reconcile += st.reconcile_time;
         t_shuf_move += st.move_time;
         shuf_move_raws += st.move_raws_scanned as u64;
+        shuf_move_projected += st.move_raws_projected as u64;
+        shuf_move_dirty += st.move_dirty_clusters as u64;
+        shuf_move_prunable += st.move_passes_prunable as u64;
+        shuf_move_passes += st.move_passes as u64;
         shuf_rec_affected += st.reconcile_affected as u64;
         shuf_rec_changed += st.reconcile_changed as u64;
         shuf_nraw = st.nraw;
@@ -1141,6 +1148,51 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 f64::INFINITY
             },
         );
+        // #132 projection: what a dirty-cluster move pass would have scanned.
+        // Behaviour-neutral — the real pass is what ran. `ns/raw` here is the
+        // measured sequential rate applied to the projected volume, so it is a
+        // lower bound on the pruned pass: it credits the same access pattern
+        // (whole clusters, cluster-major) and ignores per-pass bookkeeping.
+        if shuf_move_passes > 0 {
+            let saved_raws = shuf_move_raws.saturating_sub(shuf_move_projected);
+            let ns_raw = if shuf_move_raws > 0 {
+                t_shuf_move.as_secs_f64() / shuf_move_raws as f64
+            } else {
+                0.0
+            };
+            eprintln!(
+                "[dada]   move projection (#132): {} raws vs {} scanned = {:.1}% pruned, \
+                 ~{:.2}s of {:.2}s",
+                shuf_move_projected,
+                shuf_move_raws,
+                if shuf_move_raws > 0 {
+                    100.0 * saved_raws as f64 / shuf_move_raws as f64
+                } else {
+                    0.0
+                },
+                ns_raw * shuf_move_projected as f64,
+                t_shuf_move.as_secs_f64(),
+            );
+            eprintln!(
+                "[dada]     {} of {} passes prunable ({:.0}%), mean {:.1} dirty clusters/pass \
+                 of {} ({:.2}% of clusters)",
+                shuf_move_prunable,
+                shuf_move_passes,
+                100.0 * shuf_move_prunable as f64 / shuf_move_passes as f64,
+                if shuf_move_prunable > 0 {
+                    shuf_move_dirty as f64 / shuf_move_prunable as f64
+                } else {
+                    0.0
+                },
+                bb.clusters.len(),
+                if shuf_move_prunable > 0 && !bb.clusters.is_empty() {
+                    100.0 * (shuf_move_dirty as f64 / shuf_move_prunable as f64)
+                        / bb.clusters.len() as f64
+                } else {
+                    0.0
+                },
+            );
+        }
         eprintln!(
             "[dada]   other     {:>8.2}s ({:>4.1}%)  (loop bookkeeping; large = an unmeasured phase)",
             other,
