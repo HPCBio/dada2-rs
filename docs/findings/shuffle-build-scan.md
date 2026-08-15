@@ -204,11 +204,34 @@ replacement set is small enough that the scattered rate does not matter.
 
 Sized: ~5.6s / 5.9s / 6.4s ⇒ **1.8% / 2.9% / 0.7% of `run_dada`**.
 
-**Not built.** A sub-3% prize does not justify a change that must preserve
-byte-identical move ordering (ascending `ci`) — precisely the invariant where
-Result 2 hid a latent bug. Recorded here so it does not have to be rediscovered,
-and so that anyone reopening it starts from the sizing rather than from the
-mechanism.
+**Not built — at the time.** A sub-3% prize did not justify a change that must
+preserve byte-identical move ordering (ascending `ci`) — precisely the invariant
+where Result 2 hid a latent bug. Recorded here so it would not have to be
+rediscovered, and so that anyone reopening it started from the sizing rather
+than from the mechanism.
+
+!!! success "Built and merged in [#132](compare-screen-vs-align.md#thread-scaling-and-the-ranking-it-overturns)"
+
+    That sizing was measured **at 24 threads**, and `b_shuffle` is serial: its
+    share of `run_dada` grows with every thread added to the parallel
+    `b_compare`. At 64 threads the same lever is worth **4.3% / 5.6% / 1.8%**,
+    and it was built — the move pass now visits only the clusters holding raws
+    whose `compmax` changed, cutting it **59–66%** with output byte-identical
+    across 1,638 production files.
+
+    The prize was not the only thing that had moved. The sizing above assumed
+    the reducible passes go to *near-zero* work; realised pruning is 57–67% of
+    move raws, because the post-build passes remain irreducible. It came out
+    ahead anyway, for a reason the sizing did not anticipate: `build` and
+    `reconcile` also run 2–6% faster while doing provably identical work,
+    apparently because a move pass touching 60% less memory leaves more of the
+    working set resident.
+
+    The design is not the obvious one, and the difference is Result 2's lesson
+    applied: a dirty set of *raws* needs `raw → (cluster, position)` — scattered
+    index, scattered updates — while a dirty set of *clusters* keeps the walk
+    cluster-major and sequential. See
+    [#132](https://github.com/HPCBio/dada2-rs/issues/132).
 
 ## What the guardrail bought
 
@@ -235,11 +258,19 @@ first is what makes a negative result *final* rather than merely discouraging.
 
 ## What this dictates
 
-- **`b_shuffle` is done.** [#124][124] closes as fully assessed. Build scan
-  falsified twice (layout, bounded pruning); reconcile has huge redundancy and no
-  mechanism to reach it; the move pass has a mechanism but a <3% prize. Do not
-  reopen without both a fundamentally different mechanism *and* a fresh
-  measurement of the phase's share.
+- **`b_shuffle` is done — with one exception, since taken.** [#124][124] closed
+  as fully assessed: build scan falsified twice (layout, bounded pruning);
+  reconcile has huge redundancy and no mechanism to reach it; the move pass has
+  a mechanism but was a <3% prize. The closure said *"do not reopen without both
+  a fundamentally different mechanism **and** a fresh measurement of the phase's
+  share"* — and the second condition is exactly what
+  [#132](https://github.com/HPCBio/dada2-rs/issues/132) supplied. At 64 rather
+  than 24 threads the move-pass lever is worth 4.3–5.6% on MiSeq, and it is now
+  built and merged. **The build-scan and reconcile verdicts stand unchanged.**
+- **A share-of-runtime verdict has a thread count attached to it.** Serial
+  phases grow as parallel ones shrink, so "too small to bother with" is a
+  statement about a configuration, not about a phase. Any future closure on
+  those grounds should record the thread count it was measured at.
 - **`b_compare` is the target.** 70–92% of `run_dada` on every arm measured, and
   877s of PacBio's 953s. Any further pooled-`dada` performance work starts there.
 - **Re-measure the premise before costing an optimisation, not just the design.**

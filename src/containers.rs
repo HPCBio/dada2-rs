@@ -300,6 +300,18 @@ pub struct B {
     /// CDF values corresponding to `lams`.
     #[allow(dead_code)]
     pub cdf: Vec<f64>,
+    /// Cluster currently holding each Raw, indexed by Raw index (issue #132).
+    ///
+    /// Maintained by [`B::bi_add_raw`], which every membership change routes
+    /// through, so it stays correct across shuffles and buds alike. It exists so
+    /// the shuffle's move pass can be restricted to the clusters holding raws
+    /// whose best cluster actually changed, instead of walking every cluster
+    /// every iteration.
+    ///
+    /// Deliberately *not* derived from `Raw::comp`: the bud paths move raws via
+    /// `bi_add_raw` without updating `comp` (they carry `birth_comp` instead), so
+    /// that field goes stale after a bud and would silently mis-target the scan.
+    pub raw_cluster: Vec<u32>,
 }
 
 impl B {
@@ -323,6 +335,7 @@ impl B {
             use_quals,
             lams: Vec::new(),
             cdf: Vec::new(),
+            raw_cluster: Vec::new(),
         };
         b.init();
         b
@@ -348,6 +361,7 @@ impl B {
             .iter()
             .map(|r| (r.index as usize, r.reads))
             .collect();
+        self.raw_cluster = vec![0u32; self.raws.len()];
         for (idx, reads) in members {
             self.clusters[0].raws.push(idx);
             self.clusters[0].reads += reads;
@@ -371,6 +385,13 @@ impl B {
     /// Equivalent to C++ `bi_add_raw`.
     pub fn bi_add_raw(&mut self, bi_idx: usize, raw_idx: usize) {
         let reads = self.raws[raw_idx].reads;
+        // #132: the single choke point for membership changes, so the only
+        // place `raw_cluster` needs maintaining. `bi_pop_raw` deliberately does
+        // not clear it — every pop in this codebase is immediately followed by
+        // an add, and a stale entry between the two is never observed.
+        if raw_idx < self.raw_cluster.len() {
+            self.raw_cluster[raw_idx] = bi_idx as u32;
+        }
         self.clusters[bi_idx].raws.push(raw_idx);
         self.clusters[bi_idx].reads += reads;
         self.clusters[bi_idx].update_e = true;

@@ -303,6 +303,37 @@ For a head-to-head where R's C was compiled with the cluster's native gcc, prefe
 
 ---
 
+## 6b. A/B-ing an optimisation from one binary
+
+Where a change is expected to be output-identical and to move only wall time,
+the safest A/B runs **both arms from the same binary**, selected by an
+environment variable, rather than from two builds:
+
+| variable | effect |
+|---|---|
+| `DADA2RS_SHUFFLE_NO_PRUNE=1` | forces `b_shuffle`'s move pass to scan every cluster, disabling the dirty-cluster pruning ([#132](findings/shuffle-build-scan.md)) |
+
+```sh
+dada2-rs dada-pooled ... --verbose                            # optimised
+DADA2RS_SHUFFLE_NO_PRUNE=1 dada2-rs dada-pooled ... --verbose # baseline
+```
+
+Two reasons this is worth the small amount of gating code:
+
+1. **It removes the wrong-build failure mode.** Two A/B runs during #132 were
+   built from a stale checkout and silently compared `main` against `main` —
+   caught only because the expected verbose line was missing from the output.
+   Check the version tag in any A/B (`grep -o '0\.2\.0-[0-9a-f]*'` on an output
+   JSON) even when using this pattern.
+2. **The two arms are otherwise bit-identical code**, so nothing else — compiler
+   version, LTO, incidental codegen — can differ between them.
+
+The tradeoff: the branch is evaluated at runtime, so it cannot be used for a
+change whose cost is *inside* the hot loop being measured. #132's is not — the
+check is once per move pass, not per raw.
+
+---
+
 ## 7. PacBio vs Illumina specifics
 
 - **PacBio input is raw, primered reads.** `remove-primers` trims primers,
