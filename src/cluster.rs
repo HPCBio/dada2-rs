@@ -394,6 +394,36 @@ pub struct ShuffleStats {
     pub move_passes_prunable: usize,
     /// Total move passes, pruned or not.
     pub move_passes: usize,
+    /// Affected raws whose full candidate rescan is *provably necessary*,
+    /// because their current best cluster's reads **decreased** (issue #136).
+    ///
+    /// The reconcile currently rescans every affected raw's whole candidate
+    /// list. Most of that is redundant — only 0.006-0.034% of recomputes change
+    /// anything — and #124 called the redundancy unreachable, on the grounds
+    /// that finding which raws changed costs the scattered access being avoided.
+    ///
+    /// That is true of *avoiding the touch*, but not of doing it more cheaply.
+    /// A raw's rescan is only needed when its current best shrank: if that
+    /// cluster's reads held or rose, its score still beats every *unchanged*
+    /// candidate (theirs are unchanged and were already below the old max), so
+    /// only the changed candidates need testing — and those are reachable by
+    /// walking the changed clusters' own comp vectors, which is sequential and
+    /// already happening to collect the affected set.
+    ///
+    /// So this counter, against `reconcile_affected`, is the fraction of the
+    /// reconcile that a cheaper scheme could not avoid. Measurement only.
+    pub reconcile_rescan_raws: usize,
+    /// Comparisons those provably-necessary rescans would walk, against
+    /// `comps_reconcile` for what the current reconcile walks.
+    pub reconcile_comps_rescan: usize,
+    /// Reconcile time in the *collect* half: walking the changed clusters' own
+    /// comp vectors to gather the affected raws. Sequential, cluster-major, and
+    /// unavoidable — a cheaper scheme still has to do this.
+    pub reconcile_collect_time: std::time::Duration,
+    /// Reconcile time in the *rescan* half: recomputing each affected raw's
+    /// best over its full candidate list. Scattered, raw-major, and the part
+    /// `reconcile_rescan_raws` says is mostly unnecessary.
+    pub reconcile_rescan_time: std::time::Duration,
     /// Of those recomputes, how many actually changed the raw's best cluster.
     ///
     /// This is the sizing number for any reconcile optimization: the rest of
@@ -497,6 +527,10 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
         move_passes_prunable: 0,
         move_passes: 0,
         reconcile_affected: 0,
+        reconcile_rescan_raws: 0,
+        reconcile_comps_rescan: 0,
+        reconcile_collect_time: std::time::Duration::ZERO,
+        reconcile_rescan_time: std::time::Duration::ZERO,
         reconcile_changed: 0,
         zero_move_calls: usize::from(moves == 0),
         calls: 1,
@@ -691,6 +725,15 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
     let mut move_time = std::time::Duration::ZERO;
     let mut move_raws_scanned = 0usize;
     let mut reconcile_affected = 0usize;
+    // Clusters whose reads *decreased* in the current reconcile. A raw whose
+    // best sits in one of these is the only case a cheaper reconcile could not
+    // settle without a full candidate rescan — see `reconcile_rescan_raws`.
+    let mut reads_fell = vec![false; b.clusters.len()];
+    let mut reads_fell_list: Vec<u32> = Vec::new();
+    let mut reconcile_rescan_raws = 0usize;
+    let mut reconcile_comps_rescan = 0usize;
+    let mut reconcile_collect_time = std::time::Duration::ZERO;
+    let mut reconcile_rescan_time = std::time::Duration::ZERO;
     let mut reconcile_changed = 0usize;
     loop {
         // Move pass — identical to b_shuffle2's, using the current compmax.
@@ -745,8 +788,14 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         // its candidates — provably correct at the current reads regardless of
         // increase/decrease, avoiding stale-max ordering hazards.
         let t_rec = std::time::Instant::now();
+        let t_collect = std::time::Instant::now();
+        reads_fell.resize(b.clusters.len(), false);
         for (ci, ru) in reads_used.iter_mut().enumerate() {
             if b.clusters[ci].reads != *ru {
+                if b.clusters[ci].reads < *ru && !reads_fell[ci] {
+                    reads_fell[ci] = true;
+                    reads_fell_list.push(ci as u32);
+                }
                 for comp in &b.clusters[ci].comp {
                     let raw = comp.index as usize;
                     if !in_affected[raw] {
@@ -757,8 +806,17 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
                 *ru = b.clusters[ci].reads;
             }
         }
+        reconcile_collect_time += t_collect.elapsed();
         reconcile_affected += affected.len();
+        let t_rescan = std::time::Instant::now();
         for &raw in &affected {
+            // Counted before the recompute: `compmax[raw]` is still the raw's
+            // best at the *previous* reads, which is what decides whether a
+            // cheaper scheme would have to fall back to a full rescan.
+            if reads_fell[compmax[raw].i as usize] {
+                reconcile_rescan_raws += 1;
+                reconcile_comps_rescan += index[raw].len();
+            }
             let new_best = best_from_cands(&index[raw], raw, &b.clusters);
             // Did this recompute actually learn anything? A recompute that
             // returns the cluster already in `compmax` was redundant, and the
@@ -779,7 +837,12 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
             comps_scanned += index[raw].len();
             in_affected[raw] = false;
         }
+        reconcile_rescan_time += t_rescan.elapsed();
         affected.clear();
+        for &ci in &reads_fell_list {
+            reads_fell[ci as usize] = false;
+        }
+        reads_fell_list.clear();
         // The next move pass follows a reconcile, so its dirty set is known —
         // *even when nothing changed*, in which case the set is empty and the
         // pass provably moves nothing. Setting this only on a change would
@@ -804,6 +867,10 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         move_passes_prunable,
         move_passes,
         reconcile_affected,
+        reconcile_rescan_raws,
+        reconcile_comps_rescan,
+        reconcile_collect_time,
+        reconcile_rescan_time,
         reconcile_changed,
         zero_move_calls,
         calls: nshuffle,

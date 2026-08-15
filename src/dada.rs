@@ -747,6 +747,10 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // best cluster, which is what bounds any future reconcile optimization.
     let mut t_shuf_move = std::time::Duration::ZERO;
     let (mut shuf_move_raws, mut shuf_rec_affected, mut shuf_rec_changed) = (0u64, 0u64, 0u64);
+    // Reconcile rescan-necessity projection (#136).
+    let (mut shuf_rec_rescan, mut shuf_rec_rescan_comps) = (0u64, 0u64);
+    let mut t_rec_collect = std::time::Duration::ZERO;
+    let mut t_rec_rescan = std::time::Duration::ZERO;
     // #132 dirty-cluster move-pass diagnostics.
     let (mut shuf_move_unpruned, mut shuf_move_dirty) = (0u64, 0u64);
     let (mut shuf_move_prunable, mut shuf_move_passes) = (0u64, 0u64);
@@ -901,6 +905,10 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         shuf_move_prunable += st.move_passes_prunable as u64;
         shuf_move_passes += st.move_passes as u64;
         shuf_rec_affected += st.reconcile_affected as u64;
+        shuf_rec_rescan += st.reconcile_rescan_raws as u64;
+        shuf_rec_rescan_comps += st.reconcile_comps_rescan as u64;
+        t_rec_collect += st.reconcile_collect_time;
+        t_rec_rescan += st.reconcile_rescan_time;
         shuf_rec_changed += st.reconcile_changed as u64;
         shuf_nraw = st.nraw;
         shuf_zero_move_calls += st.zero_move_calls as u64;
@@ -1148,6 +1156,49 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 f64::INFINITY
             },
         );
+        // Reconcile rescan-necessity (#136, measurement only).
+        //
+        // #124 called the reconcile's redundancy unreachable: 99.97% of
+        // recomputes return the value already in `compmax`, and finding which
+        // raws changed costs the scattered access being avoided. That rules out
+        // *skipping* the touch, not doing it more cheaply. A raw only needs its
+        // full candidate rescan when its current best cluster shrank; otherwise
+        // that cluster still beats every unchanged candidate and only the
+        // changed ones need testing, which a sequential walk of the changed
+        // clusters' comps already reaches.
+        //
+        // This reports the fraction that a cheaper scheme could NOT avoid. If
+        // it is most of them, the redundancy really is unreachable and #124's
+        // verdict stands as written.
+        if shuf_rec_affected > 0 {
+            eprintln!(
+                "[dada]   reconcile rescan-necessity (#136): {} of {} affected raws must rescan \
+                 ({:.1}%), {} of {} comps ({:.1}%); collect {:.2}s + rescan {:.2}s, \
+                 so ~{:.2}s of {:.2}s reconcile is avoidable",
+                shuf_rec_rescan,
+                shuf_rec_affected,
+                100.0 * shuf_rec_rescan as f64 / shuf_rec_affected as f64,
+                shuf_rec_rescan_comps,
+                shuf_comps_reconcile,
+                if shuf_comps_reconcile > 0 {
+                    100.0 * shuf_rec_rescan_comps as f64 / shuf_comps_reconcile as f64
+                } else {
+                    0.0
+                },
+                t_rec_collect.as_secs_f64(),
+                t_rec_rescan.as_secs_f64(),
+                // The rescan half scaled by the share of comps a cheaper scheme
+                // would not have to walk. Optimistic: it credits the survivors
+                // with the same per-comp rate, and the collect half is unchanged.
+                t_rec_rescan.as_secs_f64()
+                    * if shuf_comps_reconcile > 0 {
+                        1.0 - shuf_rec_rescan_comps as f64 / shuf_comps_reconcile as f64
+                    } else {
+                        0.0
+                    },
+                t_shuf_reconcile.as_secs_f64(),
+            );
+        }
         // #132: how much the dirty-cluster pruning actually bought. The prune
         // is workload-dependent (64-67% MiSeq, 57% PacBio), so it is reported
         // rather than assumed — an erosion should be visible here, not inferred
