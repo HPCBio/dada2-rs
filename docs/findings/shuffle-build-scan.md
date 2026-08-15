@@ -175,18 +175,37 @@ The build, meanwhile, gets **cheaper** with scale — 3.53 ns/comp on PacBio's
 547k raws against ~7.4 on MiSeq's 273–297k. Independent confirmation of Result 1:
 the cluster-major build is at its floor and improves as the pool grows.
 
-### Reconcile redundancy is enormous and not exploitable
+### Reconcile redundancy is enormous — and reachable after all
 
-Only **0.006–0.034%** of reconcile recomputes actually change the raw's cluster —
-and the fraction falls as the pool grows, so the waste scales *against* us. That
-is far more nominal headroom than the build ever had.
+Only **0.006–0.034% of recomputes change the raw's cluster**. The rest re-derive
+what `compmax` already held.
 
-It is not reachable. The reconcile already runs at the scattered rate, so there
-is no cheap baseline to lose against (the asymmetry that sank Result 2 does not
-apply) — but identifying which 0.03% of raws changed requires touching them, at
-~12.4 ns/comp, which is the cost being avoided. A **perfect oracle** costing
-nothing would save 3.4% / 10.3% / 2.3% of `run_dada`; any real mechanism gets a
-fraction of that.
+At the time this was called unreachable, and the argument was sound as far as it
+went: finding which raws changed means touching them, at the ~12.4 ns/comp
+scattered rate that is the cost being avoided.
+
+!!! success "Superseded by [#136](https://github.com/HPCBio/dada2-rs/issues/136) — reconcile −66 to −80%"
+
+    That argument rules out *skipping* the touch. It does not rule out doing it
+    **more cheaply**, and the distinction turned out to be the whole thing —
+    exactly as it was for the move pass below.
+
+    A raw needs its full candidate rescan only when **its current best cluster's
+    reads fell**. If they held or rose, that cluster still beats every
+    *unchanged* candidate — theirs are unchanged and were already below the old
+    max — so only the *changed* candidates need testing, and those are reachable
+    by walking the changed clusters' own comp vectors: sequential, cluster-major,
+    and already happening to collect the affected set.
+
+    Measured necessity: **23.5% / 23.2% / 13.1%** of affected raws, and only
+    **16.5% / 15.4% / 7.6%** of comparisons. Built, the reconcile falls
+    **−66% / −67% / −80%** and `run_dada` **−7.2% / −15.3% / −5.2%**,
+    byte-identical across 1,638 production files.
+
+    The verdict here was not wrong about the access pattern; it was wrong to
+    treat "the touch costs the scattered rate" as "the touch cannot be made
+    cheaper". Two of this page's three closures have now fallen to the same
+    correction.
 
 ### The move pass: the only favourable cost shape, and still too small
 
@@ -271,6 +290,12 @@ first is what makes a negative result *final* rather than merely discouraging.
   phases grow as parallel ones shrink, so "too small to bother with" is a
   statement about a configuration, not about a phase. Any future closure on
   those grounds should record the thread count it was measured at.
+- **"Unreachable" is a claim about a route, not about a quantity.** Both the
+  move pass and the reconcile were closed here because reaching their redundancy
+  looked to cost the scattered rate. Both were reopened by finding a
+  *cluster-major* route to the same information. Before closing something as
+  unreachable, ask whether the cost belongs to the goal or to the one path
+  tried.
 - **`b_compare` is the target.** 70–92% of `run_dada` on every arm measured, and
   877s of PacBio's 953s. Any further pooled-`dada` performance work starts there.
 - **Re-measure the premise before costing an optimisation, not just the design.**

@@ -428,6 +428,13 @@ as conditional on thread count rather than final.
     threads. The re-ranking was the finding; the code change was the
     consequence.
 
+    The same re-ranking then reopened the **reconcile**
+    ([#136](https://github.com/HPCBio/dada2-rs/issues/136)), which #124 had
+    closed as unreachable: it is now **−66% to −80%**, worth **−7.2% / −15.3% /
+    −5.2%** of `run_dada`. MiSeq R2's −15.3% is the largest single change this
+    project has landed — from a phase that, at the 24 threads #124 measured at,
+    looked like 10% of `run_dada` and not worth the risk.
+
 !!! warning "Do not tune for 48 threads at the expense of fewer"
 
     `dada2-rs` is also run on laptops and small allocations. Any change
