@@ -599,6 +599,12 @@ pub fn dada_uniques_cached(
 /// cluster center against its parent (birth-subs pass), both with the k-mer
 /// screen disabled (`use_kmers=false, kdist_cutoff=1.0`) so every comparison
 /// produces a Sub. Mirrors the `FinalSubsParallel` block in C++ `Rmain.cpp`.
+/// Mirrors `cluster::reconcile_full` for the report, which needs to know which
+/// path produced the numbers.
+fn reconcile_full_env() -> bool {
+    std::env::var_os("DADA2RS_RECONCILE_FULL").is_some()
+}
+
 fn compute_aux(b: &B, params: &DadaParams, has_quals: bool) -> DadaAux {
     // Final-subs alignment params: no kmer screen.
     let final_align = AlignParams {
@@ -1171,33 +1177,51 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         // it is most of them, the redundancy really is unreachable and #124's
         // verdict stands as written.
         if shuf_rec_affected > 0 {
-            eprintln!(
-                "[dada]   reconcile rescan-necessity (#136): {} of {} affected raws must rescan \
-                 ({:.1}%), {} of {} comps ({:.1}%); collect {:.2}s + rescan {:.2}s, \
-                 so ~{:.2}s of {:.2}s reconcile is avoidable",
-                shuf_rec_rescan,
-                shuf_rec_affected,
-                100.0 * shuf_rec_rescan as f64 / shuf_rec_affected as f64,
-                shuf_rec_rescan_comps,
-                shuf_comps_reconcile,
-                if shuf_comps_reconcile > 0 {
-                    100.0 * shuf_rec_rescan_comps as f64 / shuf_comps_reconcile as f64
-                } else {
-                    0.0
-                },
-                t_rec_collect.as_secs_f64(),
-                t_rec_rescan.as_secs_f64(),
-                // The rescan half scaled by the share of comps a cheaper scheme
-                // would not have to walk. Optimistic: it credits the survivors
-                // with the same per-comp rate, and the collect half is unchanged.
-                t_rec_rescan.as_secs_f64()
-                    * if shuf_comps_reconcile > 0 {
-                        1.0 - shuf_rec_rescan_comps as f64 / shuf_comps_reconcile as f64
+            // Mode-aware: the two paths make `affected` mean different things.
+            // Under the baseline full rescan it is every raw in a changed
+            // cluster, and this counter *projects* how many genuinely need
+            // rescanning. Under the incremental path only those raws are
+            // collected at all, so a percentage there would measure the counter
+            // against itself and always read 100%.
+            if reconcile_full_env() {
+                eprintln!(
+                    "[dada]   reconcile rescan-necessity (#136): {} of {} affected raws must rescan \
+                     ({:.1}%), {} of {} comps ({:.1}%); collect {:.2}s + rescan {:.2}s, \
+                     so ~{:.2}s of {:.2}s reconcile is avoidable",
+                    shuf_rec_rescan,
+                    shuf_rec_affected,
+                    100.0 * shuf_rec_rescan as f64 / shuf_rec_affected as f64,
+                    shuf_rec_rescan_comps,
+                    shuf_comps_reconcile,
+                    if shuf_comps_reconcile > 0 {
+                        100.0 * shuf_rec_rescan_comps as f64 / shuf_comps_reconcile as f64
                     } else {
                         0.0
                     },
-                t_shuf_reconcile.as_secs_f64(),
-            );
+                    t_rec_collect.as_secs_f64(),
+                    t_rec_rescan.as_secs_f64(),
+                    // The rescan half scaled by the share of comps a cheaper scheme
+                    // would not have to walk. Optimistic: it credits the survivors
+                    // with the same per-comp rate, and the collect half is unchanged.
+                    t_rec_rescan.as_secs_f64()
+                        * if shuf_comps_reconcile > 0 {
+                            1.0 - shuf_rec_rescan_comps as f64 / shuf_comps_reconcile as f64
+                        } else {
+                            0.0
+                        },
+                    t_shuf_reconcile.as_secs_f64(),
+                );
+            } else {
+                eprintln!(
+                    "[dada]   reconcile incremental (#136): {} raws fully rescanned over {} \
+                     comps; collect {:.2}s + rescan {:.2}s of {:.2}s reconcile",
+                    shuf_rec_rescan,
+                    shuf_rec_rescan_comps,
+                    t_rec_collect.as_secs_f64(),
+                    t_rec_rescan.as_secs_f64(),
+                    t_shuf_reconcile.as_secs_f64(),
+                );
+            }
         }
         // #132: how much the dirty-cluster pruning actually bought. The prune
         // is workload-dependent (64-67% MiSeq, 57% PacBio), so it is reported

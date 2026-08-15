@@ -27,6 +27,37 @@ fn par_max_len() -> usize {
     })
 }
 
+/// Verify, every reconcile, that `compmax`/`emax` equal what a full rescan
+/// would produce (#136).
+///
+/// Always on under `debug_assertions`; opt-in in release via
+/// `DADA2RS_RECONCILE_VERIFY=1`. The release path exists because **the test
+/// fixtures cannot reach the cases that matter**: exact cross-cluster ties in
+/// `lambda × reads` never occur on them, and neither does an incumbent whose
+/// fall changes the argmax — so mutations to the tie-break clause and to the
+/// necessity marking both pass every fixture-based test, including this
+/// invariant. Only production-scale data (thousands of clusters, millions of
+/// candidate lists) exercises them, and a debug build is far too slow to run
+/// there.
+///
+/// It is O(nraw x candidates) per reconcile — precisely the work being avoided
+/// — so it is for validation runs, never timing runs.
+fn reconcile_verify() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        cfg!(debug_assertions) || std::env::var_os("DADA2RS_RECONCILE_VERIFY").is_some()
+    })
+}
+
+/// Force the shuffle's reconcile to fully rescan every affected raw's candidate
+/// list, disabling the #136 incremental update.
+///
+/// Same purpose as [`shuffle_no_prune`]: both arms of an A/B from one binary.
+fn reconcile_full() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var_os("DADA2RS_RECONCILE_FULL").is_some())
+}
+
 /// Disable the #132 dirty-cluster pruning in the shuffle's move pass, forcing
 /// the full scan.
 ///
@@ -603,9 +634,57 @@ fn move_pass_cluster(b: &mut B, ci: usize, compmax: &[Comparison], scanned: &mut
     moves
 }
 
-/// Raw's best cluster over its candidate list at the clusters' current reads.
-/// Ascending-ci order + strict `>` reproduces the serial lowest-ci tie-break.
-fn best_from_cands(cands: &[Cand], raw: usize, clusters: &[Bi]) -> Comparison {
+/// Does candidate `(e, ci)` displace incumbent `(e_cur, ci_cur)`?
+///
+/// `best_from_cands_scored` is argmax by `(score, -ci)`: it scans ascending `ci` with
+/// strict `>`, so an exact tie resolves to the **lowest** `ci`. Reproducing that
+/// pairwise needs the tie clause — strict `>` alone is wrong whenever the
+/// incumbent has the higher `ci`, which the incremental reconcile (#136) can
+/// easily produce since it never scans in `ci` order from scratch.
+///
+/// Exact float equality is deliberate. Cross-cluster exact ties in
+/// `lambda × reads` are the case where #124's pruning arm hid a latent bug that
+/// survived both benchmarking and ASV concordance.
+#[inline]
+fn beats(e: f64, e_cur: f64, ci: u32, ci_cur: u32) -> bool {
+    e > e_cur || (e == e_cur && ci < ci_cur)
+}
+
+/// Note that `raw`'s best cluster changed: count it, and mark the cluster that
+/// currently *holds* the raw dirty so the next move pass visits it (#132).
+///
+/// Its current cluster, not the new best — the move pass finds movers by
+/// walking membership, so it has to look where the raw is now.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn record_change(
+    raw: usize,
+    new_ci: u32,
+    compmax: &[Comparison],
+    b: &B,
+    dirty_cluster: &mut [bool],
+    dirty_list: &mut Vec<u32>,
+    reconcile_changed: &mut usize,
+) {
+    if new_ci == compmax[raw].i {
+        return;
+    }
+    *reconcile_changed += 1;
+    let cur = b.raw_cluster[raw];
+    if cur != u32::MAX && !dirty_cluster[cur as usize] {
+        dirty_cluster[cur as usize] = true;
+        dirty_list.push(cur);
+    }
+}
+
+/// Raw's best cluster over its candidate list at the clusters' current reads,
+/// with the winning score.
+///
+/// Ascending-`ci` order + strict `>` reproduces the serial lowest-`ci`
+/// tie-break. The score is returned because the incremental reconcile (#136)
+/// keeps `emax` in step with `compmax`, and recomputing it from the returned
+/// `Comparison` would re-read the cluster's reads for nothing.
+fn best_from_cands_scored(cands: &[Cand], raw: usize, clusters: &[Bi]) -> (Comparison, f64) {
     let mut best_e = f64::NEG_INFINITY;
     let mut best = Comparison::default();
     for c in cands {
@@ -620,7 +699,7 @@ fn best_from_cands(cands: &[Cand], raw: usize, clusters: &[Bi]) -> Comparison {
             };
         }
     }
-    best
+    (best, best_e)
 }
 
 /// Incremental equivalent of looping [`b_shuffle2`] to convergence (or
@@ -688,8 +767,11 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
     // across buds would keep that buffer alive anyway, so it belongs here.
     let build_time = t_build.elapsed();
     let mut reconcile_time = std::time::Duration::ZERO;
-    // emax was only needed to build compmax; the reconcile recomputes affected
-    // raws from the index, so it is not carried forward.
+    // `emax` is carried forward (#136). It used to be dropped here, because the
+    // reconcile recomputed every affected raw from its candidate list and so
+    // never needed the incumbent's score. The incremental reconcile does need
+    // it: testing a changed candidate against the current best is exactly a
+    // comparison of scores. +8 bytes/raw, against a pooled peak measured in GB.
 
     // Reads the map is currently consistent with (for dirty detection).
     let mut reads_used: Vec<u32> = b.clusters.iter().map(|c| c.reads).collect();
@@ -790,12 +872,84 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         let t_rec = std::time::Instant::now();
         let t_collect = std::time::Instant::now();
         reads_fell.resize(b.clusters.len(), false);
-        for (ci, ru) in reads_used.iter_mut().enumerate() {
-            if b.clusters[ci].reads != *ru {
-                if b.clusters[ci].reads < *ru && !reads_fell[ci] {
-                    reads_fell[ci] = true;
-                    reads_fell_list.push(ci as u32);
+        let incremental = !reconcile_full();
+
+        // --- Pass A1: necessity marking (#136) ---
+        // A raw needs a full candidate rescan only if its current best cluster's
+        // reads FELL. If they held or rose, that cluster still beats every
+        // *unchanged* candidate — theirs are unchanged and were already below
+        // the old max — so only the changed candidates need testing, and those
+        // are reachable cluster-major in A2.
+        //
+        // This must run before A2 and separately from it: it reads the
+        // *entry-time* incumbent, and A2 mutates `compmax` as it goes.
+        for (ci, ru) in reads_used.iter().enumerate() {
+            if b.clusters[ci].reads < *ru && !reads_fell[ci] {
+                reads_fell[ci] = true;
+                reads_fell_list.push(ci as u32);
+            }
+        }
+        for &ci in &reads_fell_list {
+            for comp in &b.clusters[ci as usize].comp {
+                let raw = comp.index as usize;
+                if compmax[raw].i == ci && !in_affected[raw] {
+                    in_affected[raw] = true;
+                    affected.push(raw);
                 }
+            }
+        }
+        let n_rescan = affected.len();
+        reconcile_rescan_raws += n_rescan;
+        for &raw in &affected {
+            reconcile_comps_rescan += index[raw].len();
+        }
+
+        // --- Pass A2: incremental test (#136) ---
+        // Every changed cluster, ascending `ci`, skipping rescan-marked raws.
+        //
+        // The replacement rule reproduces `best_from_cands` exactly, which is
+        // argmax by (score, -ci): strict `>` alone is NOT sufficient, because an
+        // incumbent with a *higher* ci must lose an exact tie to a lower-ci
+        // candidate. Exact float equality is deliberate — cross-cluster exact
+        // ties are the case where #124's pruning arm hid a latent bug.
+        // Indexed rather than zipped: the loop body needs `&mut` access to
+        // `compmax`/`emax`/`dirty_*` alongside `&b`, so holding iterators over
+        // `b.clusters` and `reads_used` across it would over-borrow.
+        #[allow(clippy::needless_range_loop)]
+        for ci in 0..b.clusters.len() {
+            let new_reads = b.clusters[ci].reads;
+            if new_reads == reads_used[ci] {
+                continue;
+            }
+            let reads_f = new_reads as f64;
+            if incremental {
+                for comp in &b.clusters[ci].comp {
+                    let raw = comp.index as usize;
+                    if in_affected[raw] {
+                        continue; // queued for full rescan
+                    }
+                    let e = comp.lambda * reads_f;
+                    if compmax[raw].i == ci as u32 {
+                        // Same cluster, re-priced at the new reads. Its own
+                        // score is stale, so this is an assignment, not a test.
+                        emax[raw] = e;
+                    } else if beats(e, emax[raw], ci as u32, compmax[raw].i) {
+                        emax[raw] = e;
+                        record_change(
+                            raw,
+                            ci as u32,
+                            &compmax,
+                            b,
+                            &mut dirty_cluster,
+                            &mut dirty_list,
+                            &mut reconcile_changed,
+                        );
+                        compmax[raw] = comp.clone();
+                    }
+                }
+            } else {
+                // Baseline path (DADA2RS_RECONCILE_FULL): collect every raw in a
+                // changed cluster and rescan them all, as before #136.
                 for comp in &b.clusters[ci].comp {
                     let raw = comp.index as usize;
                     if !in_affected[raw] {
@@ -803,41 +957,56 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
                         affected.push(raw);
                     }
                 }
-                *ru = b.clusters[ci].reads;
             }
+            reads_used[ci] = new_reads;
         }
         reconcile_collect_time += t_collect.elapsed();
         reconcile_affected += affected.len();
+
+        // --- Pass B: full rescan, for the marked raws only ---
         let t_rescan = std::time::Instant::now();
         for &raw in &affected {
-            // Counted before the recompute: `compmax[raw]` is still the raw's
-            // best at the *previous* reads, which is what decides whether a
-            // cheaper scheme would have to fall back to a full rescan.
-            if reads_fell[compmax[raw].i as usize] {
-                reconcile_rescan_raws += 1;
-                reconcile_comps_rescan += index[raw].len();
-            }
-            let new_best = best_from_cands(&index[raw], raw, &b.clusters);
-            // Did this recompute actually learn anything? A recompute that
-            // returns the cluster already in `compmax` was redundant, and the
-            // redundant fraction is what bounds any future reconcile scheme.
-            // Observational only — `compmax` is assigned either way.
+            let (new_best, new_e) = best_from_cands_scored(&index[raw], raw, &b.clusters);
             if new_best.i != compmax[raw].i {
-                reconcile_changed += 1;
-                // #132: this raw can move, so the cluster holding it must be
-                // visited by the next move pass. Its *current* cluster, not the
-                // new best — the move pass finds movers by walking membership.
-                let cur = b.raw_cluster[raw];
-                if cur != u32::MAX && !dirty_cluster[cur as usize] {
-                    dirty_cluster[cur as usize] = true;
-                    dirty_list.push(cur);
-                }
+                record_change(
+                    raw,
+                    new_best.i,
+                    &compmax,
+                    b,
+                    &mut dirty_cluster,
+                    &mut dirty_list,
+                    &mut reconcile_changed,
+                );
             }
             compmax[raw] = new_best;
+            emax[raw] = new_e;
             comps_scanned += index[raw].len();
             in_affected[raw] = false;
         }
         reconcile_rescan_time += t_rescan.elapsed();
+
+        // #136: `compmax`/`emax` must equal what a full rescan would produce.
+        // The incremental path reaches that answer by a different route —
+        // testing only changed candidates against a carried incumbent — so the
+        // equality is asserted, not assumed. See `reconcile_verify` for why
+        // this must be runnable in release: the fixtures cannot reach the cases
+        // that matter.
+        if reconcile_verify() {
+            for raw in 0..nraw {
+                let (want, want_e) = best_from_cands_scored(&index[raw], raw, &b.clusters);
+                assert_eq!(
+                    compmax[raw].i, want.i,
+                    "reconcile: compmax[{raw}] = cluster {} but a full rescan says {}",
+                    compmax[raw].i, want.i
+                );
+                assert_eq!(
+                    emax[raw], want_e,
+                    "reconcile: emax[{raw}] = {} but a full rescan says {want_e}",
+                    emax[raw]
+                );
+            }
+        }
+
         affected.clear();
         for &ci in &reads_fell_list {
             reads_fell[ci as usize] = false;
@@ -1195,4 +1364,91 @@ pub fn b_bud_incremental(
         );
     }
     None
+}
+
+#[cfg(test)]
+mod reconcile_rule_tests {
+    use super::*;
+
+    /// Reference semantics: exactly what `best_from_cands_scored` does — ascending
+    /// `ci`, strict `>`.
+    fn reference_argmax(cands: &[(f64, u32)]) -> u32 {
+        let mut sorted = cands.to_vec();
+        sorted.sort_by_key(|&(_, ci)| ci);
+        let mut best_e = f64::NEG_INFINITY;
+        let mut best_ci = u32::MAX;
+        for &(e, ci) in &sorted {
+            if e > best_e {
+                best_e = e;
+                best_ci = ci;
+            }
+        }
+        best_ci
+    }
+
+    /// Fold `beats` over the candidates in an arbitrary order and require the
+    /// same winner as the reference.
+    ///
+    /// The arbitrary order is the point: the incremental reconcile visits only
+    /// *changed* clusters, so it meets candidates in an order unrelated to `ci`,
+    /// and an incumbent with a higher `ci` than a later candidate is routine.
+    fn fold_beats(cands: &[(f64, u32)]) -> u32 {
+        let mut e_cur = f64::NEG_INFINITY;
+        let mut ci_cur = u32::MAX;
+        for &(e, ci) in cands {
+            if beats(e, e_cur, ci, ci_cur) {
+                e_cur = e;
+                ci_cur = ci;
+            }
+        }
+        ci_cur
+    }
+
+    /// **Exact ties, in both orders.** This is the case no fixture in this repo
+    /// reaches — `lambda × reads` collisions across clusters simply do not occur
+    /// on them — so dropping the tie clause passes every end-to-end test,
+    /// including the full-rescan invariant. It is caught only here.
+    #[test]
+    fn exact_ties_resolve_to_lowest_ci() {
+        // Incumbent has the HIGHER ci and is met first: the tie must flip it.
+        assert_eq!(fold_beats(&[(10.0, 7), (10.0, 3)]), 3);
+        assert_eq!(reference_argmax(&[(10.0, 7), (10.0, 3)]), 3);
+        // Incumbent has the LOWER ci: the tie must not flip it.
+        assert_eq!(fold_beats(&[(10.0, 3), (10.0, 7)]), 3);
+        assert_eq!(reference_argmax(&[(10.0, 3), (10.0, 7)]), 3);
+        // Three-way tie, worst order.
+        assert_eq!(fold_beats(&[(5.0, 9), (5.0, 4), (5.0, 6)]), 4);
+        assert_eq!(reference_argmax(&[(5.0, 9), (5.0, 4), (5.0, 6)]), 4);
+    }
+
+    /// A tie produced the way production produces one: different `lambda` and
+    /// `reads` whose product is bit-identical.
+    #[test]
+    fn ties_from_distinct_lambda_reads_products() {
+        let a = (0.25_f64 * 400.0, 11u32); // 100.0
+        let b = (0.5_f64 * 200.0, 4u32); // 100.0
+        assert_eq!(
+            a.0, b.0,
+            "test precondition: products must be bit-identical"
+        );
+        assert_eq!(fold_beats(&[a, b]), 4);
+        assert_eq!(fold_beats(&[b, a]), 4);
+    }
+
+    /// Order-independence on non-tied inputs, including negatives and zero.
+    #[test]
+    fn fold_matches_reference_in_any_order() {
+        let cands = [(3.0, 5), (7.5, 2), (7.5, 9), (0.0, 1), (-2.0, 0), (7.5, 4)];
+        let want = reference_argmax(&cands);
+        assert_eq!(
+            want, 2,
+            "reference: highest score 7.5, lowest ci among ties"
+        );
+        let mut perm: Vec<_> = cands.to_vec();
+        for rot in 0..cands.len() {
+            perm.rotate_left(rot.min(1));
+            assert_eq!(fold_beats(&perm), want, "rotation {rot} disagreed");
+        }
+        assert_eq!(fold_beats(&[(-2.0, 0)]), 0, "single candidate");
+    }
 }
