@@ -197,10 +197,24 @@ scattered rate that is the cost being avoided.
     by walking the changed clusters' own comp vectors: sequential, cluster-major,
     and already happening to collect the affected set.
 
-    Measured necessity: **23.5% / 23.2% / 13.1%** of affected raws, and only
-    **16.5% / 15.4% / 7.6%** of comparisons. Built, the reconcile falls
-    **−66% / −67% / −80%** and `run_dada` **−7.2% / −15.3% / −5.2%**,
-    byte-identical across 1,638 production files.
+    Measured necessity: **23.5% / 23.2% / 13.1%** of affected raws on MiSeq
+    R1/R2 and PacBio, and only **16.5% / 15.4% / 7.6%** of comparisons. Built,
+    the reconcile falls **−66% / −67% / −80%** and `run_dada`
+    **−7.2% / −15.3% / −5.2%**, byte-identical across 1,638 production files.
+
+    **The prize grows with pool diversity, and grows a lot.** On a 60-sample
+    soil 16S pool — 9,701 clusters against MiSeq's 2,564 — necessity *falls* to
+    **11.6% / 11.3%** of raws and **6.0% / 3.3%** of comparisons, and the
+    reconcile drops **−82% / −86%** for **−23.3% / −28.3% of `run_dada`**
+    (120/120 byte-identical, replicates agreeing to 0.2–1.5%).
+
+    That is the opposite of what was predicted. More clusters looked like it
+    should *raise* necessity, since more clusters change reads each iteration
+    and a raw's incumbent is likelier to be among them. What actually happens is
+    that each changed cluster is a smaller share of any one raw's candidate
+    list, so the incumbent is *less* likely to be the cluster that fell. The
+    full-rescan reconcile was doing **41–56 billion comparisons** on that pool;
+    the incremental one does 1.8–2.5 billion.
 
     The verdict here was not wrong about the access pattern; it was wrong to
     treat "the touch costs the scattered rate" as "the touch cannot be made

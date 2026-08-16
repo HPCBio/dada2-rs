@@ -430,10 +430,16 @@ as conditional on thread count rather than final.
 
     The same re-ranking then reopened the **reconcile**
     ([#136](https://github.com/HPCBio/dada2-rs/issues/136)), which #124 had
-    closed as unreachable: it is now **−66% to −80%**, worth **−7.2% / −15.3% /
-    −5.2%** of `run_dada`. MiSeq R2's −15.3% is the largest single change this
+    closed as unreachable: it is now **−66% to −86%** of the phase, worth
+    **−5.2% to −28.3% of `run_dada`** depending on the pool. The upper end is a
+    diverse soil 16S set; the lower is PacBio. That is the largest change this
     project has landed — from a phase that, at the 24 threads #124 measured at,
     looked like 10% of `run_dada` and not worth the risk.
+
+    Note the range: these levers are **workload-scaled, not fixed**. The
+    reconcile's payoff grows with cluster count, so a benchmark on a
+    low-diversity pool understates it several-fold. Both platforms this page is
+    built on are low-diversity pools.
 
 !!! warning "Do not tune for 48 threads at the expense of fewer"
 
@@ -486,6 +492,15 @@ category, because these are conclusions rather than measurements:
 - The best thread count. 48 beat 24 by 28% (MiSeq) and 41% (PacBio) here; the
   right number elsewhere depends on cores, bandwidth and what else shares the
   node.
+- **The workload, not just the machine.** Every number on this page comes from
+  two *low-diversity* pools (MiSeq SOP, PacBio HiFi: 2,564 and 2,844 clusters).
+  A diverse pool is a different regime — a soil 16S set has 9,701 clusters, and
+  on it the reconcile lever is worth −28.3% of `run_dada` against −5.2% here,
+  while the build scan grows to ~38% of `run_dada` on 26× the comparison volume
+  ([#139](https://github.com/HPCBio/dada2-rs/issues/139)). The gate is
+  `comps/build` — a property of the community and the depth, not of the
+  instrument: #87 got opposite signs from 16S and ITS2 on the *same* NovaSeq
+  run. Quote a phase share with the pool it was measured on.
 - **Measurement conditions, not just hardware.** Every number on this page
   assumes fixed NUMA page placement. Under default placement the same rig
   produced a 25% noise floor that hid a 5% effect — see

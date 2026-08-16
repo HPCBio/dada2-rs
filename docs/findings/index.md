@@ -74,8 +74,9 @@ here is the evidence, and here is the path it opens or closes."
   generalises beyond the arithmetic: re-measure an optimisation's *premise*, not
   only its design. Two of its three closures were later reopened and built —
   the move pass in #132 (−4.3 to −5.6% of `run_dada`) and the reconcile in #136
-  (−5.2 to −15.3%) — both by finding a **cluster-major route** to information
-  the page had priced at the scattered rate. "Unreachable" turned out to be a
+  (**−5.2 to −28.3%**, the top of that range on a diverse soil pool) — both by
+  finding a **cluster-major route** to information the page had priced at the
+  scattered rate. "Unreachable" turned out to be a
   claim about a route, not a quantity. Also the page on why exactness is worth enforcing on a change
   you throw away — it caught a latent tie-break bug and is what makes the verdict
   final rather than ambiguous.
