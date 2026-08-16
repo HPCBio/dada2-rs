@@ -58,6 +58,24 @@ fn reconcile_full() -> bool {
     *VALUE.get_or_init(|| std::env::var_os("DADA2RS_RECONCILE_FULL").is_some())
 }
 
+/// Carry `compmax`/`emax`/`reads_used` across bud rounds instead of rebuilding
+/// the whole map from scratch on every `b_shuffle_converge` call (#87 / #139).
+///
+/// The build scan is 92-98% of the shuffle's scanned comparisons and 47-50% of
+/// its wall time, yet a bud changes only two clusters' reads and appends one new
+/// comp vector. #87 measured carrying the map as a win on 16S and a +10.5%
+/// *regression* on ITS2, and was closed on that. #136 then replaced the
+/// first-reconcile full rescan with an incremental update, which is exactly the
+/// work the carry relocates — re-projecting under the new cost model turned all
+/// four benchmark datasets into wins (see `docs/findings/shuffle-build-scan.md`).
+///
+/// Off by default while the A/B runs, and gated rather than branched so both
+/// arms come from one binary — same reason as [`shuffle_no_prune`].
+pub fn shuffle_carry() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var_os("DADA2RS_SHUFFLE_CARRY").is_some())
+}
+
 /// Disable the #132 dirty-cluster pruning in the shuffle's move pass, forcing
 /// the full scan.
 ///
@@ -757,6 +775,67 @@ fn best_from_cands_scored(cands: &[Cand], raw: usize, clusters: &[Bi]) -> (Compa
     (best, best_e)
 }
 
+/// Shuffle state that can outlive a single [`b_shuffle_converge`] call (#139).
+///
+/// Owned by the caller and threaded through every bud round. When
+/// [`shuffle_carry`] is off the caller resets it before each call, which
+/// reproduces the previous per-call allocation and full build exactly.
+///
+/// The scratch buffers (`in_affected`, `affected`, `dirty_*`, `reads_fell*`)
+/// live here too. They are logically per-call — every one is left empty/false at
+/// the end of a reconcile — but hoisting them removes an O(nraw) alloc + zero
+/// per bud round, which on a 1.3 M-raw pool over 11 k buds is not free.
+#[derive(Default)]
+pub struct ShuffleCarry {
+    /// Best comparison per raw at `reads_used`. Empty until the first build.
+    compmax: Vec<Comparison>,
+    /// Score of `compmax`, carried so the incremental reconcile can test
+    /// against the incumbent without recomputing it.
+    emax: Vec<f64>,
+    /// Per-cluster reads the map is currently consistent with. A cluster whose
+    /// current reads differ is what the reconcile treats as changed, so this is
+    /// the sole record of how stale the map is.
+    reads_used: Vec<u32>,
+    in_affected: Vec<bool>,
+    affected: Vec<usize>,
+    dirty_cluster: Vec<bool>,
+    dirty_list: Vec<u32>,
+    reads_fell: Vec<bool>,
+    reads_fell_list: Vec<u32>,
+    /// False until a full build has populated `compmax`/`emax`.
+    built: bool,
+}
+
+impl ShuffleCarry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Discard the carried map, forcing the next call to do a full build.
+    ///
+    /// Keeps the allocations: the vectors are overwritten wholesale by the
+    /// build, so there is nothing stale to leak, and reusing the buffers is
+    /// what the no-carry arm did implicitly anyway.
+    pub fn reset(&mut self) {
+        self.built = false;
+    }
+
+    /// Grow the per-cluster vectors to cover clusters created since the last
+    /// call, marking the new ones as never-seen.
+    ///
+    /// `reads_used = 0` is what makes a new cluster fold itself in: the
+    /// reconcile's pass A2 treats any cluster whose reads differ from
+    /// `reads_used` as changed and tests its whole comp vector against the
+    /// carried incumbents. A bud cluster always has `reads >= min_abund > 0`,
+    /// so 0 reliably reads as "changed" — and as a *rise*, so pass A1 never
+    /// mistakes a new cluster for one that lost reads.
+    fn grow_to(&mut self, nclusters: usize) {
+        self.reads_used.resize(nclusters, 0);
+        self.dirty_cluster.resize(nclusters, false);
+        self.reads_fell.resize(nclusters, false);
+    }
+}
+
 /// Incremental equivalent of looping [`b_shuffle2`] to convergence (or
 /// `max_shuffle`). Rebuilds `compmax` once from the persistent candidate
 /// `index` (one pass over the comps), then after each move pass only recomputes
@@ -767,7 +846,12 @@ fn best_from_cands_scored(cands: &[Cand], raw: usize, clusters: &[Bi]) -> (Compa
 /// identical. `comps_scanned` reports the realised scan work (initial build +
 /// per-iteration recomputes) so the reduction against the serial baseline is
 /// directly measurable.
-pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> ShuffleStats {
+pub fn b_shuffle_converge(
+    b: &mut B,
+    index: &CandIndex,
+    max_shuffle: usize,
+    carry: &mut ShuffleCarry,
+) -> ShuffleStats {
     let nraw = b.raws.len();
 
     // #132: `b.raw_cluster` must agree with actual membership, or the move
@@ -801,22 +885,52 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
     // index is reserved for the reconcile, where the touched-raw volume is
     // small. Byte-identical to b_shuffle2's build: ascending ci + strict `>`
     // keeps the lowest-ci max.
-    let t_build = std::time::Instant::now();
-    let mut compmax = vec![Comparison::default(); nraw];
-    let mut emax = vec![f64::NEG_INFINITY; nraw];
-    let mut comps_scanned = 0usize;
-    for bi in &b.clusters {
-        let ci_reads = bi.reads as f64;
-        for comp in &bi.comp {
-            let idx = comp.index as usize;
-            let e = comp.lambda * ci_reads;
-            if e > emax[idx] {
-                emax[idx] = e;
-                compmax[idx] = comp.clone();
-            }
-        }
-        comps_scanned += bi.comp.len();
+    //
+    // #139: skipped entirely when a map is carried in. The carried map is stale
+    // only where the bud touched things — the parent cluster lost reads, the new
+    // cluster's comps were never folded in — and both are expressed as "reads
+    // differ from `reads_used`", which is exactly what the reconcile already
+    // repairs. So the carry needs no new reconcile logic: it removes the build
+    // and lets the first reconcile of the call absorb the difference.
+    if !shuffle_carry() {
+        carry.reset();
     }
+    let carried = carry.built;
+    let t_build = std::time::Instant::now();
+    let mut comps_scanned = 0usize;
+    if !carried {
+        carry.compmax.clear();
+        carry.compmax.resize(nraw, Comparison::default());
+        carry.emax.clear();
+        carry.emax.resize(nraw, f64::NEG_INFINITY);
+        carry.reads_used.clear();
+        carry.dirty_cluster.clear();
+        carry.reads_fell.clear();
+        carry.grow_to(b.clusters.len());
+        let (compmax, emax) = (&mut carry.compmax, &mut carry.emax);
+        for bi in &b.clusters {
+            let ci_reads = bi.reads as f64;
+            for comp in &bi.comp {
+                let idx = comp.index as usize;
+                let e = comp.lambda * ci_reads;
+                if e > emax[idx] {
+                    emax[idx] = e;
+                    compmax[idx] = comp.clone();
+                }
+            }
+            comps_scanned += bi.comp.len();
+        }
+        // The build just read every cluster at its current reads, so the map is
+        // consistent with them by construction.
+        for (ci, c) in b.clusters.iter().enumerate() {
+            carry.reads_used[ci] = c.reads;
+        }
+        carry.built = true;
+    } else {
+        // New clusters enter with `reads_used = 0`, i.e. flagged as changed.
+        carry.grow_to(b.clusters.len());
+    }
+    carry.in_affected.resize(nraw, false);
     let comps_build = comps_scanned;
     // Includes the compmax/emax allocation above: a scheme that reused the map
     // across buds would keep that buffer alive anyway, so it belongs here.
@@ -828,12 +942,21 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
     // it: testing a changed candidate against the current best is exactly a
     // comparison of scores. +8 bytes/raw, against a pooled peak measured in GB.
 
-    // Reads the map is currently consistent with (for dirty detection).
-    let mut reads_used: Vec<u32> = b.clusters.iter().map(|c| c.reads).collect();
-
-    // Reused scratch for the affected-raw set (avoid per-iteration nraw alloc).
-    let mut in_affected = vec![false; nraw];
-    let mut affected: Vec<usize> = Vec::new();
+    // Destructured from the carry so the loop body below reads exactly as it
+    // did when these were locals — the borrow checker will not allow field
+    // access through `carry` alongside the `&mut b` the move pass needs.
+    let ShuffleCarry {
+        compmax,
+        emax,
+        reads_used,
+        in_affected,
+        affected,
+        dirty_cluster,
+        dirty_list,
+        reads_fell,
+        reads_fell_list,
+        ..
+    } = carry;
 
     // --- #132: dirty-cluster move pass ---
     // After a reconcile, only raws whose `compmax` changed can move, so the
@@ -845,12 +968,14 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
     //
     // `b.raw_cluster` supplies the raw -> cluster mapping and is maintained
     // globally by `bi_add_raw`.
-    let mut dirty_cluster = vec![false; b.clusters.len()];
-    let mut dirty_list: Vec<u32> = Vec::new();
     // False only on the first pass, which follows the build and must scan
     // everything (`compmax` was just rebuilt wholesale). Every later pass is
     // preceded by a reconcile, which sets this.
     let mut after_reconcile = false;
+    // #139: a carried map is stale on entry, so the first move pass must not
+    // run on it — the call opens with a reconcile instead. Without the carry the
+    // build has just made the map exact, and the move pass leads as before.
+    let mut skip_move = carried;
     let mut move_raws_unpruned = 0usize;
     let mut move_dirty_clusters = 0usize;
     let mut move_passes_prunable = 0usize;
@@ -865,8 +990,6 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
     // Clusters whose reads *decreased* in the current reconcile. A raw whose
     // best sits in one of these is the only case a cheaper reconcile could not
     // settle without a full candidate rescan — see `reconcile_rescan_raws`.
-    let mut reads_fell = vec![false; b.clusters.len()];
-    let mut reads_fell_list: Vec<u32> = Vec::new();
     let mut reconcile_rescan_raws = 0usize;
     let mut reconcile_tie_breaks = 0usize;
     let mut pairs_first_reconcile = 0usize;
@@ -881,48 +1004,58 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         // Move pass — identical to b_shuffle2's, using the current compmax.
         // Timed separately (#124): build + reconcile left 15-19% of shuffle
         // time unaccounted for, and this is where it goes.
-        let t_move = std::time::Instant::now();
-        let mut moves = 0usize;
-        move_passes += 1;
-        move_raws_unpruned += b.clusters.iter().map(|c| c.raws.len()).sum::<usize>();
-        if after_reconcile && !shuffle_no_prune() {
-            move_passes_prunable += 1;
-            move_dirty_clusters += dirty_list.len();
-            // Ascending cluster order, matching the full scan. The move outcome
-            // is order-independent (`compmax` is fixed for the pass and each raw
-            // goes to `compmax[raw].i` regardless of when it is visited), but
-            // keeping the order identical means the *sequence* of pops and adds
-            // is too — so `swap_remove` shuffles membership vectors the same
-            // way, and anything downstream that reads them positionally sees
-            // what it saw before.
-            dirty_list.sort_unstable();
-            #[allow(clippy::needless_range_loop)]
-            // Indexed rather than iterated: `move_pass_cluster` takes `&mut b`,
-            // and `dirty_list` is a local so the borrows do not overlap, but an
-            // iterator over it would hold a borrow across the call.
-            for k in 0..dirty_list.len() {
-                let ci = dirty_list[k] as usize;
-                moves += move_pass_cluster(b, ci, &compmax, &mut move_raws_scanned);
-            }
+        if skip_move {
+            // Opening a carried call. No move pass, and deliberately no
+            // `move_passes` increment — this iteration performs no move work, so
+            // counting it would dilute the #132 prune ratio with a phantom pass.
+            // `nshuffle` *is* incremented, so `first_reconcile` still identifies
+            // the reconcile that settles the bud (the one #139 relocates into).
+            skip_move = false;
+            nshuffle += 1;
         } else {
-            for ci in 0..b.clusters.len() {
-                moves += move_pass_cluster(b, ci, &compmax, &mut move_raws_scanned);
+            let t_move = std::time::Instant::now();
+            let mut moves = 0usize;
+            move_passes += 1;
+            move_raws_unpruned += b.clusters.iter().map(|c| c.raws.len()).sum::<usize>();
+            if after_reconcile && !shuffle_no_prune() {
+                move_passes_prunable += 1;
+                move_dirty_clusters += dirty_list.len();
+                // Ascending cluster order, matching the full scan. The move outcome
+                // is order-independent (`compmax` is fixed for the pass and each raw
+                // goes to `compmax[raw].i` regardless of when it is visited), but
+                // keeping the order identical means the *sequence* of pops and adds
+                // is too — so `swap_remove` shuffles membership vectors the same
+                // way, and anything downstream that reads them positionally sees
+                // what it saw before.
+                dirty_list.sort_unstable();
+                #[allow(clippy::needless_range_loop)]
+                // Indexed rather than iterated: `move_pass_cluster` takes `&mut b`,
+                // and `dirty_list` is a local so the borrows do not overlap, but an
+                // iterator over it would hold a borrow across the call.
+                for k in 0..dirty_list.len() {
+                    let ci = dirty_list[k] as usize;
+                    moves += move_pass_cluster(b, ci, &compmax[..], &mut move_raws_scanned);
+                }
+            } else {
+                for ci in 0..b.clusters.len() {
+                    moves += move_pass_cluster(b, ci, &compmax[..], &mut move_raws_scanned);
+                }
             }
-        }
-        for &ci in &dirty_list {
-            dirty_cluster[ci as usize] = false;
-        }
-        dirty_list.clear();
-        dirty_cluster.resize(b.clusters.len(), false);
-        move_time += t_move.elapsed();
+            for &ci in dirty_list.iter() {
+                dirty_cluster[ci as usize] = false;
+            }
+            dirty_list.clear();
+            dirty_cluster.resize(b.clusters.len(), false);
+            move_time += t_move.elapsed();
 
-        total_moves += moves;
-        if moves == 0 {
-            zero_move_calls += 1;
-        }
-        nshuffle += 1;
-        if moves == 0 || nshuffle >= max_shuffle {
-            break;
+            total_moves += moves;
+            if moves == 0 {
+                zero_move_calls += 1;
+            }
+            nshuffle += 1;
+            if moves == 0 || nshuffle >= max_shuffle {
+                break;
+            }
         }
 
         // Reconcile: any raw with a comp in a cluster whose reads changed may
@@ -955,7 +1088,7 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
                 reads_fell_list.push(ci as u32);
             }
         }
-        for &ci in &reads_fell_list {
+        for &ci in reads_fell_list.iter() {
             for comp in &b.clusters[ci as usize].comp {
                 let raw = comp.index as usize;
                 if compmax[raw].i == ci && !in_affected[raw] {
@@ -966,7 +1099,7 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         }
         let n_rescan = affected.len();
         reconcile_rescan_raws += n_rescan;
-        for &raw in &affected {
+        for &raw in affected.iter() {
             reconcile_comps_rescan += index[raw].len();
         }
 
@@ -1008,10 +1141,10 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
                         record_change(
                             raw,
                             ci as u32,
-                            &compmax,
+                            &compmax[..],
                             b,
-                            &mut dirty_cluster,
-                            &mut dirty_list,
+                            dirty_cluster,
+                            dirty_list,
                             &mut reconcile_changed,
                         );
                         compmax[raw] = comp.clone();
@@ -1035,16 +1168,16 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
 
         // --- Pass B: full rescan, for the marked raws only ---
         let t_rescan = std::time::Instant::now();
-        for &raw in &affected {
+        for &raw in affected.iter() {
             let (new_best, new_e) = best_from_cands_scored(&index[raw], raw, &b.clusters);
             if new_best.i != compmax[raw].i {
                 record_change(
                     raw,
                     new_best.i,
-                    &compmax,
+                    &compmax[..],
                     b,
-                    &mut dirty_cluster,
-                    &mut dirty_list,
+                    dirty_cluster,
+                    dirty_list,
                     &mut reconcile_changed,
                 );
             }
@@ -1084,7 +1217,7 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         }
 
         affected.clear();
-        for &ci in &reads_fell_list {
+        for &ci in reads_fell_list.iter() {
             reads_fell[ci as usize] = false;
         }
         reads_fell_list.clear();
@@ -1450,6 +1583,57 @@ pub fn b_bud_incremental(
 #[cfg(test)]
 mod reconcile_rule_tests {
     use super::*;
+
+    /// A cluster created since the last call must enter as "changed" and never
+    /// as "reads fell" (#139).
+    ///
+    /// This is the whole of the carry's new logic. `grow_to` seeds new clusters
+    /// with `reads_used = 0`, and the two reconcile passes then read that value
+    /// in opposite directions: A1 marks a cluster whose reads *fell* below
+    /// `reads_used`, A2 folds any cluster whose reads *differ*. A bud cluster
+    /// must hit A2 and miss A1 — if it hit A1 instead, its members would be
+    /// queued for a rescan that the carry exists to avoid; if it missed A2, its
+    /// comps would never be folded in and the map would be silently wrong.
+    #[test]
+    fn new_clusters_enter_as_changed_never_as_fallen() {
+        let mut carry = ShuffleCarry::new();
+        carry.grow_to(2);
+        carry.reads_used[0] = 500;
+        carry.reads_used[1] = 300;
+
+        // Round two: cluster 0 lost reads to a new cluster 2.
+        carry.grow_to(3);
+        assert_eq!(carry.reads_used.len(), 3);
+        assert_eq!(carry.reads_used[2], 0, "new cluster must look never-seen");
+        assert_eq!(carry.dirty_cluster.len(), 3);
+        assert_eq!(carry.reads_fell.len(), 3);
+
+        // Any positive read count differs from 0 (A2 folds it) and is not below
+        // 0 (A1 leaves it alone). `min_abund >= 1` guarantees positivity.
+        let new_reads = 7u32;
+        assert_ne!(new_reads, carry.reads_used[2], "A2 must see it as changed");
+        assert!(
+            new_reads >= carry.reads_used[2],
+            "A1 must not see it as fallen"
+        );
+    }
+
+    /// `reset` must force a rebuild without discarding the buffers.
+    ///
+    /// The no-carry arm relies on this being a complete return to the previous
+    /// behaviour: if `built` survived a reset, a run with the carry disabled
+    /// would silently skip builds and the A/B would compare an arm to itself —
+    /// the exact failure mode that wasted two runs on #132 and #136.
+    #[test]
+    fn reset_clears_built_but_keeps_capacity() {
+        let mut carry = ShuffleCarry::new();
+        carry.grow_to(4);
+        carry.built = true;
+        let cap = carry.reads_used.capacity();
+        carry.reset();
+        assert!(!carry.built, "reset must force the next call to rebuild");
+        assert_eq!(carry.reads_used.capacity(), cap, "buffers should survive");
+    }
 
     /// Reference semantics: exactly what `best_from_cands_scored` does — ascending
     /// `ci`, strict `>`.
