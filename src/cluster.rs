@@ -472,6 +472,38 @@ pub struct ShuffleStats {
     /// which does not move during a reconcile, so repeated marking is
     /// idempotent.
     pub reconcile_changed: usize,
+    /// Work done by the **first** reconcile of this call — the one immediately
+    /// following the post-bud move pass ([#139](https://github.com/HPCBio/dada2-rs/issues/139),
+    /// reviving #87's projection).
+    ///
+    /// This is the direct measurement of what carrying `compmax` across buds
+    /// would *relocate*. #87 removes the per-bud build but forces the
+    /// newly-budded state to be reconciled instead, and this first reconcile is
+    /// that reconcile. Averaged reconcile volume understates it, because a bud
+    /// both adds a cluster and steals raws from many others, perturbing more
+    /// comp volume than a mid-loop iteration does.
+    ///
+    /// **The model has changed since #87 was closed.** It priced the relocated
+    /// work at the *full-rescan* reconcile's scattered rate, and #136 replaced
+    /// that with an incremental update: most affected raws are now settled by a
+    /// sequential cluster-major test, and only those whose own best cluster
+    /// fell pay a candidate rescan. So the relocated cost now has two parts,
+    /// counted separately here, and #87's break-even must be re-derived rather
+    /// than re-read.
+    ///
+    /// Pairs walked by the incremental test (sequential, cluster-major).
+    pub pairs_first_reconcile: usize,
+    /// (raw, changed-cluster) pairs walked by the incremental test across *all*
+    /// reconciles — the denominator that turns `reconcile_collect_time` into a
+    /// per-pair rate, so the projection can be priced at this run's own cost.
+    pub pairs_reconcile: usize,
+    /// Candidate comparisons rescanned by the first reconcile (scattered,
+    /// raw-major) — the part that survives #136.
+    pub comps_first_reconcile: usize,
+    /// Calls that reached at least one reconcile, the denominator for both.
+    /// Below `calls`, because a converge call that moves nothing breaks before
+    /// reconciling.
+    pub first_reconcile_calls: usize,
     /// Times the incremental reconcile's replacement decided on an **exact
     /// tie** in `lambda × reads`, resolved to the lower `ci` (#136).
     ///
@@ -578,6 +610,10 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
         reconcile_affected: 0,
         reconcile_rescan_raws: 0,
         reconcile_tie_breaks: 0,
+        pairs_first_reconcile: 0,
+        pairs_reconcile: 0,
+        comps_first_reconcile: 0,
+        first_reconcile_calls: 0,
         reconcile_comps_rescan: 0,
         reconcile_collect_time: std::time::Duration::ZERO,
         reconcile_rescan_time: std::time::Duration::ZERO,
@@ -833,6 +869,10 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
     let mut reads_fell_list: Vec<u32> = Vec::new();
     let mut reconcile_rescan_raws = 0usize;
     let mut reconcile_tie_breaks = 0usize;
+    let mut pairs_first_reconcile = 0usize;
+    let mut comps_first_reconcile = 0usize;
+    let mut first_reconcile_calls = 0usize;
+    let mut pairs_reconcile = 0usize;
     let mut reconcile_comps_rescan = 0usize;
     let mut reconcile_collect_time = std::time::Duration::ZERO;
     let mut reconcile_rescan_time = std::time::Duration::ZERO;
@@ -891,6 +931,12 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         // increase/decrease, avoiding stale-max ordering hazards.
         let t_rec = std::time::Instant::now();
         let t_collect = std::time::Instant::now();
+        // #139: `nshuffle == 1` means this is the first reconcile of the call —
+        // the one settling the state the bud just created, and therefore the
+        // work #87 would relocate.
+        let first_reconcile = nshuffle == 1;
+        let comps_before_rec = comps_scanned;
+        let mut pairs_this_reconcile = 0usize;
         reads_fell.resize(b.clusters.len(), false);
         let incremental = !reconcile_full();
 
@@ -943,6 +989,7 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
             }
             let reads_f = new_reads as f64;
             if incremental {
+                pairs_this_reconcile += b.clusters[ci].comp.len();
                 for comp in &b.clusters[ci].comp {
                     let raw = comp.index as usize;
                     if in_affected[raw] {
@@ -1007,6 +1054,12 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
             in_affected[raw] = false;
         }
         reconcile_rescan_time += t_rescan.elapsed();
+        pairs_reconcile += pairs_this_reconcile;
+        if first_reconcile {
+            first_reconcile_calls = 1;
+            pairs_first_reconcile = pairs_this_reconcile;
+            comps_first_reconcile = comps_scanned - comps_before_rec;
+        }
 
         // #136: `compmax`/`emax` must equal what a full rescan would produce.
         // The incremental path reaches that answer by a different route —
@@ -1061,6 +1114,10 @@ pub fn b_shuffle_converge(b: &mut B, index: &CandIndex, max_shuffle: usize) -> S
         reconcile_affected,
         reconcile_rescan_raws,
         reconcile_tie_breaks,
+        pairs_first_reconcile,
+        pairs_reconcile,
+        comps_first_reconcile,
+        first_reconcile_calls,
         reconcile_comps_rescan,
         reconcile_collect_time,
         reconcile_rescan_time,
