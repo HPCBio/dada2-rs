@@ -77,7 +77,12 @@ here is the evidence, and here is the path it opens or closes."
   (**−5.2 to −28.3%**, the top of that range on a diverse soil pool) — both by
   finding a **cluster-major route** to information the page had priced at the
   scattered rate. "Unreachable" turned out to be a
-  claim about a route, not a quantity. Also the page on why exactness is worth enforcing on a change
+  claim about a route, not a quantity. Then the third fell too: #139 deleted the
+  build scan rather than redesigning it, carrying `compmax` across buds for
+  **−28.8 to −32.0% of `run_dada`** on soil 16S and reversing #87's +10.5% ITS2
+  regression into a −8.1 to −13.7% win — because #136 had changed the price of
+  the work #87 was costed against. A closure can expire when a *dependency*
+  changes, not only when the idea improves. Also the page on why exactness is worth enforcing on a change
   you throw away — it caught a latent tie-break bug and is what makes the verdict
   final rather than ambiguous.
 - [Inside `b_compare`: screen vs align](compare-screen-vs-align.md) — the phase

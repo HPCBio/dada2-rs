@@ -19,7 +19,7 @@
 use rayon::prelude::*;
 
 use crate::cluster::{
-    CandIndex, b_bud_incremental, b_compare, b_compare_parallel, b_shuffle_converge,
+    CandIndex, ShuffleCarry, b_bud_incremental, b_compare, b_compare_parallel, b_shuffle_converge,
     index_add_cluster,
 };
 use crate::containers::{B, BirthType, Raw, Sub};
@@ -737,6 +737,9 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // the timings below) is the starting point for sizing any change to the
     // shuffle — see #124.
     let (mut shuf_comps_build, mut shuf_comps_reconcile) = (0u64, 0u64);
+    // #139: converge calls that actually ran a build (all of them without the
+    // carry; typically one with it).
+    let mut shuf_builds = 0u64;
     // b_shuffle_converge invocations (one per bud round) = number of full
     // builds paid; the per-build average is the useful unit here.
     let mut shuf_converge_calls = 0u64;
@@ -835,6 +838,8 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         params.max_clust
     };
 
+    let mut shuffle_carry = ShuffleCarry::new();
+
     while bb.clusters.len() < max_clust {
         let t = Instant::now();
         let mut bud_scanned = 0u64;
@@ -901,12 +906,18 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         // (one build + per-iteration recomputes), so comparing it to the serial
         // baseline's counts shows the reduction directly.
         let t = Instant::now();
-        let st = b_shuffle_converge(&mut bb, &cand_index, MAX_SHUFFLE);
+        // #139: one carry, threaded through every bud round. When the carry is
+        // off, `b_shuffle_converge` resets it internally and rebuilds, so this
+        // is behaviour-neutral by default.
+        let st = b_shuffle_converge(&mut bb, &cand_index, MAX_SHUFFLE, &mut shuffle_carry);
         shuf_converge_calls += 1;
         shuf_calls += st.calls as u64;
         shuf_moves += st.moves as u64;
         shuf_comps_scanned += st.comps_scanned as u64;
         shuf_comps_build += st.comps_build as u64;
+        if st.comps_build > 0 {
+            shuf_builds += 1;
+        }
         shuf_comps_reconcile += st.comps_reconcile as u64;
         t_shuf_build += st.build_time;
         t_shuf_reconcile += st.reconcile_time;
@@ -1083,8 +1094,11 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         } else {
             0.0
         };
-        let per_build = if shuf_converge_calls > 0 {
-            shuf_comps_build as f64 / shuf_converge_calls as f64
+        // #139: with the carry on, most converge calls do no build at all, so
+        // dividing by the call count would report a per-build cost for builds
+        // that never happened. Divide by the calls that actually built.
+        let per_build = if shuf_builds > 0 {
+            shuf_comps_build as f64 / shuf_builds as f64
         } else {
             0.0
         };
@@ -1092,7 +1106,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             "[dada] shuffle scan split: build={} ({:.0}% of scanned) over {} builds ({:.0} comps/build), reconcile={} ({:.0}%)",
             shuf_comps_build,
             build_pct,
-            shuf_converge_calls,
+            shuf_builds,
             per_build,
             shuf_comps_reconcile,
             100.0 - build_pct,
@@ -1251,7 +1265,22 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         // touches more clusters than a mid-loop one, so if its per-unit cost
         // differs the estimate drifts. Directionally it is the volume, not the
         // rate, that separates the regimes.
-        if shuf_first_rec_calls > 0 && shuf_comps_build > 0 {
+        //
+        // With the carry on (the default) the projection is moot — the build is
+        // already skipped, and `shuf_comps_build` counts only the single initial
+        // build that seeds the map. Report what was realised instead of
+        // projecting what could be, so the two arms are never confused.
+        if crate::cluster::shuffle_carry() {
+            eprintln!(
+                "[dada]   #87 carry (#139): ACTIVE -- {} of {} converge calls built \
+                 ({} comps, {:.1}s); {} entered on a carried map",
+                shuf_builds,
+                shuf_converge_calls,
+                shuf_comps_build,
+                t_shuf_build.as_secs_f64(),
+                shuf_converge_calls.saturating_sub(shuf_builds),
+            );
+        } else if shuf_first_rec_calls > 0 && shuf_comps_build > 0 {
             let build_ns = t_shuf_build.as_secs_f64() * 1e9 / shuf_comps_build as f64;
             let collect_ns = if shuf_rec_pairs > 0 {
                 t_rec_collect.as_secs_f64() * 1e9 / shuf_rec_pairs as f64
