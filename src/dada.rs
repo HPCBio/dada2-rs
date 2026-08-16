@@ -756,6 +756,11 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // Reconcile rescan-necessity projection (#136).
     let (mut shuf_rec_rescan, mut shuf_rec_rescan_comps) = (0u64, 0u64);
     let mut shuf_rec_ties: u64 = 0;
+    // #139 (reviving #87's projection): what carrying compmax across buds would
+    // relocate, split by access pattern.
+    let (mut shuf_first_rec_pairs, mut shuf_first_rec_comps) = (0u64, 0u64);
+    let mut shuf_rec_pairs: u64 = 0;
+    let mut shuf_first_rec_calls: u64 = 0;
     let mut t_rec_collect = std::time::Duration::ZERO;
     let mut t_rec_rescan = std::time::Duration::ZERO;
     // #132 dirty-cluster move-pass diagnostics.
@@ -914,6 +919,10 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         shuf_rec_affected += st.reconcile_affected as u64;
         shuf_rec_rescan += st.reconcile_rescan_raws as u64;
         shuf_rec_ties += st.reconcile_tie_breaks as u64;
+        shuf_first_rec_pairs += st.pairs_first_reconcile as u64;
+        shuf_rec_pairs += st.pairs_reconcile as u64;
+        shuf_first_rec_comps += st.comps_first_reconcile as u64;
+        shuf_first_rec_calls += st.first_reconcile_calls as u64;
         shuf_rec_rescan_comps += st.reconcile_comps_rescan as u64;
         t_rec_collect += st.reconcile_collect_time;
         t_rec_rescan += st.reconcile_rescan_time;
@@ -1226,6 +1235,57 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                     shuf_rec_ties,
                 );
             }
+        }
+        // #139: would carrying `compmax` across buds pay? Reviving #87's
+        // projection, with its cost model re-derived — #87 priced the relocated
+        // work at the full-rescan reconcile's scattered rate, and #136 replaced
+        // that with an incremental update.
+        //
+        // Skipping the per-bud build saves `comps_build x build_ns`. It costs
+        // the first reconcile instead, which post-#136 is a sequential
+        // cluster-major walk plus a much smaller scattered rescan. Both are
+        // measured here rather than assumed, and priced at this run's own rates.
+        //
+        // Caveat: the pair and comp counts are specific to the first reconcile,
+        // but the ns rates are averaged over all of them. A post-bud reconcile
+        // touches more clusters than a mid-loop one, so if its per-unit cost
+        // differs the estimate drifts. Directionally it is the volume, not the
+        // rate, that separates the regimes.
+        if shuf_first_rec_calls > 0 && shuf_comps_build > 0 {
+            let build_ns = t_shuf_build.as_secs_f64() * 1e9 / shuf_comps_build as f64;
+            let collect_ns = if shuf_rec_pairs > 0 {
+                t_rec_collect.as_secs_f64() * 1e9 / shuf_rec_pairs as f64
+            } else {
+                0.0
+            };
+            let rescan_ns = if shuf_comps_reconcile > 0 {
+                t_rec_rescan.as_secs_f64() * 1e9 / shuf_comps_reconcile as f64
+            } else {
+                0.0
+            };
+            let saved = shuf_comps_build as f64 * build_ns;
+            let cost =
+                shuf_first_rec_pairs as f64 * collect_ns + shuf_first_rec_comps as f64 * rescan_ns;
+            eprintln!(
+                "[dada]   #87 projection (#139): skipping the per-bud build saves {:.1}s \
+                 ({} comps at {:.2} ns), costs {:.1}s relocated ({} pairs at {:.2} ns + \
+                 {} comps at {:.2} ns) over {} calls => {} by {:.2}x",
+                saved / 1e9,
+                shuf_comps_build,
+                build_ns,
+                cost / 1e9,
+                shuf_first_rec_pairs,
+                collect_ns,
+                shuf_first_rec_comps,
+                rescan_ns,
+                shuf_first_rec_calls,
+                if cost < saved { "WIN" } else { "LOSS" },
+                if cost > 0.0 {
+                    saved / cost
+                } else {
+                    f64::INFINITY
+                },
+            );
         }
         // #132: how much the dirty-cluster pruning actually bought. The prune
         // is workload-dependent (64-67% MiSeq, 57% PacBio), so it is reported
