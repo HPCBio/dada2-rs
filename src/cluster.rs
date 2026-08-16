@@ -193,6 +193,23 @@ pub struct CompareTiming {
     pub map: std::time::Duration,
     /// Post-processing store-loop wall time (serial).
     pub serial: std::time::Duration,
+    /// Serial reduction over the map's results: the summed per-item costs and
+    /// the screened/aligned denominators (#143).
+    ///
+    /// Every one of these is a verbose-only diagnostic, but the passes
+    /// themselves run unconditionally and are O(nraw) per bud round, so they
+    /// are paid by production runs too. This timer is what tells us whether
+    /// that matters.
+    pub agg: std::time::Duration,
+    /// Freeing the map's result vector (serial), separated from the store loop
+    /// so the store's own cost is not inflated by nraw deallocation (#143).
+    pub free: std::time::Duration,
+    /// Everything in `b_compare_parallel` before the parallel map begins.
+    pub setup: std::time::Duration,
+    /// Comparisons the store loop actually retained (pushed onto the cluster's
+    /// comp vector). The store loop's per-item cost splits into a scan paid by
+    /// all `nraw` and a push paid only by these (#143).
+    pub stored: u64,
     /// Summed per-item compute time across all worker threads.
     pub busy: std::time::Duration,
     /// Portion of `busy` in the k-mer screen (zero unless `measure`).
@@ -228,12 +245,14 @@ pub fn b_compare_parallel(
     greedy: bool,
     measure: bool,
 ) -> CompareTiming {
+    let t_setup = std::time::Instant::now();
     let center_idx = b.clusters[i]
         .center
         .expect("b_compare_parallel: cluster has no center");
     let center_reads = b.raws[center_idx].reads;
     let nraw = b.raws.len();
     let use_quals = b.use_quals;
+    let setup_dur = t_setup.elapsed();
     let t_map = std::time::Instant::now();
 
     // Read-only parallel pass over raws.
@@ -310,6 +329,10 @@ pub fn b_compare_parallel(
         )
         .collect();
     let map_dur = t_map.elapsed();
+    // Serial reduction (#143). Six separate passes over an nraw-long vector of
+    // 48-byte tuples, once per bud round — kept as-is here so the timer
+    // measures the code that actually shipped, not a rewrite of it.
+    let t_agg = std::time::Instant::now();
     let cost = CompCost {
         total: comps.iter().map(|c| c.3.total).sum(),
         screen: comps.iter().map(|c| c.3.screen).sum(),
@@ -321,11 +344,13 @@ pub fn b_compare_parallel(
     // non-greedy-skipped comparison, the aligner only on those it passes.
     let screened = comps.iter().filter(|c| !c.2).count() as u64;
     let aligned = comps.iter().filter(|c| !c.2 && c.1 != u32::MAX).count() as u64;
+    let agg_dur = t_agg.elapsed();
 
     // Serial post-processing: selectively store comparisons.
     let t_serial = std::time::Instant::now();
     let total_reads = b.reads as f64;
-    for (index, (lambda, hamming, skipped, _cost)) in comps.into_iter().enumerate() {
+    let mut stored = 0u64;
+    for (index, &(lambda, hamming, skipped, _)) in comps.iter().enumerate() {
         // Match serial b_compare counting: only count non-skipped raws.
         if !skipped {
             b.nalign += 1;
@@ -351,14 +376,25 @@ pub fn b_compare_parallel(
                 hamming: if hamming == u32::MAX { 0 } else { hamming },
             };
             b.clusters[i].comp.push(comp.clone());
+            stored += 1;
             if update_raw {
                 b.raws[index].comp = comp;
             }
         }
     }
+    let serial_dur = t_serial.elapsed();
+    // Freeing the nraw-long result vector is charged separately so the store
+    // loop's ns/raw is not inflated by deallocation (#143).
+    let t_free = std::time::Instant::now();
+    drop(comps);
+    let free_dur = t_free.elapsed();
     CompareTiming {
         map: map_dur,
-        serial: t_serial.elapsed(),
+        serial: serial_dur,
+        agg: agg_dur,
+        free: free_dur,
+        setup: setup_dur,
+        stored,
         busy: busy_dur,
         screen: std::time::Duration::from_nanos(cost.screen),
         dp: std::time::Duration::from_nanos(cost.dp),
