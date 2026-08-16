@@ -289,6 +289,96 @@ A perf A/B whose two arms might disagree on output cannot be interpreted at all,
 and would have left this question open instead of closed. Establishing identity
 first is what makes a negative result *final* rather than merely discouraging.
 
+## Result 4: the build scan falls after all — by deletion, not redesign
+
+Results 1 and 2 both tried to make the per-bud build scan *cheaper*. Both
+failed. [#139][139] removed it instead: carry `compmax`/`emax` across bud
+rounds and let the next call's first reconcile repair what the bud invalidated.
+
+That is [#87][87]'s idea, which had been closed as workload-conditional — −7.5%
+on NovaSeq 16S but a **+10.5% regression** on ITS2 from the same run. What
+changed is not the idea but its price. #87 costed the relocated work against the
+pre-[#136][136] first reconcile, which expanded to every raw in a changed
+cluster and rescanned its whole candidate list. #136 replaced that with an
+incremental update, so **the regression arm had been costed against code that no
+longer exists.**
+
+Measured, 24 threads, `numactl --interleave=all`, one binary both arms:
+
+| dataset | reps | shuffle | `run_dada` |
+|---|---|---|---|
+| NovaSeq 16S R1 | 1 | 879.5 → 114.5 s (−87.0%) | **−32.0%** |
+| NovaSeq 16S R2 | 1 | 999.3 → 130.2 s (−87.0%) | **−28.8%** |
+| NovaSeq ITS2 R1 | 2 | 84.7 → 43.3 s / 84.8 → 43.7 s | −10.3% / −9.7% |
+| NovaSeq ITS2 R2 | 2 | 131.2 → 64.7 s / 128.0 → 66.0 s | −13.7% / −8.1% |
+
+**180 output files byte-identical across every arm.** ITS2 — the workload that
+closed #87 — now improves by roughly the margin it used to regress by.
+
+### The carry needed no new reconcile logic
+
+This is why it is a deletion rather than a redesign. A bud invalidates the
+carried map in exactly two ways, and #136's reconcile already repairs both,
+because both are expressed as *"reads differ from `reads_used`"*:
+
+- the parent cluster's reads **fell**, so pass A1 marks its members for a full
+  candidate rescan — the relocated work #87 priced;
+- the new cluster enters with `reads_used = 0`, so pass A2 sees it as changed
+  and folds its comp vector against the carried incumbents. Ascending-`ci` order
+  still holds, because a bud cluster is always the highest index so far, so the
+  lowest-`ci` tie-break is preserved.
+
+The only structural change is that a carried call opens with a reconcile instead
+of a move pass, since moving on a stale `compmax` would be wrong.
+
+### The projection was pessimistic — and `comps/build` was the wrong gate
+
+Two modelling errors, both worth carrying forward.
+
+**The relocation cost was over-charged roughly 10×.** The gate projected 1.45 G
+rescan comps on 16S R1; the measured reconcile rose from 2.49 G to 2.63 G, or
+**+134 M**. The error: the model charged the *entire* first-reconcile volume as
+newly incurred, when that reconcile already ran in the rebuilt arm too. Skipping
+the build does not create it — it only makes it start from a staler map, so the
+marginal cost is the difference, not the total. Every projection undershot the
+measured result, on both datasets: ITS2 projected 3.0–3.8% and delivered
+8.1–13.7%.
+
+**`comps/build` does not predict the verdict.** It was proposed as the
+workload-regime discriminator and the data falsifies it — 16S has the *highest*
+comps/build (9.3–10.0 M) and the *best* ratio, while ITS2 sits mid-range and
+scores worst. What separates them is the **per-comp cost of the build scan
+itself** (16S 6.1–7.1 ns, ITS2 3.9–4.2 ns): the prize scales with how
+cache-hostile the scan is, which tracks the pool's working set, not the
+comparison count per build.
+
+### The 16S screen anomaly — open, and four hypotheses already dead
+
+On 16S only, the k-mer screen slowed **+124–140%** (495 → 1109, 512 → 1231
+ns/comp) on identical comparison counts, giving back 244–347 s of the shuffle's
+765–869 s saving. The following are **falsified — do not retry**:
+
+- **Cache residency of the carried map.** Predicts the bandwidth-bound DP kernel
+  suffers; the DP moved +1.4%, and only the screen changed.
+- **Peak parallel load.** Both arms run ~57 of 64 threads during the map.
+- **Sustained-clock throttling.** The EPYC 7713's entire range between light and
+  all-core load is ~1.35× (base 2.0, boost 3.72 GHz). It cannot produce 2.2–2.4×.
+- **Anything intrinsic to the carry.** ITS2 shows **no screen regression**
+  (−1.9%, +1.7%), so the effect is 16S-specific.
+
+What remains is that 16S's screen runs anomalously *fast* at 495 ns/comp —
+against ITS2's 1669–1856 — and the carry costs it that operating point. Even
+degraded, 16S's screen is still faster than ITS2's baseline. Tracked as its own
+issue; it is headroom (−30% could be ~−47%), not correctness.
+
+### What it exposed next
+
+After the carry, node occupancy roughly doubles (12–16% → 31–34% of 64 cores)
+and the ranking flips again. Within `b_compare`, only 417 s of 951 s is the
+parallel map: **205 s serial store plus 329 s unattributed** is now larger than
+the whole shuffle phase, and ~48% of `run_dada`. An unmeasured block that large
+has twice been where the win was.
+
 ## What this dictates
 
 - **`b_shuffle` is done — with one exception, since taken.** [#124][124] closed
@@ -299,7 +389,12 @@ first is what makes a negative result *final* rather than merely discouraging.
   share"* — and the second condition is exactly what
   [#132](https://github.com/HPCBio/dada2-rs/issues/132) supplied. At 64 rather
   than 24 threads the move-pass lever is worth 4.3–5.6% on MiSeq, and it is now
-  built and merged. **The build-scan and reconcile verdicts stand unchanged.**
+  built and merged. **All three of this page's closures have now been reopened
+  and built** — the move pass (#132), the reconcile (#136), and finally the
+  build scan itself ([#139][139], Result 4, −28.8 to −32.0% of `run_dada`).
+  Every one fell to a route the page had not considered, not to a cheaper
+  version of the route it had priced. Two of the three were reopened because a
+  *dependency* changed price, not because the idea improved.
 - **A share-of-runtime verdict has a thread count attached to it.** Serial
   phases grow as parallel ones shrink, so "too small to bother with" is a
   statement about a configuration, not about a phase. Any future closure on
@@ -351,6 +446,8 @@ The bounded-pruning implementation is preserved in git history at
 [86]: https://github.com/HPCBio/dada2-rs/pull/86
 [87]: https://github.com/HPCBio/dada2-rs/issues/87
 [124]: https://github.com/HPCBio/dada2-rs/issues/124
+[136]: https://github.com/HPCBio/dada2-rs/issues/136
+[139]: https://github.com/HPCBio/dada2-rs/issues/139
 [53d7add]: https://github.com/HPCBio/dada2-rs/commit/53d7add
 [ff40014]: https://github.com/HPCBio/dada2-rs/commit/ff40014
 [302c60f]: https://github.com/HPCBio/dada2-rs/commit/302c60f
