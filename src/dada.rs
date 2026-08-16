@@ -1266,7 +1266,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         // differs the estimate drifts. Directionally it is the volume, not the
         // rate, that separates the regimes.
         //
-        // With `DADA2RS_SHUFFLE_CARRY=1` the projection is moot — the build is
+        // With the carry on (the default) the projection is moot — the build is
         // already skipped, and `shuf_comps_build` counts only the single initial
         // build that seeds the map. Report what was realised instead of
         // projecting what could be, so the two arms are never confused.

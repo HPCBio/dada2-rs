@@ -69,11 +69,16 @@ fn reconcile_full() -> bool {
 /// work the carry relocates — re-projecting under the new cost model turned all
 /// four benchmark datasets into wins (see `docs/findings/shuffle-build-scan.md`).
 ///
-/// Off by default while the A/B runs, and gated rather than branched so both
-/// arms come from one binary — same reason as [`shuffle_no_prune`].
+/// **On by default.** `DADA2RS_SHUFFLE_NO_CARRY=1` restores the per-bud rebuild,
+/// so both arms still come from one binary — and the env var names the *old*
+/// behaviour, matching [`shuffle_no_prune`] and [`reconcile_full`].
+///
+/// Measured on four datasets, ten arms, ~1,900 byte-identical output files:
+/// soil 16S -28.8 to -32.0% of `run_dada`, MiSeq -23.5 to -27.5%, ITS2 -8.1 to
+/// -13.7%, PacBio -7.0%. One known cost, on soil 16S only, is tracked in #142.
 pub fn shuffle_carry() -> bool {
     static VALUE: OnceLock<bool> = OnceLock::new();
-    *VALUE.get_or_init(|| std::env::var_os("DADA2RS_SHUFFLE_CARRY").is_some())
+    *VALUE.get_or_init(|| std::env::var_os("DADA2RS_SHUFFLE_NO_CARRY").is_none())
 }
 
 /// Disable the #132 dirty-cluster pruning in the shuffle's move pass, forcing

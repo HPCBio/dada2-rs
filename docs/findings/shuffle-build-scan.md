@@ -311,9 +311,17 @@ Measured, 24 threads, `numactl --interleave=all`, one binary both arms:
 | NovaSeq 16S R2 | 1 | 999.3 → 130.2 s (−87.0%) | **−28.8%** |
 | NovaSeq ITS2 R1 | 2 | 84.7 → 43.3 s / 84.8 → 43.7 s | −10.3% / −9.7% |
 | NovaSeq ITS2 R2 | 2 | 131.2 → 64.7 s / 128.0 → 66.0 s | −13.7% / −8.1% |
+| MiSeq R1 | 2 | 27.9 → 5.0 s / 28.3 → 4.8 s | −23.5% / −24.1% |
+| MiSeq R2 | 2 | 31.1 → 8.9 s / 30.8 → 8.7 s | −26.2% / −27.5% |
+| PacBio | 2 | 37.5 → 9.2 s / 37.2 → 9.4 s | −7.0% / −7.0% |
 
-**180 output files byte-identical across every arm.** ITS2 — the workload that
-closed #87 — now improves by roughly the margin it used to regress by.
+**~1,900 output files byte-identical across every arm**, four datasets, both
+platforms. ITS2 — the workload that closed #87 — now improves by roughly the
+margin it used to regress by. On by default since this evidence landed;
+`DADA2RS_SHUFFLE_NO_CARRY=1` restores the rebuild.
+
+Every one of the five projections undershot the measured result, so the
+over-charge below is systematic, not dataset-specific.
 
 ### The carry needed no new reconcile logic
 
@@ -344,10 +352,13 @@ marginal cost is the difference, not the total. Every projection undershot the
 measured result, on both datasets: ITS2 projected 3.0–3.8% and delivered
 8.1–13.7%.
 
-**`comps/build` does not predict the verdict.** It was proposed as the
-workload-regime discriminator and the data falsifies it — 16S has the *highest*
-comps/build (9.3–10.0 M) and the *best* ratio, while ITS2 sits mid-range and
-scores worst. What separates them is the **per-comp cost of the build scan
+**`comps/build` does not predict the verdict, and the regimes were inverted.**
+It was proposed as the workload discriminator and the data falsifies it — 16S
+has the *highest* comps/build (9.3–10.0 M) and the *best* ratio, while ITS2 sits
+mid-range and scores worst. Worse for the old framing: **MiSeq at 1.46 M was the
+canonical *loss* regime** — the basis for #87's closure and the dataset #124's
+build verdict was measured on — and it delivers −23.5 to −27.5%, roughly double
+ITS2's. What separates them is the **per-comp cost of the build scan
 itself** (16S 6.1–7.1 ns, ITS2 3.9–4.2 ns): the prize scales with how
 cache-hostile the scan is, which tracks the pool's working set, not the
 comparison count per build.
@@ -363,8 +374,10 @@ ns/comp) on identical comparison counts, giving back 244–347 s of the shuffle'
 - **Peak parallel load.** Both arms run ~57 of 64 threads during the map.
 - **Sustained-clock throttling.** The EPYC 7713's entire range between light and
   all-core load is ~1.35× (base 2.0, boost 3.72 GHz). It cannot produce 2.2–2.4×.
-- **Anything intrinsic to the carry.** ITS2 shows **no screen regression**
-  (−1.9%, +1.7%), so the effect is 16S-specific.
+- **Anything intrinsic to the carry.** Three independent controls spanning 3.4×
+  in screen rate show no effect: MiSeq 1104 ns/comp (−1.2%), ITS2 1669–1856
+  (−1.9% / +1.7%), PacBio 3780–3872 (+1.3%). Only 16S, at **495 ns/comp**, is
+  affected — and it degrades to 1109, i.e. right at MiSeq's baseline.
 
 What remains is that 16S's screen runs anomalously *fast* at 495 ns/comp —
 against ITS2's 1669–1856 — and the carry costs it that operating point. Even

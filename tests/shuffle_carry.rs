@@ -2,8 +2,8 @@
 //!
 //! The shuffle normally rebuilds its `compmax`/`emax` map from scratch on every
 //! `b_shuffle_converge` call — one full cluster-major pass over every comp in
-//! the pool, per bud. `DADA2RS_SHUFFLE_CARRY=1` keeps the map alive across buds
-//! instead, letting the first reconcile of the next call repair the parts the
+//! the pool, per bud. The carry (on by default; `DADA2RS_SHUFFLE_NO_CARRY=1`
+//! disables it) keeps the map alive across buds instead, letting the first reconcile of the next call repair the parts the
 //! bud invalidated (the parent cluster's fallen reads, the new cluster's
 //! never-folded comps).
 //!
@@ -72,8 +72,8 @@ fn run_pooled(out: &Path, carry: bool, threads: &str, verify: bool) {
         .arg(out)
         .arg(fixture("sam1F.fastq.gz"))
         .arg(fixture("sam2F.fastq.gz"));
-    if carry {
-        cmd.env("DADA2RS_SHUFFLE_CARRY", "1");
+    if !carry {
+        cmd.env("DADA2RS_SHUFFLE_NO_CARRY", "1");
     }
     if verify {
         cmd.env("DADA2RS_RECONCILE_VERIFY", "1");
@@ -189,8 +189,8 @@ fn carried_compmax_matches_rebuild_unpruned() {
             .arg(fixture("sam1F.fastq.gz"))
             .arg(fixture("sam2F.fastq.gz"))
             .env("DADA2RS_SHUFFLE_NO_PRUNE", "1");
-        if carry {
-            cmd.env("DADA2RS_SHUFFLE_CARRY", "1");
+        if !carry {
+            cmd.env("DADA2RS_SHUFFLE_NO_CARRY", "1");
         }
         let run = cmd.output().expect("dada-pooled");
         assert!(
