@@ -707,8 +707,8 @@ struct SampleIterDiag {
     n_abundance: usize,
     n_prior: usize,
     n_singleton: usize,
-    nalign: u32,
-    nshroud: u32,
+    nalign: u64,
+    nshroud: u64,
 }
 
 /// Written to `<diag_dir>/iter_NNN.json` after each full iteration.

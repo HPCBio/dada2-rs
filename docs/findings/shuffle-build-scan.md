@@ -320,6 +320,16 @@ platforms. ITS2 — the workload that closed #87 — now improves by roughly the
 margin it used to regress by. On by default since this evidence landed;
 `DADA2RS_SHUFFLE_NO_CARRY=1` restores the rebuild.
 
+!!! note "These `run_dada` fractions are understated post-#143"
+    They were measured before
+    [#143](compare-serial-fold.md) folded ~290 s of serial work out of
+    `b_compare`. The carry saves the same absolute time, but against a smaller
+    denominator, so its share grew. Re-measured on the same node at 64 threads,
+    two reps per arm: **soil 16S −45 to −48%** of `run_dada` (781.5 / 751.6 s
+    with the carry versus 1525.3 / 1443.2 s without, R1) and **ITS2 −15.4 to
+    −15.9%**. The mechanism is unchanged and visible in the scan split — 9,700
+    rebuilds collapsing to 1 — and the arms remain byte-identical.
+
 Every one of the five projections undershot the measured result, so the
 over-charge below is systematic, not dataset-specific.
 

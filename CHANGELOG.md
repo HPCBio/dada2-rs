@@ -26,6 +26,17 @@ minor versions may carry breaking changes).
 - `just` / `make` task runners for build, install, test, and docs (#46).
 
 ### Fixed
+- The `nalign` and `nshroud` counters no longer overflow on large pooled runs
+  (#143). Both count pairwise comparisons (`nraw × nclusters`) and were `u32`,
+  so any pool exceeding ~4.3 billion comparisons wrapped silently: a 1.23 M-
+  unique NovaSeq soil 16S pool reported 3,015,581,030 alignments against an
+  actual 11,605,515,622. The wrapped values reached the `ALIGN:` verbose line
+  *and* the `nalign` / `nshroud` fields of `dada`, `dada-pseudo` and
+  `dada-pooled` output JSON, so affected artifacts carry wrong values in those
+  two fields. Nothing reads either counter — no clustering, error-model,
+  p-value or table output was affected, and no re-run is needed to correct an
+  archived result. Smaller pools (under ~4.3e9 comparisons) were never
+  affected.
 - LOESS error models no longer collapse to a uniform `1e-7` floor on input with
   five or fewer populated quality columns (#95). The tricube kernel zeroes the
   farthest neighbour in the local window, which left a `span = 0.75`,

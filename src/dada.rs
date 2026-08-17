@@ -193,9 +193,9 @@ pub struct DadaResult {
     #[allow(dead_code)]
     pub pvals: Vec<f64>,
     /// Total pairwise alignments performed.
-    pub nalign: u32,
+    pub nalign: u64,
     /// Comparisons screened out by k-mer distance.
-    pub nshroud: u32,
+    pub nshroud: u64,
     /// Auxiliary R-DADA2-parity outputs. `Some` only when
     /// `DadaParams::aux_outputs` was true.
     pub aux: Option<DadaAux>,
@@ -721,6 +721,16 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // plus summed worker-busy time to derive the map's parallel efficiency.
     let (mut t_cmp_map, mut t_cmp_serial, mut t_cmp_busy) =
         (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+    // #143: the rest of `b_compare`, which map+store left unattributed — the
+    // serial reduction over the map's results, the free of that result vector,
+    // and the pre-map setup. Plus `index_add_cluster`, which sits just outside
+    // the compare timer and so lands in run_dada's own residual.
+    let (mut t_cmp_agg, mut t_cmp_free, mut t_cmp_setup) =
+        (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+    let mut t_index_add = Duration::ZERO;
+    // Store-loop denominators: it scans every raw but pushes only some, so the
+    // two rates have to be separated before anything is designed against it.
+    let (mut n_cmp_scanned, mut n_cmp_stored) = (0u64, 0u64);
     // Split of the map's worker-busy time into the k-mer screen (paid on every
     // comparison) vs. the DP alignment (paid only by pairs the screen passes),
     // with the matching denominators. This ratio is what #127 exists to
@@ -804,6 +814,11 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         t_cmp_post += ct.post;
         n_cmp_screened += ct.screened;
         n_cmp_aligned += ct.aligned;
+        t_cmp_agg += ct.agg;
+        t_cmp_free += ct.free;
+        t_cmp_setup += ct.setup;
+        n_cmp_scanned += bb.raws.len() as u64;
+        n_cmp_stored += ct.stored;
     } else {
         b_compare(
             &mut bb,
@@ -820,7 +835,9 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // Appended once per cluster, in ascending cluster order, right after each
     // compare populates that cluster's comps.
     let mut cand_index: CandIndex = vec![Vec::new(); bb.raws.len()];
+    let t = Instant::now();
     index_add_cluster(&mut cand_index, &bb, 0);
+    t_index_add += t.elapsed();
     let t = Instant::now();
     b_p_update(
         &mut bb,
@@ -885,6 +902,11 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             t_cmp_post += ct.post;
             n_cmp_screened += ct.screened;
             n_cmp_aligned += ct.aligned;
+            t_cmp_agg += ct.agg;
+            t_cmp_free += ct.free;
+            t_cmp_setup += ct.setup;
+            n_cmp_scanned += bb.raws.len() as u64;
+            n_cmp_stored += ct.stored;
         } else {
             b_compare(
                 &mut bb,
@@ -899,7 +921,9 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         t_compare += t.elapsed();
         // Append the new cluster's comps to the persistent candidate index
         // (ascending cluster order preserved: newi is the largest index so far).
+        let t = Instant::now();
         index_add_cluster(&mut cand_index, &bb, newi);
+        t_index_add += t.elapsed();
 
         // Shuffle until stable or MAX_SHUFFLE reached — incremental driver.
         // Redundancy accounting: comps_scanned is now the realised scan work
@@ -988,6 +1012,66 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             t_bud.as_secs_f64(),
             t_pupdate.as_secs_f64(),
         );
+        // #143: attribute the rest of `b_compare`. Before this, map+store
+        // covered only part of the compare timer and the remainder was
+        // reported as nothing at all. Each line below is serial, so it caps
+        // node occupancy exactly the way the shuffle does.
+        {
+            let cmp = t_compare.as_secs_f64();
+            let pct = |x: f64| if cmp > 0.0 { 100.0 * x / cmp } else { 0.0 };
+            let per = |x: f64, n: u64| {
+                if n > 0 { x * 1e9 / n as f64 } else { 0.0 }
+            };
+            let residual = cmp
+                - (t_cmp_map.as_secs_f64()
+                    + t_cmp_serial.as_secs_f64()
+                    + t_cmp_agg.as_secs_f64()
+                    + t_cmp_free.as_secs_f64()
+                    + t_cmp_setup.as_secs_f64());
+            eprintln!(
+                "[dada] compare attribution (of {:.2}s over {} raw-visits, {} stored):",
+                cmp, n_cmp_scanned, n_cmp_stored,
+            );
+            eprintln!(
+                "[dada]   map          {:8.2}s ({:4.1}%)  parallel",
+                t_cmp_map.as_secs_f64(),
+                pct(t_cmp_map.as_secs_f64()),
+            );
+            eprintln!(
+                "[dada]   reduction    {:8.2}s ({:4.1}%)  serial  {:6.1} ns/raw  (summed costs + denominators)",
+                t_cmp_agg.as_secs_f64(),
+                pct(t_cmp_agg.as_secs_f64()),
+                per(t_cmp_agg.as_secs_f64(), n_cmp_scanned),
+            );
+            eprintln!(
+                "[dada]   store        {:8.2}s ({:4.1}%)  serial  {:6.1} ns/raw  {:6.1} ns/stored",
+                t_cmp_serial.as_secs_f64(),
+                pct(t_cmp_serial.as_secs_f64()),
+                per(t_cmp_serial.as_secs_f64(), n_cmp_scanned),
+                per(t_cmp_serial.as_secs_f64(), n_cmp_stored),
+            );
+            eprintln!(
+                "[dada]   free         {:8.2}s ({:4.1}%)  serial  {:6.1} ns/raw  (result vector)",
+                t_cmp_free.as_secs_f64(),
+                pct(t_cmp_free.as_secs_f64()),
+                per(t_cmp_free.as_secs_f64(), n_cmp_scanned),
+            );
+            eprintln!(
+                "[dada]   setup        {:8.2}s ({:4.1}%)  serial",
+                t_cmp_setup.as_secs_f64(),
+                pct(t_cmp_setup.as_secs_f64()),
+            );
+            eprintln!(
+                "[dada]   unattributed {:8.2}s ({:4.1}%)",
+                residual,
+                pct(residual),
+            );
+            eprintln!(
+                "[dada]   (outside compare) index_add_cluster {:.2}s  {:6.1} ns/raw",
+                t_index_add.as_secs_f64(),
+                per(t_index_add.as_secs_f64(), n_cmp_scanned),
+            );
+        }
         eprintln!(
             "[dada] map parallel efficiency: {:.0}% (busy={:.0}s / map={:.0}s × {} threads)",
             100.0 * map_eff,

@@ -104,6 +104,18 @@ here is the evidence, and here is the path it opens or closes."
   [#124's closure](shuffle-build-scan.md) turns out to have been conditional on
   thread count. Includes a section on which of these numbers travel to other
   hardware and which do not.
+- [Inside `b_compare`: the serial remainder](compare-serial-fold.md) — the 329 s
+  (48% of `run_dada`) that was neither the parallel map nor the store. Attributed
+  first, on the issue's own insistence that an optimisation not be designed
+  against a share-of-wall figure before re-measuring what it is made of — and the
+  attribution made the fix obvious: **six serial passes over the map's result
+  vector**, folded into the store loop that already walked it. Seven passes become
+  one, for **−24 to −30% of `run_dada`** on two soil pools, byte-identical. The
+  cache-residency explanation for why those passes were expensive is **falsified**
+  here — ITS2 reduces at the same ~29 ns/raw-visit as soil 16S with a fraction of
+  the working set, so it was six passes, not where the data lived. Leaves the
+  serial **store** as the whole remaining block, at a suspiciously flat
+  18.4–19.6 ns/raw-visit across a 5× range in pool size.
 - [Measuring on a NUMA node](measuring-on-numa.md) — **a methodology result that
   reversed a verdict.** The benchmark node has two NUMA domains and nothing was
   ever pinned, so page placement re-rolled every run and replicates of the *same

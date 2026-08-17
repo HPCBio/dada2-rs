@@ -78,6 +78,17 @@ current screen shrouds — is therefore capped at 15–23% of compare. Worth hav
 eventually; not the thing to build first, and not the thing #127 was opened to
 find.
 
+!!! note "The screen's `ns/comp` is not a constant"
+
+    The figures on this page are per-pool measurements, not a property of the
+    kernel. `kmer_dist8` reduces a dense `4^k`-byte vector, so its work is fixed
+    by `k` alone — yet pools running the identical kernel over identical bytes
+    have measured 495 to 1890 ns/comp. That spread is memory behaviour, and it
+    is separable from the algorithm with the
+    [`screen_bandwidth`](../diagnostics.md#screen_bandwidth-isolating-the-k-mer-screen)
+    benchmark. Recalibrate before carrying any screen rate on this page to a
+    different pool.
+
 ## Where the DP kernel's time goes
 
 The per-aligned-pair costs are large enough to be worth decomposing. The
