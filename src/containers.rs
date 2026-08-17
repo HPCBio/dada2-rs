@@ -286,8 +286,14 @@ pub struct B {
     /// Total read count across all Raws.
     pub reads: u32,
     /// Number of pairwise alignments performed.
+    ///
+    /// Must stay `u64`: this counts `nraw × nclusters` comparisons, which on a
+    /// diverse pooled run reaches 1.4e10 — the NovaSeq soil 16S pool wrapped a
+    /// `u32` here three times before it was caught.
     pub nalign: u64,
     /// Number of comparisons screened out by k-mer distance ("shrouded").
+    ///
+    /// Same width requirement as [`B::nalign`], which it tracks closely.
     pub nshroud: u64,
     /// Significance threshold for abundance-based cluster splitting.
     pub omega_a: f64,
