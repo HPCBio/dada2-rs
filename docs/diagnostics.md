@@ -734,3 +734,165 @@ MiSeq**, **~0.20 on PacBio**.
     - **Subsampling.** `--max-pairs` / `--max-uniques` random-subsample to bound
       the O(n²) cost; results are statistical, and pooled inputs in particular
       should be run with a cap.
+
+---
+
+## `screen_bandwidth`: isolating the k-mer screen
+
+The `[dada] compare split` line in a `--verbose` run reports what the k-mer
+screen costs per comparison, but not *why* it costs that. Across pools that
+number varies far more than the work does:
+
+| Pool | Uniques | `k` | Bytes/vector | `kmer screen` |
+|---|---|---|---|---|
+| NovaSeq soil 16S | 1,225,523 | 5 | 1024 | **495 ns/comp** |
+| NovaSeq ITS2 | 825,214 | 5 | 1024 | 1890 ns/comp |
+| MiSeq 16S | 272,574 | 5 | 1024 | 1091 ns/comp |
+
+The screen is [`kmer_dist8`](https://github.com/HPCBio/dada2-rs/blob/main/src/kmers.rs):
+a min-reduce over a **dense `4^k`-byte vector**, so its cost depends on `k` and
+nothing else — not on sequence length, not on how many pairs it lets through.
+All three rows above run the identical kernel over the identical number of
+bytes, and differ 3.8×. That difference is in the memory system, and a
+whole-run A/B cannot see inside it.
+
+`screen_bandwidth` is a standalone benchmark that streams synthetic k-mer
+vectors through the real kernel, so the memory behaviour can be varied one axis
+at a time without touching a real dataset.
+
+!!! note "Not a subcommand"
+
+    This is a Cargo example, not part of the CLI:
+
+    ```bash
+    cargo build --release --example screen_bandwidth
+    ./target/release/examples/screen_bandwidth --help
+    ```
+
+### Invocation
+
+```bash
+# Sweep pool size against thread count
+numactl --interleave=all ./target/release/examples/screen_bandwidth \
+    --raws 272574,825214,1225523 --threads 1,8,24,48,64 --rounds 20
+
+# Does holding a large allocation alongside the screen change its rate?
+for m in none resident churn; do
+    numactl --interleave=all ./target/release/examples/screen_bandwidth \
+        --raws 1225523 --threads 64 --rounds 20 --carry-mode $m
+done
+```
+
+`numactl --interleave=all` is not optional on a multi-socket node — see
+[Measuring on a NUMA node](findings/measuring-on-numa.md).
+
+### What it reproduces
+
+The benchmark is built to mirror the access pattern of `b_compare_parallel`'s
+parallel map, because that pattern *is* the thing being measured:
+
+| Aspect | How it is matched |
+|---|---|
+| Kernel | Calls the real `KmerScreen::dist8` — not a reimplementation |
+| Allocation | One heap block per screen, as `Raw::kmer8` has |
+| Heap spacing | `--pad` interleaves a filler per raw, so screens sit at the ~1854 B stride that `seq`/`qual`/`kord` impose in a run |
+| Fill | `--distinct` defaults to the observed ~198 of 1024 buckets, keeping the kernel off its saturation branch |
+| Task grain | Pinned to `par_max_len`'s default of 32 |
+| Interleaved work | `--align-frac` / `--align-ns` burn cycles on the fraction of pairs that pass the screen, defaulting to the soil 16S values (4.5% × 16.4 µs) |
+| Screen timing | Per-item clock reads summed across threads — the same instrumentation `AlignBuffers::measuring` uses |
+
+That last pair matters more than it looks. See
+[Interpreting the output](#interpreting-the-output) below.
+
+### Output
+
+TSV on stdout, configuration echoed to stderr:
+
+```
+[screen] k=5 len=250 distinct=198/1024 buckets, 1024 B/vector, 5 rounds
+[screen] heap stride: 1854 B per raw (1024 B screen + 830 B interleaved filler)
+[screen] carry mode: none
+[screen] interleaved align work: 4.5% of comparisons (every 22) x 16400 ns
+
+raws    threads MB_resident comps   wall_s  ns_total ns_screen GB_per_s GB_per_s_per_thread
+272574  1       266     1362870     1.068   783.3    44.3      23.12    23.120
+272574  4       266     1362870     0.239   701.3    39.6      103.36   25.839
+272574  8       266     1362870     0.126   737.4    49.8      164.58   20.573
+```
+
+!!! note "That example is from a laptop, and is shown for *shape* only"
+
+    Per-thread rate is flat and aggregate throughput still climbing at 8
+    threads — an unsaturated machine. The figures to interpret come from the
+    target node across the full thread ladder; an 8-core reading cannot show
+    where saturation sets in.
+
+| Column | Meaning |
+|---|---|
+| `MB_resident` | Total k-mer vector footprint (`raws × 4^k`) |
+| `wall_s` | Measured wall time, summed over `--rounds` |
+| `ns_total` | Whole loop (screen + interleaved alignment), scaled by thread count |
+| `ns_screen` | **Summed worker-busy time in the screen ÷ comparisons** — the run log's own definition, so compare it directly against `kmer screen` |
+| `GB_per_s` | Aggregate across threads, over screen time only |
+| `GB_per_s_per_thread` | The same divided by `--threads`; this is the number that shows saturation |
+
+### Interpreting the output
+
+**Compare `ns_screen`, not `ns_total`.** `ns_total` includes the interleaved
+alignment stand-in and will sit near 800 ns/comp at the defaults regardless of
+what the screen is doing. Only `ns_screen` is comparable to a run log.
+
+**Read the thread ladder, not any single row.** The diagnostic value is in how
+the rate changes from 1 thread to 64, because that separates three mechanisms
+which look identical at a single thread count:
+
+| Pattern across the ladder | What it means |
+|---|---|
+| Flat `GB_per_s_per_thread` | Screen is execution-bound; the kernel is the cost, and a cheaper kernel or a smaller `k` is the lever |
+| Per-thread rate falls, aggregate `GB_per_s` still climbing | Approaching memory-bandwidth saturation — normal, and the point at which adding threads stops paying |
+| Aggregate `GB_per_s` *falls* as threads rise | Past saturation into contention; more threads are actively harmful for this pool |
+
+**A difference that only appears at high thread counts is a scaling property,
+not a data property.** If pools of different size give the same `ns_screen` at
+one thread and diverge at 64, nothing about the sequences explains it — rule out
+the data and look at concurrency.
+
+**`--carry-mode` isolates allocation lifetime**, not allocation size. All three
+modes touch the same bytes with the same coverage; they differ only in whether
+the allocation is held across rounds (`resident`) or allocated and freed each
+round (`churn`). A difference between them points at allocator or page
+behaviour rather than at the screen.
+
+!!! warning "Absolute rates need a reproduction check before you trust them"
+
+    Confirm the benchmark lands near the run log's `kmer screen` figure for a
+    pool you have already measured *before* drawing conclusions from a
+    configuration you have not. This benchmark's first version overstated
+    contention roughly 3× — it streamed vectors back to back with no work
+    between them, while the real map spends ~740 ns/comp in the aligner, and
+    that compute spaces out the memory requests. It reproduced the correct
+    *ordering* across pools while being wrong about every magnitude, which is
+    exactly the failure mode a reproduction check catches and a plausible-looking
+    table does not.
+
+!!! note "Where the alignment stand-in stops being faithful"
+
+    `--align-ns` burns a dependent floating-point chain: it occupies the core
+    without issuing loads. The real DP kernel is execution-bound up to ~48
+    threads but bandwidth-bound above that
+    ([screen vs align](findings/compare-screen-vs-align.md)), so past 48 threads
+    the stand-in understates the aligner's memory contribution. If a
+    reproduction is good at 24 threads and degrades at 64, suspect the stand-in
+    before concluding anything about the screen.
+
+### Caveats
+
+- **Synthetic vectors.** k-mer counts are drawn to match observed *fill*
+  statistics, not real sequence composition. This is sound because `dist8`'s
+  cost is independent of the values it reduces — but any future screen that
+  branches on content would break that assumption.
+- **One centre.** The benchmark compares every vector against a single fixed
+  centre, as one `b_compare` call does. It does not model the full bud loop, so
+  it says nothing about how the screen's cost accumulates over a run.
+- **No greedy skipping.** Every comparison reaches the screen. In a real run,
+  greedy mode skips a workload-dependent fraction outright.
