@@ -875,6 +875,31 @@ behaviour rather than at the screen.
     exactly the failure mode a reproduction check catches and a plausible-looking
     table does not.
 
+!!! danger "`--align-frac` is confounded — do not read a difference between two align fractions as a memory-system result"
+
+    The interleaved alignment work changes the measured screen cost through a
+    second channel that has nothing to do with contention. Measured on the
+    target node at **one thread**, where contention is impossible:
+
+    | `--align-frac` | `ns_screen` @ 1 thread |
+    |---|---|
+    | 0.008 | 418.9 |
+    | 0.045 | 517.5 |
+    | 0.250 | 675.3 |
+
+    Pool size does not explain this: at a fixed fraction the 1-thread rate is
+    flat across a 4.5× range in working set (512.9 / 521.0 / 518.7). The likely
+    mechanism is prefetch disruption — a multi-microsecond dependent chain every
+    few iterations breaks the sequential stream — but the timing data alone does
+    not establish that.
+
+    Two consequences. Comparisons **across different `--align-frac` values are
+    not valid**; hold it fixed and vary something else. And because real pools
+    differ up to 30× in screen pass rate (25% MiSeq, 4.5% soil 16S, 0.8% ITS2),
+    the same effect is present in the run log's own `kmer screen` figures — so
+    cross-pool comparisons of that number are confounded by pass rate too, and
+    the apparent spread between pools overstates the real one.
+
 !!! note "Where the alignment stand-in stops being faithful"
 
     `--align-ns` burns a dependent floating-point chain: it occupies the core
@@ -884,6 +909,15 @@ behaviour rather than at the screen.
     the stand-in understates the aligner's memory contribution. If a
     reproduction is good at 24 threads and degrades at 64, suspect the stand-in
     before concluding anything about the screen.
+
+!!! warning "What this benchmark has not been able to do"
+
+    It reproduces the *ordering* production shows across pool sizes but not the
+    magnitudes, and it has never reproduced ITS2's position (production's
+    slowest pool, the benchmark's middle one). Two successive corrections —
+    adding interleaved alignment work, then matching each pool's real pass rate
+    — improved neither. Treat it as a tool for varying one memory-system axis
+    under controlled conditions, not as a predictor of what a real pool will do.
 
 ### Caveats
 

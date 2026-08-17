@@ -49,6 +49,22 @@
 //! If neither reproduces, the effect is not in the screen kernel at all and the
 //! whole-run A/B was measuring something downstream of it.
 //!
+//! ## `--align-frac` is confounded
+//!
+//! Measured on the target node at **one thread**, where contention cannot
+//! occur, `ns_screen` still tracks the align fraction: 418.9 ns at 0.008,
+//! 517.5 at 0.045, 675.3 at 0.250. Pool size does not explain it — at a fixed
+//! fraction the 1-thread rate is flat across a 4.5x range in working set
+//! (512.9 / 521.0 / 518.7). So the knob introduced to make the benchmark
+//! faithful also perturbs the quantity it was meant to isolate, most likely by
+//! breaking the prefetcher's stream, though timing alone does not establish
+//! that.
+//!
+//! Do not compare across align fractions. And note the same effect is present
+//! in the run log, since real pools differ up to 30x in pass rate — the
+//! cross-pool `kmer screen` spread that motivates this benchmark is itself
+//! partly this artifact.
+//!
 //! ## What the first cluster run changed
 //!
 //! Run without interleaved alignment work, this reproduced the *ordering*
