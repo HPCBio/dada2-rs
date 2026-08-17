@@ -27,9 +27,14 @@
 //!
 //! ## Reading the output
 //!
-//! `ns/comp` is scaled by thread count (`wall x threads / comps`) so it is
-//! comparable to the `[dada] compare split` line in a run log, which divides
-//! summed worker-busy time by comparisons. `GB/s` is aggregate across threads.
+//! `ns_screen` is summed worker-busy time in `dist8` divided by comparisons —
+//! the run log's own definition, measured with the same per-item clock reads,
+//! so the two are directly comparable including instrumentation cost.
+//! `ns_total` is the whole loop (screen + interleaved alignment) scaled by
+//! thread count. `GB/s` is aggregate across threads, over screen time only.
+//!
+//! Compare `ns_screen` against `[dada] compare split`'s `kmer screen` figure:
+//! 495 ns/comp on soil 16S, 1091 on MiSeq, 1890 on ITS2.
 //!
 //! Two outcomes, and they point opposite ways:
 //!
@@ -43,6 +48,18 @@
 //!
 //! If neither reproduces, the effect is not in the screen kernel at all and the
 //! whole-run A/B was measuring something downstream of it.
+//!
+//! ## What the first cluster run changed
+//!
+//! Run without interleaved alignment work, this reproduced the *ordering*
+//! (largest pool fastest) but overstated contention roughly 3x: soil-sized
+//! pools came out at 1465 ns/comp against production's 495, and at one thread
+//! all three pool sizes were identical (366-384 ns/comp). The size dependence
+//! only appeared as threads rose, which is a concurrency effect rather than a
+//! working-set effect — and a benchmark with no compute between streams
+//! manufactures a bandwidth storm the real map never sees, because the map
+//! spends ~740 ns/comp in the aligner. Hence `--align-frac` / `--align-ns`,
+//! on by default at the soil 16S values.
 //!
 //! ## Usage
 //!
@@ -141,6 +158,41 @@ fn touch_carry(buf: &mut [f64], rng: &mut Rng) {
     std::hint::black_box(rng.next());
 }
 
+/// Stand-in for the DP alignment the real map runs on the fraction of pairs the
+/// screen passes.
+///
+/// This exists because omitting it is not neutral. In `b_compare_parallel` the
+/// screen is interleaved with roughly 740 ns of alignment work per comparison
+/// (16.4 us on the 4.5% of soil 16S pairs that pass), which spaces out the
+/// memory requests. A benchmark that streams k-mer vectors back to back with no
+/// work between them manufactures a worst-case bandwidth storm the run never
+/// experiences — the first version of this benchmark did exactly that, and
+/// overstated contention roughly 3x against the production figure.
+///
+/// A dependent FP chain is an approximation: it occupies the core without
+/// issuing loads. The real DP kernel is execution-bound up to ~48 threads but
+/// bandwidth-bound above (#127), so above that this understates its memory
+/// component. It is the right first-order correction, not a model of the
+/// aligner.
+#[inline(never)]
+fn burn(iters: u64) -> f64 {
+    let mut x = 1.000_000_1f64;
+    for _ in 0..iters {
+        x = x * 1.000_000_1 + 1e-9;
+    }
+    x
+}
+
+/// Calibrate `burn` iterations per nanosecond on this machine, so `--align-ns`
+/// means the same thing across hardware.
+fn calibrate_burn() -> f64 {
+    std::hint::black_box(burn(100_000));
+    let t = std::time::Instant::now();
+    std::hint::black_box(burn(10_000_000));
+    let ns = t.elapsed().as_secs_f64() * 1e9;
+    10_000_000.0 / ns
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum CarryMode {
     /// No competing working set — the floor.
@@ -176,6 +228,11 @@ fn main() {
     // Allocating that padding reproduces the spacing; without it the benchmark
     // measures a best-case contiguous stream that the run never gets.
     let mut pad = 830usize;
+    // Interleaved alignment work: `align_frac` of comparisons pay `align_ns`.
+    // Defaults are the soil 16S measurements — 4.5% of pairs pass the screen,
+    // at 16,400 ns each (`docs/findings/compare-screen-vs-align.md`).
+    let mut align_frac = 0.045f64;
+    let mut align_ns = 16_400.0f64;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -194,6 +251,8 @@ fn main() {
             "--distinct" => distinct = val(i).parse().expect("--distinct"),
             "--carry-mb" => carry_mb = val(i).parse().expect("--carry-mb"),
             "--pad" => pad = val(i).parse().expect("--pad"),
+            "--align-frac" => align_frac = val(i).parse().expect("--align-frac"),
+            "--align-ns" => align_ns = val(i).parse().expect("--align-ns"),
             "--carry-mode" => {
                 carry_mode = match val(i).as_str() {
                     "none" => CarryMode::None,
@@ -206,7 +265,8 @@ fn main() {
                 eprintln!(
                     "screen_bandwidth --raws N,N --threads T,T --rounds R \\\n  \
                      [--k 5] [--len 250] [--distinct 198] \\\n  \
-                     [--pad 830] [--carry-mode none|resident|churn] [--carry-mb 39]"
+                     [--pad 830] [--align-frac 0.045] [--align-ns 16400] \\n  \
+                     [--carry-mode none|resident|churn] [--carry-mb 39]"
                 );
                 return;
             }
@@ -233,8 +293,29 @@ fn main() {
         }
     );
 
+    let per_ns = calibrate_burn();
+    let align_iters = (align_ns * per_ns) as u64;
+    // Every Nth comparison pays the alignment cost — a fixed stride rather than
+    // a random draw, so each thread carries the same share and the pattern is
+    // identical run to run.
+    let align_every = if align_frac > 0.0 {
+        (1.0 / align_frac).round() as usize
+    } else {
+        0
+    };
+    eprintln!(
+        "[screen] interleaved align work: {:.1}% of comparisons (every {align_every}) x {:.0} ns ({align_iters} iters, calibrated {per_ns:.2} iter/ns)",
+        100.0 * align_frac,
+        align_ns,
+    );
+    if align_every == 0 || align_iters == 0 {
+        eprintln!(
+            "[screen] WARNING: no interleaved work — measures a pure streaming storm, not the map"
+        );
+    }
+
     println!(
-        "raws\tthreads\tMB_resident\tcomps\twall_s\tns_per_comp\tGB_per_s\tGB_per_s_per_thread"
+        "raws\tthreads\tMB_resident\tcomps\twall_s\tns_total\tns_screen\tGB_per_s\tGB_per_s_per_thread"
     );
 
     for &nraw in &raws {
@@ -282,12 +363,20 @@ fn main() {
                 let s: f64 = screens
                     .par_iter()
                     .with_max_len(PAR_GRAIN)
-                    .map(|s| center.dist8(s, len, len, k))
+                    .enumerate()
+                    .map(|(idx, s)| {
+                        let d = center.dist8(s, len, len, k);
+                        if align_every > 0 && idx % align_every == 0 {
+                            return d + burn(align_iters);
+                        }
+                        d
+                    })
                     .sum();
                 std::hint::black_box(s);
             });
 
             let mut elapsed = std::time::Duration::ZERO;
+            let mut screen_busy_ns = 0u64;
             for _ in 0..rounds {
                 if carry_mode == CarryMode::Churn {
                     let mut v = vec![0.0f64; carry_len];
@@ -299,28 +388,49 @@ fn main() {
                 }
 
                 let t = std::time::Instant::now();
-                let sum = pool.install(|| {
+                // Time the screen per item and sum across threads — the same
+                // instrumentation `AlignBuffers::measuring` uses, so this
+                // figure is comparable to the run log's `kmer screen` line
+                // including the two clock reads that measurement itself costs.
+                // Differencing a burn-only control was tried first and is a
+                // useless estimator here: it extracts a ~30 ns signal from the
+                // difference of two ~730 ns quantities.
+                let (sum, screen_ns) = pool.install(|| {
                     screens
                         .par_iter()
                         .with_max_len(PAR_GRAIN)
-                        .map(|s| center.dist8(s, len, len, k))
-                        .sum::<f64>()
+                        .enumerate()
+                        .map(|(idx, s)| {
+                            let t0 = std::time::Instant::now();
+                            let d = center.dist8(s, len, len, k);
+                            let ns = t0.elapsed().as_nanos() as u64;
+                            if align_every > 0 && idx % align_every == 0 {
+                                return (d + burn(align_iters), ns);
+                            }
+                            (d, ns)
+                        })
+                        .reduce(|| (0.0, 0u64), |a, b| (a.0 + b.0, a.1 + b.1))
                 });
                 elapsed += t.elapsed();
+                screen_busy_ns += screen_ns;
                 std::hint::black_box(sum);
             }
 
             let comps = (nraw * rounds) as f64;
             let wall = elapsed.as_secs_f64();
             let bytes = comps * bytes_per_vec as f64;
+            // Worker-busy time in the screen, divided by comparisons — exactly
+            // the run log's definition.
+            let ns_screen = screen_busy_ns as f64 / comps;
+            let screen_wall = screen_busy_ns as f64 / 1e9 / nthreads as f64;
             // Scaled by threads so it is directly comparable to the run log's
             // `[dada] compare split` ns/comp, which divides summed worker-busy
             // time by comparisons.
-            let ns_per_comp = wall * 1e9 * nthreads as f64 / comps;
-            let gbs = bytes / wall / 1e9;
+            let ns_total = wall * 1e9 * nthreads as f64 / comps;
+            let gbs = bytes / screen_wall.max(1e-12) / 1e9;
             println!(
-                "{nraw}\t{nthreads}\t{resident_mb:.0}\t{comps:.0}\t{wall:.3}\t{ns_per_comp:.1}\t{gbs:.2}\t{:.3}",
-                gbs / nthreads as f64
+                "{nraw}\t{nthreads}\t{resident_mb:.0}\t{comps:.0}\t{wall:.3}\t{ns_total:.1}\t{ns_screen:.1}\t{gbs:.2}\t{:.3}",
+                gbs / nthreads as f64,
             );
             drop(held.take());
         }
