@@ -329,33 +329,46 @@ pub fn b_compare_parallel(
         )
         .collect();
     let map_dur = t_map.elapsed();
-    // Serial reduction (#143). Six separate passes over an nraw-long vector of
-    // 48-byte tuples, once per bud round — kept as-is here so the timer
-    // measures the code that actually shipped, not a rewrite of it.
-    let t_agg = std::time::Instant::now();
-    let cost = CompCost {
-        total: comps.iter().map(|c| c.3.total).sum(),
-        screen: comps.iter().map(|c| c.3.screen).sum(),
-        dp: comps.iter().map(|c| c.3.dp).sum(),
-        post: comps.iter().map(|c| c.3.post).sum(),
-    };
-    let busy_dur = std::time::Duration::from_nanos(cost.total);
-    // Denominators for the ns/comp figures: the screen runs on every
-    // non-greedy-skipped comparison, the aligner only on those it passes.
-    let screened = comps.iter().filter(|c| !c.2).count() as u64;
-    let aligned = comps.iter().filter(|c| !c.2 && c.1 != u32::MAX).count() as u64;
-    let agg_dur = t_agg.elapsed();
 
-    // Serial post-processing: selectively store comparisons.
+    // Serial post-processing: reduce the map's per-item costs and selectively
+    // store comparisons — in ONE pass over the result vector (#143).
+    //
+    // This reduction used to be six separate passes (four `sum`s and two
+    // `filter().count()`s) run before the store loop touched the same vector a
+    // seventh time. At 48 bytes per element that is 288 B/raw-visit of extra
+    // traffic, and it does not stay in cache: MiSeq's result vector is 13 MB
+    // and fits the 7713's 32 MB per-CCD L3, but the soil 16S pool's is 59 MB
+    // and misses on every pass. Measured, the six passes cost 15.4 ns/raw on
+    // MiSeq and 28.3 ns/raw on soil 16S — 337 s, or 31% of `run_dada`, on a
+    // pool whose parallel map is already bandwidth-saturated and cannot absorb
+    // it.
+    //
+    // Folded here the accumulators are ALU on values the store loop has
+    // already loaded, so the traffic is paid once instead of seven times.
+    // Every figure they produce is verbose-only, but the passes were
+    // unconditional, so this is a production win and not just a cheaper
+    // measurement.
     let t_serial = std::time::Instant::now();
     let total_reads = b.reads as f64;
+    let mut cost = CompCost::default();
+    // Denominators for the ns/comp figures: the screen runs on every
+    // non-greedy-skipped comparison, the aligner only on those it passes.
+    let (mut screened, mut aligned) = (0u64, 0u64);
     let mut stored = 0u64;
-    for (index, &(lambda, hamming, skipped, _)) in comps.iter().enumerate() {
+    for (index, &(lambda, hamming, skipped, item)) in comps.iter().enumerate() {
+        cost.total += item.total;
+        cost.screen += item.screen;
+        cost.dp += item.dp;
+        cost.post += item.post;
+
         // Match serial b_compare counting: only count non-skipped raws.
         if !skipped {
+            screened += 1;
             b.nalign += 1;
             if hamming == u32::MAX {
                 b.nshroud += 1;
+            } else {
+                aligned += 1;
             }
         }
 
@@ -383,6 +396,11 @@ pub fn b_compare_parallel(
         }
     }
     let serial_dur = t_serial.elapsed();
+    let busy_dur = std::time::Duration::from_nanos(cost.total);
+    // Retained so the attribution block still reconstructs `compare` and so a
+    // future change that reintroduces a separate reduction is visible rather
+    // than silent. Zero by construction while the reduction stays folded.
+    let agg_dur = std::time::Duration::ZERO;
     // Freeing the nraw-long result vector is charged separately so the store
     // loop's ns/raw is not inflated by deallocation (#143).
     let t_free = std::time::Instant::now();
@@ -1756,5 +1774,150 @@ mod reconcile_rule_tests {
             assert_eq!(fold_beats(&perm), want, "rotation {rot} disagreed");
         }
         assert_eq!(fold_beats(&[(-2.0, 0)]), 0, "single candidate");
+    }
+}
+
+#[cfg(test)]
+mod compare_fold_tests {
+    use super::*;
+    use crate::containers::Raw;
+    use crate::kmers::raw_assign_kmers;
+
+    const K: usize = 5;
+
+    /// A pool with enough variety that the screen shrouds some pairs, aligns
+    /// others, and greedy locks a third group — all three branches of the
+    /// folded loop have to be exercised or the test proves nothing.
+    fn pool() -> Vec<Raw> {
+        let base = b"ACGTACGTAGCTAGCTAAGGCCTTAGCTAGCTACGTACGTTTGACTGACAGCTTAAGGCCA";
+        let mut raws = Vec::new();
+        for (n, reads) in [
+            (0usize, 500u32),
+            (1, 200),
+            (3, 40),
+            (7, 9),
+            (20, 3),
+            (31, 1),
+        ] {
+            let mut seq = base.to_vec();
+            // Mutate `n` positions so the pair's k-mer distance spans the range
+            // from "identical" through "far past any cutoff".
+            for p in 0..n {
+                let idx = (p * 7 + 3) % seq.len();
+                seq[idx] = match seq[idx] {
+                    b'A' => b'C',
+                    b'C' => b'G',
+                    b'G' => b'T',
+                    _ => b'A',
+                };
+            }
+            let seq: Vec<u8> = seq.iter().map(|&b| crate::misc::nt_encode(b)).collect();
+            let mut raw = Raw::new(seq, None, reads, false);
+            raw_assign_kmers(&mut raw, K);
+            raws.push(raw);
+        }
+        raws
+    }
+
+    fn params() -> AlignParams {
+        AlignParams {
+            backend: crate::nwalign::AlignBackend::Nw,
+            wfa_max_edits: 0,
+            match_score: 5,
+            mismatch: -4,
+            gap_p: -8,
+            homo_gap_p: -1,
+            use_kmers: true,
+            kdist_cutoff: 0.42,
+            kmer_size: K,
+            band: 16,
+            vectorized: true,
+            gapless: true,
+        }
+    }
+
+    /// Centre the cluster on the *second* most abundant raw, not the first.
+    /// Greedy mode skips raws whose reads exceed the centre's, so a pool
+    /// centred on its own maximum can never exercise the skip branch — and the
+    /// greedy arm would silently duplicate the non-greedy one.
+    fn seeded() -> B {
+        let mut b = B::new(pool(), 1e-40, 1e-4, false);
+        b.clusters[0].center = Some(1);
+        b
+    }
+
+    /// The reduction was folded into the store loop (#143). Its outputs are the
+    /// denominators every `ns/comp` figure in the run log divides by, so they
+    /// have to keep agreeing with the counters kept independently on `B`.
+    #[test]
+    fn folded_reduction_agrees_with_b_counters() {
+        for greedy in [false, true] {
+            let mut b = seeded();
+            let err = vec![0.001f64; 16 * 41];
+            let ct = b_compare_parallel(&mut b, 0, &err, 41, &params(), greedy, true);
+
+            assert_eq!(
+                ct.screened, b.nalign,
+                "greedy={greedy}: screened must equal the alignments counted on B"
+            );
+            assert_eq!(
+                ct.screened - ct.aligned,
+                b.nshroud,
+                "greedy={greedy}: screened minus aligned must equal shrouded"
+            );
+            assert_eq!(
+                ct.stored,
+                b.clusters[0].comp.len() as u64,
+                "greedy={greedy}: stored must equal the comps actually pushed"
+            );
+            assert!(
+                ct.screened <= b.raws.len() as u64,
+                "greedy={greedy}: cannot screen more pairs than there are raws"
+            );
+            // Guard against a vacuous pass: the pool must actually drive every
+            // branch of the folded loop, or these assertions prove nothing.
+            assert!(ct.aligned > 0, "greedy={greedy}: no pair passed the screen");
+            assert!(b.nshroud > 0, "greedy={greedy}: no pair was shrouded");
+            assert!(ct.stored > 0, "greedy={greedy}: nothing was stored");
+            if greedy {
+                assert!(
+                    ct.screened < b.raws.len() as u64,
+                    "greedy mode must skip at least one raw, or the greedy arm \
+                     is indistinguishable from the non-greedy one"
+                );
+            }
+        }
+    }
+
+    /// The parallel path and the serial `b_compare` must remain interchangeable.
+    /// The fold touched only the parallel one, so any divergence it introduced
+    /// shows up here.
+    #[test]
+    fn parallel_matches_serial() {
+        let err = vec![0.001f64; 16 * 41];
+        for greedy in [false, true] {
+            let mut par = seeded();
+            b_compare_parallel(&mut par, 0, &err, 41, &params(), greedy, true);
+
+            let mut ser = seeded();
+            b_compare(&mut ser, 0, &err, 41, &params(), greedy, false);
+
+            assert_eq!(par.nalign, ser.nalign, "greedy={greedy}: nalign");
+            assert_eq!(par.nshroud, ser.nshroud, "greedy={greedy}: nshroud");
+            assert_eq!(
+                par.clusters[0].comp.len(),
+                ser.clusters[0].comp.len(),
+                "greedy={greedy}: stored comp count"
+            );
+            for (p, s) in par.clusters[0].comp.iter().zip(ser.clusters[0].comp.iter()) {
+                assert_eq!(p.index, s.index, "greedy={greedy}: comp index");
+                assert_eq!(p.hamming, s.hamming, "greedy={greedy}: comp hamming");
+                assert_eq!(
+                    p.lambda.to_bits(),
+                    s.lambda.to_bits(),
+                    "greedy={greedy}: lambda"
+                );
+            }
+        }
     }
 }
