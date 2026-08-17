@@ -286,9 +286,9 @@ pub struct B {
     /// Total read count across all Raws.
     pub reads: u32,
     /// Number of pairwise alignments performed.
-    pub nalign: u32,
+    pub nalign: u64,
     /// Number of comparisons screened out by k-mer distance ("shrouded").
-    pub nshroud: u32,
+    pub nshroud: u64,
     /// Significance threshold for abundance-based cluster splitting.
     pub omega_a: f64,
     /// Significance threshold for singleton detection.

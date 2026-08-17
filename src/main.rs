@@ -4784,8 +4784,8 @@ struct AsvEntry {
 
 #[derive(Serialize)]
 struct DadaStats {
-    nalign: u32,
-    nshroud: u32,
+    nalign: u64,
+    nshroud: u64,
 }
 
 /// Stable string label for a cluster's birth type (matches R DADA2's `$type`).

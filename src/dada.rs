@@ -193,9 +193,9 @@ pub struct DadaResult {
     #[allow(dead_code)]
     pub pvals: Vec<f64>,
     /// Total pairwise alignments performed.
-    pub nalign: u32,
+    pub nalign: u64,
     /// Comparisons screened out by k-mer distance.
-    pub nshroud: u32,
+    pub nshroud: u64,
     /// Auxiliary R-DADA2-parity outputs. `Some` only when
     /// `DadaParams::aux_outputs` was true.
     pub aux: Option<DadaAux>,
