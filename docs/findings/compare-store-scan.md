@@ -104,15 +104,195 @@ large serial block left in `b_compare`: the parallel map is 66% of the phase and
 bandwidth-bound above 48 threads, which is
 [a different problem](compare-screen-vs-align.md) with a different lever.
 
-Two smaller things are open and measured but not decided:
+Two further levers were built and measured, and **neither is merged.** They are
+the rest of this page, because the reasons are more useful than the result.
 
-- **Collecting the map's result at 16 B instead of 48 B** in production runs
-  (`--verbose` needs the 48 B form for its cost attribution). This is real but
-  ambiguous: −5.9% / −1.5% wall on ITS2, `sys` time collapsing 93%, and `user`
-  time *rising* 6–12% with no mechanism established for the rise. The leading
-  account is glibc's dynamic `mmap` threshold, which caps at 32 MB: the 48 B
-  vector is 39.6–62.6 MB and is `munmap`ped and re-faulted every call, while the
-  16 B vector fits under the cap and is reused. That predicts the *allocation*,
-  not the element width, is the thing to fix.
-- **Reusing one scratch buffer** across calls rather than allocating per call,
-  which would remove the allocation at either width.
+## The allocation levers: a real cost that does not pay
+
+`b_compare_parallel` allocates its `nraw`-long result vector on every call and
+frees it — 45.1 MB on soil ITS2, 58.8 MB on 16S, over thousands of calls. Two
+ways to stop paying for that were built:
+
+- **Lever A** — collect at 16 B instead of 48 B in production runs, dropping
+  `CompCost` from the element (`--verbose` still needs the 48 B form for its
+  attribution). This works by *accident*: it puts the vector under a threshold.
+- **Lever D** — hold one buffer on `B` and fill it with `collect_into_vec`,
+  removing the allocation at either width.
+
+Both collapse `sys` time — 70% for A, **94% for D** (674.6 → 38.6 s on ITS2 R2).
+The mechanism is glibc's dynamic `mmap` threshold, which caps at 32 MB: a vector
+above the cap is `mmap`ped and `munmap`ped every call rather than recycled from
+the arena, so the kernel re-faults and re-zeroes every page each time.
+`examples/parallel_overhead` confirms it directly — at 16 B the vector is
+15.0–19.6 MB, under the cap, and fresh-vs-reuse shows no consistent difference;
+at 48 B it is 45.1–58.8 MB, over the cap, and the gap is **~5 ms per call at
+both pool sizes**.
+
+That arithmetic is consistent end to end: 4,017 calls × 5 ms ≈ 20 s against a
+131 s map, and 674 core-seconds of `sys` is ~10.5 s of wall across 64 threads.
+
+**And removing it returns nothing.**
+
+| soil ITS2 R2, non-verbose | baseline | D (scratch buffer) | A (16 B) |
+|---|---|---|---|
+| real | 258.3 s | 264.7 s (**+2.5%**) | 257.7 s (−1.5%) |
+| user | 7,381 s | 8,592 s (**+16%**) | 8,536 s (+11%) |
+| sys | 674.6 s | 38.6 s (−94%) | 202 s (−70%) |
+
+Both levers convert a large `sys` saving into an equal-or-larger `user` cost and
+a wall time that does not improve. Total CPU goes *up*: 8,056 core-seconds
+becomes 8,631 (D) or 8,738 (A).
+
+### Where the `user` time actually goes
+
+A verbose B-vs-D pair localises it. `busy` — the sum of per-item timers taken
+inside the map closure — rises **+16.0%** on ITS2 R2, against a `user` rise of
++16.4% measured non-verbose. The extra CPU is inside the map closure, not in the
+serial phases and not in framework overhead.
+
+| ITS2 | B | D | change |
+|---|---|---|---|
+| `busy` R1 | 4834 / 5175 core-s | 4907 / 5212 | +1.1% |
+| `busy` R2 | 5534 / 5715 core-s | 6307 / 6745 | **+16.0%** |
+| `free` | 1.10–1.99 s | 0.00 s | buffer confirmed reused |
+| map parallel efficiency | 87–88% | **93–94%** | see below |
+| `run_dada` R1 | 167.3 / 172.3 s | 161.7 / 164.7 s | −3.9% |
+| `run_dada` R2 | 211.2 / 214.4 s | 217.9 / 235.4 s | **+6.5%** |
+
+**A read-for-ownership account was proposed and this falsifies it** — or rather,
+shows the test was built wrong, which amounts to the same thing. The account was
+that a freshly-`mmap`ped page is zeroed by the kernel immediately before a worker
+writes it, so the destination store is cache-warm, while a reused buffer's lines
+are cold and dirty. `busy` rising was written down in advance as the confirming
+prediction.
+
+It cannot be. `busy` times the closure *body*; the write into the destination
+vector happens in rayon's collect, **after the closure returns**. A cost on the
+destination store could never appear in `busy`. What got slower is the
+screen-and-align compute itself, which that account does not predict. The
+prediction was mapped onto an instrument that could not observe the thing it was
+predicting.
+
+What survives is narrower and, in one respect, more interesting: **reused memory
+is slower than freshly-faulted memory for this workload, across two independent
+implementations and two buffer sizes.** Lever A reuses a 15 MB buffer through
+glibc's arena and pays +11%; lever D reuses a 45 MB buffer explicitly and pays
++16%. Size modulates the penalty but does not cause it — the common factor is
+reuse itself. That is worth knowing beyond this issue, because "hoist the
+allocation out of the loop" is a routine optimisation instinct and here it costs
+more than it saves.
+
+The candidate that fits the size dependence — offered as a hypothesis, having
+already been wrong once on this page — is that a live buffer stays resident in
+LLC and contends with the 1.7 GB of k-mer vectors the screen streams, while a
+freed region's lines die naturally. Settling it needs hardware counters
+(LLC-misses, dTLB-misses) on one B-vs-D pair, not another timer.
+
+`parallel_overhead` cannot settle that, and says so: its synthetic reports reuse
+as **faster**, the opposite of production. Its work function is pure ALU while
+production's map streams 1.7 GB of k-mer vectors, so it has nothing to contend
+with. Same failure mode as `screen_bandwidth` — a stand-in reproduces ordering,
+not magnitudes, when it stands in for real work.
+
+**Consequence: do not retry either lever on the strength of the `sys` number.**
+The `sys` time is real, well-understood, and not on the critical path. Anything
+that revisits this needs to explain the `user` rise first, with hardware
+counters rather than a timer.
+
+## Load imbalance in the map: falsified
+
+The same investigation was pointed at a second target. Production reports 86–90%
+map parallel efficiency, and the residual looked like threads idling at the tail
+of each collect waiting on stragglers — plausible, since raws are
+abundance-sorted and a few percent pay a full alignment while the rest are
+screened out.
+
+It is not happening. `join_uniform` and `join_skewed` do the **same total work**
+per call and differ only in its distribution:
+
+| | ITS2 shape (0.8% heavy) | 16S shape (4.5% heavy) |
+|---|---|---|
+| skewed vs work-matched uniform | +0.1% | −0.1% |
+
+Zero, on both parameterisations, at production's measured 14× aligner/screen
+cost ratio. The heavy region is ~235 tasks of 29,360 spread over 64 threads, so
+`with_max_len(32)` gives work-stealing far more splits than it needs.
+
+**So the 86–90% figure is not idle time**, and an earlier reading of it here as
+"1,166 core-seconds lost to imbalance" was wrong. `busy` is the sum of timers
+taken *inside* the map closure: it never measured rayon's per-task dispatch, the
+collect's stores into the destination, or the timer calls themselves. The gap is
+mostly unmeasured work.
+
+Roughly half of it is now identified. Removing the per-call allocation (lever D)
+raises map parallel efficiency from 87–88% to **93–94%** while `busy` is
+unchanged or higher — so ~6 of the missing 10–14 points was allocation and
+page-fault work, sitting inside map wall but outside the per-item timers. The
+remaining ~6 points is still unattributed and needs a different instrument.
+
+**Consequence: the load-balancing knobs are closed.** `DADA2RS_PAR_GRAIN` is
+already doing its job, and there is no parallel-dampening problem to chase.
+
+## The run is not uniform, and the means describe no part of it
+
+Every figure above is a total over the whole bud loop. Per-window progress lines
+(#150) show that is hiding a lot.
+
+Soil ITS2 R1, 30-second windows:
+
+| window | eff cores | `align` | map | shuffle | bud+pupd |
+|---|---|---|---|---|---|
+| 0–30 s | 24.4 | 1.62% | 12.6 s | 9.1 s | 6.6 s |
+| 60–90 s | 29.0 | 0.42% | 15.4 s | 8.5 s | 3.1 s |
+| 120–150 s | **37.9** | 1.01% | 20.2 s | **4.0 s** | **1.7 s** |
+
+Occupancy climbs monotonically from 22 to 42 effective cores of 64. The
+end-of-run mean of ~29 describes no window of the run.
+
+**The ramp is the serial fraction, not the workload.** `align` falls six-fold
+and then rises again while occupancy climbs straight through, so the alignment
+pass rate is not driving it. Serial work per window collapses from 15.7 s to
+5.7 s — the partition stabilises, the incremental reconcile finds less to do,
+and `b_shuffle` plus `p_update` shrink out of the way.
+
+A prediction made before looking was that occupancy should *fall* over the run,
+because greedy skips increase as cluster centres get less abundant. That
+reasoned about the map, and the map is not where the answer is.
+
+**Consequence for how this project measures.** "Effective cores 31.4 → 38.4" and
+"map parallel efficiency 86–90%" have both been used to rank levers, and both are
+means over a run that spans nearly a factor of two. A change that helps the
+early, serial-heavy phase and one that helps the late, map-heavy phase are
+indistinguishable in the totals. Prefer per-window figures when the question is
+*where* a change acts.
+
+## Three instrument errors, and what each cost
+
+This page's negative results all came from measurement mistakes caught late, so
+they are recorded rather than quietly fixed:
+
+1. **A hypothesis killed by accounting, not by a run.** Rayon spin-wait was the
+   first explanation for the `user` rise. The whole ITS2 R2 run has only 838
+   core-seconds of CPU outside the map's summed busy time, while lever D's
+   `user` rise alone is 1,211 — there was no room for it. Doing that arithmetic
+   before booking node time is the cheapest step in this entire page.
+2. **A skew model that could not exhibit the thing it measured.** The first
+   imbalance arm marked every 32nd index heavy while the task grain was 32, so
+   every task held exactly one heavy item and mean task cost equalled max task
+   cost *by construction*. It reported "no imbalance" and would have done so
+   whatever the truth was. A skew uniform at the granularity of a task is not a
+   skew.
+3. **The right estimator applied to the wrong arm.** Reporting the per-round
+   minimum defends against a noisy neighbour, and is correct for five of the six
+   arms. `collect_fresh`'s spread is *intrinsic* — glibc allocator state, i.e.
+   whether a round recycled rather than remapped — so the minimum systematically
+   selects the rounds where the effect under test did not occur. On `min` the
+   allocation cost appeared to shrink as the vector grew (2.5 ms at 45.1 MB,
+   1.3 ms at 58.8 MB); on `median` it is 5.04 and 5.10 ms, essentially identical.
+   The tell was in the output the whole time: that arm runs at `med/min`
+   1.06–1.10 while every other arm sits at 1.00–1.01.
+
+The generalisation, and the reason this section exists: **an arm that cannot
+produce the effect, and an estimator that selects against it, both return a
+clean-looking null.** A null is only evidence once the instrument has been shown
+capable of returning something else.
