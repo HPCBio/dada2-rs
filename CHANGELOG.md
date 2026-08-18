@@ -81,6 +81,17 @@ minor versions may carry breaking changes).
   (multi-MB PacBio FASTQs), examples, notes, and CI/infra files are excluded.
 
 ### Performance
+- `b_compare`'s serial reduction is folded into the store loop it already
+  shared a result vector with (#143): seven passes over that vector become
+  one. Worth **−24 to −30% of `run_dada`** on two NovaSeq soil pools
+  (16S and ITS2, both reads), byte-identical. The reduction had been six
+  separate passes costing 337 s on soil 16S — 31% of `run_dada` — on a phase
+  whose parallel map is already bandwidth-saturated and cannot absorb it.
+- `b_shuffle` carries `compmax` across bud rounds instead of rebuilding it
+  per bud (#139), deleting the build scan: 9,700 rebuilds collapse to 1.
+  Measured **−45 to −48% of `run_dada`** on soil 16S and −15.4 to −15.9% on
+  ITS2 (64 threads, post-#143), byte-identical across arms.
+  `DADA2RS_SHUFFLE_NO_CARRY=1` restores the per-bud rebuild.
 - Sparse k-mer-8 screen, gated to k ≥ 8, cutting resident memory in the
   high-k regime (#43).
 - `dada-pooled` streams dereplication into merging instead of holding all
