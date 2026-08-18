@@ -1,3 +1,4 @@
+use crate::cluster::CompCost;
 use crate::kmers::KmerScreen;
 
 /// Default initial cluster buffer size (mirrors C++ RAWBUF / CLUSTBUF).
@@ -327,6 +328,23 @@ pub struct B {
     /// [`B::new`]; deliberately *not* reset by [`B::init`], which never reset
     /// the field either.
     pub e_minmax: Vec<f64>,
+    /// Reusable buffer for `b_compare_parallel`'s map result (issue #147).
+    ///
+    /// The parallel map produces one element per raw and the serial store then
+    /// walks it; allocating it per call meant `nraw × 48` bytes — 39.6 MB on
+    /// soil ITS2, 62.6 MB on soil 16S — handed back to the OS and re-faulted on
+    /// every one of the thousands of calls a pooled run makes. glibc's dynamic
+    /// `mmap` threshold caps at 32 MB, so a vector this size is `mmap`ped and
+    /// `munmap`ped each time rather than being recycled from the arena, and the
+    /// kernel's page-fault and zeroing work showed up as hundreds of seconds of
+    /// `sys` time.
+    ///
+    /// Held here so `collect_into_vec` reuses one allocation for the whole run.
+    /// Taken out with [`std::mem::take`] for the duration of the call (the map
+    /// borrows `raws` immutably and the store borrows `self` mutably) and put
+    /// back before returning. Contents are meaningless between calls — the
+    /// collect overwrites the whole vector — so nothing reads it across calls.
+    pub comp_scratch: Vec<(f64, u32, bool, CompCost)>,
 }
 
 impl B {
@@ -353,6 +371,7 @@ impl B {
             cdf: Vec::new(),
             raw_cluster: Vec::new(),
             e_minmax,
+            comp_scratch: Vec::new(),
         };
         b.init();
         b

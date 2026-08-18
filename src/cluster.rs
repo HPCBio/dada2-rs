@@ -173,11 +173,11 @@ pub fn b_compare(
 /// screen lets through. `total - screen - align` is `compute_lambda` plus
 /// per-item overhead.
 #[derive(Clone, Copy, Default)]
-struct CompCost {
-    total: u64,
-    screen: u64,
-    dp: u64,
-    post: u64,
+pub struct CompCost {
+    pub total: u64,
+    pub screen: u64,
+    pub dp: u64,
+    pub post: u64,
 }
 
 /// Timing breakdown returned by [`b_compare_parallel`].
@@ -276,7 +276,11 @@ pub fn b_compare_parallel(
     // `DADA2_RS_PAR_GRAIN` env var to tune for your workload.
     // Per-item compute time (4th tuple field, nanos) is summed after collect to
     // get total worker-busy time without cross-thread atomic contention.
-    let comps: Vec<(f64, u32, bool, CompCost)> = (0..nraw)
+    // One allocation for the whole run (#147): see [`B::comp_scratch`]. Taken
+    // out of `b` because the map below borrows `b.raws` immutably while the
+    // store borrows `b` mutably; put back at the end of the call.
+    let mut comps: Vec<(f64, u32, bool, CompCost)> = std::mem::take(&mut b.comp_scratch);
+    (0..nraw)
         .into_par_iter()
         .with_max_len(par_max_len())
         .map_init(
@@ -327,7 +331,7 @@ pub fn b_compare_parallel(
                 )
             },
         )
-        .collect();
+        .collect_into_vec(&mut comps);
     let map_dur = t_map.elapsed();
 
     // Serial post-processing: reduce the map's per-item costs and selectively
@@ -401,10 +405,14 @@ pub fn b_compare_parallel(
     // future change that reintroduces a separate reduction is visible rather
     // than silent. Zero by construction while the reduction stays folded.
     let agg_dur = std::time::Duration::ZERO;
-    // Freeing the nraw-long result vector is charged separately so the store
-    // loop's ns/raw is not inflated by deallocation (#143).
+    // Was the cost of freeing the nraw-long result vector, charged separately so
+    // the store loop's ns/raw was not inflated by deallocation (#143). The
+    // vector is now reused across calls rather than freed (#147), so this is
+    // handing the allocation back to `b` and should read ~0; the timer stays so
+    // a regression to per-call allocation is visible rather than silent.
     let t_free = std::time::Instant::now();
-    drop(comps);
+    comps.clear();
+    b.comp_scratch = comps;
     let free_dur = t_free.elapsed();
     CompareTiming {
         map: map_dur,
