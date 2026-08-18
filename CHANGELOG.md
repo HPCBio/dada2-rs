@@ -81,6 +81,26 @@ minor versions may carry breaking changes).
   (multi-MB PacBio FASTQs), examples, notes, and CI/infra files are excluded.
 
 ### Performance
+- `Raw::e_minmax` moves off `Raw` into a dense `Vec<f64>` on `B`, parallel to
+  `B::raw_cluster` (#147). `b_compare`'s serial store reads this value once per
+  raw per call; `Raw` is 160 bytes, so as a field each read pulled a full
+  64-byte cache line to use 8 bytes of it, and that strided read measured as
+  **83–87% of the store scan**. Contiguous, the store falls from 18.8–19.1 to
+  4.9–5.5 ns per raw-visit — **−71% of store time** — worth **−20.1 to −21.3%
+  of `run_dada`** on NovaSeq soil 16S and −15.2% on ITS2, byte-identical on
+  both pools across two replicates. Effective cores rise 31.4 → 38.4 (R1) and
+  29.4 → 36.5 (R2) of 64.
+- `b_compare`'s serial reduction is folded into the store loop it already
+  shared a result vector with (#143): seven passes over that vector become
+  one. Worth **−24 to −30% of `run_dada`** on two NovaSeq soil pools
+  (16S and ITS2, both reads), byte-identical. The reduction had been six
+  separate passes costing 337 s on soil 16S — 31% of `run_dada` — on a phase
+  whose parallel map is already bandwidth-saturated and cannot absorb it.
+- `b_shuffle` carries `compmax` across bud rounds instead of rebuilding it
+  per bud (#139), deleting the build scan: 9,700 rebuilds collapse to 1.
+  Measured **−45 to −48% of `run_dada`** on soil 16S and −15.4 to −15.9% on
+  ITS2 (64 threads, post-#143), byte-identical across arms.
+  `DADA2RS_SHUFFLE_NO_CARRY=1` restores the per-bud rebuild.
 - Sparse k-mer-8 screen, gated to k ≥ 8, cutting resident memory in the
   high-k regime (#43).
 - `dada-pooled` streams dereplication into merging instead of holding all

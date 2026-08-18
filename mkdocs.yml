@@ -73,6 +73,7 @@ nav:
     - Redesigning b_shuffle (closed): findings/shuffle-build-scan.md
     - Inside b_compare — screen vs align: findings/compare-screen-vs-align.md
     - Inside b_compare — the serial remainder: findings/compare-serial-fold.md
+    - Inside b_compare — the store scan: findings/compare-store-scan.md
     - Measuring on a NUMA node: findings/measuring-on-numa.md
     - Pseudo-pooling priors vs error model: findings/pseudo-pooling-priors-vs-error-model.md
     - Binned quality scores:

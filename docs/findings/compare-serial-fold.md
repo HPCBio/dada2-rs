@@ -94,6 +94,11 @@ consistency across a 5× range in pool size is the useful lead — it suggests a
 per-visit cost that does not depend on the working set, which is a different
 kind of target from the one just removed.
 
+That is exactly what it turned out to be: the store reads one `f64` out of a
+160-byte `Raw` per raw-visit, paying a full cache line for 8 bytes. Hoisting it
+into a dense array cut the store 71% and `run_dada` a further 20.1–21.3% — see
+[the store scan](compare-store-scan.md).
+
 Occupancy frames the same point. Reconstructed from the phase timers and
 cross-checked against SLURM accounting to within 9%, soil 16S post-fold runs at
 **~30 of 64 cores**. The deficit is serial `b_compare` plus `b_shuffle`, and

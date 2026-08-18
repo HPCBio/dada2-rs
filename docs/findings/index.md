@@ -116,6 +116,17 @@ here is the evidence, and here is the path it opens or closes."
   the working set, so it was six passes, not where the data lived. Leaves the
   serial **store** as the whole remaining block, at a suspiciously flat
   18.4–19.6 ns/raw-visit across a 5× range in pool size.
+- [Inside `b_compare`: the store scan](compare-store-scan.md) — the serial store
+  was never doing serial work; it was walking a 160-byte `Raw` to read 8 bytes of
+  it. The tell was a **per-unit cost that did not move with working-set size**
+  (18.4–19.6 ns/raw-visit across a 5× range in pool size), which is a cache-line
+  signature, not a residency one. A microbenchmark put the strided read at
+  **83–87% of the scan**; hoisting `e_minmax` into a dense array parallel to
+  `raw_cluster` cut the store **71%** and `run_dada` **20.1–21.3%** on soil 16S
+  (−15.2% on ITS2), byte-identical, with the untouched phases flat. Effective
+  cores go 31.4 → 38.4 of 64. Also a note on synthetics: the microbenchmark got
+  the mechanism right and the magnitude wrong by 3×, so plan against its
+  *ordering*, not its numbers.
 - [Measuring on a NUMA node](measuring-on-numa.md) — **a methodology result that
   reversed a verdict.** The benchmark node has two NUMA domains and nothing was
   ever pinned, so page placement re-rolled every run and replicates of the *same
