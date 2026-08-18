@@ -62,10 +62,34 @@
 //! Per-call figures matter more than totals here, because production's cost
 //! scales with call count (4,017 on ITS2, 11,283 on 16S), not with wall time.
 //!
-//! Run under `numactl --interleave=all` on an otherwise idle node, at the
-//! thread count production uses. Page placement re-rolls per run and the
-//! serial scattered phases have swung 25% between replicates of one binary
-//! without it — see docs/findings/measuring-on-numa.md.
+//! ## Running it on a node you do not have to yourself
+//!
+//! Prefer an idle node. When one is not available this benchmark is built to
+//! survive a neighbour, by two deliberate choices:
+//!
+//! - **Arms run round-robin, one round each**, never as sequential blocks.
+//!   Contention drifts over the life of a run, so blocked arms sample different
+//!   node states and the between-arm difference picks up whatever the
+//!   neighbouring job was doing during each block. Interleaved, every arm sees
+//!   the same drift, and because only the matched pairs carry the argument the
+//!   common component cancels.
+//! - **The estimator is the per-round minimum**, not the mean. The
+//!   least-disturbed round is the one closest to the uncontended truth; a mean
+//!   is pulled around by the neighbour. Median and max print alongside it, and
+//!   the `med/min` line is the contention readout — near 1.00 is a quiet node,
+//!   and a wide spread is the signal to distrust the run rather than to reason
+//!   about small differences in it.
+//!
+//! Neither trick rescues a badly oversubscribed node. If the neighbour is using
+//! cores this run also wants, `join_skewed` is measuring the neighbour's
+//! stragglers as well as its own and the imbalance number is not meaningful.
+//! Leave headroom with `--threads` rather than oversubscribing, and say what
+//! the node was doing when reporting the result.
+//!
+//! Run under `numactl --interleave=all`, at the thread count production uses.
+//! Page placement re-rolls per run and the serial scattered phases have swung
+//! 25% between replicates of one binary without it — see
+//! docs/findings/measuring-on-numa.md.
 //!
 //! ## Variants
 //!
@@ -183,129 +207,184 @@ fn main() {
     );
 
     let grain = 32;
-    let report = |name: &str, dur: std::time::Duration, bytes: usize| {
-        let per_call = dur.as_secs_f64() / rounds as f64;
-        let core_s = per_call * nthreads as f64;
+    let uniform = base + (base * (skew - 1)) / 32;
+
+    // Reused destinations. Faulted in once so the first round is not charged
+    // for page faults the later rounds do not pay.
+    let mut buf48: Vec<Item48> = vec![Item48::default(); nraw];
+    let mut buf16: Vec<Item16> = vec![Item16::default(); nraw];
+
+    // Arms are run **round-robin, one round each**, not as sequential blocks.
+    //
+    // On a shared node this is the difference between a usable measurement and
+    // a worthless one. Contention drifts over the life of the run, so blocked
+    // arms sample different node states and the between-arm difference picks up
+    // whatever the neighbouring job happened to be doing during each block.
+    // Interleaved, every arm sees the same drift, and since only the matched
+    // pairs carry the argument the common component cancels.
+    //
+    // Per-round times are kept rather than summed so the reporting can use the
+    // **minimum** as the estimator: the least-disturbed round is the one
+    // closest to the uncontended truth, while the mean is pulled around by
+    // whatever else is on the node. Median and max are printed alongside so
+    // contention is visible instead of silent -- a wide min-to-median spread is
+    // the signal to distrust the run.
+    type Arm<'a> = (&'a str, Box<dyn FnMut() + 'a>, usize);
+    let mut arms: Vec<Arm> = vec![
+        (
+            "collect_fresh",
+            Box::new(|| {
+                let v: Vec<Item48> = (0..nraw)
+                    .into_par_iter()
+                    .with_max_len(grain)
+                    .map(|i| Item48 {
+                        lambda: work(i, base, skew),
+                        hamming: i as u32,
+                        skipped: false,
+                        cost: [0; 4],
+                    })
+                    .collect();
+                black_box(&v);
+            }),
+            bytes48,
+        ),
+        (
+            "collect_reuse",
+            Box::new(|| {
+                (0..nraw)
+                    .into_par_iter()
+                    .with_max_len(grain)
+                    .map(|i| Item48 {
+                        lambda: work(i, base, skew),
+                        hamming: i as u32,
+                        skipped: false,
+                        cost: [0; 4],
+                    })
+                    .collect_into_vec(&mut buf48);
+                black_box(&buf48);
+            }),
+            bytes48,
+        ),
+        (
+            "collect_fresh16",
+            Box::new(|| {
+                let v: Vec<Item16> = (0..nraw)
+                    .into_par_iter()
+                    .with_max_len(grain)
+                    .map(|i| Item16 {
+                        lambda: work(i, base, skew),
+                        hamming: i as u32,
+                        skipped: false,
+                    })
+                    .collect();
+                black_box(&v);
+            }),
+            bytes16,
+        ),
+        (
+            "collect_reuse16",
+            Box::new(|| {
+                (0..nraw)
+                    .into_par_iter()
+                    .with_max_len(grain)
+                    .map(|i| Item16 {
+                        lambda: work(i, base, skew),
+                        hamming: i as u32,
+                        skipped: false,
+                    })
+                    .collect_into_vec(&mut buf16);
+                black_box(&buf16);
+            }),
+            bytes16,
+        ),
+        (
+            "join_uniform",
+            Box::new(|| {
+                let s: f64 = (0..nraw)
+                    .into_par_iter()
+                    .with_max_len(grain)
+                    .map(|i| work(i, uniform, 1))
+                    .sum();
+                black_box(s);
+            }),
+            0,
+        ),
+        (
+            "join_skewed",
+            Box::new(|| {
+                let s: f64 = (0..nraw)
+                    .into_par_iter()
+                    .with_max_len(grain)
+                    .map(|i| work(i, base, skew))
+                    .sum();
+                black_box(s);
+            }),
+            0,
+        ),
+    ];
+
+    let mut times: Vec<Vec<f64>> = vec![Vec::with_capacity(rounds); arms.len()];
+    // One untimed round per arm: first touch, allocator warm-up, and branch
+    // predictor state should not land on the first measured round.
+    for (_, run, _) in arms.iter_mut() {
+        run();
+    }
+    for _ in 0..rounds {
+        for (a, (_, run, _)) in arms.iter_mut().enumerate() {
+            let t = Instant::now();
+            run();
+            times[a].push(t.elapsed().as_secs_f64());
+        }
+    }
+
+    println!(
+        "{:<16} {:>10} {:>10} {:>10} {:>10} {:>9} {:>12}",
+        "arm", "min ms", "med ms", "max ms", "ns/raw", "GB/s", "core-ms"
+    );
+    let mut mins = Vec::with_capacity(arms.len());
+    for (a, (name, _, bytes)) in arms.iter().enumerate() {
+        let mut v = times[a].clone();
+        v.sort_by(|x, y| x.partial_cmp(y).expect("no NaN in timings"));
+        let (min, med, max) = (v[0], v[v.len() / 2], v[v.len() - 1]);
+        mins.push(min);
         println!(
-            "{name:<16} {:>8.3}s total  {:>8.3} ms/call  {:>8.1} ns/raw  \
-             {:>7.1} GB/s  {:>8.1} core-ms/call",
-            dur.as_secs_f64(),
-            per_call * 1e3,
-            per_call * 1e9 / nraw as f64,
-            if bytes > 0 {
-                bytes as f64 / per_call / 1e9
+            "{name:<16} {:>10.3} {:>10.3} {:>10.3} {:>10.1} {:>9.1} {:>12.1}",
+            min * 1e3,
+            med * 1e3,
+            max * 1e3,
+            min * 1e9 / nraw as f64,
+            if *bytes > 0 {
+                *bytes as f64 / min / 1e9
             } else {
                 0.0
             },
-            core_s * 1e3,
+            min * nthreads as f64 * 1e3,
         );
-    };
-
-    // --- allocation: fresh mapping vs reused buffer -----------------------
-    //
-    // Identical work and identical element; the only difference is whether the
-    // destination pages were just handed over zeroed by the kernel.
-
-    let t = Instant::now();
-    for _ in 0..rounds {
-        let v: Vec<Item48> = (0..nraw)
-            .into_par_iter()
-            .with_max_len(grain)
-            .map(|i| Item48 {
-                lambda: work(i, base, skew),
-                hamming: i as u32,
-                skipped: false,
-                cost: [0; 4],
-            })
-            .collect();
-        black_box(&v);
     }
-    report("collect_fresh", t.elapsed(), bytes48);
 
-    let mut buf48: Vec<Item48> = Vec::with_capacity(nraw);
-    // Fault the pages in once so the first round is not charged for it.
-    buf48.resize(nraw, Item48::default());
-    let t = Instant::now();
-    for _ in 0..rounds {
-        (0..nraw)
-            .into_par_iter()
-            .with_max_len(grain)
-            .map(|i| Item48 {
-                lambda: work(i, base, skew),
-                hamming: i as u32,
-                skipped: false,
-                cost: [0; 4],
-            })
-            .collect_into_vec(&mut buf48);
-        black_box(&buf48);
-    }
-    report("collect_reuse", t.elapsed(), bytes48);
-
-    let t = Instant::now();
-    for _ in 0..rounds {
-        let v: Vec<Item16> = (0..nraw)
-            .into_par_iter()
-            .with_max_len(grain)
-            .map(|i| Item16 {
-                lambda: work(i, base, skew),
-                hamming: i as u32,
-                skipped: false,
-            })
-            .collect();
-        black_box(&v);
-    }
-    report("collect_fresh16", t.elapsed(), bytes16);
-
-    let mut buf16: Vec<Item16> = Vec::with_capacity(nraw);
-    buf16.resize(nraw, Item16::default());
-    let t = Instant::now();
-    for _ in 0..rounds {
-        (0..nraw)
-            .into_par_iter()
-            .with_max_len(grain)
-            .map(|i| Item16 {
-                lambda: work(i, base, skew),
-                hamming: i as u32,
-                skipped: false,
-            })
-            .collect_into_vec(&mut buf16);
-        black_box(&buf16);
-    }
-    report("collect_reuse16", t.elapsed(), bytes16);
-
-    // --- fork/join floor vs load imbalance --------------------------------
-    //
-    // No collect at all: a sum reduction, so the only memory traffic is the
-    // index range. `join_empty` gives uniform per-item cost, `join_skewed`
-    // gives production's. The gap is imbalance, not framework overhead.
-
-    // Work-matched against `join_skewed`: same mean iterations per item, spread
-    // uniformly instead of concentrated in one item per 32. Matching the *work*
-    // is the whole point — an arm that simply does less is measuring work, not
-    // imbalance, and the difference between these two is then the cost of the
-    // distribution alone.
-    let uniform = base + (base * (skew - 1)) / 32;
-    let t = Instant::now();
-    for _ in 0..rounds {
-        let s: f64 = (0..nraw)
-            .into_par_iter()
-            .with_max_len(grain)
-            .map(|i| work(i, uniform, 1))
-            .sum();
-        black_box(s);
-    }
-    report("join_uniform", t.elapsed(), 0);
-
-    let t = Instant::now();
-    for _ in 0..rounds {
-        let s: f64 = (0..nraw)
-            .into_par_iter()
-            .with_max_len(grain)
-            .map(|i| work(i, base, skew))
-            .sum();
-        black_box(s);
-    }
-    report("join_skewed", t.elapsed(), 0);
+    // The two comparisons this benchmark exists for, on the min estimator.
+    let pct = |a: usize, b: usize| (mins[b] - mins[a]) / mins[a] * 100.0;
+    println!(
+        "\nallocation  48 B: reuse is {:+.1}% vs fresh   16 B: {:+.1}%",
+        pct(0, 1),
+        pct(2, 3),
+    );
+    println!(
+        "imbalance        : skewed is {:+.1}% vs work-matched uniform",
+        pct(4, 5),
+    );
+    // Contention check: on an idle node med/min sits near 1.00. Well above that
+    // and the arms were not sampling the same machine.
+    let spread: Vec<String> = arms
+        .iter()
+        .enumerate()
+        .map(|(a, (name, _, _))| {
+            let mut v = times[a].clone();
+            v.sort_by(|x, y| x.partial_cmp(y).expect("no NaN in timings"));
+            format!("{name} {:.2}", v[v.len() / 2] / v[0])
+        })
+        .collect();
+    println!("med/min (1.00 = quiet node): {}", spread.join("  "));
 
     println!(
         "\nfresh vs reuse is the allocation question (#147 levers A and D);\n\
