@@ -73,12 +73,24 @@
 //!   neighbouring job was doing during each block. Interleaved, every arm sees
 //!   the same drift, and because only the matched pairs carry the argument the
 //!   common component cancels.
-//! - **The estimator is the per-round minimum**, not the mean. The
-//!   least-disturbed round is the one closest to the uncontended truth; a mean
-//!   is pulled around by the neighbour. Median and max print alongside it, and
-//!   the `med/min` line is the contention readout — near 1.00 is a quiet node,
-//!   and a wide spread is the signal to distrust the run rather than to reason
-//!   about small differences in it.
+//! - **Both a per-round minimum and a median are reported.** The minimum is the
+//!   right statistic when an arm's spread comes from a noisy neighbour: the
+//!   least-disturbed round is closest to the uncontended truth, where a mean is
+//!   pulled around by whatever else is on the node. The `med/min` line is the
+//!   contention readout — near 1.00 is a quiet node.
+//!
+//!   It is the **wrong** statistic when the spread is intrinsic to what the arm
+//!   measures, and `collect_fresh` is exactly that: its variance is glibc's
+//!   allocator state — whether a given round recycled rather than remapped — so
+//!   the minimum systematically selects the rounds where the thing under test
+//!   did not happen. It runs at med/min 1.06–1.10 in every cluster run so far
+//!   while every other arm sits at 1.00–1.01. Read the median for the
+//!   allocation pair, the minimum for the rest, and say which was used.
+//!
+//!   This is not hypothetical: on `min` the allocation cost appeared to shrink
+//!   as the vector grew (2.5 ms at 45.1 MB, 1.3 ms at 58.8 MB), which is
+//!   backwards; on `median` it is ~5 ms/call at both sizes, which is what a
+//!   page-fault cost should look like.
 //!
 //! Neither trick rescues a badly oversubscribed node. If the neighbour is using
 //! cores this run also wants, `join_skewed` is measuring the neighbour's
@@ -359,11 +371,13 @@ fn main() {
         "arm", "min ms", "med ms", "max ms", "ns/raw", "GB/s", "core-ms"
     );
     let mut mins = Vec::with_capacity(arms.len());
+    let mut meds = Vec::with_capacity(arms.len());
     for (a, (name, _, bytes)) in arms.iter().enumerate() {
         let mut v = times[a].clone();
         v.sort_by(|x, y| x.partial_cmp(y).expect("no NaN in timings"));
         let (min, med, max) = (v[0], v[v.len() / 2], v[v.len() - 1]);
         mins.push(min);
+        meds.push(med);
         println!(
             "{name:<16} {:>10.3} {:>10.3} {:>10.3} {:>10.1} {:>9.1} {:>12.1}",
             min * 1e3,
@@ -379,16 +393,42 @@ fn main() {
         );
     }
 
-    // The two comparisons this benchmark exists for, on the min estimator.
-    let pct = |a: usize, b: usize| (mins[b] - mins[a]) / mins[a] * 100.0;
+    // The two comparisons this benchmark exists for, reported on BOTH
+    // estimators because they disagree for one arm and the disagreement is
+    // itself informative.
+    //
+    // `min` is the right statistic when an arm's spread comes from a noisy
+    // neighbour: the least-disturbed round is closest to the truth. It is the
+    // wrong one when the spread is *intrinsic* to what the arm measures, and
+    // `collect_fresh` is exactly that case -- its variance is glibc's
+    // allocator state (whether a round happened to recycle rather than remap),
+    // so taking the minimum systematically picks the rounds where the thing
+    // under test did not happen. Every other arm here runs at med/min 1.00
+    // while collect_fresh sits at 1.06-1.10 across every run so far.
+    //
+    // Read the median line for the allocation pair and the min line for the
+    // rest. Where they disagree, say which you used: on `min` the allocation
+    // cost appeared to shrink as the vector grew (2.5 ms at 45 MB, 1.3 ms at
+    // 59 MB), which is backwards; on `median` it is ~5 ms/call at both sizes,
+    // which is what a page-fault cost should look like.
+    let dpct = |v: &[f64], a: usize, b: usize| (v[b] - v[a]) / v[a] * 100.0;
     println!(
-        "\nallocation  48 B: reuse is {:+.1}% vs fresh   16 B: {:+.1}%",
-        pct(0, 1),
-        pct(2, 3),
+        "\nallocation  48 B: reuse is {:+.1}% (min) / {:+.1}% (med) vs fresh   \
+         16 B: {:+.1}% (min) / {:+.1}% (med)",
+        dpct(&mins, 0, 1),
+        dpct(&meds, 0, 1),
+        dpct(&mins, 2, 3),
+        dpct(&meds, 2, 3),
     );
     println!(
-        "imbalance        : skewed is {:+.1}% vs work-matched uniform",
-        pct(4, 5),
+        "            48 B absolute: {:+.2} ms/call (min) / {:+.2} ms/call (med)",
+        (mins[1] - mins[0]) * 1e3,
+        (meds[1] - meds[0]) * 1e3,
+    );
+    println!(
+        "imbalance        : skewed is {:+.1}% (min) / {:+.1}% (med) vs work-matched uniform",
+        dpct(&mins, 4, 5),
+        dpct(&meds, 4, 5),
     );
     // Contention check: on an idle node med/min sits near 1.00. Well above that
     // and the arms were not sampling the same machine.
