@@ -124,9 +124,17 @@ here is the evidence, and here is the path it opens or closes."
   **83–87% of the scan**; hoisting `e_minmax` into a dense array parallel to
   `raw_cluster` cut the store **71%** and `run_dada` **20.1–21.3%** on soil 16S
   (−15.2% on ITS2), byte-identical, with the untouched phases flat. Effective
-  cores go 31.4 → 38.4 of 64. Also a note on synthetics: the microbenchmark got
-  the mechanism right and the magnitude wrong by 3×, so plan against its
-  *ordering*, not its numbers.
+  cores go 31.4 → 38.4 of 64. Then two follow-on levers were built and
+  **neither merged**: removing the map's per-call allocation collapses `sys` by
+  94% and returns *nothing* — wall +2.5%, `user` +16%, total CPU up — because
+  that `sys` time was never on the critical path; and map load imbalance, the
+  suspected cause of the 86–90% parallel efficiency, measures at ±0.1% on both
+  pool shapes, so the residual is unmeasured work rather than idle threads.
+  Ends with the three instrument errors behind those nulls — a hypothesis killed
+  by arithmetic instead of node time, a skew model that could not exhibit skew,
+  and the right estimator applied to the one arm whose variance was intrinsic —
+  and the rule they share: **a null is evidence only once the instrument has
+  been shown capable of returning something else.**
 - [Measuring on a NUMA node](measuring-on-numa.md) — **a methodology result that
   reversed a verdict.** The benchmark node has two NUMA domains and nothing was
   ever pinned, so page placement re-rolled every run and replicates of the *same
