@@ -100,7 +100,7 @@
 //! | `collect_fresh16` | as `collect_fresh`, 16 B element | lever A, allocation kept |
 //! | `collect_reuse16` | as `collect_reuse`, 16 B element | levers A+D |
 //! | `join_uniform` | parallel map, cost spread evenly over items | work-matched control |
-//! | `join_skewed` | same total work, concentrated 1 item in 32 | + load imbalance |
+//! | `join_skewed` | same total work, concentrated in the abundance-sorted front | + load imbalance |
 //!
 //! ## Usage
 //!
@@ -148,17 +148,23 @@ fn arg<T: std::str::FromStr>(name: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
-/// Stand-in for per-item alignment cost. Production's raws are abundance-sorted
-/// and a few percent trigger full alignment while the rest are k-mer screened
-/// out, so per-task cost is heavily skewed — which is what `with_max_len`
-/// exists to rebalance. `skew = 0` gives uniform cost for the `join_empty`
-/// floor.
+/// Stand-in for per-item alignment cost.
+///
+/// Production's raws are **abundance-sorted**, and the few percent that clear
+/// the k-mer screen and pay a full alignment are concentrated at the *front* of
+/// the index range. So the skew has to be positional: the first `heavy_frac` of
+/// indices cost `base * skew`, the rest cost `base`.
+///
+/// The first version of this got it wrong in a way that made the imbalance arm
+/// measure nothing. It marked every 32nd index heavy, while the task grain is
+/// `with_max_len(32)` — so every task contained exactly one heavy item and mean
+/// task cost equalled max task cost by construction. The arm reported −3.3%,
+/// i.e. no imbalance, because there was none to find. A skew that is uniform at
+/// the granularity of a task is not a skew.
 #[inline]
-fn work(index: usize, base: usize, skew: usize) -> f64 {
-    // `base` iterations for every item; the skewed arm multiplies that by
-    // `skew` for one item in 32, standing in for the few percent of
-    // comparisons that clear the k-mer screen and pay a full alignment.
-    let iters = if skew > 1 && index.is_multiple_of(32) {
+fn work(index: usize, nraw: usize, base: usize, skew: usize, heavy_frac: f64) -> f64 {
+    let heavy_until = (nraw as f64 * heavy_frac) as usize;
+    let iters = if skew > 1 && index < heavy_until {
         base * skew
     } else {
         base
@@ -177,14 +183,21 @@ fn main() {
     let threads: usize = arg("--threads", 0);
     // Production's alignment pass rate is 0.8% (ITS2) to 4.5% (16S); the skew
     // multiplier stands in for how much more a passing comparison costs.
-    let skew: usize = arg("--skew", 64);
+    // Production's cost ratio, not a round number: soil 16S R1 measures the
+    // aligner at 17,759 ns/comp against the screen's 1,282, so a comparison
+    // that clears the screen costs ~14x one that does not.
+    let skew: usize = arg("--skew", 14);
     // Per-item work, in iterations of a dependent FLOP. The default is set so
     // `join_skewed` lands near production's map cost on soil ITS2 R2 —
     // 131 s over 4,017 calls at 64 threads is 2,086 core-ms/call, or ~2.2 us
-    // per raw. An under-costed stand-in makes the collect look dominant and
+    // per raw. With the default skew and heavy fraction the mean is
+    // `base * 1.104` iterations, which is why this is 430 and not 160. An under-costed stand-in makes the collect look dominant and
     // understates imbalance, which is the thing being measured. Pass `--base 0`
     // to strip the compute out entirely and read the fork/join/wake floor.
-    let base: usize = arg("--base", 160);
+    let base: usize = arg("--base", 430);
+    // Fraction of the (abundance-sorted) index range that pays a full
+    // alignment: 0.8% on soil ITS2, 4.5% on soil 16S.
+    let heavy_frac: f64 = arg("--heavy-frac", 0.008);
 
     if threads > 0 {
         rayon::ThreadPoolBuilder::new()
@@ -197,17 +210,21 @@ fn main() {
     let bytes48 = nraw * std::mem::size_of::<Item48>();
     let bytes16 = nraw * std::mem::size_of::<Item16>();
     println!(
-        "raws={nraw} rounds={rounds} threads={nthreads} base={base} skew={skew}\n\
+        "raws={nraw} rounds={rounds} threads={nthreads} base={base} skew={skew} heavy_frac={heavy_frac}\n\
          result vector: {:.1} MB at 48 B, {:.1} MB at 16 B \
          (glibc mmap cap is 32 MB)\n\
          production reference: soil ITS2 R2 map = 2086 core-ms/call \
-         (131 s / 4017 calls x 64 threads)\n",
+         (131 s / 4017 calls x 64 threads)\n\
+         mean {mean_iters} iters/item; heavy tasks cost {task_ratio:.0}x a light one\n",
         bytes48 as f64 / 1e6,
         bytes16 as f64 / 1e6,
+        mean_iters = base + (base as f64 * (skew - 1) as f64 * heavy_frac) as usize,
+        task_ratio = skew as f64,
     );
 
     let grain = 32;
-    let uniform = base + (base * (skew - 1)) / 32;
+    // Work-matched to `join_skewed`: same mean iterations per item.
+    let uniform = base + (base as f64 * (skew - 1) as f64 * heavy_frac) as usize;
 
     // Reused destinations. Faulted in once so the first round is not charged
     // for page faults the later rounds do not pay.
@@ -238,7 +255,7 @@ fn main() {
                     .into_par_iter()
                     .with_max_len(grain)
                     .map(|i| Item48 {
-                        lambda: work(i, base, skew),
+                        lambda: work(i, nraw, base, skew, heavy_frac),
                         hamming: i as u32,
                         skipped: false,
                         cost: [0; 4],
@@ -255,7 +272,7 @@ fn main() {
                     .into_par_iter()
                     .with_max_len(grain)
                     .map(|i| Item48 {
-                        lambda: work(i, base, skew),
+                        lambda: work(i, nraw, base, skew, heavy_frac),
                         hamming: i as u32,
                         skipped: false,
                         cost: [0; 4],
@@ -272,7 +289,7 @@ fn main() {
                     .into_par_iter()
                     .with_max_len(grain)
                     .map(|i| Item16 {
-                        lambda: work(i, base, skew),
+                        lambda: work(i, nraw, base, skew, heavy_frac),
                         hamming: i as u32,
                         skipped: false,
                     })
@@ -288,7 +305,7 @@ fn main() {
                     .into_par_iter()
                     .with_max_len(grain)
                     .map(|i| Item16 {
-                        lambda: work(i, base, skew),
+                        lambda: work(i, nraw, base, skew, heavy_frac),
                         hamming: i as u32,
                         skipped: false,
                     })
@@ -303,7 +320,7 @@ fn main() {
                 let s: f64 = (0..nraw)
                     .into_par_iter()
                     .with_max_len(grain)
-                    .map(|i| work(i, uniform, 1))
+                    .map(|i| work(i, nraw, uniform, 1, 0.0))
                     .sum();
                 black_box(s);
             }),
@@ -315,7 +332,7 @@ fn main() {
                 let s: f64 = (0..nraw)
                     .into_par_iter()
                     .with_max_len(grain)
-                    .map(|i| work(i, base, skew))
+                    .map(|i| work(i, nraw, base, skew, heavy_frac))
                     .sum();
                 black_box(s);
             }),
