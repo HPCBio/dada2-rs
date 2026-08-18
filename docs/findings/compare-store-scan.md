@@ -143,13 +143,50 @@ Both levers convert a large `sys` saving into an equal-or-larger `user` cost and
 a wall time that does not improve. Total CPU goes *up*: 8,056 core-seconds
 becomes 8,631 (D) or 8,738 (A).
 
-The leading account for the `user` rise — untested, and stated as a hypothesis —
-is that a freshly-`mmap`ped page is zeroed by the kernel immediately before a
-worker writes it, so those lines are cache-warm and the store is nearly free,
-while a reused buffer's lines are cold and dirty and every store pays a
-read-for-ownership plus a writeback. Same work, moved out of kernel zeroing and
-into user-mode stalls, and *more* of it, since the kernel zeroes with
-non-temporal stores and a `collect` does not.
+### Where the `user` time actually goes
+
+A verbose B-vs-D pair localises it. `busy` — the sum of per-item timers taken
+inside the map closure — rises **+16.0%** on ITS2 R2, against a `user` rise of
++16.4% measured non-verbose. The extra CPU is inside the map closure, not in the
+serial phases and not in framework overhead.
+
+| ITS2 | B | D | change |
+|---|---|---|---|
+| `busy` R1 | 4834 / 5175 core-s | 4907 / 5212 | +1.1% |
+| `busy` R2 | 5534 / 5715 core-s | 6307 / 6745 | **+16.0%** |
+| `free` | 1.10–1.99 s | 0.00 s | buffer confirmed reused |
+| map parallel efficiency | 87–88% | **93–94%** | see below |
+| `run_dada` R1 | 167.3 / 172.3 s | 161.7 / 164.7 s | −3.9% |
+| `run_dada` R2 | 211.2 / 214.4 s | 217.9 / 235.4 s | **+6.5%** |
+
+**A read-for-ownership account was proposed and this falsifies it** — or rather,
+shows the test was built wrong, which amounts to the same thing. The account was
+that a freshly-`mmap`ped page is zeroed by the kernel immediately before a worker
+writes it, so the destination store is cache-warm, while a reused buffer's lines
+are cold and dirty. `busy` rising was written down in advance as the confirming
+prediction.
+
+It cannot be. `busy` times the closure *body*; the write into the destination
+vector happens in rayon's collect, **after the closure returns**. A cost on the
+destination store could never appear in `busy`. What got slower is the
+screen-and-align compute itself, which that account does not predict. The
+prediction was mapped onto an instrument that could not observe the thing it was
+predicting.
+
+What survives is narrower and, in one respect, more interesting: **reused memory
+is slower than freshly-faulted memory for this workload, across two independent
+implementations and two buffer sizes.** Lever A reuses a 15 MB buffer through
+glibc's arena and pays +11%; lever D reuses a 45 MB buffer explicitly and pays
++16%. Size modulates the penalty but does not cause it — the common factor is
+reuse itself. That is worth knowing beyond this issue, because "hoist the
+allocation out of the loop" is a routine optimisation instinct and here it costs
+more than it saves.
+
+The candidate that fits the size dependence — offered as a hypothesis, having
+already been wrong once on this page — is that a live buffer stays resident in
+LLC and contends with the 1.7 GB of k-mer vectors the screen streams, while a
+freed region's lines die naturally. Settling it needs hardware counters
+(LLC-misses, dTLB-misses) on one B-vs-D pair, not another timer.
 
 `parallel_overhead` cannot settle that, and says so: its synthetic reports reuse
 as **faster**, the opposite of production. Its work function is pure ALU while
@@ -185,11 +222,49 @@ cost ratio. The heavy region is ~235 tasks of 29,360 spread over 64 threads, so
 "1,166 core-seconds lost to imbalance" was wrong. `busy` is the sum of timers
 taken *inside* the map closure: it never measured rayon's per-task dispatch, the
 collect's stores into the destination, or the timer calls themselves. The gap is
-mostly unmeasured work. It is bounded at ≤14% of the map and separating it needs
-a different instrument.
+mostly unmeasured work.
+
+Roughly half of it is now identified. Removing the per-call allocation (lever D)
+raises map parallel efficiency from 87–88% to **93–94%** while `busy` is
+unchanged or higher — so ~6 of the missing 10–14 points was allocation and
+page-fault work, sitting inside map wall but outside the per-item timers. The
+remaining ~6 points is still unattributed and needs a different instrument.
 
 **Consequence: the load-balancing knobs are closed.** `DADA2RS_PAR_GRAIN` is
 already doing its job, and there is no parallel-dampening problem to chase.
+
+## The run is not uniform, and the means describe no part of it
+
+Every figure above is a total over the whole bud loop. Per-window progress lines
+(#150) show that is hiding a lot.
+
+Soil ITS2 R1, 30-second windows:
+
+| window | eff cores | `align` | map | shuffle | bud+pupd |
+|---|---|---|---|---|---|
+| 0–30 s | 24.4 | 1.62% | 12.6 s | 9.1 s | 6.6 s |
+| 60–90 s | 29.0 | 0.42% | 15.4 s | 8.5 s | 3.1 s |
+| 120–150 s | **37.9** | 1.01% | 20.2 s | **4.0 s** | **1.7 s** |
+
+Occupancy climbs monotonically from 22 to 42 effective cores of 64. The
+end-of-run mean of ~29 describes no window of the run.
+
+**The ramp is the serial fraction, not the workload.** `align` falls six-fold
+and then rises again while occupancy climbs straight through, so the alignment
+pass rate is not driving it. Serial work per window collapses from 15.7 s to
+5.7 s — the partition stabilises, the incremental reconcile finds less to do,
+and `b_shuffle` plus `p_update` shrink out of the way.
+
+A prediction made before looking was that occupancy should *fall* over the run,
+because greedy skips increase as cluster centres get less abundant. That
+reasoned about the map, and the map is not where the answer is.
+
+**Consequence for how this project measures.** "Effective cores 31.4 → 38.4" and
+"map parallel efficiency 86–90%" have both been used to rank levers, and both are
+means over a run that spans nearly a factor of two. A change that helps the
+early, serial-heavy phase and one that helps the late, map-heavy phase are
+indistinguishable in the totals. Prefer per-window figures when the question is
+*where* a change acts.
 
 ## Three instrument errors, and what each cost
 
