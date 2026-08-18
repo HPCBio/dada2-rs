@@ -31,6 +31,8 @@ use crate::kmers::{KMER_SIZE_MAX, KMER_SIZE_MIN, raw_assign_kmers};
 use crate::misc::nt_encode;
 use crate::nwalign::{AlignBuffers, AlignParams, sub_new_with_buf};
 use crate::pval::{b_p_update, calc_pA};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 /// Maximum shuffle iterations before giving up on convergence.
 /// Matches C++ `MAX_SHUFFLE`.
@@ -704,6 +706,46 @@ fn compute_birth_subs(b: &B, align: &AlignParams) -> Vec<Option<Sub>> {
 /// post-processing (final p-values, map construction, output formatting).
 ///
 /// Equivalent to C++ `run_dada`.
+/// Interval, in seconds, between `--verbose` progress lines from the bud loop.
+/// Default `30`; `0` disables them. Overridable via `DADA2RS_PROGRESS_SECS`.
+///
+/// Every other figure `run_dada` prints is a **total**, summed over the whole
+/// loop and reported once at the end. That hides any change in the phase mix
+/// over the run — and OS-level core usage is observably not flat, ramping
+/// before it plateaus, which means the end-of-run means (effective cores, map
+/// parallel efficiency) may describe no part of the run. These lines report
+/// *deltas since the previous line* so the shape is visible, not just the mean.
+///
+/// Time-based rather than every N clusters: per-cluster cost is not constant,
+/// so a cluster-stride would sample unevenly in exactly the dimension under
+/// examination. The cluster index is printed on every line so the two can still
+/// be cross-referenced.
+fn progress_secs() -> u64 {
+    static VALUE: OnceLock<u64> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("DADA2RS_PROGRESS_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(30)
+    })
+}
+
+/// Accumulator values at the previous progress line, so the next one can report
+/// deltas rather than running totals.
+#[derive(Clone, Copy)]
+struct ProgressMark {
+    at: Duration,
+    clusters: usize,
+    map: Duration,
+    store: Duration,
+    busy: Duration,
+    shuffle: Duration,
+    bud: Duration,
+    pupdate: Duration,
+    screened: u64,
+    aligned: u64,
+}
+
 pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     use std::time::{Duration, Instant};
     let mut bb = B::new(raws, params.omega_a, params.omega_p, params.use_quals);
@@ -857,6 +899,25 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
 
     let mut shuffle_carry = ShuffleCarry::new();
 
+    // Progress-line state (see `progress_secs`). `t_loop` is the bud loop's own
+    // clock, so the reported `t=` excludes the setup above and lines up with the
+    // phase totals rather than with process wall time.
+    let t_loop = Instant::now();
+    let progress_every = if params.verbose { progress_secs() } else { 0 };
+    let mut mark = ProgressMark {
+        at: Duration::ZERO,
+        clusters: bb.clusters.len(),
+        map: Duration::ZERO,
+        store: Duration::ZERO,
+        busy: Duration::ZERO,
+        shuffle: Duration::ZERO,
+        bud: Duration::ZERO,
+        pupdate: Duration::ZERO,
+        screened: 0,
+        aligned: 0,
+    };
+    let nthreads = rayon::current_num_threads().max(1);
+
     while bb.clusters.len() < max_clust {
         let t = Instant::now();
         let mut bud_scanned = 0u64;
@@ -984,6 +1045,68 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         t_pupdate += t.elapsed();
         pupd_rounds += 1;
         pupd_raws_repriced += repriced;
+
+        if progress_every > 0 {
+            let now = t_loop.elapsed();
+            if (now - mark.at).as_secs() >= progress_every {
+                let wall = (now - mark.at).as_secs_f64();
+                let map = (t_cmp_map - mark.map).as_secs_f64();
+                let store = (t_cmp_serial - mark.store).as_secs_f64();
+                let busy = (t_cmp_busy - mark.busy).as_secs_f64();
+                let shuffle = (t_shuffle - mark.shuffle).as_secs_f64();
+                let other = ((t_bud - mark.bud) + (t_pupdate - mark.pupdate)).as_secs_f64();
+                let screened = n_cmp_screened - mark.screened;
+                let aligned = n_cmp_aligned - mark.aligned;
+                // Effective cores over this window: worker-busy time plus the
+                // serial time that ran single-threaded, divided by the window.
+                // Same construction as the end-of-run figure, so the lines and
+                // the total are directly comparable.
+                let eff = if wall > 0.0 {
+                    (busy + (wall - map).max(0.0)) / wall
+                } else {
+                    0.0
+                };
+                let map_eff = if map > 0.0 {
+                    busy / (map * nthreads as f64)
+                } else {
+                    0.0
+                };
+                let align_frac = if screened > 0 {
+                    aligned as f64 / screened as f64 * 100.0
+                } else {
+                    0.0
+                };
+                eprintln!(
+                    "\n[dada] progress t={:.0}s cluster {} (+{} in {:.0}s): \
+                     map={:.1}s store={:.1}s shuffle={:.1}s bud+pupd={:.1}s  \
+                     eff cores {:.1}/{}  map eff {:.0}%  align {:.2}%",
+                    now.as_secs_f64(),
+                    bb.clusters.len(),
+                    bb.clusters.len() - mark.clusters,
+                    wall,
+                    map,
+                    store,
+                    shuffle,
+                    other,
+                    eff,
+                    nthreads,
+                    map_eff * 100.0,
+                    align_frac,
+                );
+                mark = ProgressMark {
+                    at: now,
+                    clusters: bb.clusters.len(),
+                    map: t_cmp_map,
+                    store: t_cmp_serial,
+                    busy: t_cmp_busy,
+                    shuffle: t_shuffle,
+                    bud: t_bud,
+                    pupdate: t_pupdate,
+                    screened: n_cmp_screened,
+                    aligned: n_cmp_aligned,
+                };
+            }
+        }
     }
 
     if params.verbose {

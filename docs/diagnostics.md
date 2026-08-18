@@ -930,3 +930,50 @@ behaviour rather than at the screen.
   it says nothing about how the screen's cost accumulates over a run.
 - **No greedy skipping.** Every comparison reaches the screen. In a real run,
   greedy mode skips a workload-dependent fraction outright.
+
+---
+
+## `--verbose` progress lines: the shape of a run, not just its mean
+
+Every other figure `run_dada` reports is a **total**, summed over the whole bud
+loop and printed once at the end. That is fine for comparing two runs and
+useless for understanding one, because it hides any change in the phase mix over
+the run.
+
+The gap showed up as an observation nothing in the output could confirm or
+refute: OS-level core usage on a pooled run is not flat — it ramps, then
+plateaus. If that is real, then end-of-run means like "effective cores 31.4 of
+64" and "map parallel efficiency 86–90%" may describe no part of the run, and a
+change that helps the plateau is indistinguishable from one that helps the ramp.
+
+Under `--verbose`, the bud loop now emits a line every 30 seconds reporting
+**deltas since the previous line**:
+
+```
+[dada] progress t=120s cluster 3184 (+812 in 30s): map=21.4s store=6.1s
+       shuffle=1.9s bud+pupd=0.6s  eff cores 38.4/64  map eff 89%  align 4.51%
+```
+
+| field | meaning |
+|---|---|
+| `t=` | seconds since the bud loop started (excludes setup, so it lines up with the phase totals rather than with process wall time) |
+| `cluster N (+M in Ss)` | current cluster count, and how many were added in this window |
+| `map` / `store` / `shuffle` / `bud+pupd` | phase seconds **in this window** |
+| `eff cores` | worker-busy plus serial time, over the window — same construction as the end-of-run figure, so lines and total are directly comparable |
+| `map eff` | the window's map parallel efficiency |
+| `align` | fraction of screened comparisons that went on to align |
+
+Set the interval with `DADA2RS_PROGRESS_SECS` (seconds; `0` disables). It is
+time-based rather than every N clusters deliberately: per-cluster cost is not
+constant, so a cluster-stride would sample unevenly in exactly the dimension
+under examination. The cluster index is on every line so the two can still be
+cross-referenced — a window that adds far fewer clusters for the same wall time
+is itself the signal.
+
+### Reading it
+
+`align` is the one to watch first. The k-mer screen is paid on every comparison
+and the alignment only on what passes, so a drifting pass rate moves the map's
+cost per comparison without anything else changing. If `eff cores` tracks
+`align`, the ramp is a workload property; if `eff cores` moves while `align`
+holds flat, it is not, and the serial phases are where to look.
