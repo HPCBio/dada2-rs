@@ -266,6 +266,16 @@ early, serial-heavy phase and one that helps the late, map-heavy phase are
 indistinguishable in the totals. Prefer per-window figures when the question is
 *where* a change acts.
 
+Tracked as [#152](https://github.com/HPCBio/dada2-rs/issues/152), which carries
+one figure this section does not: normalised for progress, serial time *per
+cluster added* falls from **31.9 ms early to 6.9 ms late**, a 4.6× drop. So the
+ramp is not simply more clusters landing later — the early rounds genuinely do
+more shuffle and p-update work per bud. The issue's first step is measurement
+rather than a lever: 16S has 2.4× the clusters and a 5.6× higher align rate, so
+the ramp may have a different shape there or none at all, and `b_p_update`
+(fully serial, 11–12% of `run_dada`, never targeted) is the phase most
+concentrated in the windows where occupancy is worst.
+
 ## Three instrument errors, and what each cost
 
 This page's negative results all came from measurement mistakes caught late, so
