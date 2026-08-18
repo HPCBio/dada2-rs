@@ -180,6 +180,47 @@ struct CompCost {
     post: u64,
 }
 
+/// The per-item payload `b_compare_parallel`'s store loop needs, abstracted over
+/// whether per-item costs were collected (#147).
+///
+/// In production (`measure == false`) `CompCost` is four `u64`s of *known
+/// zeros*: the map writes them, the store reads them back, and the vector is
+/// freed — 32 of every 48 bytes per raw, for nothing. Gating them out takes the
+/// element to 16 bytes.
+///
+/// The point of the trait is that **both widths run the same store loop**. If
+/// the verbose and production paths diverged, the attribution numbers we
+/// measure with would stop describing the code that actually ships.
+trait CompItem: Copy {
+    /// `(lambda, hamming, skipped)` — needed on every raw-visit.
+    fn parts(&self) -> (f64, u32, bool);
+    /// Per-item timing; a zero-cost constant on the production element, so the
+    /// accumulation below folds away entirely when it is not collected.
+    fn cost(&self) -> CompCost;
+}
+
+impl CompItem for (f64, u32, bool) {
+    #[inline(always)]
+    fn parts(&self) -> (f64, u32, bool) {
+        *self
+    }
+    #[inline(always)]
+    fn cost(&self) -> CompCost {
+        CompCost::default()
+    }
+}
+
+impl CompItem for (f64, u32, bool, CompCost) {
+    #[inline(always)]
+    fn parts(&self) -> (f64, u32, bool) {
+        (self.0, self.1, self.2)
+    }
+    #[inline(always)]
+    fn cost(&self) -> CompCost {
+        self.3
+    }
+}
+
 /// Timing breakdown returned by [`b_compare_parallel`].
 ///
 /// `busy / (map × nthreads)` is the map's parallel efficiency — if well below
@@ -276,60 +317,100 @@ pub fn b_compare_parallel(
     // `DADA2_RS_PAR_GRAIN` env var to tune for your workload.
     // Per-item compute time (4th tuple field, nanos) is summed after collect to
     // get total worker-busy time without cross-thread atomic contention.
-    let comps: Vec<(f64, u32, bool, CompCost)> = (0..nraw)
-        .into_par_iter()
-        .with_max_len(par_max_len())
-        .map_init(
-            || {
-                if measure {
-                    AlignBuffers::measuring()
-                } else {
-                    AlignBuffers::new()
-                }
-            },
-            |buf, index| {
-                // Per-item timing only under `measure` (verbose) — keeps the hot
-                // alignment loop allocation/Instant-free in production runs.
-                let t0 = measure.then(std::time::Instant::now);
-                let raw = &raws[index];
-                let (lambda, hamming, skipped) = if greedy && (raw.reads > center_reads || raw.lock)
-                {
-                    let lambda = compute_lambda(raw, None, err_mat, ncol, use_quals);
-                    (lambda, u32::MAX, true)
-                } else {
-                    let sub = sub_new_with_buf(&raws[center_idx], raw, params, buf);
-                    let lambda = compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
-                    let hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
-                    (lambda, hamming, false)
-                };
-                // A greedy skip runs neither half, so leave both at zero rather
-                // than reading the buffer's stale values from the previous item.
-                let (screen, dp, post) = if skipped || !measure {
-                    (0, 0, 0)
-                } else {
-                    (
-                        buf.last_screen_nanos,
-                        buf.last_dp_nanos,
-                        buf.last_post_nanos,
-                    )
-                };
-                let nanos = t0.map_or(0, |t| t.elapsed().as_nanos() as u64);
-                (
-                    lambda,
-                    hamming,
-                    skipped,
-                    CompCost {
-                        total: nanos,
-                        screen,
-                        dp,
-                        post,
-                    },
-                )
+    // The per-item work, shared by both collects below so the two paths cannot
+    // drift apart.
+    let item = |buf: &mut AlignBuffers, index: usize| -> (f64, u32, bool, CompCost) {
+        // Per-item timing only under `measure` (verbose) — keeps the hot
+        // alignment loop allocation/Instant-free in production runs.
+        let t0 = measure.then(std::time::Instant::now);
+        let raw = &raws[index];
+        let (lambda, hamming, skipped) = if greedy && (raw.reads > center_reads || raw.lock) {
+            let lambda = compute_lambda(raw, None, err_mat, ncol, use_quals);
+            (lambda, u32::MAX, true)
+        } else {
+            let sub = sub_new_with_buf(&raws[center_idx], raw, params, buf);
+            let lambda = compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
+            let hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
+            (lambda, hamming, false)
+        };
+        // A greedy skip runs neither half, so leave both at zero rather
+        // than reading the buffer's stale values from the previous item.
+        let (screen, dp, post) = if skipped || !measure {
+            (0, 0, 0)
+        } else {
+            (
+                buf.last_screen_nanos,
+                buf.last_dp_nanos,
+                buf.last_post_nanos,
+            )
+        };
+        let nanos = t0.map_or(0, |t| t.elapsed().as_nanos() as u64);
+        (
+            lambda,
+            hamming,
+            skipped,
+            CompCost {
+                total: nanos,
+                screen,
+                dp,
+                post,
             },
         )
-        .collect();
-    let map_dur = t_map.elapsed();
+    };
+    let init = || {
+        if measure {
+            AlignBuffers::measuring()
+        } else {
+            AlignBuffers::new()
+        }
+    };
 
+    // Collect at the narrowest element the run actually needs (#147).
+    //
+    // `CompCost` is four `u64`s that are only populated under `measure`. Left
+    // in the tuple unconditionally, a production run writes 32 B of known
+    // zeros per raw in the map, reads them back in the store, and frees them —
+    // 48 B/element where 16 B will do. On the EPYC bench node the store's
+    // sequential stream costs 2.34 ns/raw-visit at 48 B against 1.12 at 16 B.
+    //
+    // Both arms run the same store loop via [`CompItem`]; see there for why
+    // that matters.
+    if measure {
+        let comps: Vec<(f64, u32, bool, CompCost)> = (0..nraw)
+            .into_par_iter()
+            .with_max_len(par_max_len())
+            .map_init(init, item)
+            .collect();
+        let map_dur = t_map.elapsed();
+        finish_compare(b, i, comps, center_idx, center_reads, map_dur, setup_dur)
+    } else {
+        let comps: Vec<(f64, u32, bool)> = (0..nraw)
+            .into_par_iter()
+            .with_max_len(par_max_len())
+            .map_init(init, |buf, index| {
+                let (lambda, hamming, skipped, _) = item(buf, index);
+                (lambda, hamming, skipped)
+            })
+            .collect();
+        let map_dur = t_map.elapsed();
+        finish_compare(b, i, comps, center_idx, center_reads, map_dur, setup_dur)
+    }
+}
+
+/// The serial half of [`b_compare_parallel`]: reduce per-item costs and store
+/// the comparisons that clear each raw's running expected-abundance maximum.
+///
+/// Generic over the element width so the production (16 B) and verbose (48 B)
+/// paths execute *the same loop* — see [`CompItem`].
+fn finish_compare<T: CompItem>(
+    b: &mut B,
+    i: usize,
+    comps: Vec<T>,
+    center_idx: usize,
+    center_reads: u32,
+    map_dur: std::time::Duration,
+    setup_dur: std::time::Duration,
+) -> CompareTiming {
     // Serial post-processing: reduce the map's per-item costs and selectively
     // store comparisons — in ONE pass over the result vector (#143).
     //
@@ -355,7 +436,11 @@ pub fn b_compare_parallel(
     // non-greedy-skipped comparison, the aligner only on those it passes.
     let (mut screened, mut aligned) = (0u64, 0u64);
     let mut stored = 0u64;
-    for (index, &(lambda, hamming, skipped, item)) in comps.iter().enumerate() {
+    for (index, it) in comps.iter().enumerate() {
+        let (lambda, hamming, skipped) = it.parts();
+        // Folds away entirely on the production element, whose `cost()` is a
+        // zero constant.
+        let item = it.cost();
         cost.total += item.total;
         cost.screen += item.screen;
         cost.dp += item.dp;
