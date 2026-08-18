@@ -99,8 +99,6 @@ pub struct Raw {
     pub index: u32,
     /// Abundance p-value relative to the current cluster.
     pub p: f64,
-    /// Sentinel value used during min/max expected-abundance calculations.
-    pub e_minmax: f64,
     /// Most recent comparison result against a cluster center.
     pub comp: Comparison,
     /// When true, this Raw is locked to its current cluster in greedy mode.
@@ -148,7 +146,6 @@ impl Raw {
             reads,
             index: 0,
             p: 0.0,
-            e_minmax: -999.0,
             comp: Comparison::default(),
             lock: false,
             correct: true,
@@ -168,10 +165,9 @@ impl Raw {
     /// fresh DADA run without re-encoding the sequence or recomputing k-mer
     /// vectors. Leaves `seq`, `qual`, `kmer8`, `kord`, `reads`, `prior`
     /// intact — those are fixed for the life of the input. `index` is
-    /// reassigned by `B::new`.
+    /// reassigned by `B::new`, which also re-seeds [`B::e_minmax`].
     pub fn reset_for_iteration(&mut self) {
         self.p = 0.0;
-        self.e_minmax = -999.0;
         self.comp = Comparison::default();
         self.lock = false;
         self.correct = true;
@@ -318,6 +314,19 @@ pub struct B {
     /// `bi_add_raw` without updating `comp` (they carry `birth_comp` instead), so
     /// that field goes stale after a bud and would silently mis-target the scan.
     pub raw_cluster: Vec<u32>,
+    /// Running maximum expected abundance for each Raw, indexed by Raw index.
+    ///
+    /// Held here rather than on [`Raw`] (issue #147). `b_compare`'s serial
+    /// store reads this value once per raw per call, and `Raw` is 160 bytes —
+    /// so as a field it cost a full 64-byte cache line per read to use 8 bytes
+    /// of it, and that strided read measured as **83% of the store scan**. As a
+    /// dense array the same reads are contiguous.
+    ///
+    /// Same parallel-array pattern as [`B::raw_cluster`]. Seeded to `-999.0`
+    /// (the sentinel `Raw::with_qual` used to set) for every raw in
+    /// [`B::new`]; deliberately *not* reset by [`B::init`], which never reset
+    /// the field either.
+    pub e_minmax: Vec<f64>,
 }
 
 impl B {
@@ -330,6 +339,7 @@ impl B {
         for (i, raw) in raws.iter_mut().enumerate() {
             raw.index = i as u32;
         }
+        let e_minmax = vec![-999.0; raws.len()];
         let mut b = B {
             raws,
             clusters: Vec::with_capacity(INIT_CLUSTERS_CAPACITY),
@@ -342,6 +352,7 @@ impl B {
             lams: Vec::new(),
             cdf: Vec::new(),
             raw_cluster: Vec::new(),
+            e_minmax,
         };
         b.init();
         b

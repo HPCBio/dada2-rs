@@ -143,10 +143,10 @@ pub fn b_compare(
         }
 
         let total_reads = b.reads as f64;
-        if lambda * total_reads > b.raws[index].e_minmax {
+        if lambda * total_reads > b.e_minmax[index] {
             let new_e = lambda * center_reads as f64;
-            if new_e > b.raws[index].e_minmax {
-                b.raws[index].e_minmax = new_e;
+            if new_e > b.e_minmax[index] {
+                b.e_minmax[index] = new_e;
             }
             let update_raw = i == 0 || index == center_idx;
             let comp = Comparison {
@@ -376,10 +376,10 @@ pub fn b_compare_parallel(
             b.clusters[i].self_ = lambda;
         }
 
-        if lambda * total_reads > b.raws[index].e_minmax {
+        if lambda * total_reads > b.e_minmax[index] {
             let new_e = lambda * center_reads as f64;
-            if new_e > b.raws[index].e_minmax {
-                b.raws[index].e_minmax = new_e;
+            if new_e > b.e_minmax[index] {
+                b.e_minmax[index] = new_e;
             }
             let update_raw = i == 0 || index == center_idx;
             let comp = Comparison {
