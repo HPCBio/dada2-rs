@@ -58,8 +58,8 @@ nav:
     - Pooled (dada-pooled): algorithm-dada-pooled.md
     - Pseudo-pooled (dada-pseudo): algorithm-dada-pseudo.md
   - Walkthroughs:
-    - Illumina MiSeq: walkthrough-illumina.md
-    - PacBio HiFi: walkthrough-pacbio.md
+    - Illumina MiSeq: walkthoughs/walkthrough-illumina.md
+    - PacBio HiFi: walkthoughs/walkthrough-pacbio.md
   - Parameters: parameters.md
   - Performance:
     - Tooling & metrics: benchmarking.md
