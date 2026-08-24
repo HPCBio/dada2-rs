@@ -68,7 +68,7 @@ matching R's `removeBimeraDenovo` (which respects the global `GAP_PENALTY`).
 `k = 5` in its C layer. dada2-rs exposes it as a tunable flag, **`--kmer-size`
 (3–8, default 5)**. The default matches R exactly, but the knob lets PacBio HiFi
 runs trade memory for speed (e.g. `k = 7`); see the
-[PacBio walkthrough](walkthrough-pacbio.md). This is the one place dada2-rs goes
+[PacBio walkthrough](walkthroughs/walkthrough-pacbio.md). This is the one place dada2-rs goes
 *beyond* R's parameter surface.
 
 ## Experimental: WFA alignment backend

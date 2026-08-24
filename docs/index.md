@@ -52,10 +52,12 @@ Run `dada2-rs <subcommand> --help` for full parameter documentation.
 
 - **[Installation](installation.md)** — build from source (standard and native
   release) or use a container image.
-- **[Illumina MiSeq walkthrough](walkthrough-illumina.md)** — paired-end,
-  end-to-end.
-- **[PacBio HiFi walkthrough](walkthrough-pacbio.md)** — single-end, with primer
-  removal and PacBio-tuned parameters.
+- **[Illumina MiSeq walkthrough](walkthroughs/walkthrough-illumina.md)** — 
+  paired-end, end-to-end.
+- **[PacBio HiFi walkthrough](walkthroughs/walkthrough-pacbio.md)** — single-end, 
+  with primer removal and PacBio-tuned parameters.
+- Binned quality analysis for **[Illumina](walkthroughs/walkthrough-illumina.md)**  
+  paired-end and **[PacBio](walkthroughs/walkthrough-pacbio.md)** single-end.
 - **[Performance & Benchmarking](benchmarking.md)** — the tooling, log output,
   and metrics for evaluating performance and running head-to-head comparisons
   against R DADA2.

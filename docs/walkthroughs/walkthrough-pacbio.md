@@ -23,7 +23,7 @@ differs from [Illumina](walkthrough-illumina.md) in a few key ways:
     `learn-errors` and `dada`. If the error model is learned with different
     alignment params than denoising uses, `dada` will warn, and results change
     subtly. (See the param-mismatch note in
-    [Performance & Benchmarking](benchmarking.md#4-built-in-instrumentation-the-binarys-own-logs).)
+    [Performance & Benchmarking](../benchmarking.md#4-built-in-instrumentation-the-binarys-own-logs).)
 
 ## 1. Remove primers, orient, and filter
 

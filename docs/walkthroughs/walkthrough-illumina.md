@@ -67,7 +67,7 @@ Repeat for reverse reads using the reverse error model.
     `dada` accepts more than one input. Pass several filtered FASTQs and an
     `--output-dir` to denoise them in one invocation; use `--sample-jobs N` to
     control how many run concurrently. See
-    [Performance & Benchmarking](benchmarking.md) for the concurrency model.
+    [Performance & Benchmarking](../benchmarking.md) for the concurrency model.
 
 ## 4. Merge paired reads
 

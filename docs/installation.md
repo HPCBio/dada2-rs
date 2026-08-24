@@ -115,6 +115,7 @@ You should see the list of [subcommands](index.md#whats-implemented). Run
 
 ## Next steps
 
-- [Illumina MiSeq walkthrough](walkthrough-illumina.md)
-- [PacBio HiFi walkthrough](walkthrough-pacbio.md)
+- [Illumina MiSeq walkthrough](walkthroughs/walkthrough-illumina.md)
+- [PacBio HiFi walkthrough](walkthroughs/walkthrough-pacbio.md)
+- Binned quality walkthroughs - [Illumina](walkthroughs/walkthrough-illumina-binned.md) and [PacBio](walkthroughs/walkthrough-pacbio-binned.md)
 - [Performance & Benchmarking](benchmarking.md)
