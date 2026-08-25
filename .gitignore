@@ -1,6 +1,9 @@
 /dev/comparison_out/
 /data
 /target
+
+# mkdocs build output (site_dir default; ReadTheDocs builds from source).
+/site/
 notes/Chat*
 # Unsent drafts — keep local until the wording is settled.
 notes/*-draft.md
