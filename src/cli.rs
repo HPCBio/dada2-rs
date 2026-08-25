@@ -672,9 +672,13 @@ pub enum Commands {
         ///
         /// Off by default: the published definition of pseudo-pooling is
         /// "select priors from round 1, re-run with them flagged", which is what
-        /// dada2-rs does, and whether R's extra re-fit is intended or incidental
-        /// is still an open question (issue #100). Enable this to compare the
-        /// two behaviours; do not assume it is more correct.
+        /// dada2-rs does. R's extra re-fit has since been confirmed with
+        /// DADA2's author as **unintended** behaviour that somewhat blunts the
+        /// intended effect of pseudo-pooling (issue #100), so this flag
+        /// reproduces an R quirk for compatibility, not a correctness fix --
+        /// do not assume it is more correct.
+        /// Enable it to compare the two behaviours, or to make a timing or
+        /// concordance comparison against R apples-to-apples.
         ///
         /// The re-fit uses the errfun and loess settings recorded in the error
         /// model's `params` block, mirroring R's use of a fixed
