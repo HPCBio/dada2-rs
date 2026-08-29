@@ -1039,3 +1039,53 @@ Add it to `KNOWN` in `src/gates.rs`, or the run will warn about a variable that
 does work. On a rename, add an `Alias` naming the replacement — a rename without
 one re-arms the trap. Unit tests assert that every alias points at a name the
 binary actually reads and that no retired spelling is still listed as current.
+
+---
+
+## `b_p_update` path attribution: which exit the work actually takes
+
+`b_p_update` recomputes abundance p-values for every member of every cluster
+whose read count changed. It is 10–12% of `run_dada` on soil ITS2 and 4.5–6% on
+soil 16S, and it runs at ~57–65 ns per repricing.
+
+That headline rate is an average over four exits of very different cost.
+`get_pA` returns immediately for a singleton, for a cluster centre, and for zero
+lambda; only the remainder reaches `calc_pA`, which evaluates a regularised
+incomplete gamma. **The mix decides which optimisation is worth building**, and
+an average over a cheap majority and an expensive minority is not a cost model.
+
+Under `--verbose`:
+
+```
+[dada] p-update churn: 3533 rounds, 355895585 raws repriced (100735 repriced/round, nraw=825214)
+[dada]   full calc_pA     20332845 (  5.7%)  <- the only parallelisable work
+[dada]   exit singleton  335424353 ( 94.2%)  exit center   138387 (  0.0%)  exit zero-lambda  0 (  0.0%)
+[dada]   dirty clusters 13092 of 6246344 visited; greedy lock pass walked 1337664 raws
+```
+
+**Counted, not timed.** Two `Instant::now()` calls cost ~40 ns against a ~57 ns
+budget, so per-item timing here would measure the instrument rather than the
+phase. The counters are near-free; per-path prices come from
+`examples/pval_cost.rs`.
+
+### What it settled
+
+[#154](https://github.com/HPCBio/dada2-rs/issues/154) was opened to parallelise
+`calc_pA`, on the reasoning that it is expensive arithmetic which would scale
+with threads. Measured on four arms across two pools, **`full calc_pA` is
+4.6–7.9%** — so parallelising it perfectly would return ~0.5% of `run_dada`.
+What the time actually buys is a scattered read of four fields out of a 160-byte
+`Raw`, one cache miss per repricing, paid whether or not any arithmetic follows.
+
+The per-repricing rate is a second, independent tell: 56.6–65.4 ns across pools
+differing 1.5× in `nraw`. A per-unit cost that barely moves with the working set
+is a cache-line signature, not a compute one — the same diagnostic that
+identified the serial store in [#147](https://github.com/HPCBio/dada2-rs/issues/147).
+
+### Reading `exit singleton`
+
+It is **work-weighted, not a biological singleton fraction**: a singleton in a
+frequently-dirtied cluster is counted on every round it is repriced. It answers
+what fraction of *this phase's work* is early-exit, which is the question a cost
+model needs — but it is not a property of the pool and should not be quoted as
+one.

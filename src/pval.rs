@@ -21,6 +21,56 @@ const TAIL_APPROX_CUTOFF: f64 = 1e-7;
 // Public interface
 // ---------------------------------------------------------------------------
 
+/// Attribution of `b_p_update`'s cost, gathered by counting rather than timing
+/// (issue #154).
+///
+/// The phase is 10-12% of `run_dada` on soil ITS2 and has never been optimised,
+/// but its headline figure — ~56 ns per repricing — is an average over four
+/// paths of very different cost. `get_pA` returns early and free for
+/// singletons, for cluster centres, and for zero lambda; only the remainder
+/// reaches [`calc_pA`], which evaluates a regularised incomplete gamma. Whether
+/// the phase is worth parallelising, and what the payoff would be, depends
+/// entirely on the mix — an average over a cheap majority and an expensive
+/// minority is not a cost model.
+///
+/// **Counted, not timed, on purpose.** Two `Instant::now()` calls cost ~40 ns
+/// against a ~56 ns budget, so per-item timing here would measure the
+/// instrument rather than the phase. Counters are near-free; the per-path
+/// prices come from `examples/pval_cost.rs` instead.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct PUpdateStats {
+    /// Raws whose `p` was recomputed (members of every cluster with `update_e`).
+    pub repriced: u64,
+    /// Returned `1.0` immediately: singleton, not a prior, singleton detection off.
+    pub exit_singleton: u64,
+    /// Returned `1.0` immediately: `hamming == 0`, i.e. a cluster centre or exact match.
+    pub exit_center: u64,
+    /// Returned `0.0` immediately: `lambda == 0`, outside the k-mer screen.
+    pub exit_zero_lambda: u64,
+    /// Reached `calc_pA` — the Poisson upper tail. The expensive path.
+    pub full_calc: u64,
+    /// Raws walked by the greedy lock pass, which is a second traversal of the
+    /// same members and is not counted in `repriced`.
+    pub lock_scanned: u64,
+    /// Clusters found dirty (`update_e` set) and repriced.
+    pub dirty_clusters: u64,
+    /// Clusters skipped because `update_e` was clear.
+    pub clean_clusters: u64,
+}
+
+impl std::ops::AddAssign for PUpdateStats {
+    fn add_assign(&mut self, o: Self) {
+        self.repriced += o.repriced;
+        self.exit_singleton += o.exit_singleton;
+        self.exit_center += o.exit_center;
+        self.exit_zero_lambda += o.exit_zero_lambda;
+        self.full_calc += o.full_calc;
+        self.lock_scanned += o.lock_scanned;
+        self.dirty_clusters += o.dirty_clusters;
+        self.clean_clusters += o.clean_clusters;
+    }
+}
+
 /// Update abundance p-values for every Raw in the partition.
 ///
 /// For each cluster whose `update_e` flag is set, recomputes `raw.p` for all
@@ -49,11 +99,15 @@ pub fn b_p_update(
     min_fold: f64,
     min_hamming: u32,
     min_abund: u32,
-) -> u64 {
+) -> PUpdateStats {
     use crate::containers::BudCand;
-    let mut raws_repriced = 0u64;
+    let mut st = PUpdateStats::default();
     for i in 0..b.clusters.len() {
+        if !b.clusters[i].update_e {
+            st.clean_clusters += 1;
+        }
         if b.clusters[i].update_e {
+            st.dirty_clusters += 1;
             // Clone indices to avoid holding a shared borrow on b.clusters
             // while mutating b.raws.
             let members: Vec<usize> = b.clusters[i].raws.clone();
@@ -63,16 +117,17 @@ pub fn b_p_update(
             let mut bud_min: Option<BudCand> = None;
             let mut bud_min_prior: Option<BudCand> = None;
             for (r, &raw_idx) in members.iter().enumerate() {
-                let p = get_pA(
+                let p = get_pA_counted(
                     b.raws[raw_idx].reads,
                     b.raws[raw_idx].prior,
                     b.raws[raw_idx].comp.lambda,
                     b.raws[raw_idx].comp.hamming,
                     bi_reads,
                     detect_singletons,
+                    Some(&mut st),
                 );
                 b.raws[raw_idx].p = p;
-                raws_repriced += 1;
+                st.repriced += 1;
 
                 if r == 0 {
                     continue; // center slot: never a bud candidate
@@ -113,6 +168,7 @@ pub fn b_p_update(
             let center_reads = center_idx.map_or(0, |ci| b.raws[ci].reads);
             let members: Vec<usize> = b.clusters[i].raws.clone();
             for raw_idx in members {
+                st.lock_scanned += 1;
                 // Lock if the center alone expects more reads than observed.
                 let e_from_center = center_reads as f64 * b.raws[raw_idx].comp.lambda;
                 if e_from_center > b.raws[raw_idx].reads as f64 {
@@ -126,7 +182,7 @@ pub fn b_p_update(
             b.clusters[i].check_locks = false;
         }
     }
-    raws_repriced
+    st
 }
 
 /// Non-mutating serial equivalent of `b_bud`'s candidate selection: scans every
@@ -373,26 +429,47 @@ pub fn get_self(seq: &[u8], err: &[[f64; 4]; 4]) -> f64 {
 /// `calc_pA`. Factored out to allow use from `b_p_update` without holding
 /// simultaneous borrows on both `B.raws` and `B.clusters`.
 /// Equivalent to C++ `get_pA`.
-fn get_pA(
+/// Abundance p-value for one Raw, with optional path attribution (#154).
+///
+/// Was `get_pA`; the un-counted wrapper had no callers once `b_p_update`
+/// started attributing, so it folded away rather than sitting as dead code.
+///
+/// `stats` is `None` on any path that does not care, so the counting folds
+/// away; `b_p_update` passes `Some` because the mix of early exits versus full
+/// evaluations is the thing that decides whether this phase is worth
+/// parallelising. Equivalent to C++ `get_pA`.
+fn get_pA_counted(
     reads: u32,
     prior: bool,
     lambda: f64,
     hamming: u32,
     bi_reads: u32,
     detect_singletons: bool,
+    mut stats: Option<&mut PUpdateStats>,
 ) -> f64 {
+    macro_rules! bump {
+        ($field:ident) => {
+            if let Some(s) = stats.as_deref_mut() {
+                s.$field += 1;
+            }
+        };
+    }
     if reads == 1 && !prior && !detect_singletons {
         // Singleton: no abundance p-value is applied.
+        bump!(exit_singleton);
         return 1.0;
     }
     if hamming == 0 {
         // Cluster center (or exact match): always valid.
+        bump!(exit_center);
         return 1.0;
     }
     if lambda == 0.0 {
         // Zero expected reads: reject unconditionally.
+        bump!(exit_zero_lambda);
         return 0.0;
     }
+    bump!(full_calc);
     let e_reads = lambda * bi_reads as f64;
     calc_pA(reads, e_reads, prior || detect_singletons)
 }
