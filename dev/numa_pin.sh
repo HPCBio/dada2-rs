@@ -28,6 +28,29 @@
 # also sets memory policy only, never CPU affinity, so unlike binding it cannot
 # silently oversubscribe a thread count sized for the whole node.
 #
+# THREAD-COUNT CONDITIONAL -- READ THIS BEFORE APPLYING THE ABOVE (#152).
+# The 21% figure was measured at 64 threads, where 64 threads bound to a 64-core
+# domain saturates that domain's controllers. At 48 threads, which leaves
+# headroom, binding is the FASTER policy by a wide margin -- and on both pools
+# tested, not just one:
+#
+#   run_dada, 48 threads, interleave -> cpunodebind        ITS2 R1  ITS2 R2   16S R1
+#     one job, --interleave=all                             197.8s   259.7s   708.1s
+#     one job, --cpunodebind=0 --membind=0                  143.9s   185.2s   528.1s
+#                                                            -27%     -29%     -25%
+#
+# Every phase gains, including the single-threaded ones (16S: map -27%, store
+# -22%, shuffle -21%, p-update -31%), which is memory *latency* rather than
+# bandwidth. Outputs byte-identical across all arms.
+#
+# So: do not read "interleave beats bind" as general. It holds when the thread
+# count fills or exceeds a domain; it reverses when the count fits inside one.
+# Benchmark numbers gathered under this helper are therefore CONSERVATIVE in
+# absolute terms at sub-domain thread counts -- A/B deltas are unaffected, since
+# both arms always share the policy. Whether binding is as *reproducible* as
+# interleaving is not yet measured, which is the only reason the default here
+# has not changed. See docs/tuning-for-your-data.md.
+#
 # NOTE this is a *measurement* tool. Interleaving is not a speed recommendation:
 # at 64 threads it matches default placement on mean run_dada (372s vs 372s).
 # What it buys is predictability.
