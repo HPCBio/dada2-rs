@@ -64,6 +64,7 @@ nav:
     - PacBio - Binned Quality: walkthroughs/walkthrough-pacbio-binned.md
   - Parameters: parameters.md
   - Performance:
+    - Tuning for your data: tuning-for-your-data.md
     - Tooling & metrics: benchmarking.md
     - Results: results.md
   - Findings:
