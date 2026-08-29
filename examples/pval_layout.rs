@@ -30,6 +30,7 @@
 //! | `raw_aligned` | `repr(C, align(64))`, hot fields first, 192 B |
 //! | `dense_split` | `p` and `comp` in dense arrays; `reads`/`prior` still in `Raw` |
 //! | `dense_all` | one packed 32 B record — the ceiling, if every hot field could move |
+//! | `prefetch` | today's layout, with a software prefetch issued `--distance` iterations ahead |
 //!
 //! `dense_all` is deliberately **not implementable as written**: `reads` and
 //! `prior` are read all over the codebase and moving them is a much larger
@@ -54,6 +55,25 @@
 //! benefit is simply fewer bytes touched. Run both before building anything.
 //! `--raws` also sweeps this directly: shrink it until even `raw_current` fits
 //! and every arm should converge.
+//!
+//! ## Why `prefetch` is the interesting arm
+//!
+//! Every layout arm changes *where the data lives*. The prefetch arm changes
+//! only *when it is asked for*: the member list is fully known before the loop
+//! runs, so the address needed `D` iterations from now is available now. That
+//! makes it the one candidate which
+//!
+//! - needs no duplication and no second source of truth,
+//! - is **byte-identical by construction** — the loop body is untouched, only
+//!   the memory system is warned, and
+//! - does not depend on the hot array fitting L3, so it should not decay as
+//!   pools grow. `dense_all` wins 2.1x on soil ITS2 (26.4 MB, fits) and loses
+//!   5% on soil 16S (39.2 MB, does not), which makes it a cache-capacity result
+//!   with an expiry date.
+//!
+//! Tune `--distance` (default 8): too short and the line has not arrived; too
+//! long and it is evicted before use, or the prefetches themselves saturate the
+//! load/store queues.
 //!
 //! ## Read this before believing any number
 //!
@@ -371,12 +391,71 @@ fn main() {
     }
     report("dense_all", t.elapsed());
 
+    // Software prefetch, D iterations ahead. `Raw`'s hot fields span offsets
+    // 104..146 — two lines — so both are requested; prefetching only the first
+    // would leave half the stall in place.
+    let dist: usize = arg("--distance", 8);
+    // The prefetch is x86_64-only. On any other target the arm degrades to
+    // `raw_current` plus a bounds check and would report a convincing null —
+    // the fourth instrument in this issue that could not exhibit the effect it
+    // was built to measure. Say so instead.
+    let pf_active = cfg!(target_arch = "x86_64");
+    if !pf_active {
+        println!(
+            "  NOTE: prefetch arm is INACTIVE on this target \
+                  (x86_64 only); its number is raw_current, not a result"
+        );
+    }
+    let mut pf_p = vec![0.0f64; nraw];
+    let t = Instant::now();
+    for r in 0..rounds {
+        let ms = &rounds_members[r];
+        for (i, &m) in ms.iter().enumerate() {
+            #[cfg(target_arch = "x86_64")]
+            if let Some(&ahead) = ms.get(i + dist) {
+                // SAFETY: prefetch has no architectural effect — an out-of-range
+                // or unmapped address is a no-op, never a fault. The pointer is
+                // in-bounds regardless, since `ahead` indexes `cur`.
+                unsafe {
+                    let p = cur.as_ptr().add(ahead) as *const i8;
+                    std::arch::x86_64::_mm_prefetch(p.add(104), std::arch::x86_64::_MM_HINT_T0);
+                    std::arch::x86_64::_mm_prefetch(p.add(140), std::arch::x86_64::_MM_HINT_T0);
+                }
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            let _ = ms.get(i + dist);
+            let rr = &cur[m];
+            let (reads, prior, h, l) = (
+                black_box(rr.reads),
+                black_box(rr.prior),
+                black_box(rr.hamming),
+                black_box(rr.lambda),
+            );
+            pf_p[m] = if reads == 1 && !prior {
+                1.0
+            } else {
+                l + h as f64
+            };
+        }
+        black_box(&pf_p);
+    }
+    report(
+        &format!(
+            "prefetch(d={dist}){}",
+            if pf_active { "" } else { " [INACTIVE]" }
+        ),
+        t.elapsed(),
+    );
+
     println!(
         "\nstride_control is the SAME arm over a constant stride, i.e. fully\n\
          prefetchable. raw_current must be markedly slower than it; if the two\n\
          are close, this machine is not exhibiting miss costs at this working-set\n\
          size and no layout arm here means anything.\n\
          Then check raw_current against production: p_update seconds / raws\n\
-         repriced was 56.6-65.4 ns on the four measured arms."
+         repriced was 56.6-65.4 ns on the four measured arms.\n\
+         prefetch is compared against raw_current, not against dense_all: it is\n\
+         the same layout, so any gain is latency hiding and carries no refactor\n\
+         and no size ceiling. Sweep --distance before concluding it does nothing."
     );
 }
