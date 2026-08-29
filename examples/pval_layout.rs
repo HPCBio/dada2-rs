@@ -128,12 +128,35 @@ fn main() {
     let visit: usize = arg("--visit", 100_735);
     let rounds: usize = arg("--rounds", 40);
 
-    // Member lists are neither sequential nor uniformly random: raws are
-    // abundance-sorted and members accumulate by cluster, so the gather is
-    // scattered but correlated. A large odd stride reproduces that shape and
-    // keeps the arm reproducible run to run.
-    let step = 7919usize;
-    let members: Vec<usize> = (0..visit).map(|i| (i * step) % nraw).collect();
+    // Member lists are arbitrary raw indices in insertion order — effectively
+    // random with respect to memory. A seeded shuffle reproduces that and stays
+    // deterministic between runs.
+    //
+    // The first version of this used `(i * 7919) % nraw` and called it
+    // "scattered but correlated". It is nothing of the sort: a large odd stride
+    // is a CONSTANT stride, the most prefetchable pattern there is. The hardware
+    // prefetcher locked onto it and every arm measured streaming rather than a
+    // gather — `raw_current` read 5.3 ns against production's 56.6-65.4, and was
+    // *faster* on the benchmark node than on a laptop, which is what gave it
+    // away. See `stride_control` below.
+    let mut rng = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        // xorshift64*, so the pattern is reproducible without a dependency.
+        rng ^= rng >> 12;
+        rng ^= rng << 25;
+        rng ^= rng >> 27;
+        rng.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    };
+    let members: Vec<usize> = (0..visit)
+        .map(|_| (next() % nraw as u64) as usize)
+        .collect();
+
+    // Positive control: the same arm over the old constant stride. A null is
+    // evidence only once the instrument is shown able to return something else,
+    // so if `stride_control` is not markedly faster than `raw_current`, this
+    // machine is not exhibiting miss costs at this working-set size and none of
+    // the layout arms mean anything.
+    let stride: Vec<usize> = (0..visit).map(|i| (i * 7919) % nraw).collect();
 
     let cur = vec![
         RawCurrent {
@@ -238,6 +261,27 @@ fn main() {
     }
     report("raw_current", t.elapsed());
 
+    let mut ctl_p = vec![0.0f64; nraw];
+    let t = Instant::now();
+    for _ in 0..rounds {
+        for &m in &stride {
+            let r = &cur[m];
+            let (reads, prior, h, l) = (
+                black_box(r.reads),
+                black_box(r.prior),
+                black_box(r.hamming),
+                black_box(r.lambda),
+            );
+            ctl_p[m] = if reads == 1 && !prior {
+                1.0
+            } else {
+                l + h as f64
+            };
+        }
+        black_box(&ctl_p);
+    }
+    report("stride_control", t.elapsed());
+
     let mut ali_p = vec![0.0f64; nraw];
     let t = Instant::now();
     for _ in 0..rounds {
@@ -296,8 +340,11 @@ fn main() {
     report("dense_all", t.elapsed());
 
     println!(
-        "\nCheck raw_current against production (p_update s / raws repriced:\n\
-         56.6-65.4 ns on the four measured arms). If it is far below, this is\n\
-         modelling the wrong machine and only the ORDERING of the arms is usable."
+        "\nstride_control is the SAME arm over a constant stride, i.e. fully\n\
+         prefetchable. raw_current must be markedly slower than it; if the two\n\
+         are close, this machine is not exhibiting miss costs at this working-set\n\
+         size and no layout arm here means anything.\n\
+         Then check raw_current against production: p_update seconds / raws\n\
+         repriced was 56.6-65.4 ns on the four measured arms."
     );
 }
