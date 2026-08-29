@@ -23,6 +23,7 @@
 #
 # ARMS
 #   solo   one job, N threads, --interleave=all          (the #152 baseline)
+#   sbind  one job, N threads, bound to ONE NUMA domain  (locality, no sharing)
 #   both   two jobs, N threads each, both interleaved    (naive packing)
 #   split  two jobs, N threads each, each bound to its own NUMA domain
 #
@@ -42,7 +43,7 @@ BIN=./target/release-native/dada2-rs
 ERRMODEL=
 OUT_ROOT=concurrency-test
 THREADS=48
-ARMS="solo both split"
+ARMS="solo sbind both split"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -100,6 +101,15 @@ for arm in $ARMS; do
       echo "== solo: one job, ${THREADS} threads, interleaved"
       run_job solo "--interleave=all"
       ;;
+    sbind)
+      # Separates LOCALITY from CONCURRENCY. On ITS2 R1 the split arm ran each
+      # job 28% faster than solo -- but those jobs were still sharing the node,
+      # so locality and packing are confounded there. If sbind also lands near
+      # split, the whole gain is locality and packing is incidental; if it lands
+      # near solo, the gain needs the second job.
+      echo "== sbind: one job, ${THREADS} threads, bound to NUMA domain 0"
+      run_job sbind "--cpunodebind=0 --membind=0"
+      ;;
     both)
       echo "== both: two jobs, ${THREADS} threads each, both interleaved"
       run_job both_a "--interleave=all" &
@@ -121,6 +131,12 @@ echo "== results (wall seconds per job)"
 solo_w=$(cat "$OUT_ROOT/solo.wall" 2>/dev/null || echo 0)
 printf "%-10s %10s %10s %14s\n" arm job_a job_b "vs solo"
 printf "%-10s %10.1f %10s %14s\n" solo "$solo_w" "-" "-"
+for arm in sbind; do
+  [[ -f "$OUT_ROOT/${arm}.wall" ]] || continue
+  a=$(cat "$OUT_ROOT/${arm}.wall")
+  pen=$(python3 -c "print(f'{($a/$solo_w-1)*100:+.1f}%')" 2>/dev/null || echo "n/a")
+  printf "%-10s %10.1f %10s %14s\n" "$arm" "$a" "-" "$pen"
+done
 for arm in both split; do
   [[ -f "$OUT_ROOT/${arm}_a.wall" ]] || continue
   a=$(cat "$OUT_ROOT/${arm}_a.wall"); b=$(cat "$OUT_ROOT/${arm}_b.wall")
