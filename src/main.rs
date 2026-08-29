@@ -202,6 +202,12 @@ fn main() -> ExitCode {
 fn run() -> io::Result<()> {
     let cli = Cli::parse();
 
+    // Before anything else, and irrespective of `--verbose`: a `DADA2RS_*`
+    // variable that is set but not recognised means the run is not the one that
+    // was asked for, and the entire failure mode is that nobody thinks to check
+    // (#145). Two full soil-pool A/B runs were lost to exactly this.
+    dada2_rs::gates::warn_unrecognised();
+
     let command = match cli.command {
         Some(c) => c,
         None => {
@@ -4496,6 +4502,10 @@ fn resolve_dada_params(
         eprintln!("[dada] cpu allocation: {alloc}");
         if let Some(w) = alloc_warn {
             eprintln!("[dada] {w}");
+        }
+        // Resolved gate values, not an echo of the environment (#145).
+        for line in dada2_rs::gates::report() {
+            eprintln!("[dada] {line}");
         }
     }
 

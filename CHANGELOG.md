@@ -8,6 +8,17 @@ minor versions may carry breaking changes).
 ## [0.2.0] - Unreleased
 
 ### Added
+- `--verbose` now reports the **resolved** values of the `DADA2RS_*` development
+  tuning gates, and any `DADA2RS_*` variable that is set but not recognised is
+  warned about **regardless of `--verbose`** (#145). Retired spellings carry an
+  alias naming the replacement. Motivated by two full soil-pool A/B runs spent
+  comparing a configuration against itself after `DADA2RS_SHUFFLE_CARRY` was
+  renamed to `DADA2RS_SHUFFLE_NO_CARRY`: both arms ran carry-on, and came back
+  byte-identical and within 1%, which is what a *correct* null looks like.
+- `--verbose` progress lines for pooled `dada`: per-window phase deltas,
+  effective cores, map parallel efficiency and align fraction, every
+  `DADA2RS_PROGRESS_SECS` seconds (default 30, `0` disables) (#150). Totals hid
+  that occupancy climbs 22 → 42 effective cores of 64 across a single run.
 - `summary` subcommand: per-position quality metrics, cumulative expected-error
   metrics, and an optional per-read sequence-complexity histogram (#8).
 - `sample` and `errors-from-sample` subcommands for subsampling input FASTQs and
@@ -69,6 +80,10 @@ minor versions may carry breaking changes).
   `assign-taxonomy`, `assign-species`, and `dada`'s single-sample output.
 
 ### Changed
+- The `DADA2_RS_PAR_GRAIN` tuning gate is renamed `DADA2RS_PAR_GRAIN` for
+  consistency with every other gate (#145). The old spelling is still honoured
+  and warns; it was the lone `DADA2_RS_` name, so anyone setting it from memory
+  got silence and the default grain.
 - The experimental WFA backend is now gated behind an **off-by-default `wfa`
   Cargo feature** (#63). Default builds — and the published crate — are
   Needleman-Wunsch only; selecting `--align-backend wfa2` without the feature
