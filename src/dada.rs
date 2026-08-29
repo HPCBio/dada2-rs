@@ -828,7 +828,8 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // Only the in-loop p_update rounds count — the pre-loop call reprices the
     // whole partition once and is not part of the per-bud churn a p-ordered
     // structure would face.
-    let (mut pupd_rounds, mut pupd_raws_repriced) = (0u64, 0u64);
+    let mut pupd_rounds = 0u64;
+    let mut pupd_stats = crate::pval::PUpdateStats::default();
 
     // Initial compare: no k-mer distance screen so that cluster 0 accumulates
     // comparisons for every Raw (required by b_shuffle2).
@@ -1044,7 +1045,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         );
         t_pupdate += t.elapsed();
         pupd_rounds += 1;
-        pupd_raws_repriced += repriced;
+        pupd_stats += repriced;
 
         if progress_every > 0 {
             let now = t_loop.elapsed();
@@ -1586,16 +1587,44 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         // if it approaches the scanned/bud figure above, re-keying costs about
         // as much as the scan it would replace — i.e. no obvious net win.
         let repriced_per_round = if pupd_rounds > 0 {
-            pupd_raws_repriced as f64 / pupd_rounds as f64
+            pupd_stats.repriced as f64 / pupd_rounds as f64
         } else {
             0.0
         };
         eprintln!(
             "[dada] p-update churn: {} rounds, {} raws repriced ({:.0} repriced/round, nraw={})",
             pupd_rounds,
-            pupd_raws_repriced,
+            pupd_stats.repriced,
             repriced_per_round,
             bb.raws.len(),
+        );
+        // Path attribution (#154). The phase's headline ns/repricing is an
+        // average over four paths of very different cost: three early exits
+        // that are a couple of comparisons, and `calc_pA`, which evaluates a
+        // regularised incomplete gamma. Only the last is worth parallelising,
+        // so its share bounds the payoff. Counted rather than timed — see
+        // `PUpdateStats`.
+        let rp = pupd_stats.repriced.max(1) as f64;
+        let pct = |n: u64| n as f64 / rp * 100.0;
+        eprintln!(
+            "[dada]   full calc_pA {:>12} ({:>5.1}%)  <- the only parallelisable work",
+            pupd_stats.full_calc,
+            pct(pupd_stats.full_calc),
+        );
+        eprintln!(
+            "[dada]   exit singleton {:>10} ({:>5.1}%)  exit center {:>12} ({:>5.1}%)               exit zero-lambda {:>10} ({:>5.1}%)",
+            pupd_stats.exit_singleton,
+            pct(pupd_stats.exit_singleton),
+            pupd_stats.exit_center,
+            pct(pupd_stats.exit_center),
+            pupd_stats.exit_zero_lambda,
+            pct(pupd_stats.exit_zero_lambda),
+        );
+        eprintln!(
+            "[dada]   dirty clusters {} of {} visited; greedy lock pass walked {} raws",
+            pupd_stats.dirty_clusters,
+            pupd_stats.dirty_clusters + pupd_stats.clean_clusters,
+            pupd_stats.lock_scanned,
         );
     }
 
