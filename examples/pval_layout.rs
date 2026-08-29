@@ -37,6 +37,24 @@
 //! `dense_split` lands close to it, the cheap version captures the win; if
 //! `dense_all` is far better, the refactor has a price worth quoting.
 //!
+//! ## The size prediction, which is the thing to test
+//!
+//! With a working instrument the win tracks **whether the hot array fits L3**,
+//! not how many bytes each access reads. A serial phase runs on one core, so it
+//! sees one CCD's 32 MB, not the 7713's 256 MB total. That makes the payoff
+//! pool-dependent:
+//!
+//! | pool | `nraw` | packed (32 B/raw) | fits 32 MB L3? |
+//! |---|---|---|---|
+//! | soil ITS2 | 825,214 | 26.4 MB | **yes** |
+//! | soil 16S | 1,225,523 | 39.2 MB | **no** |
+//!
+//! So `dense_all` should win on ITS2 and win **less, or not at all, on 16S** —
+//! and if it wins equally on both, the residency explanation is wrong and the
+//! benefit is simply fewer bytes touched. Run both before building anything.
+//! `--raws` also sweeps this directly: shrink it until even `raw_current` fits
+//! and every arm should converge.
+//!
 //! ## Read this before believing any number
 //!
 //! `examples/pval_cost.rs` reported ~7 ns/repricing against production's ~57,
@@ -129,33 +147,45 @@ fn main() {
     let rounds: usize = arg("--rounds", 40);
 
     // Member lists are arbitrary raw indices in insertion order — effectively
-    // random with respect to memory. A seeded shuffle reproduces that and stays
-    // deterministic between runs.
+    // random with respect to memory — and, crucially, **a different subset each
+    // round**: which clusters are dirty changes as the partition evolves.
     //
-    // The first version of this used `(i * 7919) % nraw` and called it
-    // "scattered but correlated". It is nothing of the sort: a large odd stride
-    // is a CONSTANT stride, the most prefetchable pattern there is. The hardware
-    // prefetcher locked onto it and every arm measured streaming rather than a
-    // gather — `raw_current` read 5.3 ns against production's 56.6-65.4, and was
-    // *faster* on the benchmark node than on a laptop, which is what gave it
-    // away. See `stride_control` below.
+    // Two instrument failures got us here, both of which made the arms measure
+    // cache hits instead of the gather they exist to price:
+    //
+    // 1. Members were `(i * 7919) % nraw`, described in a comment as "scattered
+    //    but correlated". A large odd stride is a CONSTANT stride — the most
+    //    prefetchable pattern there is.
+    // 2. With that fixed, one fixed member list was reused every round. Visiting
+    //    the same 100,735 of 825,214 raws touches ~6.4 MB of distinct lines,
+    //    which is L3-resident after the first round; the 112 MB array never
+    //    mattered. `raw_current` came back *faster* than `stride_control`, which
+    //    is impossible if misses are being paid — and is exactly what the
+    //    control exists to say.
+    //
+    // So: a fresh random sample per round, precomputed so generation cost stays
+    // out of the timed region.
     let mut rng = 0x2545_F491_4F6C_DD1Du64;
     let mut next = move || {
-        // xorshift64*, so the pattern is reproducible without a dependency.
+        // xorshift64*, reproducible without a dependency.
         rng ^= rng >> 12;
         rng ^= rng << 25;
         rng ^= rng >> 27;
         rng.wrapping_mul(0x2545_F491_4F6C_DD1D)
     };
-    let members: Vec<usize> = (0..visit)
-        .map(|_| (next() % nraw as u64) as usize)
+    let rounds_members: Vec<Vec<usize>> = (0..rounds)
+        .map(|_| {
+            (0..visit)
+                .map(|_| (next() % nraw as u64) as usize)
+                .collect()
+        })
         .collect();
 
-    // Positive control: the same arm over the old constant stride. A null is
-    // evidence only once the instrument is shown able to return something else,
-    // so if `stride_control` is not markedly faster than `raw_current`, this
-    // machine is not exhibiting miss costs at this working-set size and none of
-    // the layout arms mean anything.
+    // Positive control: the same arm over a constant stride, i.e. fully
+    // prefetchable. A null is evidence only once the instrument is shown able to
+    // return something else, so if `stride_control` is not markedly FASTER than
+    // `raw_current`, this machine is not exhibiting miss costs at this
+    // working-set size and no layout arm here means anything.
     let stride: Vec<usize> = (0..visit).map(|i| (i * 7919) % nraw).collect();
 
     let cur = vec![
@@ -219,7 +249,9 @@ fn main() {
          resident hot state:  current {:.1} MB   aligned {:.1} MB   \
          split {:.1}+{:.1}+{:.1} MB   packed {:.1} MB\n\
          (per-CCD L3 on an EPYC 7713 is 32 MB — whether the hot state fits is \
-         the question)\n",
+         the question)\n\
+         a fresh random sample of {visit} raws per round, so lines are not \
+         reused across rounds\n",
         mb(nraw * size_of::<RawCurrent>()),
         mb(nraw * size_of::<RawAligned>()),
         mb(nraw * size_of::<RawSplit>()),
@@ -242,8 +274,8 @@ fn main() {
     // impossible 574 GB/s for want of exactly that.
     let mut cur_p = vec![0.0f64; nraw];
     let t = Instant::now();
-    for _ in 0..rounds {
-        for &m in &members {
+    for r in 0..rounds {
+        for &m in &rounds_members[r] {
             let r = &cur[m];
             let (reads, prior, h, l) = (
                 black_box(r.reads),
@@ -284,8 +316,8 @@ fn main() {
 
     let mut ali_p = vec![0.0f64; nraw];
     let t = Instant::now();
-    for _ in 0..rounds {
-        for &m in &members {
+    for r in 0..rounds {
+        for &m in &rounds_members[r] {
             let r = &ali[m];
             let (reads, prior, h, l) = (
                 black_box(r.reads),
@@ -304,8 +336,8 @@ fn main() {
     report("raw_aligned", t.elapsed());
 
     let t = Instant::now();
-    for _ in 0..rounds {
-        for &m in &members {
+    for r in 0..rounds {
+        for &m in &rounds_members[r] {
             let (reads, prior) = (black_box(spl[m].reads), black_box(spl[m].prior));
             let c = &sp_c[m];
             let (h, l) = (black_box(c.hamming), black_box(c.lambda));
@@ -320,8 +352,8 @@ fn main() {
     report("dense_split", t.elapsed());
 
     let t = Instant::now();
-    for _ in 0..rounds {
-        for &m in &members {
+    for r in 0..rounds {
+        for &m in &rounds_members[r] {
             let r = &pk[m];
             let (reads, prior, h, l) = (
                 black_box(r.reads),
