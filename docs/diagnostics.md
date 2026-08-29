@@ -977,3 +977,65 @@ and the alignment only on what passes, so a drifting pass rate moves the map's
 cost per comparison without anything else changing. If `eff cores` tracks
 `align`, the ramp is a workload property; if `eff cores` moves while `align`
 holds flat, it is not, and the serial phases are where to look.
+
+---
+
+## Tuning gates: what the run actually resolved
+
+The `DADA2RS_*` environment variables are development gates — A/B switches and
+tuning knobs, deliberately undocumented in `--help` because they are not
+user-facing config. They are read once per process and, until #145, resolved
+**silently**.
+
+That silence cost two full soil-pool A/B runs. `DADA2RS_SHUFFLE_CARRY` had been
+renamed to `DADA2RS_SHUFFLE_NO_CARRY` when the carry became the default; the old
+variable was still being set, so both arms ran carry-on and the runs compared a
+configuration against itself. They completed, and came back byte-identical and
+within 1% — **which is exactly what a correct null result looks like.** The
+mistake was found only by reading the git history of the gate.
+
+Two things now guard against it.
+
+### Resolved values under `--verbose`
+
+```
+[dada] tuning gates: shuffle carry=on (default)  shuffle prune=on (default)  reconcile=incremental (default)
+[dada] tuning gates: reconcile verify=off (default)  par grain=32 (default)
+```
+
+These are the values **the code settled on**, not an echo of the environment.
+The distinction is the whole point: an environment echo would have printed
+`DADA2RS_SHUFFLE_CARRY=1` in both failed runs and been reassuring and wrong.
+Anything not at its default is marked `OVERRIDDEN`, so an intended A/B arm is
+visible in the log and a *failed* one is visible by its absence.
+
+### Warnings for variables that do nothing
+
+Printed **regardless of `--verbose`** — a stale gate means the run is not the
+one you asked for, which is not a verbose-only concern — and this is the half
+that catches the failure class, because it fires without anyone thinking to
+look:
+
+```
+[dada] warning: DADA2RS_SHUFFLE_CARRY is set but has been replaced by DADA2RS_SHUFFLE_NO_CARRY — it is having NO EFFECT.
+[dada]          the carry became the default in #139 and the gate inverted, so the old name cannot be honoured — it now selects the opposite of what it says
+[dada] warning: DADA2RS_TYPO is set but not recognised; it is having NO EFFECT.
+[dada]          Recognised gates: DADA2RS_SHUFFLE_NO_CARRY, DADA2RS_SHUFFLE_NO_PRUNE, ...
+```
+
+Retired spellings carry an alias entry naming the replacement, in one of two
+flavours:
+
+- **Renamed** — same meaning, new spelling; still honoured, but warns.
+  `DADA2_RS_PAR_GRAIN` → `DADA2RS_PAR_GRAIN` is this case. Breaking a working
+  script to make a point would be its own kind of silent failure.
+- **Superseded** — the replacement does not mean the same thing, so the old
+  variable is **not** honoured. `DADA2RS_SHUFFLE_CARRY` is this case: the gate
+  inverted, so honouring the old name would select the opposite of what it says.
+
+### If you add or rename a gate
+
+Add it to `KNOWN` in `src/gates.rs`, or the run will warn about a variable that
+does work. On a rename, add an `Alias` naming the replacement — a rename without
+one re-arms the trap. Unit tests assert that every alias points at a name the
+binary actually reads and that no retired spelling is still listed as current.

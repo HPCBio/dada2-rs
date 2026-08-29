@@ -11,19 +11,27 @@ use crate::containers::{B, Bi, BirthType, Comparison};
 use crate::nwalign::{AlignBuffers, AlignParams, sub_new_with_buf};
 use crate::pval::compute_lambda;
 
+/// Default chunk size for the parallel raw-compare loop.
+pub const PAR_GRAIN_DEFAULT: usize = 32;
+
 /// Maximum chunk size for the parallel raw-compare loop in `b_compare_parallel`
-/// (passed to rayon's `with_max_len`). Default `32`. Overridable for tuning via
-/// the `DADA2_RS_PAR_GRAIN` env var (must be > 0; invalid values fall back to
-/// the default). Read once per process and cached. Undocumented in `--help`:
-/// this is a tuning knob, not user-facing config.
-fn par_max_len() -> usize {
+/// (passed to rayon's `with_max_len`). Default [`PAR_GRAIN_DEFAULT`].
+/// Overridable for tuning via `DADA2RS_PAR_GRAIN` (must be > 0; invalid values
+/// fall back to the default). Read once per process and cached. Undocumented in
+/// `--help`: this is a tuning knob, not user-facing config.
+///
+/// The old `DADA2_RS_PAR_GRAIN` spelling is still honoured but warns — it was
+/// the lone `DADA2_RS_` name among the gates, so anyone setting it from memory
+/// got silence and the default grain (#145). See [`crate::gates`].
+pub fn par_max_len() -> usize {
     static VALUE: OnceLock<usize> = OnceLock::new();
     *VALUE.get_or_init(|| {
-        std::env::var("DADA2_RS_PAR_GRAIN")
+        std::env::var("DADA2RS_PAR_GRAIN")
+            .or_else(|_| std::env::var("DADA2_RS_PAR_GRAIN"))
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .filter(|&n| n > 0)
-            .unwrap_or(32)
+            .unwrap_or(PAR_GRAIN_DEFAULT)
     })
 }
 
@@ -42,7 +50,7 @@ fn par_max_len() -> usize {
 ///
 /// It is O(nraw x candidates) per reconcile — precisely the work being avoided
 /// — so it is for validation runs, never timing runs.
-fn reconcile_verify() -> bool {
+pub fn reconcile_verify_gate() -> bool {
     static VALUE: OnceLock<bool> = OnceLock::new();
     *VALUE.get_or_init(|| {
         cfg!(debug_assertions) || std::env::var_os("DADA2RS_RECONCILE_VERIFY").is_some()
@@ -53,7 +61,7 @@ fn reconcile_verify() -> bool {
 /// list, disabling the #136 incremental update.
 ///
 /// Same purpose as [`shuffle_no_prune`]: both arms of an A/B from one binary.
-fn reconcile_full() -> bool {
+pub fn reconcile_full_gate() -> bool {
     static VALUE: OnceLock<bool> = OnceLock::new();
     *VALUE.get_or_init(|| std::env::var_os("DADA2RS_RECONCILE_FULL").is_some())
 }
@@ -90,6 +98,13 @@ pub fn shuffle_carry() -> bool {
 /// not actually the one measured. `DADA2RS_SHUFFLE_NO_PRUNE=1` selects the old
 /// behaviour. Read once per process; undocumented in `--help` (a diagnostic,
 /// not user-facing config).
+/// Positive-sense view of [`shuffle_no_prune`] for the gate report
+/// ([`crate::gates::report`]), which states what the run *is doing* rather than
+/// which negation was set.
+pub fn shuffle_prune() -> bool {
+    !shuffle_no_prune()
+}
+
 fn shuffle_no_prune() -> bool {
     static VALUE: OnceLock<bool> = OnceLock::new();
     *VALUE.get_or_init(|| std::env::var_os("DADA2RS_SHUFFLE_NO_PRUNE").is_some())
@@ -1130,7 +1145,7 @@ pub fn b_shuffle_converge(
         let comps_before_rec = comps_scanned;
         let mut pairs_this_reconcile = 0usize;
         reads_fell.resize(b.clusters.len(), false);
-        let incremental = !reconcile_full();
+        let incremental = !reconcile_full_gate();
 
         // --- Pass A1: necessity marking (#136) ---
         // A raw needs a full candidate rescan only if its current best cluster's
@@ -1259,7 +1274,7 @@ pub fn b_shuffle_converge(
         // equality is asserted, not assumed. See `reconcile_verify` for why
         // this must be runnable in release: the fixtures cannot reach the cases
         // that matter.
-        if reconcile_verify() {
+        if reconcile_verify_gate() {
             for raw in 0..nraw {
                 let (want, want_e) = best_from_cands_scored(&index[raw], raw, &b.clusters);
                 assert_eq!(

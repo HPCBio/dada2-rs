@@ -18,6 +18,7 @@ pub mod evaluate;
 pub mod failed_uniques;
 pub mod filter;
 pub mod filter_trim;
+pub mod gates;
 pub mod kdist_calibrate;
 pub mod kmers;
 pub mod learn_errors;
