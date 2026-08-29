@@ -158,6 +158,6 @@ in the first place.
   mode with the largest single-process footprint.
 
 If you measure your own data, the tooling is in
-[Diagnostics](diagnostics.md#verbose-progress-lines-the-shape-of-a-run-not-just-its-mean)
+[Diagnostics](diagnostics.md#-verbose-progress-lines-the-shape-of-a-run-not-just-its-mean)
 and `dev/run_concurrency_test.sh`. Results that contradict this page are welcome
 — it is a summary of four arms, not a law.
