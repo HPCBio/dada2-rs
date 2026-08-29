@@ -25,10 +25,18 @@ them the wrong way:
    screen-dominated pool saturates at low thread counts; an align-dominated one
    keeps scaling.  Measured on four arms, the ordering is monotonic:
 
-       16S R1   50.8% screen  -> still scaling at 96 threads
-       16S R2   67.7% screen  -> knee near 64
-       ITS2 R2  83.2% screen  -> knee below 48
-       ITS2 R1  85.8% screen  -> knee below 48
+       16S R1   50.8% screen  -> best at 96 (still scaling there)
+       16S R2   67.7% screen  -> best at 64
+       ITS2 R2  83.2% screen  -> best at 48
+       ITS2 R1  85.8% screen  -> best at 48
+
+   Two cautions learned by getting them wrong.  The screen share is itself
+   THREAD-DEPENDENT -- ITS2 R1 reads 80.0% at 24 threads and 85.8% at 48, because
+   the bandwidth-bound half degrades faster under contention -- so the predictor
+   is only comparable when pinned to one reference count (`--ref-threads`).  And
+   a sweep that does not bracket the peak cannot locate it: from 48/64/96 alone,
+   ITS2 looked monotonically degrading and was reported as "already past the knee
+   below 48".  Adding 24 showed 48 is the peak, beating 24 by 12-17%.
 
    It predicts *within* a pool as well as across pools -- 16S's two reads differ
    by 17 points of screen share and have different knees -- so this is a property
@@ -165,6 +173,13 @@ def main():
     ap.add_argument("--segments", type=int, default=4,
                     help="number of equal cluster segments (default 4)")
     ap.add_argument("--read", help="restrict to one read (R1/R2)")
+    ap.add_argument("--ref-threads", type=int, default=48,
+                    help="thread count at which to report the map's screen/align "
+                         "split (default 48). The split is itself thread-dependent "
+                         "-- ITS2 R1 reads 80.0%% screen at 24 threads and 85.8%% at "
+                         "48, because the bandwidth-bound half degrades faster under "
+                         "contention -- so the predictor is only comparable across "
+                         "arms when pinned to one reference count.")
     args = ap.parse_args()
 
     runs = load(args.sweep_dir)
@@ -233,9 +248,14 @@ def main():
                       + f"   {d:>+7.1f}%")
 
         # --- 4. why? -----------------------------------------------------
-        r0 = runs[(read, present[0])][0]
+        ref = args.ref_threads if (read, args.ref_threads) in runs else present[0]
+        r0 = runs[(read, ref)][0]
         if r0.screen_pct is not None:
-            print(f"\n-- map composition at {present[0]} threads (predicts the knee)")
+            print(f"\n-- map composition at {ref} threads (predicts the knee)")
+            if ref != args.ref_threads:
+                print(f"   WARNING: {args.ref_threads} threads not in this sweep; "
+                      f"using {ref}. The split is thread-dependent, so this is NOT "
+                      "comparable to the calibration below.")
             print(f"   k-mer screen {r0.screen_pct:>5.1f}% of busy   (streams k-mer"
                   " vectors: bandwidth-bound)")
             print(f"   alignment    {r0.align_pct:>5.1f}% of busy   (DP kernel:"
@@ -244,11 +264,12 @@ def main():
             # Calibration, not a rule: four arms measured on one machine
             # (EPYC 7713, 2 NUMA domains, 8 CCDs). The ORDERING has held on all
             # four; the thread numbers are hardware-specific and will not travel.
-            print("   observed on this machine -- knee vs screen share:")
-            print("     16S R1   50.8% screen  -> still scaling at 96 threads")
-            print("     16S R2   67.7% screen  -> knee near 64")
-            print("     ITS2 R2  83.2% screen  -> knee below 48")
-            print("     ITS2 R1  85.8% screen  -> knee below 48")
+            print("   observed on this machine -- best thread count vs screen share")
+            print("   (all measured at 48 threads; 2 reps per arm):")
+            print("     16S R1   50.8% screen  -> 96 (still scaling at 96)")
+            print("     16S R2   67.7% screen  -> 64")
+            print("     ITS2 R2  83.2% screen  -> 48")
+            print("     ITS2 R1  85.8% screen  -> 48")
             near = min(
                 [(50.8, "16S R1"), (67.7, "16S R2"), (83.2, "ITS2 R2"), (85.8, "ITS2 R1")],
                 key=lambda x: abs(x[0] - r0.screen_pct),
