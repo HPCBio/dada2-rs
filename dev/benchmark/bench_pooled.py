@@ -81,6 +81,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -223,9 +224,99 @@ def capture_version(bin_, outdir):
     return ver
 
 
+
+# ---------------------------------------------------------------------------
+# NUMA policy (issue #152)
+# ---------------------------------------------------------------------------
+#
+# Memory placement is worth 25-30% of `run_dada` on this hardware, so a
+# benchmark that pins one stack and not the other is not a benchmark. The policy
+# is therefore applied in `numa_wrap`, which BOTH stacks' launches route through
+# (`run_step` and `run_phase_concurrent`) — rather than at each call site, where
+# an arm could be missed and the speedup silently inflated by ~25%.
+#
+# R DADA2 threads the same algorithm through `multithread=`, with the same k-mer
+# screen and banded NW, so there is no reason to expect it responds differently.
+# Whether it gains as much is the interesting question and is measurable only
+# with both arms treated alike.
+#
+# The EFFECTIVE policy is recorded in summary.csv, not the requested one: a run
+# that asked for `bind` on a machine without numactl must not be filed as bound.
+
+NUMA_POLICY = "none"        # what the operator asked for
+NUMA_EFFECTIVE = "none"     # what actually happened
+NUMA_PREFIX = []
+
+
+def numa_init(policy, threads):
+    """Resolve the NUMA policy once, warning loudly on any downgrade.
+
+    Never fails the run: a missing `numactl` or a single-domain machine
+    degrades to unpinned execution, which is correct behaviour but must be
+    visible — an unpinned run recorded as bound would be worse than no feature.
+    """
+    global NUMA_POLICY, NUMA_EFFECTIVE, NUMA_PREFIX
+    NUMA_POLICY = policy
+    NUMA_EFFECTIVE = "none"
+    NUMA_PREFIX = []
+    if policy == "none":
+        return
+
+    if shutil.which("numactl") is None:
+        print(f"  [numa] WARNING: --numa {policy} requested but numactl is not "
+              "installed; running unpinned. Recorded as numa=none.", file=sys.stderr)
+        return
+    try:
+        hw = subprocess.run(["numactl", "--hardware"], capture_output=True,
+                            text=True, check=True).stdout
+    except (subprocess.SubprocessError, OSError) as e:
+        print(f"  [numa] WARNING: numactl --hardware failed ({e}); running "
+              "unpinned. Recorded as numa=none.", file=sys.stderr)
+        return
+
+    m = re.search(r"^available:\s+(\d+)", hw, re.M)
+    nodes = int(m.group(1)) if m else 1
+    if nodes < 2:
+        print(f"  [numa] single NUMA domain; --numa {policy} has nothing to do. "
+              "Recorded as numa=none.", file=sys.stderr)
+        return
+
+    if policy == "interleave":
+        NUMA_PREFIX = ["numactl", "--interleave=all"]
+        NUMA_EFFECTIVE = "interleave"
+    elif policy == "bind":
+        # Binding is only the faster policy while the thread count FITS inside a
+        # domain. At or above a domain's core count it saturates that domain's
+        # controllers and loses to interleaving — which is how dev/numa_pin.sh
+        # came to recommend the opposite, from a 64-thread measurement on a
+        # 64-core domain. Warn rather than silently choose for the operator.
+        cores = re.findall(r"^node \d+ cpus:(.*)$", hw, re.M)
+        per_domain = len(cores[0].split()) if cores else 0
+        if per_domain and threads > per_domain:
+            print(f"  [numa] WARNING: --threads {threads} exceeds the {per_domain} "
+                  f"CPUs in one domain; binding cannot honour it. Falling back to "
+                  "interleave. Recorded as numa=interleave.", file=sys.stderr)
+            NUMA_PREFIX = ["numactl", "--interleave=all"]
+            NUMA_EFFECTIVE = "interleave"
+        else:
+            NUMA_PREFIX = ["numactl", "--cpunodebind=0", "--membind=0"]
+            NUMA_EFFECTIVE = "bind"
+            if per_domain and threads > per_domain * 0.9:
+                print(f"  [numa] note: {threads} threads nearly fills a "
+                      f"{per_domain}-CPU domain; the binding advantage shrinks as "
+                      "the domain saturates.", file=sys.stderr)
+    print(f"  [numa] policy={NUMA_EFFECTIVE} ({' '.join(NUMA_PREFIX)}) "
+          "— applied to BOTH stacks", file=sys.stderr)
+
+
+def numa_wrap(cmd):
+    """Prefix a command with the resolved NUMA policy. Both stacks route here."""
+    return [*NUMA_PREFIX, *cmd] if NUMA_PREFIX else cmd
+
+
 def run_step(name, cmd, logf, results, append_log=False):
     """Run cmd as one process; record (name, wall_s, maxrss_kb, rc). Returns rc."""
-    cmd = maybe_align_backend(maybe_verbose(cmd))
+    cmd = numa_wrap(maybe_align_backend(maybe_verbose(cmd)))
     print(f"  ==> {name}: {' '.join(str(c) for c in cmd)}", flush=True)
     start = time.time()
     with open(logf, "ab" if append_log else "wb") as lf:
@@ -255,7 +346,7 @@ def run_phase_concurrent(name, jobs, results, max_workers):
     print(f"  ==> {name}: {len(jobs)} samples, up to {max_workers} concurrent", flush=True)
 
     def one(cmd, logf):
-        cmd = maybe_align_backend(maybe_verbose(cmd))
+        cmd = numa_wrap(maybe_align_backend(maybe_verbose(cmd)))
         with open(logf, "wb") as lf:
             proc = subprocess.Popen([str(c) for c in cmd],
                                     stdout=subprocess.DEVNULL, stderr=lf)
@@ -884,6 +975,14 @@ def main():
     p.add_argument("input", help="directory of raw FASTQ files")
     p.add_argument("--outdir", default="bench_pooled_out")
     p.add_argument("--threads", type=int, default=1)
+    p.add_argument("--numa", choices=["none", "interleave", "bind"], default="none",
+                   help="memory placement, applied to BOTH stacks (default: none, "
+                        "matching every historical run). 'bind' pins CPUs and memory "
+                        "to one NUMA domain and is worth 25-30%% of run_dada when the "
+                        "thread count fits inside a domain; 'interleave' spreads pages "
+                        "and is the more reproducible policy. Degrades to unpinned, "
+                        "with a warning, where numactl is unavailable or the machine "
+                        "has one domain — the EFFECTIVE policy is what gets recorded.")
     p.add_argument("--nbases", type=float, default=1e8)
     p.add_argument("--pool", choices=["true", "false", "pseudo"], default="true",
                    help="denoising mode: 'true' = pooled (R pool=TRUE / dada-pooled, "
@@ -1026,6 +1125,7 @@ def main():
     INFER_KDIST = args.kdist_cutoff
     LEARN_KDIST = args.learn_kdist_cutoff
     LOESS_PRESET = args.loess_preset
+    numa_init(args.numa, args.threads)
     if args.reestimate_err_between_rounds and args.pool != "pseudo":
         p_err = "--reestimate-err-between-rounds applies to --pool pseudo only"
         raise SystemExit(p_err)
@@ -1100,13 +1200,23 @@ def main():
         learn_c = LEARN_KDIST if LEARN_KDIST is not None else infer_c
         kdmode = (f", kdist learn={learn_c}/infer={infer_c} (decoupled)"
                   if learn_c != infer_c else f", kdist={infer_c}")
+    nmode = f", numa={NUMA_EFFECTIVE}"
+    if NUMA_EFFECTIVE != NUMA_POLICY:
+        nmode += f" (requested {NUMA_POLICY})"
     print(f"BENCHMARK SUMMARY — {args.platform}, {mode} denoise, "
-          f"{args.threads} thread(s){bemode}{kdmode}{rmode}")
+          f"{args.threads} thread(s){bemode}{kdmode}{rmode}{nmode}")
     print("=" * 56)
     print(f"  cores = CPU/wall (effective cores; ideal ≈ {args.threads} for an "
           "in-process step, ≈ min(#samples, threads) for fanned steps)")
     csv_path = outdir / "summary.csv"
     with open(csv_path, "w") as cf:
+        # The effective policy is a header comment rather than a column: it is
+        # a property of the whole run, and a run gathered under one policy is
+        # not comparable to one gathered under another (25-30% on this
+        # hardware). Recording the REQUESTED policy too makes a silent
+        # downgrade — missing numactl, single domain — visible in the artifact.
+        cf.write(f"# numa_effective={NUMA_EFFECTIVE} numa_requested={NUMA_POLICY} "
+                 f"threads={args.threads}\n")
         cf.write("stack,step,wall_s,cpu_s,cores,maxrss_kb\n")
         rs = print_stack("dada2-rs", rust_results, cf) if rust_results else None
         rr_split = print_stack("R-split", r_split_results, cf) if r_split_results else None
