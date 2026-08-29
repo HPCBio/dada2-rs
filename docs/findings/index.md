@@ -135,6 +135,20 @@ here is the evidence, and here is the path it opens or closes."
   and the right estimator applied to the one arm whose variance was intrinsic —
   and the rule they share: **a null is evidence only once the instrument has
   been shown capable of returning something else.**
+- [Thread scaling & memory placement](thread-scaling-and-placement.md) — **two
+  results with opposite characters.** How many threads to use is strongly
+  data-dependent: the best count differs *two-fold between two reads of the same
+  pool*, and is predicted by the map's screen/align split, which the verbose log
+  already prints (50.8% screen scales to 96 threads, 67.7% peaks at 64, 83–86%
+  peaks at 48 and degrades past it). Where to put the memory is **not**
+  data-dependent — binding one job to one NUMA domain is worth **25–29% on every
+  arm**, across a 35-point gap in screen share, and gives 2.6–2.9× throughput
+  when two jobs each take a domain. Also the page that reconciles this with
+  [Measuring on a NUMA node](measuring-on-numa.md), which concluded the opposite:
+  that page's own phase table **already showed the serial phases 23–37% faster
+  bound**, matching what we just measured; the map penalty at 64 threads
+  outweighed it and the total said "binding loses". Ends with four instrument
+  errors, including one that inverted the sign of a reported trend.
 - [Measuring on a NUMA node](measuring-on-numa.md) — **a methodology result that
   reversed a verdict.** The benchmark node has two NUMA domains and nothing was
   ever pinned, so page placement re-rolled every run and replicates of the *same

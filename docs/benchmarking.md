@@ -334,6 +334,50 @@ check is once per move pass, not per raw.
 
 ---
 
+## 6c. Memory placement (`--numa`)
+
+On a multi-domain machine, memory placement is worth **25–30% of `run_dada`** —
+larger than most changes this harness exists to measure. `bench_pooled.py`
+therefore takes `--numa {none,interleave,bind}`.
+
+**It applies to both stacks, by construction.** The policy is resolved once and
+applied in `numa_wrap`, which every launch routes through, rather than at each
+call site. R DADA2 threads the same algorithm — same k-mer screen, same banded
+NW — so pinning dada2-rs and not R would inflate every speedup number by up to
+~25% for free. Whether R gains as much as we do is an open and interesting
+question, and it is answerable only with both arms treated alike.
+
+| policy | what it does | when |
+|---|---|---|
+| `none` (default) | no `numactl` | matches every historical run in [Results](results.md) |
+| `interleave` | pages round-robin across domains | most reproducible; see `dev/numa_pin.sh` |
+| `bind` | CPUs *and* memory on one domain | fastest **when the thread count fits inside a domain** |
+
+`bind` is not universally better: at or above a domain's core count it saturates
+that domain's controllers and loses to interleaving, which is how
+`dev/numa_pin.sh` came to recommend the opposite from a 64-thread measurement on
+a 64-core domain. The harness checks the domain's CPU count and **falls back to
+`interleave` with a warning** rather than honouring a request that cannot help.
+
+**Where `numactl` is unavailable** — or the machine has a single domain — the run
+proceeds unpinned with a warning. It never fails, and it never silently records
+the policy you asked for:
+
+```
+# numa_effective=none numa_requested=bind threads=48
+stack,step,wall_s,cpu_s,cores,maxrss_kb
+```
+
+`summary.csv` carries both the effective and the requested policy in a header
+comment, because a run gathered under one policy is not comparable to one
+gathered under another, and a downgrade the operator did not notice is exactly
+the failure mode [#145](https://github.com/HPCBio/dada2-rs/issues/145) exists to
+close.
+
+The default is `none` so that new runs stay comparable to the archived ones. It
+is not a recommendation — see [Tuning for your
+data](tuning-for-your-data.md#memory-placement-numa).
+
 ## 7. PacBio vs Illumina specifics
 
 - **PacBio input is raw, primered reads.** `remove-primers` trims primers,

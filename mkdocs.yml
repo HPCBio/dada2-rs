@@ -64,6 +64,7 @@ nav:
     - PacBio - Binned Quality: walkthroughs/walkthrough-pacbio-binned.md
   - Parameters: parameters.md
   - Performance:
+    - Tuning for your data: tuning-for-your-data.md
     - Tooling & metrics: benchmarking.md
     - Results: results.md
   - Findings:
@@ -77,6 +78,7 @@ nav:
     - Inside b_compare — the serial remainder: findings/compare-serial-fold.md
     - Inside b_compare — the store scan: findings/compare-store-scan.md
     - Measuring on a NUMA node: findings/measuring-on-numa.md
+    - Thread scaling & memory placement: findings/thread-scaling-and-placement.md
     - Pseudo-pooling priors vs error model: findings/pseudo-pooling-priors-vs-error-model.md
     - Binned quality scores:
       - Overview: findings/binned-quality.md
