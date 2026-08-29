@@ -103,9 +103,9 @@ So the two questions have opposite answers:
     Unlike thread count, the NUMA effect held at nearly the same size on both
     pools — 25% on the compute-bound one and 27–29% on the memory-bound one —
     despite a 35-point gap in screen share. We expected the compute-bound pool to
-    gain much less, because arithmetic can hide memory latency; it did not.
-    (16S read 2 is still outstanding.) If you have a multi-domain machine, this
-    is worth trying whatever your amplicon is.
+    gain much less, because arithmetic can hide memory latency; it did not. If
+    you have a multi-domain machine, this is worth trying whatever your amplicon
+    is.
 
 On a multi-socket or multi-die machine, memory is faster from some cores than
 others. By default the kernel scatters a job's pages across all of it, so a
@@ -113,15 +113,16 @@ sizeable fraction of every access pays the remote penalty.
 
 Binding one job to a single NUMA domain, at 48 threads (`run_dada` seconds):
 
-| configuration | ITS2 R1 | ITS2 R2 | 16S R1 |
-|---|---|---|---|
-| one job, interleaved (default) | 197.8 | 259.7 | 708.1 |
-| **one job, bound to one domain** | **143.9** | **185.2** | **528.1** |
-| two jobs, interleaved | 195.2 / 193.8 | 258.7 / 258.8 | 656.0 / 651.8 |
-| **two jobs, one domain each** | **139.0 / 138.1** | **179.3 / 178.1** | **527.8 / 540.4** |
-| *binding gain* | *−27%* | *−29%* | *−25%* |
+| configuration | ITS2 R1 | ITS2 R2 | 16S R1 | 16S R2 |
+|---|---|---|---|---|
+| one job, interleaved (default) | 197.8 | 259.7 | 708.1 | 785.5 |
+| **one job, bound to one domain** | **143.9** | **185.2** | **528.1** | **575.0** |
+| two jobs, interleaved | 195.2 / 193.8 | 258.7 / 258.8 | 656.0 / 651.8 | 826.0 / 834.5 |
+| **two jobs, one domain each** | **139.0 / 138.1** | **179.3 / 178.1** | **527.8 / 540.4** | **530.4 / 559.4** |
+| *binding gain (one job)* | *−27%* | *−29%* | *−25%* | *−27%* |
 
-Throughput, two bound jobs against one default job: **2.6× (16S) to 2.9× (ITS2)**.
+Four arms across two pools, and the binding gain sits in a **25–29% band** on all
+of them. Throughput, two bound jobs against one default job: **2.6× to 2.9×**.
 
 ```bash
 # one job, pinned to a domain
@@ -142,9 +143,12 @@ Three things this measurement showed that are worth knowing:
    single-threaded bookkeeping — on 16S: map −27%, store −22%, shuffle −21%,
    p-update −31%. Phases with completely different characters improving by
    similar amounts is the signature of memory *latency*, not bandwidth.
-3. **Two unpinned jobs do not slow each other down** (0% on ITS2, and 16S was
-   7.6% *faster* per job than running one alone — unexplained). Either way the
-   machine was never short of bandwidth. It was waiting on distant memory.
+3. **Two unpinned jobs barely affect each other**, but unpredictably: −1% and
+   0% on ITS2, −8% on 16S read 1, +6% on read 2. That is the arm where
+   placement is left to the kernel, so the spread is itself the point — an
+   unpinned run's performance depends on where its pages happen to land. If the
+   machine were short of *bandwidth*, two jobs would reliably slow each other;
+   they do not. It is distance to memory, not throughput to it.
 
 **The thread count must fit inside one domain.** Our node has 64 cores per
 domain, so 48 works and 96 cannot be bound this way. `numactl --hardware` shows
