@@ -1082,6 +1082,19 @@ differing 1.5× in `nraw`. A per-unit cost that barely moves with the working se
 is a cache-line signature, not a compute one — the same diagnostic that
 identified the serial store in [#147](https://github.com/HPCBio/dada2-rs/issues/147).
 
+### What it led to
+
+The gather, not the arithmetic, is what the time buys — so the fix is a software
+prefetch of the `Raw` the loop will read 16 iterations later, not parallelism and
+not a layout change. Measured at **−34 to −38% of the phase** on four arms across
+two pools, byte-identical, and disabled with `DADA2RS_PUPDATE_PREFETCH=0`.
+
+Three layout candidates were priced first (`examples/pval_layout.rs`) and all
+were worse. The only competitive one — packing every hot field into 32 bytes —
+wins by fitting a 32 MB per-CCD L3, so it *loses* on the larger pool, needs
+`reads` and `prior` moved out of `Raw`, and swung 37% between runs because an
+array on the cache-capacity boundary depends on having that cache to itself.
+
 ### Reading `exit singleton`
 
 It is **work-weighted, not a biological singleton fraction**: a singleton in a

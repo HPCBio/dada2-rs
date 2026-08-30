@@ -48,6 +48,7 @@ const KNOWN: &[&str] = &[
     "DADA2RS_RECONCILE_FULL",
     "DADA2RS_PAR_GRAIN",
     "DADA2RS_PROGRESS_SECS",
+    "DADA2RS_PUPDATE_PREFETCH",
     "DADA2RS_ALIGN_BACKEND",
     "DADA2RS_WFA_MAX_STEPS",
     "DADA2RS_BENCH_THREADS",
@@ -182,6 +183,7 @@ impl Resolved {
 /// environment — see the module docs for why that distinction is the point.
 pub fn report() -> Vec<String> {
     let grain = crate::cluster::par_max_len();
+    let pf = crate::pval::prefetch_distance();
     let gates = [
         Resolved {
             label: "shuffle carry",
@@ -208,6 +210,15 @@ pub fn report() -> Vec<String> {
             // On by default in debug builds; the release default is off, and a
             // release build is what every timing run uses.
             default: crate::cluster::reconcile_verify_gate() == cfg!(debug_assertions),
+        },
+        Resolved {
+            label: "p-update prefetch",
+            value: if pf == 0 {
+                "off".into()
+            } else {
+                pf.to_string()
+            },
+            default: pf == crate::pval::PUPDATE_PREFETCH_DEFAULT,
         },
         Resolved {
             label: "par grain",

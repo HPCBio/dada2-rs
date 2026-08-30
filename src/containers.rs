@@ -462,3 +462,37 @@ impl B {
         }
     }
 }
+
+#[cfg(test)]
+mod raw_layout_probe {
+    use super::*;
+
+    /// Not an assertion about the layout — a probe, printed by
+    /// `cargo test raw_layout_probe -- --nocapture`, to see how many cache
+    /// lines `b_p_update`'s hot field set spans (#154).
+    ///
+    /// At the time of writing: `Raw` is 152 bytes and the hot set occupies
+    /// offsets 104..146, a 42-byte span that straddles a 64-byte boundary. Since
+    /// alignment is 8, consecutive raws start at 152·i, so *reordering* the
+    /// fields cannot fix it — the span crosses a line ~2/3 of the time wherever
+    /// it sits. Only `align(64)` (and padding to 192) would guarantee one line,
+    /// which costs 26% of the `Raw` array. Run this before assuming a layout
+    /// change does what it looks like it does.
+    #[test]
+    fn print_raw_field_offsets() {
+        let r = Raw::with_qual(vec![1], None, 1, false);
+        let base = &r as *const _ as usize;
+        let off = |p: usize| p - base;
+        println!("size_of::<Raw>() = {}", std::mem::size_of::<Raw>());
+        for (name, o) in [
+            ("prior", off(&r.prior as *const _ as usize)),
+            ("reads", off(&r.reads as *const _ as usize)),
+            ("p", off(&r.p as *const _ as usize)),
+            ("comp.lambda", off(&r.comp.lambda as *const _ as usize)),
+            ("comp.hamming", off(&r.comp.hamming as *const _ as usize)),
+            ("lock", off(&r.lock as *const _ as usize)),
+        ] {
+            println!("  {name:<14} offset {o:>3}  -> 64B line {}", o / 64);
+        }
+    }
+}

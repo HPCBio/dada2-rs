@@ -11,6 +11,7 @@
 use statrs::distribution::{DiscreteCDF, Poisson};
 
 use crate::containers::{B, Raw, Sub};
+use std::sync::OnceLock;
 
 /// Minimum value of the conditioning normaliser below which the second-order
 /// Taylor approximation `E - E²/2` is used instead of `1 - exp(-E)`.
@@ -71,6 +72,75 @@ impl std::ops::AddAssign for PUpdateStats {
     }
 }
 
+/// Distance, in loop iterations, at which `b_p_update` prefetches the `Raw` it
+/// will read next (issue #154). Default `16`; `0` disables. Overridable via
+/// `DADA2RS_PUPDATE_PREFETCH` so both arms of an A/B come from one binary.
+///
+/// 16 is where the benefit saturates: on soil ITS2 the sweep reads 23.6 ns per
+/// repricing at 4, 19.2 at 8, then 17.0 at both 16 and 32 against a 27.7 ns
+/// baseline. 16 buys the same as 32 with half the outstanding prefetches.
+pub const PUPDATE_PREFETCH_DEFAULT: usize = 16;
+
+pub fn prefetch_distance() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("DADA2RS_PUPDATE_PREFETCH")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(PUPDATE_PREFETCH_DEFAULT)
+    })
+}
+
+/// Ask the memory system for the two fields `b_p_update` is about to read from
+/// `raw`, `prefetch_distance()` iterations before it reads them.
+///
+/// **Why this and not a layout change.** The phase is memory-bound on a random
+/// gather: over 91% of repricings take an early exit doing no arithmetic, and
+/// the cost is a cache miss on a 160-byte `Raw` read for ~20 bytes of it.
+/// Three layout fixes were priced (`examples/pval_layout.rs`) and all are worse
+/// than this one:
+///
+/// | candidate | soil ITS2 | soil 16S |
+/// |---|---|---|
+/// | today | 27.7 ns | 29.0 ns |
+/// | `repr(C, align(64))` | 37.0 (worse) | 40.4 (worse) |
+/// | `p`/`comp` in dense arrays | 41.7 (worse) | 44.8 (worse) |
+/// | every hot field packed to 32 B | **11.7** | 33.3 (worse) |
+/// | **prefetch, d=16** | **17.0** | **20.2** |
+///
+/// The packed layout is the only competitive one and it wins by fitting a 32 MB
+/// per-CCD L3 (26.4 MB on ITS2) — so it *loses* on 16S (39.2 MB), needs `reads`
+/// and `prior` moved out of `Raw`, and its advantage swung 37% between runs
+/// because an array sitting on the cache-capacity boundary depends on having
+/// that cache to itself. Prefetching wins on both pools, needs no refactor,
+/// varied 0% at the plateau, and does not decay as pools grow.
+///
+/// Addresses come from `addr_of!` on the real fields rather than hardcoded
+/// offsets: `Raw` is `repr(Rust)`, so its layout is the compiler's to choose and
+/// a hardcoded offset would silently prefetch the wrong line after any field
+/// reordering.
+///
+/// **Byte-identical by construction**: a prefetch has no architectural effect.
+#[inline(always)]
+fn prefetch_raw(raw: &Raw) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+        // SAFETY: both pointers are derived from a live `&Raw`, so they are
+        // valid for reads. `_mm_prefetch` is a hint with no architectural
+        // effect and cannot fault regardless.
+        unsafe {
+            _mm_prefetch(
+                std::ptr::addr_of!(raw.comp.lambda) as *const i8,
+                _MM_HINT_T0,
+            );
+            _mm_prefetch(std::ptr::addr_of!(raw.reads) as *const i8, _MM_HINT_T0);
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = raw;
+}
+
 /// Update abundance p-values for every Raw in the partition.
 ///
 /// For each cluster whose `update_e` flag is set, recomputes `raw.p` for all
@@ -116,7 +186,15 @@ pub fn b_p_update(
             // Position 0 is skipped, mirroring b_bud's `for r in 1..len`.
             let mut bud_min: Option<BudCand> = None;
             let mut bud_min_prior: Option<BudCand> = None;
+            let pf = prefetch_distance();
             for (r, &raw_idx) in members.iter().enumerate() {
+                // The member list is fully known before the loop runs, so the
+                // address needed `pf` iterations from now is available now.
+                if pf > 0
+                    && let Some(&ahead) = members.get(r + pf)
+                {
+                    prefetch_raw(&b.raws[ahead]);
+                }
                 let p = get_pA_counted(
                     b.raws[raw_idx].reads,
                     b.raws[raw_idx].prior,
