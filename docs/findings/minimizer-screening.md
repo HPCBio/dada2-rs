@@ -79,7 +79,12 @@ stable run-to-run, even though content is. See
 | arm | ASVs | churn | count cells differing | L1 | aligned vs k-mer |
 |---|---|---|---|---|---|
 | k-mer, k=7 @ 0.42 (production) | 1540 | — | — | — | 100.0% |
+| **control:** k-mer again | 1540 | **0** | **0 / 2452** | **0.0000%** | 100.0% |
 | **minimizer, k=8 @ 0.50 (calibrated)** | **1540** | **0** | 17 / 2452 | **0.0053%** | **86.7%** |
+
+The control channel is bit-identical, so the noise floor here is **exactly zero**
+and the 17 differing cells are real signal rather than run-to-run variation —
+the same discipline that made the Illumina numbers interpretable.
 
 The ASV **set is identical**. 233.6 M comparisons in each arm; the minimizer
 shrouds 209.4 M against the k-mer screen's 205.6 M, so it performs 24.3 M
