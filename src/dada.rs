@@ -606,6 +606,14 @@ pub fn dada_uniques_cached(
         // cumulative snapshot across every sample denoised so far rather than
         // this sample's own figures. Intended for a single pooled run.
         eprintln!("{}", crate::minimizers::audit::summary().report());
+        let (hits, tot) = (
+            crate::nwalign::GAPLESS_HITS.load(std::sync::atomic::Ordering::Relaxed),
+            crate::nwalign::GAPLESS_TOTAL.load(std::sync::atomic::Ordering::Relaxed),
+        );
+        eprintln!(
+            "[screen-audit] gapless shortcut: {hits} / {tot} aligned pairs ({:.2}%)",
+            100.0 * hits as f64 / tot.max(1) as f64
+        );
     }
 
     // ---- Final per-raw p-value pass ----

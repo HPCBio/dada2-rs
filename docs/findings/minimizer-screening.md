@@ -1,7 +1,8 @@
 # Minimizers as the pre-alignment screen
 
-**Verdict: not equivalent, and not ready. The idea survives; the parameters and
-one of its design premises did not.** On the 20-sample MiSeq SOP the
+**Verdict: not equivalent, and not ready. The idea survives; two of its design
+premises did not, and the last residual turned out not to be about screening at
+all.** On the 20-sample MiSeq SOP the
 minimizer screen does **not** reproduce the k-mer screen's ASV table. It fails by
 **cluster fragmentation** — spurious low-abundance ASVs, several at Hamming-1
 from high-abundance parents. Calibrating its cutoff takes the disagreement from
@@ -150,6 +151,64 @@ cutoff safe to tighten while tightening the *learn* stage churned real ASVs.
 > but the model-side arm (0.03% L1) may understate sensitivity at a converged
 > `nbases`. An `--nbases` ladder is owed before any of the error-model numbers
 > here are treated as settled.
+
+## The residual is not the screen at all: the gapless shortcut switches off
+
+Calibrating the cutoff (below) takes the disagreement from 1.10% to 0.34% L1 and
+then **plateaus** — 0.65 and 0.72 are indistinguishable (0.3356% vs 0.3348%). The
+plateau is not a screening effect, and the control proves it:
+
+| arm (identical error model) | ASVs | churn | count L1 |
+|---|---|---|---|
+| k-mer **cutoff 1.0** vs minimizer **cutoff 1.0** | 232 vs 231 | 1 | **0.3074%** |
+
+With both screens **fully open** nothing can be shrouded, so screening cannot
+differ — yet essentially the entire residual survives. The cause is
+`raw_align_dp`'s method selection:
+
+```rust
+if p.band == 0 || (p.gapless && (kodist - kdist).abs() < f64::EPSILON) {
+    align_gapless_with_buf(...)   // skip the DP entirely
+}
+```
+
+`kodist` is `kord_dist`, the **positional** k-mer mismatch fraction; `kdist` is
+the screen distance. Their agreeing means every shared k-mer is also positionally
+aligned — no shifts, therefore no indels — which is what makes a gapless
+alignment safe. **That predicate is only meaningful when both quantities live in
+the same k-mer space.** Under the minimizer backend `kdist` is a sketch distance,
+so the equality essentially never holds:
+
+| backend | gapless shortcut fires |
+|---|---|
+| k-mer | 2,341 / 147,866 aligned pairs (**1.58%**) |
+| minimizer, k=8, cutoff 0.72 | 113 / 147,641 (**0.08%**) |
+
+A 20x drop, with no error and no warning — the backend simply stops taking a path
+it cannot know it was supposed to take.
+
+**This generalises past minimizers.** The gapless shortcut is *coupled to the
+k-mer frequency vector*, and any screen replacement that does not supply a
+commensurate compositional distance disables it silently. A screen swap is
+therefore not the local change it appears to be: `kdist` is not only a gate, it is
+also an **input to alignment method selection**, and the second role is
+undocumented and easy to miss. It was missed here.
+
+Two consequences:
+
+- **The memory case is weaker than it looked.** The obvious fix — keep a k-mer
+  frequency distance for the predicate — reinstates the `4^k` vector the sketch
+  exists to avoid. A cheaper route exists: `kord` is already stored under both
+  backends and *is* the per-position k-mer index, so its value multiset is
+  exactly the k-mer composition; a sorted copy per raw (~`len` entries, the same
+  order as the sketch) would let the exact predicate be recovered by merge-join.
+  Untried.
+- **It is not obvious which arm is more correct.** `align_gapless` assumes no
+  indels; banded NW is the general optimum. If the predicate is a heuristic
+  rather than a proof, the minimizer arm — which always runs the full DP — may be
+  producing *better* alignments while deviating from R DADA2, which is the
+  fidelity target. Untested, and worth testing on its own: it is a question about
+  the existing k-mer path, not about minimizers.
 
 ## Two claims this falsified
 

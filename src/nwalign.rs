@@ -1425,6 +1425,10 @@ pub fn raw_align_with_screen(
     r
 }
 
+/// Gapless-shortcut hit counters, active only under `--screen-audit`.
+pub static GAPLESS_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static GAPLESS_TOTAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Minimizer-sketch screen distance for a pair (experimental,
 /// [`ScreenBackend::Minimizer`]).
 ///
@@ -1451,7 +1455,21 @@ fn raw_align_dp(
     kodist: f64,
 ) -> Option<()> {
     // --- Method selection ---
-    if p.band == 0 || (p.gapless && (kodist - kdist).abs() < f64::EPSILON) {
+    let take_gapless = p.band == 0 || (p.gapless && (kodist - kdist).abs() < f64::EPSILON);
+    if p.screen_audit {
+        // The gapless shortcut fires on `kodist == kdist`: the positional and
+        // compositional k-mer distances agreeing means no shifts, hence no
+        // indels. That predicate is only meaningful when `kdist` comes from the
+        // SAME k-mer space as `kodist` -- under the minimizer backend `kdist` is
+        // a sketch distance, so the equality essentially never holds and this
+        // path silently stops firing. Counted so that claim is measured, not
+        // assumed.
+        GAPLESS_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if take_gapless {
+            GAPLESS_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    if take_gapless {
         align_gapless_with_buf(&raw1.seq, &raw2.seq, buf);
         return Some(());
     }
