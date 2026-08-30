@@ -1033,6 +1033,32 @@ flavours:
   variable is **not** honoured. `DADA2RS_SHUFFLE_CARRY` is this case: the gate
   inverted, so honouring the old name would select the opposite of what it says.
 
+### Gates that invalidate timing
+
+A few gates do not select an arm of an A/B — they add validation work on top of
+whatever arm is running, so any timing the run produces is measuring the
+validation. Those warn separately, and regardless of `--verbose`:
+
+```
+[dada] WARNING: DADA2RS_RECONCILE_VERIFY is on. This is an O(nraw × candidates)
+[dada]          validation rescan that can make b_shuffle 8x slower on some
+[dada]          data, e.g. soil ITS2 (41.9s -> 347.4s). Timings from this
+[dada]          run are not comparable.
+```
+
+This exists because the `(OVERRIDDEN)` marker was not contrast enough. The first
+cluster A/B of the [#154](https://github.com/HPCBio/dada2-rs/issues/154) prefetch
+looked like a **2.4× regression** — `run_dada` 192.5 s → 457.9 s — until someone
+read the gate line closely and found `reconcile verify=on` in one arm, left in a
+run script. In that line it sits mid-row between two harmless settings.
+
+`DADA2RS_SHUFFLE_NO_CARRY` and friends are deliberately *not* in this category:
+they select the other arm of an A/B, which is slower on purpose and a perfectly
+valid thing to time.
+
+Release-only: debug builds turn `DADA2RS_RECONCILE_VERIFY` on by default and are
+never timing runs, so warning there would tag every `cargo test`.
+
 ### If you add or rename a gate
 
 Add it to `KNOWN` in `src/gates.rs`, or the run will warn about a variable that
