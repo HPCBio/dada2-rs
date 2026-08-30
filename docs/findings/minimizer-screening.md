@@ -1,21 +1,37 @@
 # Minimizers as the pre-alignment screen
 
-**Verdict: not equivalent, and not ready. The idea survives; two of its design
-premises did not, and the last residual turned out not to be about screening at
-all.** On the 20-sample MiSeq SOP the
-minimizer screen does **not** reproduce the k-mer screen's ASV table. It fails by
-**cluster fragmentation** — spurious low-abundance ASVs, several at Hamming-1
-from high-abundance parents. Calibrating its cutoff takes the disagreement from
-17 churned ASVs down to 2 (and the count-matrix L1 from 1.10% to 0.34%), but
-**not to zero**, measured against a control whose noise floor is exactly zero.
+**Verdict: the idea works. Its shipped defaults did not, and neither did two of
+its design premises — and the biggest single problem turned out not to be about
+minimizers at all.** On the 20-sample MiSeq SOP the minimizer screen started
+1.10% apart from the k-mer screen (17 churned ASVs) and ends **0.0596% apart
+(1 ASV)**, against a control whose noise floor is exactly zero. Getting there
+required three corrections, in descending order of how wrong I was:
 
-Experimental and opt-in (`--screen-backend minimizer`), default unchanged.
+| arm | ASVs | churn | count-matrix L1 |
+|---|---|---|---|
+| **control:** k-mer vs k-mer | 232 = 232 | **0** | **0.0000%** |
+| minimizer k=11, cutoff 0.42 *(shipped default)* | 241 | 17 | 1.1009% |
+| k=8 — calibrated sketch size | 237 | 13 | 0.7557% |
+| k=8, cutoff 0.72 — calibrated cutoff | 231 | 1 | 0.3348% |
+| **+ gapless method selection decoupled from the screen** | **231** | **1** | **0.0596%** |
 
-**This page previously reported the opposite.** An earlier revision concluded the
-screen "reproduces the k-mer screen's decisions on both platforms" on the
-strength of the 2-sample concordance fixtures. That conclusion was wrong, and the
-way it was wrong is the most useful thing here — see
-[How the fixtures misled](#how-the-fixtures-misled).
+And with both screens **fully open** on the same error model, the two backends
+are now **bit-identical** (0 of 1634 count cells) — no structural coupling
+remains, so the final 0.0596% is nothing but the two screens legitimately
+disagreeing about which distant pairs to shroud, which is what a different screen
+*is*.
+
+Experimental and opt-in (`--screen-backend minimizer`), default unchanged. The
+shipped defaults (k=11, cutoff 0.42) are **wrong** and are left in place only
+because the right pair is coupled and changing one without the other is not an
+improvement.
+
+**This page previously reported the opposite twice.** An earlier revision
+concluded the screen "reproduces the k-mer screen's decisions on both platforms"
+from 2-sample fixtures; a later one concluded it fragments clusters irreparably.
+Both were wrong, in instructive ways — see
+[How the fixtures misled](#how-the-fixtures-misled) and
+[the gapless section](#the-residual-is-not-the-screen-at-all-the-gapless-shortcut-switches-off).
 
 ## What the screen is
 
@@ -203,12 +219,61 @@ Two consequences:
   exactly the k-mer composition; a sorted copy per raw (~`len` entries, the same
   order as the sketch) would let the exact predicate be recovered by merge-join.
   Untried.
-- **It is not obvious which arm is more correct.** `align_gapless` assumes no
-  indels; banded NW is the general optimum. If the predicate is a heuristic
-  rather than a proof, the minimizer arm — which always runs the full DP — may be
-  producing *better* alignments while deviating from R DADA2, which is the
-  fidelity target. Untested, and worth testing on its own: it is a question about
-  the existing k-mer path, not about minimizers.
+### The fix, and what it says about the k-mer screen
+
+The predicate never needed the screen. It asks a question about the *pair* — do
+these two sequences contain an indel? — and read it off `kdist` only because the
+k-mer screen already had that number lying around.
+
+`kord` is stored under **both** backends and `kord[i]` *is* the k-mer index at
+position `i`, so its value multiset is exactly the k-mer composition. Both counts
+come from it:
+
+```text
+positional     = #{ i : kord_a[i] == kord_b[i] }
+compositional  = |multiset(kord_a) ∩ multiset(kord_b)|
+gapless        ⟺  compositional == positional
+```
+
+`pair_is_gapless` computes that and consults no screen at all. The `4^k` counter
+is **per-thread scratch, not per-raw resident**, and is cleared only over the
+`klen` entries touched — so recovering the exact predicate does *not* give back
+the memory the sketch saves. The now-dead per-pair `kord_dist` is removed; it ran
+on every screened pair, including the majority the screen then rejected.
+
+**A minimizer-specific analogue would have been a trap.** Comparing the *i*-th
+minimizer of each read reports "no indel" even when there is one, because
+winnowing is deliberately shift-robust and an indel barely perturbs the ordered
+minimizer list. Doing it properly needs per-minimizer sequence offsets (~45% more
+sketch) to reconstruct what `kord` already holds.
+
+Result: both backends take the gapless path **exactly 2,341 times**, the k-mer
+backend is bit-identical through the change, and the minimizer residual falls
+from 0.3348% to **0.0596%**.
+
+### Which arm is actually more faithful
+
+With the coupling gone, an unscreened run (cutoff 1.0) becomes a usable reference
+for what denoising does *without* the prefilter:
+
+| arm | ASVs | vs unscreened |
+|---|---|---|
+| unscreened | 231 | — |
+| k-mer @ 0.42 (production, = R DADA2) | **232** | **+1 ASV**, L1 0.0692% |
+| minimizer @ 0.72 (calibrated) | **231** | **ASV set identical**, L1 0.0612% |
+
+The screen is supposed to be a pure speed optimisation, dropping only pairs that
+could not have mattered. **On this dataset the k-mer screen at 0.42 is not
+lossless** — it yields one ASV unscreened denoising does not. The calibrated
+minimizer screen is lossless here.
+
+Both framings are true and they use different references: against **R DADA2**,
+which is this project's stated fidelity target, the k-mer arm is correct by
+definition and the minimizer differs by one ASV. Against **what the algorithm
+does without a lossy prefilter**, the minimizer is the more faithful of the two.
+One ASV in 231 on one dataset is a modest effect — but it is measured against a
+zero noise floor, and it is a fact about the *existing* screen, not about
+minimizers.
 
 ## Two claims this falsified
 
