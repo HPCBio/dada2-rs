@@ -12,7 +12,7 @@
 //! Traceback pointer values: `1` = diagonal, `2` = left (gap in s1), `3` = up (gap in s2).
 
 use crate::containers::{Raw, Sub};
-use crate::kmers::{assign_kmer, kmer_dist, kord_dist};
+use crate::kmers::{assign_kmer, kmer_dist};
 use crate::minimizers;
 // The experimental WFA backend lives in [`crate::wfa`]; the ends-free dispatch
 // below routes to it when selected. `align_wfa_endsfree_with_buf` and
@@ -164,6 +164,11 @@ pub struct VectorizedAlignScores {
 /// avoid per-alignment `Vec<u8>` allocations (~2× per `raw_align`).
 #[derive(Default)]
 pub struct AlignBuffers {
+    /// Per-thread scratch for the no-indel predicate: one counter per k-mer
+    /// index (`4^k`). Sized per *thread*, not per raw, so it costs
+    /// `threads x 4^k` rather than `nraw x 4^k` -- which is why recovering the
+    /// exact k-mer predicate does not give back the memory the sketch saves.
+    kord_counts: Vec<i32>,
     /// Screen-audit state: whether the last comparison passed each screen.
     /// Written by `raw_align_with_buf`, consumed by `sub_new_with_buf`, which is
     /// the first point at which the substitution count exists.
@@ -1331,7 +1336,6 @@ pub fn raw_align_with_screen(
         buf.last_align_nanos = 0;
     }
     let mut kdist = 0.0f64;
-    let mut kodist = -1.0f64; // sentinel: different from kdist when use_kmers=false
 
     if p.use_kmers {
         let k = p.kmer_size;
@@ -1390,11 +1394,10 @@ pub fn raw_align_with_screen(
             buf.audit_mini_pass = mini_d <= p.kdist_cutoff;
         }
 
-        if p.gapless
-            && let (Some(o1), Some(o2)) = (&raw1.kord, &raw2.kord)
-        {
-            kodist = kord_dist(o1, raw1.len(), o2, raw2.len(), k);
-        }
+        // `kord_dist` used to be computed here to feed the gapless predicate.
+        // That predicate now derives both of its counts from `kord` inside
+        // `pair_is_gapless`, so this per-pair pass is dead -- and it ran on every
+        // screened pair, including the majority that the screen then rejected.
     }
 
     if let Some(t) = t_screen {
@@ -1417,12 +1420,77 @@ pub fn raw_align_with_screen(
     }
 
     let t_align = buf.measure.then(std::time::Instant::now);
-    let r = raw_align_dp(raw1, raw2, p, buf, kdist, kodist);
+    let r = raw_align_dp(raw1, raw2, p, buf);
     if let Some(t) = t_align {
         buf.last_dp_nanos = t.elapsed().as_nanos() as u64;
         buf.last_align_nanos = buf.last_dp_nanos;
     }
     r
+}
+
+/// Whether a pair is free of indels, decided from `kord` alone.
+///
+/// This is the screen-independent form of DADA2's gapless predicate. The
+/// original test is `kord_dist == kmer_dist`, and with equal lengths both share
+/// the denominator `len - k + 1`, so it reduces to two counts:
+///
+/// - **positional** matches: k-mers equal at the same offset,
+/// - **compositional** matches: the multiset intersection.
+///
+/// The intersection is always >= the positional count, because a positional
+/// match is also a multiset match. An indel shifts every downstream k-mer: it
+/// stays in the multiset but leaves its offset, so the intersection strictly
+/// exceeds the positional count. Equality therefore means no shift, hence no
+/// indel, hence a gapless alignment is safe.
+///
+/// Both counts come from `kord`, which is populated under **either** screen
+/// backend and whose value at `i` *is* the k-mer index at position `i` -- so its
+/// value multiset is exactly the k-mer composition. Nothing here consults the
+/// screen.
+///
+/// That matters because the predicate was never a property of the screen; it is
+/// a property of the pair. Reading it off `kdist` was an optimisation that
+/// happened to work while `kdist` was a k-mer frequency distance, and it broke
+/// silently when a different screen supplied a distance from another space
+/// (see `docs/findings/minimizer-screening.md`).
+fn pair_is_gapless(raw1: &Raw, raw2: &Raw, k: usize, scratch: &mut Vec<i32>) -> bool {
+    if raw1.len() != raw2.len() {
+        return false; // kord_dist is undefined for unequal lengths
+    }
+    let (Some(o1), Some(o2)) = (&raw1.kord, &raw2.kord) else {
+        return false;
+    };
+    let Some(klen) = raw1.len().checked_sub(k - 1).filter(|&l| l > 0) else {
+        return false;
+    };
+    if o1.len() < klen || o2.len() < klen {
+        return false;
+    }
+    let (a, b) = (&o1[..klen], &o2[..klen]);
+
+    let positional = a.iter().zip(b).filter(|(x, y)| x == y).count();
+
+    let n = crate::kmers::n_kmers(k);
+    if scratch.len() < n {
+        scratch.resize(n, 0);
+    }
+    for &v in a {
+        scratch[v as usize] += 1;
+    }
+    let mut intersection = 0usize;
+    for &v in b {
+        let c = &mut scratch[v as usize];
+        if *c > 0 {
+            *c -= 1;
+            intersection += 1;
+        }
+    }
+    // Clear only what was touched: O(klen), not O(4^k).
+    for &v in a {
+        scratch[v as usize] = 0;
+    }
+
+    intersection == positional
 }
 
 /// Gapless-shortcut hit counters, active only under `--screen-audit`.
@@ -1446,16 +1514,14 @@ fn screen_dist_minimizer(raw1: &Raw, raw2: &Raw) -> f64 {
 /// The alignment half of [`raw_align_with_buf`], split out so the k-mer screen
 /// and the DP can be timed separately (#127). Behaviour is unchanged: this is
 /// the body that followed the screen's early return.
-fn raw_align_dp(
-    raw1: &Raw,
-    raw2: &Raw,
-    p: &AlignParams,
-    buf: &mut AlignBuffers,
-    kdist: f64,
-    kodist: f64,
-) -> Option<()> {
+fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers) -> Option<()> {
     // --- Method selection ---
-    let take_gapless = p.band == 0 || (p.gapless && (kodist - kdist).abs() < f64::EPSILON);
+    // Method selection is decided from `kord`, independent of which screen ran.
+    // For the k-mer backend this reproduces the historical `kodist == kdist`
+    // test exactly (that equality IS `intersection == positional`); for the
+    // minimizer backend it restores a predicate that `kdist` could not express.
+    let take_gapless = p.band == 0
+        || (p.gapless && pair_is_gapless(raw1, raw2, p.kmer_size, &mut buf.kord_counts));
     if p.screen_audit {
         // The gapless shortcut fires on `kodist == kdist`: the positional and
         // compositional k-mer distances agreeing means no shifts, hence no
