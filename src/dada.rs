@@ -27,8 +27,10 @@ use crate::error::{
     BirthSubRecord, ClusterStats, birth_sub_records, cluster_quality, cluster_stats,
     transition_counts,
 };
-use crate::kmers::{KMER_SIZE_MAX, KMER_SIZE_MIN, raw_assign_kmers};
+use crate::kmers::{KMER_SIZE_MAX, KMER_SIZE_MIN, assign_kmer_order, raw_assign_kmers};
+use crate::minimizers::{self, MINIMIZER_K_MAX, MINIMIZER_K_MIN, MINIMIZER_W_MAX, MINIMIZER_W_MIN};
 use crate::misc::nt_encode;
+use crate::nwalign::ScreenBackend;
 use crate::nwalign::{AlignBuffers, AlignParams, sub_new_with_buf};
 use crate::pval::{b_p_update, calc_pA};
 use std::sync::OnceLock;
@@ -269,6 +271,32 @@ pub fn dada_uniques_cached(
             "All input sequences must be longer than the k-mer size ({k})."
         ));
     }
+    if params.align.screen_backend == ScreenBackend::Minimizer {
+        let (mk, mw) = (params.align.minimizer_k, params.align.minimizer_w);
+        if !(MINIMIZER_K_MIN..=MINIMIZER_K_MAX).contains(&mk) {
+            return Err(format!(
+                "minimizer_k {mk} out of supported range ({MINIMIZER_K_MIN}..={MINIMIZER_K_MAX})."
+            ));
+        }
+        if !(MINIMIZER_W_MIN..=MINIMIZER_W_MAX).contains(&mw) {
+            return Err(format!(
+                "minimizer_w {mw} out of supported range ({MINIMIZER_W_MIN}..={MINIMIZER_W_MAX})."
+            ));
+        }
+        // Not an error: a sequence shorter than one full window gets an empty
+        // sketch, and `screen_dist_minimizer` deliberately fails *open* on it
+        // (aligns rather than screens out). That is correct but silent, so say
+        // so once here rather than letting an unexplained loss of screening
+        // efficiency look like a performance bug.
+        if minlen < mk + mw - 1 && params.verbose {
+            eprintln!(
+                "[dada] warning: shortest input is {minlen} nt, below the minimizer \
+                 window ({} nt for k={mk}, w={mw}); those sequences bypass the screen \
+                 and are always aligned",
+                mk + mw - 1
+            );
+        }
+    }
     // Reject non-ACGT here rather than in the inner loop (issue #101). `N` in
     // particular is a user error with a known remedy — DADA2's workflow requires
     // `maxN=0` — so it deserves the same treatment as the other input problems
@@ -412,8 +440,23 @@ pub fn dada_uniques_cached(
                 .collect();
 
             if params.align.use_kmers {
-                for raw in &mut raws {
-                    raw_assign_kmers(raw, k);
+                match params.align.screen_backend {
+                    ScreenBackend::Kmer => {
+                        for raw in &mut raws {
+                            raw_assign_kmers(raw, k);
+                        }
+                    }
+                    ScreenBackend::Minimizer => {
+                        let (mk, mw) = (params.align.minimizer_k, params.align.minimizer_w);
+                        for raw in &mut raws {
+                            // `kord` is still needed: the gapless fast path in
+                            // `raw_align_dp` keys off the k-order vector, not off
+                            // the screen. `kmer8` is deliberately left `None` —
+                            // building both screens would pay twice for one.
+                            raw.minimizers = Some(minimizers::sketch(&raw.seq, mk, mw));
+                            raw.kord = Some(assign_kmer_order(&raw.seq, k));
+                        }
+                    }
                 }
             }
 
@@ -429,18 +472,25 @@ pub fn dada_uniques_cached(
                 let (mut kmer_b, mut seq_b) = (0usize, 0usize);
                 for r in &raws {
                     kmer_b += r.kmer8.as_ref().map_or(0, |v| v.resident_bytes())
+                        + r.minimizers.as_ref().map_or(0, |m| m.resident_bytes())
                         + r.kord.as_ref().map_or(0, |v| v.len() * 2);
                     seq_b += r.seq.len() + r.qual.as_ref().map_or(0, |q| q.len());
                 }
                 let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
-                let screen_repr = if k >= crate::kmers::SPARSE_KMER_MIN {
-                    "sparse #43"
-                } else {
-                    "dense"
+                let screen_repr = match params.align.screen_backend {
+                    ScreenBackend::Minimizer => format!(
+                        "minimizer sketch k={}/w={}",
+                        params.align.minimizer_k, params.align.minimizer_w
+                    ),
+                    ScreenBackend::Kmer if k >= crate::kmers::SPARSE_KMER_MIN => {
+                        "sparse #43".to_string()
+                    }
+                    ScreenBackend::Kmer => "dense".to_string(),
                 };
                 eprintln!(
                     "[dada] resident Raw footprint: {nr} raws, seq+qual {:.1} MB, \
-                     k-mer vectors {:.1} MB ({:.0} B/raw) [k={k}; kmer8 {screen_repr}; u16 k-mer freq not stored, #32]",
+                     screen vectors {:.1} MB ({:.0} B/raw) [kord k={k}; screen {screen_repr}; \
+                     u16 k-mer freq not stored, #32]",
                     mb(seq_b),
                     mb(kmer_b),
                     if nr > 0 {
@@ -461,6 +511,53 @@ pub fn dada_uniques_cached(
                 //    over-amplified data (inflated PCR error/chimera k-mers, not
                 //    biological diversity). Cost: one 4^k-bit presence bitmap
                 //    (≤8 KB through k8) + a single pass over the screens.
+                if nr > 0 && raws.iter().any(|r| r.minimizers.is_some()) {
+                    // The minimizer counterpart of the kmer8 fill/diversity
+                    // block below. Two signals worth watching:
+                    //  - DENSITY = sketch entries / (len - k + 1). Winnowing
+                    //    predicts ~2/(w+1); well above that means the sketch is
+                    //    not compressing (short reads, or low-complexity content
+                    //    defeating the window), which costs memory without
+                    //    buying specificity.
+                    //  - POOLED SHARING = Σ per-raw entries / distinct
+                    //    minimizers across the pool. High sharing means the
+                    //    sketch is landing on conserved regions and the screen
+                    //    will be permissive; near-1 means every raw is picking
+                    //    its own minimizers and the screen will be aggressive.
+                    let mut entries_sum = 0usize;
+                    let mut positional_sum = 0usize;
+                    let mut union: std::collections::HashSet<u64> =
+                        std::collections::HashSet::new();
+                    let mut unusable = 0usize;
+                    let mw = params.align.minimizer_w;
+                    let mk = params.align.minimizer_k;
+                    for r in &raws {
+                        if let Some(m) = &r.minimizers {
+                            entries_sum += m.total() as usize;
+                            positional_sum += r.len().saturating_sub(mk - 1);
+                            union.extend(m.hashes());
+                            if m.is_empty() {
+                                unusable += 1;
+                            }
+                        }
+                    }
+                    let density = entries_sum as f64 / positional_sum.max(1) as f64;
+                    eprintln!(
+                        "[dada] minimizer sketch: mean {:.0} entries/raw, density {:.3} \
+                         (winnowing predicts {:.3} at w={mw}), {unusable} raws unsketchable \
+                         (screen bypassed)",
+                        entries_sum as f64 / nr as f64,
+                        density,
+                        2.0 / (mw as f64 + 1.0),
+                    );
+                    eprintln!(
+                        "[dada] minimizer pooled diversity: {} distinct minimizers, \
+                         mean sharing {:.1}× across {nr} uniques",
+                        union.len(),
+                        entries_sum as f64 / union.len().max(1) as f64,
+                    );
+                }
+
                 if nr > 0 && raws.iter().any(|r| r.kmer8.is_some()) {
                     let nk = crate::kmers::n_kmers(k);
                     let mut bitmap = vec![0u64; nk.div_ceil(64)];

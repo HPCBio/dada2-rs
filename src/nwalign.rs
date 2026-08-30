@@ -13,6 +13,7 @@
 
 use crate::containers::{Raw, Sub};
 use crate::kmers::{assign_kmer, kmer_dist, kord_dist};
+use crate::minimizers;
 // The experimental WFA backend lives in [`crate::wfa`]; the ends-free dispatch
 // below routes to it when selected. `align_wfa_endsfree_with_buf` and
 // `wfa_cost_cap` exist in every build (a stub / pure arithmetic respectively);
@@ -59,6 +60,36 @@ pub enum AlignBackend {
     Wfa2,
 }
 
+/// Which pre-alignment screen decides whether a pair is worth aligning.
+///
+/// Both backends feed the same `kdist_cutoff` gate and neither defines the
+/// clusters — the screen only avoids alignments (see
+/// `docs/findings/kmer-size-screening.md`). They differ in *which* k-mers are
+/// consulted: `Kmer` compares full `4^k` frequency vectors, `Minimizer` compares
+/// a winnowed sketch. Experimental, opt-in, and default `Kmer`, on the same
+/// footing as [`AlignBackend::Wfa2`]: this deviates from the R/C++ reference,
+/// whose screen is the ESPRIT frequency vector.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum ScreenBackend {
+    /// ESPRIT-style `4^k` k-mer frequency vectors, the default and the R
+    /// reference's behaviour.
+    #[default]
+    Kmer,
+    /// Experimental winnowed-minimizer sketch (see [`crate::minimizers`]).
+    Minimizer,
+}
+
 /// Parameters controlling alignment method selection in `raw_align`.
 #[derive(Clone, Copy)]
 pub struct AlignParams {
@@ -78,6 +109,16 @@ pub struct AlignParams {
     pub homo_gap_p: i32,
     pub use_kmers: bool,
     pub kdist_cutoff: f64,
+    /// Which pre-alignment screen to use (experimental; default
+    /// [`ScreenBackend::Kmer`]).
+    pub screen_backend: ScreenBackend,
+    /// K-mer size for the minimizer sketch. Ignored unless `screen_backend` is
+    /// [`ScreenBackend::Minimizer`]. Independent of `kmer_size`: the sketch's
+    /// memory does not scale with it, so it is chosen purely for discrimination.
+    pub minimizer_k: usize,
+    /// Winnowing window, in k-mers, for the minimizer sketch. Ignored unless
+    /// `screen_backend` is [`ScreenBackend::Minimizer`].
+    pub minimizer_w: usize,
     /// K-mer size used for the pre-alignment screen and for building the
     /// k-mer / k-order vectors on each `Raw`. Must match the `k` used when
     /// `raw_assign_kmers` populated those vectors (otherwise the distance
@@ -1263,26 +1304,33 @@ pub fn raw_align_with_buf(
 
     if p.use_kmers {
         let k = p.kmer_size;
-        // Prefer 8-bit kmer distance; fall back to 16-bit on overflow.
-        kdist = match (&raw1.kmer8, &raw2.kmer8) {
-            (Some(k1), Some(k2)) => {
-                let d8 = k1.dist8(k2, raw1.len(), raw2.len(), k);
-                if d8 < 0.0 {
-                    // Overflow (a k-mer occurs ≥255× in both seqs): fall back to
-                    // the exact 16-bit distance. The u16 vectors are not kept
-                    // resident (issue #32), so recompute them from sequence here
-                    // — this path is essentially never hit for amplicon data.
-                    let v1 = assign_kmer(&raw1.seq, k);
-                    let v2 = assign_kmer(&raw2.seq, k);
-                    kmer_dist(&v1, raw1.len(), &v2, raw2.len(), k)
-                } else {
-                    d8
+        kdist = match p.screen_backend {
+            ScreenBackend::Kmer => {
+                // Prefer 8-bit kmer distance; fall back to 16-bit on overflow.
+                match (&raw1.kmer8, &raw2.kmer8) {
+                    (Some(k1), Some(k2)) => {
+                        let d8 = k1.dist8(k2, raw1.len(), raw2.len(), k);
+                        if d8 < 0.0 {
+                            // Overflow (a k-mer occurs ≥255× in both seqs): fall
+                            // back to the exact 16-bit distance. The u16 vectors
+                            // are not kept resident (issue #32), so recompute
+                            // them from sequence here — this path is essentially
+                            // never hit for amplicon data.
+                            let v1 = assign_kmer(&raw1.seq, k);
+                            let v2 = assign_kmer(&raw2.seq, k);
+                            kmer_dist(&v1, raw1.len(), &v2, raw2.len(), k)
+                        } else {
+                            d8
+                        }
+                    }
+                    // No 8-bit vectors built (e.g. cluster-center raws): no
+                    // k-mer screen, exactly as before — previously both kmer8
+                    // and the u16 kmer were absent together, yielding
+                    // kdist = 0.0.
+                    _ => 0.0,
                 }
             }
-            // No 8-bit vectors built (e.g. cluster-center raws): no k-mer screen,
-            // exactly as before — previously both kmer8 and the u16 kmer were
-            // absent together, yielding kdist = 0.0.
-            _ => 0.0,
+            ScreenBackend::Minimizer => screen_dist_minimizer(raw1, raw2, p),
         };
 
         if p.gapless
@@ -1307,6 +1355,35 @@ pub fn raw_align_with_buf(
         buf.last_align_nanos = buf.last_dp_nanos;
     }
     r
+}
+
+/// Minimizer-sketch screen distance for a pair (experimental,
+/// [`ScreenBackend::Minimizer`]).
+///
+/// Returns `0.0` — "as close as possible", i.e. *screen passes* — whenever the
+/// distance cannot be trusted, matching the k-mer path's behaviour when a raw
+/// has no `kmer8` vector. There are two such cases, and both must fail open:
+///
+/// - **A sketch is missing.** Cluster-center raws built outside the normal
+///   `dada` path have none, exactly as they have no `kmer8`.
+/// - **A sequence is too short to sketch** (`len < k + w - 1`, so no full
+///   window exists). [`minimizers::minimizer_dist`] would report 1.0 for the
+///   resulting empty sketch, which is maximal distance and would screen the pair
+///   out on the basis of *no evidence at all* — a silent false negative that
+///   removes short sequences from consideration entirely. Failing open costs an
+///   alignment; failing closed would lose real ASVs.
+#[inline]
+fn screen_dist_minimizer(raw1: &Raw, raw2: &Raw, p: &AlignParams) -> f64 {
+    let (k, w) = (p.minimizer_k, p.minimizer_w);
+    if !minimizers::sketch_is_usable(raw1.len(), k, w)
+        || !minimizers::sketch_is_usable(raw2.len(), k, w)
+    {
+        return 0.0;
+    }
+    match (&raw1.minimizers, &raw2.minimizers) {
+        (Some(m1), Some(m2)) => minimizers::minimizer_dist(m1, m2),
+        _ => 0.0,
+    }
 }
 
 /// The alignment half of [`raw_align_with_buf`], split out so the k-mer screen

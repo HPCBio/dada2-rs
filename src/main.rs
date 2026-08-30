@@ -10,8 +10,8 @@ use rayon::prelude::*;
 // modules this binary uses into scope so the existing `foo::Bar` paths resolve.
 use dada2_rs::{
     chimera_diagnostics, cli, cluster_trace, containers, dada, derep, error_models, failed_uniques,
-    filter_trim, kdist_calibrate, learn_errors, merge_pairs, misc, nwalign, reference_eval,
-    remove_bimera, remove_primers, sequence_table, summary, taxonomy,
+    filter_trim, kdist_calibrate, learn_errors, merge_pairs, minimizers, misc, nwalign,
+    reference_eval, remove_bimera, remove_primers, sequence_table, summary, taxonomy,
 };
 
 use clap::CommandFactory;
@@ -26,7 +26,7 @@ use learn_errors::{
     load_fastq_samples,
 };
 use misc::{DADA2_RS_VERSION, Tagged, read_fasta_records, read_tagged_json};
-use nwalign::{AlignBackend, AlignParams};
+use nwalign::{AlignBackend, AlignParams, ScreenBackend};
 use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
 use remove_primers::{RemovePrimersParams, iupac_reverse_complement, remove_primers};
 use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
@@ -759,6 +759,9 @@ fn run() -> io::Result<()> {
             match_score,
             mismatch,
             align_backend,
+            screen_backend,
+            minimizer_k,
+            minimizer_w,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -866,6 +869,9 @@ fn run() -> io::Result<()> {
                     no_kmer_screen,
                     align_backend,
                     wfa_max_edits,
+                    screen_backend,
+                    minimizer_k,
+                    minimizer_w,
                 )?;
 
                 // Samples are independent and single-pass (load -> denoise ->
@@ -1054,6 +1060,9 @@ fn run() -> io::Result<()> {
                 no_kmer_screen,
                 align_backend,
                 wfa_max_edits,
+                screen_backend,
+                minimizer_k,
+                minimizer_w,
             )?;
             let dada_params = resolved.params;
             let run_params = resolved.run;
@@ -1290,6 +1299,9 @@ fn run() -> io::Result<()> {
             match_score,
             mismatch,
             align_backend,
+            screen_backend,
+            minimizer_k,
+            minimizer_w,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -1522,6 +1534,9 @@ fn run() -> io::Result<()> {
                 no_kmer_screen,
                 align_backend,
                 wfa_max_edits,
+                screen_backend,
+                minimizer_k,
+                minimizer_w,
             )?;
             let dada_params = resolved.params;
             let mut run_params = resolved.run;
@@ -1793,6 +1808,9 @@ fn run() -> io::Result<()> {
             match_score,
             mismatch,
             align_backend,
+            screen_backend,
+            minimizer_k,
+            minimizer_w,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -1876,6 +1894,9 @@ fn run() -> io::Result<()> {
                 no_kmer_screen,
                 align_backend,
                 wfa_max_edits,
+                screen_backend,
+                minimizer_k,
+                minimizer_w,
             )?;
 
             // ---- Validate the re-estimation request up front ----
@@ -3166,6 +3187,9 @@ fn run() -> io::Result<()> {
             match_score,
             mismatch,
             align_backend,
+            screen_backend,
+            minimizer_k,
+            minimizer_w,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -3262,6 +3286,9 @@ fn run() -> io::Result<()> {
                 use_kmers: !no_kmer_screen,
                 kdist_cutoff,
                 kmer_size,
+                screen_backend: screen_backend.unwrap_or_default(),
+                minimizer_k: minimizer_k.unwrap_or(minimizers::MINIMIZER_K),
+                minimizer_w: minimizer_w.unwrap_or(minimizers::MINIMIZER_W),
                 band,
                 vectorized: true,
                 gapless: true,
@@ -3845,6 +3872,9 @@ fn run() -> io::Result<()> {
             match_score,
             mismatch,
             align_backend,
+            screen_backend,
+            minimizer_k,
+            minimizer_w,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -3941,6 +3971,9 @@ fn run() -> io::Result<()> {
                 use_kmers: !no_kmer_screen,
                 kdist_cutoff,
                 kmer_size,
+                screen_backend: screen_backend.unwrap_or_default(),
+                minimizer_k: minimizer_k.unwrap_or(minimizers::MINIMIZER_K),
+                minimizer_w: minimizer_w.unwrap_or(minimizers::MINIMIZER_W),
                 band,
                 vectorized: true,
                 gapless: true,
@@ -4366,6 +4399,9 @@ fn resolve_dada_params(
     no_kmer_screen: Option<bool>,
     align_backend: Option<AlignBackend>,
     wfa_max_edits: Option<i32>,
+    screen_backend: Option<ScreenBackend>,
+    minimizer_k: Option<usize>,
+    minimizer_w: Option<usize>,
 ) -> io::Result<ResolvedDada> {
     let em: ErrorModelJson = read_tagged_json(error_model, &["learn-errors", "errors-from-sample"])
         .with_path(error_model)?;
@@ -4494,6 +4530,16 @@ fn resolve_dada_params(
         use_kmers,
         kdist_cutoff,
         kmer_size,
+        // Deliberately NOT resolved through the error model's `params` block,
+        // unlike every neighbour here. The screen backend is experimental and
+        // absent from models written by any released version, so inheriting it
+        // would silently resolve to `Kmer` and override an explicit
+        // `--screen-backend minimizer`. Consequence: a model learned under one
+        // screen and applied under the other is not flagged the way a
+        // `kdist_cutoff` mismatch is. Revisit if the backend is promoted.
+        screen_backend: screen_backend.unwrap_or_default(),
+        minimizer_k: minimizer_k.unwrap_or(minimizers::MINIMIZER_K),
+        minimizer_w: minimizer_w.unwrap_or(minimizers::MINIMIZER_W),
         band,
         vectorized: true,
         gapless: true,

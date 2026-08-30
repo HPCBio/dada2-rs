@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{ArgAction, Parser, Subcommand};
 
 use crate::misc::DADA2_RS_VERSION;
-use crate::nwalign::AlignBackend;
+use crate::nwalign::{AlignBackend, ScreenBackend};
 
 #[derive(Parser)]
 #[command(
@@ -304,6 +304,29 @@ pub enum Commands {
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
+        /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
+        /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
+        /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
+        /// 4^k, so its k can be raised for specificity without paying for it in
+        /// memory. Both feed the same `--kdist-cutoff` gate and neither defines
+        /// the clusters. `minimizer` deviates from the reference implementation
+        /// and is not yet validated across platforms — see
+        /// docs/findings/minimizer-screening.md.
+        #[arg(long, value_enum)]
+        screen_backend: Option<ScreenBackend>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
+        /// minimizer sketch [default: 11]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 7-31.
+        #[arg(long)]
+        minimizer_k: Option<usize>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
+        /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
+        /// larger w is smaller and faster but less sensitive. Range 1-64.
+        #[arg(long)]
+        minimizer_w: Option<usize>,
+
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many
         /// edits and falls back to the NW path for that pair (NW-identical there).
@@ -522,6 +545,29 @@ pub enum Commands {
         /// published crate) errors when it is selected. See issue #63.
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
+
+        /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
+        /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
+        /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
+        /// 4^k, so its k can be raised for specificity without paying for it in
+        /// memory. Both feed the same `--kdist-cutoff` gate and neither defines
+        /// the clusters. `minimizer` deviates from the reference implementation
+        /// and is not yet validated across platforms — see
+        /// docs/findings/minimizer-screening.md.
+        #[arg(long, value_enum)]
+        screen_backend: Option<ScreenBackend>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
+        /// minimizer sketch [default: 11]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 7-31.
+        #[arg(long)]
+        minimizer_k: Option<usize>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
+        /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
+        /// larger w is smaller and faster but less sensitive. Range 1-64.
+        #[arg(long)]
+        minimizer_w: Option<usize>,
 
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many
@@ -775,6 +821,29 @@ pub enum Commands {
         /// published crate) errors when it is selected. See issue #63.
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
+
+        /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
+        /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
+        /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
+        /// 4^k, so its k can be raised for specificity without paying for it in
+        /// memory. Both feed the same `--kdist-cutoff` gate and neither defines
+        /// the clusters. `minimizer` deviates from the reference implementation
+        /// and is not yet validated across platforms — see
+        /// docs/findings/minimizer-screening.md.
+        #[arg(long, value_enum)]
+        screen_backend: Option<ScreenBackend>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
+        /// minimizer sketch [default: 11]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 7-31.
+        #[arg(long)]
+        minimizer_k: Option<usize>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
+        /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
+        /// larger w is smaller and faster but less sensitive. Range 1-64.
+        #[arg(long)]
+        minimizer_w: Option<usize>,
 
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many
@@ -1834,6 +1903,29 @@ pub enum Commands {
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
+        /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
+        /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
+        /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
+        /// 4^k, so its k can be raised for specificity without paying for it in
+        /// memory. Both feed the same `--kdist-cutoff` gate and neither defines
+        /// the clusters. `minimizer` deviates from the reference implementation
+        /// and is not yet validated across platforms — see
+        /// docs/findings/minimizer-screening.md.
+        #[arg(long, value_enum)]
+        screen_backend: Option<ScreenBackend>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
+        /// minimizer sketch [default: 11]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 7-31.
+        #[arg(long)]
+        minimizer_k: Option<usize>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
+        /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
+        /// larger w is smaller and faster but less sensitive. Range 1-64.
+        #[arg(long)]
+        minimizer_w: Option<usize>,
+
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many
         /// edits and falls back to the NW path for that pair (NW-identical there).
@@ -2143,6 +2235,29 @@ pub enum Commands {
         /// published crate) errors when it is selected. See issue #63.
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
+
+        /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
+        /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
+        /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
+        /// 4^k, so its k can be raised for specificity without paying for it in
+        /// memory. Both feed the same `--kdist-cutoff` gate and neither defines
+        /// the clusters. `minimizer` deviates from the reference implementation
+        /// and is not yet validated across platforms — see
+        /// docs/findings/minimizer-screening.md.
+        #[arg(long, value_enum)]
+        screen_backend: Option<ScreenBackend>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
+        /// minimizer sketch [default: 11]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 7-31.
+        #[arg(long)]
+        minimizer_k: Option<usize>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
+        /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
+        /// larger w is smaller and faster but less sensitive. Range 1-64.
+        #[arg(long)]
+        minimizer_w: Option<usize>,
 
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many

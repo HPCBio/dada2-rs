@@ -93,6 +93,13 @@ pub struct Raw {
     pub kmer8: Option<KmerScreen>,
     /// K-mers in the order they appear along the sequence; populated by kmers module.
     pub kord: Option<Vec<u16>>,
+    /// Winnowed minimizer sketch, populated only under
+    /// `ScreenBackend::Minimizer` (experimental). Mutually exclusive with
+    /// `kmer8` in practice — the two backends are alternatives, and building
+    /// both would pay twice for one screen. `kord` is still built alongside it,
+    /// because the gapless fast path keys off the k-order vector rather than off
+    /// the screen.
+    pub minimizers: Option<crate::minimizers::MinimizerSketch>,
     /// Number of reads of this unique sequence.
     pub reads: u32,
     /// Index of this Raw in `B.raws`.
@@ -143,6 +150,7 @@ impl Raw {
             prior,
             kmer8: None,
             kord: None,
+            minimizers: None,
             reads,
             index: 0,
             p: 0.0,
@@ -163,7 +171,8 @@ impl Raw {
 
     /// Reset per-iteration mutable state so this Raw can be fed back into a
     /// fresh DADA run without re-encoding the sequence or recomputing k-mer
-    /// vectors. Leaves `seq`, `qual`, `kmer8`, `kord`, `reads`, `prior`
+    /// vectors. Leaves `seq`, `qual`, `kmer8`, `kord`, `minimizers`, `reads`,
+    /// `prior`
     /// intact — those are fixed for the life of the input. `index` is
     /// reassigned by `B::new`, which also re-seeds [`B::e_minmax`].
     pub fn reset_for_iteration(&mut self) {
