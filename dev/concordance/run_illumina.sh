@@ -132,8 +132,23 @@ else
 fi
 
 echo "==> merge-pairs"
+# merge-pairs pairs its four lists POSITIONALLY, so the dada JSONs must be
+# enumerated in the same order as filtFs/filtRs -- NOT globbed independently.
+# Globbing breaks on the MiSeq SOP and any similar naming: the FASTQ glob sorts
+# `F3D1F.fastq.gz` against `F3D141F.fastq.gz` while the JSON glob sorts
+# `F3D1_F_filt.json` against `F3D141_F_filt.json`, and the inserted `_` flips
+# their relative order. The 2-sample fixture never exposed it; at 20 samples it
+# silently mis-pairs 10 of them, and only a downstream map-length check turns it
+# into a visible error.
+dadaFs=(); dadaRs=()
+for ff in "${filtFs[@]}"; do
+  dadaFs+=("$OUT/dada_fwd/$(basename "$ff" .fastq.gz).json")
+done
+for fr in "${filtRs[@]}"; do
+  dadaRs+=("$OUT/dada_rev/$(basename "$fr" .fastq.gz).json")
+done
 "$BIN" merge-pairs \
-    --fwd-dada "$OUT"/dada_fwd/*.json --rev-dada "$OUT"/dada_rev/*.json \
+    --fwd-dada "${dadaFs[@]}" --rev-dada "${dadaRs[@]}" \
     --fwd-fastq "${filtFs[@]}" --rev-fastq "${filtRs[@]}" \
     --threads "$THREADS" -o "$OUT/merged.json"
 
