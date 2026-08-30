@@ -564,3 +564,180 @@ mod tests {
         assert_eq!(minimizer_dist(&s, &s), 0.0);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Screen audit
+// ---------------------------------------------------------------------------
+
+/// Pair-level agreement between the two screen backends, for validating the
+/// minimizer screen against the k-mer screen it would replace.
+///
+/// This is the instrument for the question that decides whether the backend is
+/// safe: on a real pool, does the minimizer screen pass a **superset**, a
+/// **subset**, or a **different set** of the pairs that `kdist` passes? Wall
+/// clock and ASV counts both answer that only indirectly — ASV counts in
+/// particular are a known trap here (`docs/findings/kmer-size-screening.md`),
+/// because a screen change can churn intermediate clusters while the final table
+/// stays the same size.
+///
+/// The counts alone would still be ambiguous, because a *disagreement* is only
+/// bad if the pair mattered. So under audit the gate is the **union** of the two
+/// screens — every pair either backend would align is aligned — and each
+/// disagreement is bucketed by the substitution count the alignment actually
+/// found. A pair the minimizer screen rejects at 1 substitution is a candidate
+/// lost error-copy; the same rejection at 40 substitutions is the screen doing
+/// its job better.
+///
+/// Global rather than threaded through the return types because this is a
+/// diagnostic path only: it already pays two screens and aligns the union, so
+/// relaxed atomic contention is not what makes it slow.
+pub mod audit {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    /// Substitution-count buckets: 0, 1, 2, 3, 4, 5, 6-10, >10.
+    pub const NBUCKETS: usize = 8;
+
+    #[inline]
+    fn bucket(nsubs: usize) -> usize {
+        match nsubs {
+            0..=5 => nsubs,
+            6..=10 => 6,
+            _ => 7,
+        }
+    }
+
+    static COMPARISONS: AtomicU64 = AtomicU64::new(0);
+    static BOTH_PASS: AtomicU64 = AtomicU64::new(0);
+    static KMER_ONLY: AtomicU64 = AtomicU64::new(0);
+    static MINI_ONLY: AtomicU64 = AtomicU64::new(0);
+    static NEITHER: AtomicU64 = AtomicU64::new(0);
+
+    // Substitution histograms for the two disagreement classes and, for scale,
+    // the agreeing-pass class.
+    static H_KMER_ONLY: [AtomicU64; NBUCKETS] = [const { AtomicU64::new(0) }; NBUCKETS];
+    static H_MINI_ONLY: [AtomicU64; NBUCKETS] = [const { AtomicU64::new(0) }; NBUCKETS];
+    static H_BOTH: [AtomicU64; NBUCKETS] = [const { AtomicU64::new(0) }; NBUCKETS];
+
+    /// Record one comparison's two verdicts and, when the union gate aligned it,
+    /// the substitution count found. `nsubs` is `None` only when neither screen
+    /// passed, in which case no alignment was performed.
+    pub fn record(kmer_pass: bool, mini_pass: bool, nsubs: Option<usize>) {
+        COMPARISONS.fetch_add(1, Relaxed);
+        let (class, hist) = match (kmer_pass, mini_pass) {
+            (true, true) => (&BOTH_PASS, Some(&H_BOTH)),
+            (true, false) => (&KMER_ONLY, Some(&H_KMER_ONLY)),
+            (false, true) => (&MINI_ONLY, Some(&H_MINI_ONLY)),
+            (false, false) => (&NEITHER, None),
+        };
+        class.fetch_add(1, Relaxed);
+        if let (Some(h), Some(n)) = (hist, nsubs) {
+            h[bucket(n)].fetch_add(1, Relaxed);
+        }
+    }
+
+    /// Snapshot of the counters, for reporting.
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct Summary {
+        pub comparisons: u64,
+        pub both_pass: u64,
+        pub kmer_only: u64,
+        pub mini_only: u64,
+        pub neither: u64,
+        pub h_kmer_only: [u64; NBUCKETS],
+        pub h_mini_only: [u64; NBUCKETS],
+        pub h_both: [u64; NBUCKETS],
+    }
+
+    fn load_hist(h: &[AtomicU64; NBUCKETS]) -> [u64; NBUCKETS] {
+        std::array::from_fn(|i| h[i].load(Relaxed))
+    }
+
+    pub fn summary() -> Summary {
+        Summary {
+            comparisons: COMPARISONS.load(Relaxed),
+            both_pass: BOTH_PASS.load(Relaxed),
+            kmer_only: KMER_ONLY.load(Relaxed),
+            mini_only: MINI_ONLY.load(Relaxed),
+            neither: NEITHER.load(Relaxed),
+            h_kmer_only: load_hist(&H_KMER_ONLY),
+            h_mini_only: load_hist(&H_MINI_ONLY),
+            h_both: load_hist(&H_BOTH),
+        }
+    }
+
+    pub fn reset() {
+        for c in [&COMPARISONS, &BOTH_PASS, &KMER_ONLY, &MINI_ONLY, &NEITHER] {
+            c.store(0, Relaxed);
+        }
+        for h in [&H_KMER_ONLY, &H_MINI_ONLY, &H_BOTH] {
+            for b in h {
+                b.store(0, Relaxed);
+            }
+        }
+    }
+
+    /// Bucket labels, aligned with [`bucket`].
+    pub const BUCKET_LABELS: [&str; NBUCKETS] = ["0", "1", "2", "3", "4", "5", "6-10", ">10"];
+
+    impl Summary {
+        /// Human-readable report, one line per fact worth reading.
+        pub fn report(&self) -> String {
+            let n = self.comparisons.max(1) as f64;
+            let pct = |v: u64| 100.0 * v as f64 / n;
+            let kmer_pass = self.both_pass + self.kmer_only;
+            let mini_pass = self.both_pass + self.mini_only;
+            let hist = |h: &[u64; NBUCKETS]| {
+                BUCKET_LABELS
+                    .iter()
+                    .zip(h.iter())
+                    .map(|(l, v)| format!("{l}:{v}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            let mut s = String::new();
+            s.push_str(&format!(
+                "[screen-audit] {} comparisons; kmer passed {} ({:.2}%), minimizer passed {} ({:.2}%)\n",
+                self.comparisons,
+                kmer_pass,
+                pct(kmer_pass),
+                mini_pass,
+                pct(mini_pass),
+            ));
+            s.push_str(&format!(
+                "[screen-audit] agreement: both {} ({:.2}%), neither {} ({:.2}%), \
+                 kmer-only {} ({:.4}%), minimizer-only {} ({:.4}%)\n",
+                self.both_pass,
+                pct(self.both_pass),
+                self.neither,
+                pct(self.neither),
+                self.kmer_only,
+                pct(self.kmer_only),
+                self.mini_only,
+                pct(self.mini_only),
+            ));
+            // The decisive line: a kmer-only pair at low substitution count is a
+            // pair the minimizer screen would have shrouded but that the aligner
+            // says is a plausible error copy.
+            s.push_str(&format!(
+                "[screen-audit] nsubs | kmer-only (minimizer would MISS these): {}\n",
+                hist(&self.h_kmer_only)
+            ));
+            s.push_str(&format!(
+                "[screen-audit] nsubs | minimizer-only (extra alignments): {}\n",
+                hist(&self.h_mini_only)
+            ));
+            s.push_str(&format!(
+                "[screen-audit] nsubs | both passed (for scale): {}",
+                hist(&self.h_both)
+            ));
+            s
+        }
+
+        /// Substitution counts at or below which a shrouded pair could still
+        /// have been a real error copy. Pairs the minimizer screen misses in
+        /// this range are the ones that can cost ASVs.
+        pub fn kmer_only_close_pairs(&self) -> u64 {
+            self.h_kmer_only[..=3].iter().sum()
+        }
+    }
+}

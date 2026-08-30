@@ -327,6 +327,17 @@ pub enum Commands {
         #[arg(long)]
         minimizer_w: Option<usize>,
 
+        /// EXPERIMENTAL diagnostic (with `--screen-backend minimizer`): evaluate
+        /// BOTH screens on every comparison and align the union, reporting how
+        /// often they disagree and — for each disagreement — how many
+        /// substitutions the alignment actually found. Answers whether the
+        /// minimizer screen passes a superset, a subset, or a different set of
+        /// the pairs `--kdist-cutoff` passes. ASVs are unaffected (audit-only
+        /// alignments are discarded), but the run is substantially slower and
+        /// its timings are not comparable to a normal run.
+        #[arg(long, default_value_t = false)]
+        screen_audit: bool,
+
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many
         /// edits and falls back to the NW path for that pair (NW-identical there).
@@ -568,6 +579,17 @@ pub enum Commands {
         /// larger w is smaller and faster but less sensitive. Range 1-64.
         #[arg(long)]
         minimizer_w: Option<usize>,
+
+        /// EXPERIMENTAL diagnostic (with `--screen-backend minimizer`): evaluate
+        /// BOTH screens on every comparison and align the union, reporting how
+        /// often they disagree and — for each disagreement — how many
+        /// substitutions the alignment actually found. Answers whether the
+        /// minimizer screen passes a superset, a subset, or a different set of
+        /// the pairs `--kdist-cutoff` passes. ASVs are unaffected (audit-only
+        /// alignments are discarded), but the run is substantially slower and
+        /// its timings are not comparable to a normal run.
+        #[arg(long, default_value_t = false)]
+        screen_audit: bool,
 
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many
@@ -844,6 +866,17 @@ pub enum Commands {
         /// larger w is smaller and faster but less sensitive. Range 1-64.
         #[arg(long)]
         minimizer_w: Option<usize>,
+
+        /// EXPERIMENTAL diagnostic (with `--screen-backend minimizer`): evaluate
+        /// BOTH screens on every comparison and align the union, reporting how
+        /// often they disagree and — for each disagreement — how many
+        /// substitutions the alignment actually found. Answers whether the
+        /// minimizer screen passes a superset, a subset, or a different set of
+        /// the pairs `--kdist-cutoff` passes. ASVs are unaffected (audit-only
+        /// alignments are discarded), but the run is substantially slower and
+        /// its timings are not comparable to a normal run.
+        #[arg(long, default_value_t = false)]
+        screen_audit: bool,
 
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many
@@ -1926,6 +1959,17 @@ pub enum Commands {
         #[arg(long)]
         minimizer_w: Option<usize>,
 
+        /// EXPERIMENTAL diagnostic (with `--screen-backend minimizer`): evaluate
+        /// BOTH screens on every comparison and align the union, reporting how
+        /// often they disagree and — for each disagreement — how many
+        /// substitutions the alignment actually found. Answers whether the
+        /// minimizer screen passes a superset, a subset, or a different set of
+        /// the pairs `--kdist-cutoff` passes. ASVs are unaffected (audit-only
+        /// alignments are discarded), but the run is substantially slower and
+        /// its timings are not comparable to a normal run.
+        #[arg(long, default_value_t = false)]
+        screen_audit: bool,
+
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many
         /// edits and falls back to the NW path for that pair (NW-identical there).
@@ -2258,6 +2302,17 @@ pub enum Commands {
         /// larger w is smaller and faster but less sensitive. Range 1-64.
         #[arg(long)]
         minimizer_w: Option<usize>,
+
+        /// EXPERIMENTAL diagnostic (with `--screen-backend minimizer`): evaluate
+        /// BOTH screens on every comparison and align the union, reporting how
+        /// often they disagree and — for each disagreement — how many
+        /// substitutions the alignment actually found. Answers whether the
+        /// minimizer screen passes a superset, a subset, or a different set of
+        /// the pairs `--kdist-cutoff` passes. ASVs are unaffected (audit-only
+        /// alignments are discarded), but the run is substantially slower and
+        /// its timings are not comparable to a normal run.
+        #[arg(long, default_value_t = false)]
+        screen_audit: bool,
 
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many

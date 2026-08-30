@@ -455,6 +455,11 @@ pub fn dada_uniques_cached(
                             // building both screens would pay twice for one.
                             raw.minimizers = Some(minimizers::sketch(&raw.seq, mk, mw));
                             raw.kord = Some(assign_kmer_order(&raw.seq, k));
+                            // ...except under audit, which compares the two
+                            // screens pair-by-pair and therefore needs both.
+                            if params.align.screen_audit {
+                                raw_assign_kmers(raw, k);
+                            }
                         }
                     }
                 }
@@ -595,6 +600,13 @@ pub fn dada_uniques_cached(
 
     // ---- Run core algorithm ----
     let mut b = run_dada(raws, params);
+
+    if params.align.screen_audit {
+        // Counters are process-global, so with `--sample-jobs > 1` this is a
+        // cumulative snapshot across every sample denoised so far rather than
+        // this sample's own figures. Intended for a single pooled run.
+        eprintln!("{}", crate::minimizers::audit::summary().report());
+    }
 
     // ---- Final per-raw p-value pass ----
     // Determines raw->correct, which controls the read-to-cluster map.

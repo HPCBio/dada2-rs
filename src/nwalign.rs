@@ -119,6 +119,12 @@ pub struct AlignParams {
     /// Winnowing window, in k-mers, for the minimizer sketch. Ignored unless
     /// `screen_backend` is [`ScreenBackend::Minimizer`].
     pub minimizer_w: usize,
+    /// Diagnostic: evaluate BOTH screens on every comparison and align the
+    /// union, recording the pair-level agreement in [`minimizers::audit`].
+    /// Requires `screen_backend == Minimizer` and both screens built on each
+    /// `Raw`. Changes the work done (and therefore the timings) but not the
+    /// backend's own screen verdicts, so the ASVs are the minimizer backend's.
+    pub screen_audit: bool,
     /// K-mer size used for the pre-alignment screen and for building the
     /// k-mer / k-order vectors on each `Raw`. Must match the `k` used when
     /// `raw_assign_kmers` populated those vectors (otherwise the distance
@@ -158,6 +164,11 @@ pub struct VectorizedAlignScores {
 /// avoid per-alignment `Vec<u8>` allocations (~2× per `raw_align`).
 #[derive(Default)]
 pub struct AlignBuffers {
+    /// Screen-audit state: whether the last comparison passed each screen.
+    /// Written by `raw_align_with_buf`, consumed by `sub_new_with_buf`, which is
+    /// the first point at which the substitution count exists.
+    pub audit_kmer_pass: bool,
+    pub audit_mini_pass: bool,
     // Scalar DP (align_endsfree, align_endsfree_homo, align_standard).
     d32: Vec<i32>,
     p32: Vec<u8>,
@@ -1333,6 +1344,29 @@ pub fn raw_align_with_buf(
             ScreenBackend::Minimizer => screen_dist_minimizer(raw1, raw2, p),
         };
 
+        if p.screen_audit {
+            // Evaluate the *other* screen too and stash both verdicts. `kdist`
+            // itself is left as the active backend's value so the alignment path
+            // (banding, the gapless shortcut) is exactly what that backend would
+            // have taken — the audit changes which pairs are aligned, never how.
+            let other = match p.screen_backend {
+                ScreenBackend::Minimizer => match (&raw1.kmer8, &raw2.kmer8) {
+                    (Some(k1), Some(k2)) => {
+                        let d8 = k1.dist8(k2, raw1.len(), raw2.len(), k);
+                        if d8 < 0.0 { 0.0 } else { d8 }
+                    }
+                    _ => 0.0,
+                },
+                ScreenBackend::Kmer => screen_dist_minimizer(raw1, raw2, p),
+            };
+            let (kmer_d, mini_d) = match p.screen_backend {
+                ScreenBackend::Minimizer => (other, kdist),
+                ScreenBackend::Kmer => (kdist, other),
+            };
+            buf.audit_kmer_pass = kmer_d <= p.kdist_cutoff;
+            buf.audit_mini_pass = mini_d <= p.kdist_cutoff;
+        }
+
         if p.gapless
             && let (Some(o1), Some(o2)) = (&raw1.kord, &raw2.kord)
         {
@@ -1345,7 +1379,18 @@ pub fn raw_align_with_buf(
     }
 
     if p.use_kmers && kdist > p.kdist_cutoff {
-        return None; // Outside k-mer distance threshold → NULL alignment.
+        if p.screen_audit && (buf.audit_kmer_pass || buf.audit_mini_pass) {
+            // The active backend shrouded this pair but the other backend would
+            // have aligned it. Under audit we align anyway, so the disagreement
+            // can be bucketed by the substitution count the aligner finds —
+            // otherwise a disagreement is just a count, with no way to tell a
+            // lost error copy from a correctly-rejected stranger.
+        } else {
+            if p.screen_audit {
+                minimizers::audit::record(buf.audit_kmer_pass, buf.audit_mini_pass, None);
+            }
+            return None; // Outside k-mer distance threshold → NULL alignment.
+        }
     }
 
     let t_align = buf.measure.then(std::time::Instant::now);
@@ -1510,6 +1555,7 @@ pub fn sub_new_with_buf(
     buf: &mut AlignBuffers,
 ) -> Option<Sub> {
     raw_align_with_buf(raw0, raw1, params, buf)?;
+    let audit = params.screen_audit && params.use_kmers;
     // Post-alignment work is charged to the alignment half (#127): it is paid
     // only by pairs the screen let through, so it belongs to what the aligner
     // costs, not to the screen's unavoidable baseline.
@@ -1528,7 +1574,28 @@ pub fn sub_new_with_buf(
         buf.last_post_nanos = t.elapsed().as_nanos() as u64;
         buf.last_align_nanos += buf.last_post_nanos;
     }
+    if audit {
+        minimizers::audit::record(buf.audit_kmer_pass, buf.audit_mini_pass, Some(sub.nsubs()));
+    }
+    // Under audit the gate is the union of both screens, so a pair the ACTIVE
+    // backend shrouded may have been aligned purely to classify it. Returning
+    // its Sub would let the audit change the run's output, which would defeat
+    // the point of auditing that backend.
+    if audit && !screen_pass_for_backend(params, buf) {
+        return None;
+    }
     Some(sub)
+}
+
+/// Whether the active backend's own screen passed the last comparison, for
+/// discarding audit-only alignments. Reads the verdicts stashed by
+/// `raw_align_with_buf`.
+#[inline]
+fn screen_pass_for_backend(p: &AlignParams, buf: &AlignBuffers) -> bool {
+    match p.screen_backend {
+        ScreenBackend::Kmer => buf.audit_kmer_pass,
+        ScreenBackend::Minimizer => buf.audit_mini_pass,
+    }
 }
 
 #[cfg(test)]

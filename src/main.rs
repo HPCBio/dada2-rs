@@ -762,6 +762,7 @@ fn run() -> io::Result<()> {
             screen_backend,
             minimizer_k,
             minimizer_w,
+            screen_audit,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -872,6 +873,7 @@ fn run() -> io::Result<()> {
                     screen_backend,
                     minimizer_k,
                     minimizer_w,
+                    screen_audit,
                 )?;
 
                 // Samples are independent and single-pass (load -> denoise ->
@@ -1063,6 +1065,7 @@ fn run() -> io::Result<()> {
                 screen_backend,
                 minimizer_k,
                 minimizer_w,
+                screen_audit,
             )?;
             let dada_params = resolved.params;
             let run_params = resolved.run;
@@ -1302,6 +1305,7 @@ fn run() -> io::Result<()> {
             screen_backend,
             minimizer_k,
             minimizer_w,
+            screen_audit,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -1537,6 +1541,7 @@ fn run() -> io::Result<()> {
                 screen_backend,
                 minimizer_k,
                 minimizer_w,
+                screen_audit,
             )?;
             let dada_params = resolved.params;
             let mut run_params = resolved.run;
@@ -1811,6 +1816,7 @@ fn run() -> io::Result<()> {
             screen_backend,
             minimizer_k,
             minimizer_w,
+            screen_audit,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -1897,6 +1903,7 @@ fn run() -> io::Result<()> {
                 screen_backend,
                 minimizer_k,
                 minimizer_w,
+                screen_audit,
             )?;
 
             // ---- Validate the re-estimation request up front ----
@@ -3190,6 +3197,7 @@ fn run() -> io::Result<()> {
             screen_backend,
             minimizer_k,
             minimizer_w,
+            screen_audit,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -3289,6 +3297,7 @@ fn run() -> io::Result<()> {
                 screen_backend: screen_backend.unwrap_or_default(),
                 minimizer_k: minimizer_k.unwrap_or(minimizers::MINIMIZER_K),
                 minimizer_w: minimizer_w.unwrap_or(minimizers::MINIMIZER_W),
+                screen_audit,
                 band,
                 vectorized: true,
                 gapless: true,
@@ -3875,6 +3884,7 @@ fn run() -> io::Result<()> {
             screen_backend,
             minimizer_k,
             minimizer_w,
+            screen_audit,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -3974,6 +3984,7 @@ fn run() -> io::Result<()> {
                 screen_backend: screen_backend.unwrap_or_default(),
                 minimizer_k: minimizer_k.unwrap_or(minimizers::MINIMIZER_K),
                 minimizer_w: minimizer_w.unwrap_or(minimizers::MINIMIZER_W),
+                screen_audit,
                 band,
                 vectorized: true,
                 gapless: true,
@@ -4402,6 +4413,7 @@ fn resolve_dada_params(
     screen_backend: Option<ScreenBackend>,
     minimizer_k: Option<usize>,
     minimizer_w: Option<usize>,
+    screen_audit: bool,
 ) -> io::Result<ResolvedDada> {
     let em: ErrorModelJson = read_tagged_json(error_model, &["learn-errors", "errors-from-sample"])
         .with_path(error_model)?;
@@ -4540,6 +4552,7 @@ fn resolve_dada_params(
         screen_backend: screen_backend.unwrap_or_default(),
         minimizer_k: minimizer_k.unwrap_or(minimizers::MINIMIZER_K),
         minimizer_w: minimizer_w.unwrap_or(minimizers::MINIMIZER_W),
+        screen_audit,
         band,
         vectorized: true,
         gapless: true,
