@@ -96,6 +96,16 @@ minor versions may carry breaking changes).
   (multi-MB PacBio FASTQs), examples, notes, and CI/infra files are excluded.
 
 ### Performance
+- `b_p_update` prefetches the `Raw` it will read 16 iterations ahead (#154),
+  cutting the phase **34-38%** on four arms across two NovaSeq soil pools and
+  **−1.0 to −6.8% of `run_dada`** depending on how large a share the phase is
+  (5.1% on 16S read 1, 14.3% on ITS2 read 2). Byte-identical by construction —
+  a prefetch has no architectural effect. The phase is memory-bound on a random
+  gather, not compute-bound: over 91% of repricings take an early exit doing no
+  arithmetic, so the cost is a cache miss on a 160-byte `Raw` read for ~20 bytes
+  of it. Three layout fixes were priced first and all were worse; the only
+  competitive one wins by fitting a 32 MB per-CCD L3 and therefore *loses* on
+  the larger pool. x86_64 only; `DADA2RS_PUPDATE_PREFETCH=0` disables it.
 - `Raw::e_minmax` moves off `Raw` into a dense `Vec<f64>` on `B`, parallel to
   `B::raw_cluster` (#147). `b_compare`'s serial store reads this value once per
   raw per call; `Raw` is 160 bytes, so as a field each read pulled a full
