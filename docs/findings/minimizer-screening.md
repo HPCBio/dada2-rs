@@ -1,35 +1,42 @@
 # Minimizers as the pre-alignment screen
 
-**Verdict: the idea works. Its shipped defaults did not, and neither did two of
-its design premises — and the biggest single problem turned out not to be about
-minimizers at all.** On the 20-sample MiSeq SOP the minimizer screen started
-1.10% apart from the k-mer screen (17 churned ASVs) and ends **0.0596% apart
-(1 ASV)**, against a control whose noise floor is exactly zero. Getting there
-required three corrections, in descending order of how wrong I was:
+**Verdict: this is a long-read screen.** On PacBio HiFi it is **ASV-identical to
+the k-mer screen (1540 = 1540, churn 0)** while doing **13.3% fewer alignments**
+and using ~74% less resident memory. On Illumina it is merely *equivalent* — 1-2
+ASVs of 232 — at best-case parity on cost. That split is not a quirk; it follows
+from how a sketch works, and it took the whole experiment to see.
 
-| arm | ASVs | churn | count-matrix L1 |
-|---|---|---|---|
-| **control:** k-mer vs k-mer | 232 = 232 | **0** | **0.0000%** |
-| minimizer k=11, cutoff 0.42 *(shipped default)* | 241 | 17 | 1.1009% |
-| k=8 — calibrated sketch size | 237 | 13 | 0.7557% |
-| k=8, cutoff 0.72 — calibrated cutoff | 231 | 1 | 0.3348% |
-| **+ gapless method selection decoupled from the screen** | **231** | **1** | **0.0596%** |
+| | Illumina MiSeq (250 bp) | **PacBio HiFi (1490 bp)** |
+|---|---|---|
+| table size | 232 ASVs, 20 samples | **1540 ASVs**, 3 samples, 542k reads |
+| ASV set | 1-2 churned | **identical, churn 0** |
+| count-matrix L1 | 0.0596% | **0.0053%** |
+| alignments vs k-mer | 83-104% | **86.7%** |
+| equivalent cutoff | 0.72 | **0.50** |
 
-And with both screens **fully open** on the same error model, the two backends
-are now **bit-identical** (0 of 1634 count cells) — no structural coupling
-remains, so the final 0.0596% is nothing but the two screens legitimately
-disagreeing about which distant pairs to shroud, which is what a different screen
-*is*.
+**Why length decides it.** The sketch is `O(len/w)` entries: a 250 bp read yields
+~48 minimizers, a 1490 bp read ~500. The distance estimate is a sample, and its
+precision scales with the sample size. On short reads the estimate is coarse, so
+a cutoff loose enough not to lose real neighbours (0.72) also admits far more
+strangers — hence +29% alignments at full recall. On long reads the estimate is
+sharp: full recall arrives at 0.50 while *fewer* pairs pass than the k-mer screen.
+At the very same 0.42, PacBio gets 98.45% recall passing 9.36% of pairs against
+k-mer's 10.73% — better and cheaper — where Illumina gets 60.81%.
+
+This is the original hypothesis, confirmed only after being wrong about it twice.
+The k-mer screen has the opposite length behaviour — its `4^k` vector saturates
+as reads get longer, which is why PacBio needs k=7 and why at k=5 it degenerates
+to passing **100.00%** of pairs. Sketch precision *rises* with read length exactly
+where frequency-vector precision falls.
 
 Experimental and opt-in (`--screen-backend minimizer`), default unchanged. The
-shipped defaults (k=11, cutoff 0.42) are **wrong** and are left in place only
-because the right pair is coupled and changing one without the other is not an
-improvement.
+shipped defaults (k=11, cutoff 0.42) are **wrong on both platforms**; use k=8 with
+a cutoff derived per platform by `kdist-calibrate --screen-backend minimizer`
+(0.50 PacBio, ~0.58-0.65 Illumina).
 
-**This page previously reported the opposite twice.** An earlier revision
-concluded the screen "reproduces the k-mer screen's decisions on both platforms"
-from 2-sample fixtures; a later one concluded it fragments clusters irreparably.
-Both were wrong, in instructive ways — see
+**This page reported the opposite twice before reaching that.** An early revision
+concluded equivalence from 2-sample fixtures; a later one concluded irreparable
+fragmentation. Both were wrong — see
 [How the fixtures misled](#how-the-fixtures-misled) and
 [the gapless section](#the-residual-is-not-the-screen-at-all-the-gapless-shortcut-switches-off).
 
@@ -66,6 +73,22 @@ stable run-to-run, even though content is. See
 [Incidental finding](#incidental-finding-asv-ordering-is-not-deterministic).)
 
 ## The result
+
+### PacBio HiFi — 3 Kinnex samples, 542,205 reads, k=7 production baseline
+
+| arm | ASVs | churn | count cells differing | L1 | aligned vs k-mer |
+|---|---|---|---|---|---|
+| k-mer, k=7 @ 0.42 (production) | 1540 | — | — | — | 100.0% |
+| **minimizer, k=8 @ 0.50 (calibrated)** | **1540** | **0** | 17 / 2452 | **0.0053%** | **86.7%** |
+
+The ASV **set is identical**. 233.6 M comparisons in each arm; the minimizer
+shrouds 209.4 M against the k-mer screen's 205.6 M, so it performs 24.3 M
+alignments against 28.1 M — **3.7 M fewer**. `b_compare` is 82-88%
+align-dominated on this platform ([screen vs align](compare-screen-vs-align.md)),
+so that is the half of the phase that matters.
+
+### Illumina MiSeq SOP — 20 samples
+
 
 20-sample MiSeq SOP, per-sample `dada`, through to the chimera-filtered table.
 Set identity via `dev/compare_asvs.py`, counts via `dev/compare_seqtab_matrix.py`

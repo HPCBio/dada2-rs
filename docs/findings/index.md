@@ -29,22 +29,23 @@ here is the evidence, and here is the path it opens or closes."
   dada k-mer-distance cutoffs can be set independently; the dada-stage speedup is
   safe to take, while pushing the same cutoff into learn-errors perturbs the error
   model and churns real-abundance ASVs.
-- [Minimizers as the pre-alignment screen](minimizer-screening.md) — **negative
-  result so far, and a page about being wrong twice.** On the 20-sample MiSeq SOP
-  a winnowed-minimizer screen does **not** reproduce the k-mer screen's table: it
-  fragments clusters into spurious low-abundance ASVs, one at Hamming-1 from a
-  3,066-read parent. Calibrating its cutoff cuts the disagreement from 17 churned
-  ASVs to 2 (L1 1.10% → 0.34%) but not to zero — against a control whose noise
-  floor is **exactly** zero. Falsifies two of its own design claims: that a
-  cutoff transfers between metrics sharing an algebraic form (it does not — 0.42
-  passes 27.6% of pairs on one metric and 9.0% on the other, matching at ≈0.64),
-  and that k=11 was a sane default (k=8 is). Also: the earlier revision of the
-  page concluded the *opposite* from 2-sample fixtures, so it is now the
-  reference case for **why a concordance fixture is only evidence about the part
-  of the distribution it contains** — an 8-ASV table has no low-abundance tail
-  for a screen to fragment. Independently: PacBio at k=5 measures at **100.00%**
-  pass, a literal no-op; and ASV *ordering* is nondeterministic run-to-run on the
-  existing default backend.
+- [Minimizers as the pre-alignment screen](minimizer-screening.md) — **a
+  long-read screen.** On PacBio HiFi (1540 ASVs, 542k reads) a winnowed sketch is
+  **ASV-identical to the k-mer screen — churn 0, L1 0.0053%** — while doing
+  **13.3% fewer alignments** and using ~74% less resident memory; on Illumina it
+  is merely equivalent (1-2 ASVs of 232) at cost parity. The split follows from
+  sketch precision scaling with read length: 250 bp yields ~48 minimizers,
+  1490 bp ~500, so the equivalent cutoff is 0.72 on Illumina and **0.50** on
+  PacBio — exactly where the `4^k` frequency vector goes the other way (at k=5 on
+  HiFi it passes **100.00%** of pairs, a literal no-op). Also the page on being
+  wrong three times: the cutoff does not transfer between metrics sharing a
+  formula, k=11 was never measured, and the largest problem was not about
+  minimizers at all — **`kdist` was secretly driving alignment method
+  selection**, so any screen replacement silently disabled the gapless path.
+  Fixed by deriving the no-indel predicate from `kord`. Along the way: a
+  concordance fixture is only evidence about the part of the distribution it
+  contains, and the k-mer screen at 0.42 is itself **not lossless** against
+  unscreened denoising.
 - [K-mer screen size](kmer-size-screening.md) — `--kmer-size` has ~no effect on
   the final chimera-filtered table on either platform; it is a speed/memory knob,
   not an accuracy knob (k=5 Illumina, k=7 PacBio for speed).
