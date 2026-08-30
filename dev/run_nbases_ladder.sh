@@ -23,8 +23,11 @@
 # Usage:
 #   run_nbases_ladder.sh <dada2rs-binary> <fastq-dir> <out-dir> [threads]
 #
-#   <fastq-dir> holds the RAW forward FASTQs (*.fastq.gz). They are filtered here
-#   with the MiSeq SOP parameters; edit TRUNC_LEN/MAX_EE below for other data.
+#   <fastq-dir> holds the RAW FASTQs (*.fastq.gz) for ONE read orientation --
+#   forward only, say. A mixed R1/R2 set is detected and rejected, because
+#   learn-errors would silently fit one model across two different error
+#   profiles. They are filtered here with the MiSeq SOP parameters; edit
+#   TRUNC_LEN/MAX_EE below for other data.
 set -euo pipefail
 
 BIN="${1:?usage: run_nbases_ladder.sh <binary> <fastq-dir> <out-dir> [threads]}"
@@ -62,6 +65,43 @@ if [ ${#raws[@]} -eq 0 ]; then
   echo "run_nbases_ladder.sh: no *.fastq.gz in $DATA" >&2
   exit 1
 fi
+# Refuse an obviously mixed forward/reverse set.
+#
+# learn-errors fits ONE error model over whatever it is given, and forward and
+# reverse reads have materially different error profiles -- a model fit across
+# both is not slightly wrong, it is uninterpretable. Nothing downstream reports
+# this, and on a cluster the cost is hours of runtime for a meaningless model.
+#
+# Deliberately a detector rather than a hardcoded R1 glob: naming conventions
+# vary too much for a fixed pattern to be anything but brittle, so this accepts
+# ANY set of files and only rejects one where both orientations are plainly
+# present. Set ALLOW_MIXED_READS=1 if the match is a false positive (e.g. a
+# sample legitimately named "..._R2_site").
+fwd=0; rev=0
+for f in "${raws[@]}"; do
+  case "$(basename "$f")" in
+    *_R1_*|*_R1.*|*_1.fastq*|*_1.fq*) fwd=1 ;;
+  esac
+  case "$(basename "$f")" in
+    *_R2_*|*_R2.*|*_2.fastq*|*_2.fq*) rev=1 ;;
+  esac
+done
+if [ "$fwd" = 1 ] && [ "$rev" = 1 ] && [ "${ALLOW_MIXED_READS:-0}" != 1 ]; then
+  cat >&2 <<'MIXED'
+run_nbases_ladder.sh: input looks like BOTH forward and reverse reads.
+
+learn-errors fits a single error model over every file it is given, and R1/R2
+have different error profiles, so the result would be uninterpretable -- and
+nothing downstream would tell you. Point this at one orientation only:
+
+    mkdir r1 && ln -s /path/to/raw/*_R1_*.fastq.gz r1/
+    run_nbases_ladder.sh <binary> r1 <outdir> <threads>
+
+Set ALLOW_MIXED_READS=1 to override if this is a false positive.
+MIXED
+  exit 1
+fi
+
 for f in "${raws[@]}"; do
   b=$(basename "$f" .fastq.gz)
   [ -f "$OUT/filt/$b.fastq.gz" ] && continue
