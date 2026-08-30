@@ -11,7 +11,7 @@ from how a sketch works, and it took the whole experiment to see.
 | table size | 232 ASVs, 20 samples | **1540 ASVs**, 3 samples, 542k reads |
 | ASV set | 1-2 churned | **identical, churn 0** |
 | count-matrix L1 | 0.0596% | **0.0053%** |
-| alignments vs k-mer | 83-104% | **86.7%** |
+| alignments vs k-mer | 83-104% | **89-93%** (cutoff 0.42-0.45) |
 | equivalent cutoff | 0.72 | **0.50** |
 
 **Why length decides it.** The sketch is `O(len/w)` entries: a 250 bp read yields
@@ -80,7 +80,17 @@ stable run-to-run, even though content is. See
 |---|---|---|---|---|---|
 | k-mer, k=7 @ 0.42 (production) | 1540 | — | — | — | 100.0% |
 | **control:** k-mer again | 1540 | **0** | **0 / 2452** | **0.0000%** | 100.0% |
-| **minimizer, k=8 @ 0.50 (calibrated)** | **1540** | **0** | 17 / 2452 | **0.0053%** | **86.7%** |
+| **minimizer, k=8 @ 0.50 (calibrated)** | **1540** | **0** | 17 / 2452 | **0.0053%** | see below |
+
+> **The alignment column is deliberately empty for this row.** These two full
+> pipeline runs each ran their own `learn-errors`, so they carry *different error
+> models* — and the screen shapes the model (next section). Their alignment counts
+> are therefore not comparable, and an earlier revision of this page reported
+> "13.3% fewer alignments" from exactly this pair. Held to a shared model, the
+> same configuration aligns ~10% **more**. The ASV comparison above is still a
+> valid end-to-end comparison of two complete configurations; the *work* counts
+> needed the model held fixed, and are reported that way in
+> [Cost](#cost-the-screen-is-33x-cheaper-and-that-is-not-where-the-win-is).
 
 The control channel is bit-identical, so the noise floor here is **exactly zero**
 and the 17 differing cells are real signal rather than run-to-run variation —
@@ -112,6 +122,57 @@ The failure mode is **fragmentation, not loss**: the minimizer arm produces
 Hamming-1 from a baseline ASV — including one at Hamming-1 from a **3,066-read**
 parent. That is a textbook error copy that the screen prevented from ever being
 compared to its parent, so it births its own cluster instead of being absorbed.
+
+## Cost: the screen is 33x cheaper, and that is not where the win is
+
+`--verbose` splits `b_compare`'s busy time (#127 instrumentation). PacBio HiFi,
+one 224k-read sample, k=7, **shared error model** so only the screen differs:
+
+| | k-mer | minimizer k=8 @0.50 |
+|---|---|---|
+| screen | 38.41 s (4.0%), **660 ns/comp** | 1.15 s (0.1%), **20 ns/comp** |
+| align total | 897.1 s (93.2%) | 989.7 s (97.0%) |
+| aligned pairs | 5,764,121 (9.9% passed) | 6,315,520 (10.9% passed) |
+
+The sketch plus inverted index make the screen **33x cheaper per comparison** —
+the index turns the per-pair merge-join into an array lookup. But the k-mer screen
+is only **4.0%** of busy time, so making it free caps out at 4%. **The lever is
+alignment count**, at 93-97%, and that is set purely by the cutoff.
+
+At cutoff 0.50 the minimizer aligns ~10% *more* pairs and loses. At 0.42-0.45 it
+aligns 7-11% fewer:
+
+| arm (shared error model) | aligned | vs k-mer | ASVs | ASV set |
+|---|---|---|---|---|
+| k-mer k=7 @0.42 | 5,764,121 | 100.0% | 899 | — |
+| minimizer @0.45 | 5,337,487 | **92.6%** | 899 | identical, abundance L1 = 2 reads |
+| minimizer @0.42 | 5,136,392 | **89.1%** | 899 | identical, abundance L1 = 2 reads |
+
+**The last 1.5% of recall bought nothing and cost ~20% of the alignment work.**
+899 ASVs at 0.42, 0.45 and 0.50 alike. This is why the calibration must *bracket*
+the region and cost must choose within it — optimising recall alone lands at the
+expensive end every time, and did here.
+
+### Wall clock: not resolvable on the development machine
+
+| arm | n | median s | spread | vs k-mer |
+|---|---|---|---|---|
+| k-mer | 4 | 125.22 | 9.0% | 100.0% |
+| **control:** k-mer again | 4 | 129.79 | 5.3% | **103.6%** |
+| minimizer @0.45 | 4 | 123.59 | 8.7% | 98.7% |
+
+**Control channel 3.6%; measured effect 1.3%. Inside the noise floor, therefore
+not a result.** From the split above the mechanism predicts ~11% (4.0% screen +
+7.4% x 93.2% alignment), and the deterministic counts support it — but this box
+cannot distinguish it, and a 2-replicate run earlier *did* produce a "~10% faster"
+figure that four replicates erased. Same failure as
+[measuring on a NUMA node](measuring-on-numa.md), where a genuine 3.5-6% gain was
+twice reported as flat: **a speed claim is a claim about the rig first.**
+
+What is safe to state: the screen is 33x cheaper per comparison, the calibrated
+cutoff performs 7-11% fewer alignments, the ASV set is bit-identical, and the
+resident screen is 74% smaller. Whether that adds up to wall-clock time needs a
+quiet, pinned node.
 
 ## Which stage causes it: the screen changes the error model too
 
