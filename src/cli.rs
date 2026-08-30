@@ -2465,6 +2465,23 @@ pub enum Commands {
         #[arg(long, default_value_t = 5)]
         k: usize,
 
+        /// EXPERIMENTAL: which screen to calibrate. `kmer` (default) is the
+        /// ESPRIT frequency vector; `minimizer` is the winnowed sketch. A cutoff
+        /// does NOT transfer between them — on the MiSeq SOP, 0.42 passes 27.6%
+        /// of pairs on the frequency vector and 9.0% on the sketch — so the
+        /// minimizer backend needs its own curve. See
+        /// docs/findings/minimizer-screening.md.
+        #[arg(long, value_enum, default_value_t = ScreenBackend::Kmer)]
+        screen_backend: ScreenBackend,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): sketch k-mer size.
+        #[arg(long, default_value_t = crate::minimizers::MINIMIZER_K)]
+        minimizer_k: usize,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window.
+        #[arg(long, default_value_t = crate::minimizers::MINIMIZER_W)]
+        minimizer_w: usize,
+
         /// Screen cutoff used for the `screened_in` flag / leakage summary
         #[arg(long, default_value_t = 0.42)]
         cutoff: f64,

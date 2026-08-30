@@ -4116,6 +4116,9 @@ fn run() -> io::Result<()> {
         Commands::KdistCalibrate {
             inputs,
             k,
+            screen_backend,
+            minimizer_k,
+            minimizer_w,
             cutoff,
             leak_pct,
             band,
@@ -4136,6 +4139,9 @@ fn run() -> io::Result<()> {
                 &inputs,
                 &kdist_calibrate::Params {
                     k,
+                    screen_backend,
+                    minimizer_k,
+                    minimizer_w,
                     cutoff,
                     leak_pct,
                     band,

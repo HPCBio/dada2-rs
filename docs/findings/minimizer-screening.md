@@ -116,6 +116,41 @@ fragmentation verdict survives the confound. Two things worth keeping:
   `kdist_cutoff`, defaulting to `kmer` for older JSONs so nothing pre-existing
   warns spuriously.
 
+### What it does to `learn-errors` convergence
+
+| arm | iterations | total transitions | off-diagonal (error) transitions |
+|---|---|---|---|
+| k-mer, k=5 | **6** | 20,023,895 | 92,347 (100%) |
+| minimizer k=11, cut 0.42 | **5** | 20,022,722 (100.0%) | **111,903 (121.2%)** |
+| minimizer k=8, cut 0.65 | **5** | 20,023,840 (100.0%) | 92,218 (99.9%) |
+
+The over-tight screen **converges a round earlier on an error model inflated by
+21%**, and the two facts are the same fact. Self-consistency only asks whether
+the model stopped moving; it cannot tell "converged because the answer was found"
+from "converged because there is less left to disagree with."
+
+The mechanism is *compositional, not quantitative*: **total transition mass is
+identical across arms** (within 0.006% — every arm saturates the same `--nbases`
+budget), so the screen is not starving the fit of data. It changes *which*
+transitions are counted. A raw that should have moved to a nearby center cannot,
+because the move requires a comparison that passes the screen; it is then scored
+against a distant center and contributes mismatches. Over-screening therefore
+*raises* the apparent error rate rather than lowering it.
+
+This argues for the initial rounds being deliberately **inclusive** — the
+permissive arm takes the extra round and lands on the lower, more plausible error
+rate — and it is the same headroom argument as
+[KDIST cutoff decoupling](kdist-cutoff-decoupling.md), which found the dada-stage
+cutoff safe to tighten while tightening the *learn* stage churned real ASVs.
+
+> **Caveat on every number on this page.** The harness runs `--nbases 2e7`, and
+> the KDIST study found the error model **not converged even at 1e8**. So this is
+> 5x below a level already known insufficient. The screen-side conclusions
+> survive it — the decomposition above holds the model *fixed* and still churns —
+> but the model-side arm (0.03% L1) may understate sensitivity at a converged
+> `nbases`. An `--nbases` ladder is owed before any of the error-model numbers
+> here are treated as settled.
+
 ## Two claims this falsified
 
 ### 1. "The cutoff transfers between backends." It does not.
