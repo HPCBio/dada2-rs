@@ -135,6 +135,9 @@ fn build_learned_err_params(
         gapless: ap.gapless,
         backend: ap.backend,
         wfa_max_edits: ap.wfa_max_edits,
+        screen_backend: ap.screen_backend,
+        minimizer_k: ap.minimizer_k,
+        minimizer_w: ap.minimizer_w,
     }
 }
 
@@ -4520,6 +4523,29 @@ fn resolve_dada_params(
         check!("use_kmers", use_kmers, em_params.use_kmers);
         check!("align_backend", backend, em_params.backend);
         check!("wfa_max_edits", wfa_max_edits, em_params.wfa_max_edits);
+        // The screen gates which pairs reach build_trans_mat, so it shapes the
+        // fitted model as surely as kdist_cutoff does -- up to 90.9% relative
+        // difference in err_out on the MiSeq SOP. Applying a model across a
+        // screen change is a provenance error worth naming.
+        check!(
+            "screen_backend",
+            screen_backend.unwrap_or_default(),
+            em_params.screen_backend
+        );
+        if em_params.screen_backend == ScreenBackend::Minimizer
+            || screen_backend.unwrap_or_default() == ScreenBackend::Minimizer
+        {
+            check!(
+                "minimizer_k",
+                minimizer_k.unwrap_or(minimizers::MINIMIZER_K),
+                em_params.minimizer_k
+            );
+            check!(
+                "minimizer_w",
+                minimizer_w.unwrap_or(minimizers::MINIMIZER_W),
+                em_params.minimizer_w
+            );
+        }
         if !mismatches.is_empty() {
             eprintln!(
                 "[dada] warning: {} dada parameter(s) differ from error model {}; pass --inherit-err-params to adopt the err model's values:",

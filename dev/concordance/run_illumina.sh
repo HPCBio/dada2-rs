@@ -81,11 +81,22 @@ for f in "${fwds[@]}"; do
   filtFs+=("$ff"); filtRs+=("$fr")
 done
 
+# Optional: reuse an existing error model instead of learning one. Lets the
+# denoising-stage screen effect be isolated from the error-model effect, which
+# are otherwise confounded -- the screen is active inside build_trans_mat, so
+# changing it changes the learned model as well as the denoising.
+ERR_DIR="${ERR_DIR:-}"
+if [ -n "$ERR_DIR" ]; then
+  echo "==> reusing error models from $ERR_DIR (skipping learn-errors)"
+  cp "$ERR_DIR/errF.json" "$OUT/errF.json"
+  cp "$ERR_DIR/errR.json" "$OUT/errR.json"
+else
 echo "==> learn-errors (fwd, rev)"
 "$BIN" learn-errors "${filtFs[@]}" --nbases "$NBASES" --errfun loess \
     --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} -o "$OUT/errF.json"
 "$BIN" learn-errors "${filtRs[@]}" --nbases "$NBASES" --errfun loess \
     --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} -o "$OUT/errR.json"
+fi
 
 if [ "$POOL" = "pseudo" ]; then
   # Pseudo-pooling. NOTE: dada-pseudo takes -o for its output DIRECTORY, whereas

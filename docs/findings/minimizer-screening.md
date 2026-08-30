@@ -68,6 +68,54 @@ Hamming-1 from a baseline ASV — including one at Hamming-1 from a **3,066-read
 parent. That is a textbook error copy that the screen prevented from ever being
 compared to its parent, so it births its own cluster instead of being absorbed.
 
+## Which stage causes it: the screen changes the error model too
+
+The screen is active in **both** stages, so the first version of the comparison
+above was confounded — the two arms had different error models *and* different
+denoising. `build_trans_mat` (learn_errors.rs) aligns each raw against its
+cluster center **through the screen**, and a shrouded pair returns early and
+contributes nothing to the transition counts. So changing the screen refits the
+model:
+
+| minimizer arm | max relative difference in `err_out` vs k-mer |
+|---|---|
+| k=11, cutoff 0.42 | **90.9%** |
+| k=8, cutoff 0.65 | 5.0% |
+
+(One stage genuinely is screen-free: `run_dada`'s first compare of all raws
+against cluster 0 sets `kdist_cutoff = 1.0`, which disables the distance gate for
+both backends identically — `minimizer_dist` is bounded by 1.0 and the gate is
+strict `>`. That covers only that pass.)
+
+Holding the error model fixed and varying one factor at a time decomposes it:
+
+| config | arm | churn | count L1 |
+|---|---|---|---|
+| **k=11, cut 0.42** | both changed | 17 | 1.10% |
+| | k-mer model + **minimizer screen** | 16 | **0.98%** |
+| | **minimizer model** + k-mer screen | 1 | 0.24% |
+| **k=8, cut 0.65** | both changed | 2 | 0.34% |
+| | k-mer model + **minimizer screen** | 2 | **0.32%** |
+| | **minimizer model** + k-mer screen | 0 | 0.03% |
+
+**The denoising-stage screen dominates in both configurations**, so the
+fragmentation verdict survives the confound. Two things worth keeping:
+
+- **The error model is remarkably robust to this.** A 90.9% relative change in
+  `err_out` propagated to 0.24% read-level L1 and a single churned ASV. Whatever
+  the screen does to the fitted model, denoising largely absorbs it — consistent
+  with [KDIST cutoff decoupling](kdist-cutoff-decoupling.md) finding the
+  learn-errors and dada cutoffs separable, and worth remembering before treating
+  any error-model perturbation as automatically serious.
+- **The screen is an error-model parameter.** It was originally left out of the
+  model's `params` provenance block on the reasoning that no released version
+  could have written it, which is true but beside the point: a model learned
+  under one screen and applied under another is a real provenance error, and the
+  90.9% figure is what proves it. `screen_backend` / `minimizer_k` /
+  `minimizer_w` are now recorded in `params` and checked alongside
+  `kdist_cutoff`, defaulting to `kmer` for older JSONs so nothing pre-existing
+  warns spuriously.
+
 ## Two claims this falsified
 
 ### 1. "The cutoff transfers between backends." It does not.
@@ -217,6 +265,8 @@ filtered lists.
 
 ## What would change the verdict
 
+0. **Done on this branch:** `screen_backend`/`minimizer_k`/`minimizer_w` are now
+   recorded in the error model's `params` and checked on mismatch.
 1. **Calibrate the cutoff properly, per backend**, in `kdist-calibrate` rather
    than by the hand sweep used here — and teach `--screen-audit` to hold a
    separate cutoff per screen so the two can be compared at their own operating
