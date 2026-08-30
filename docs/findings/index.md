@@ -29,6 +29,16 @@ here is the evidence, and here is the path it opens or closes."
   dada k-mer-distance cutoffs can be set independently; the dada-stage speedup is
   safe to take, while pushing the same cutoff into learn-errors perturbs the error
   model and churns real-abundance ASVs.
+- [`--nbases` and error-model convergence](learn-errors-nbases-convergence.md) —
+  **the `1e8` default is inside the noise floor of which samples you drew.** On a
+  full MiSeq run, five models fitted at the *same* budget with different sample
+  draws differ by 1.25–1.43×, while raising the budget from 20 Mb to 500 Mb moves
+  it 1.41–1.43× — indistinguishable. Only above 500 Mb does added depth move the
+  model *less* than sample choice does. Confirms and quantifies the "not
+  converged at 1e8" aside from the KDIST work, and is the measurement behind
+  issue #68. The methodological point: a `--nbases` result without a
+  fixed-budget reshuffle arm cannot separate "more data helped" from "different
+  samples were read".
 - [Minimizers as the pre-alignment screen](minimizer-screening.md) — **a
   long-read screen.** On PacBio HiFi (1540 ASVs, 542k reads) a winnowed sketch is
   **ASV-identical to the k-mer screen — churn 0, L1 0.0053%** — while doing
