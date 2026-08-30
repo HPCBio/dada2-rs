@@ -29,18 +29,22 @@ here is the evidence, and here is the path it opens or closes."
   dada k-mer-distance cutoffs can be set independently; the dada-stage speedup is
   safe to take, while pushing the same cutoff into learn-errors perturbs the error
   model and churns real-abundance ASVs.
-- [Minimizers as the pre-alignment screen](minimizer-screening.md) — **early,
-  experimental, opt-in.** A winnowed sketch reproduces the k-mer screen's ASV
-  decisions on both platforms (93=93 PacBio, 8=8 Illumina, churn 0 at every
-  stage), passes a **strict subset** of its pairs, and disagrees **zero** times
-  below 10 substitutions. It is *not* faster than a tuned `k=7` — it matches its
-  selectivity (15.57% vs 15.78%) at **74% less resident memory** and without
-  per-platform tuning of `k`. Also the page that measured, for the first time,
-  that PacBio at the default `k=5` screens **100.00%** of pairs — a complete
-  no-op. Includes the correction of its own first framing (a "6.4× speedup" that
-  was really a comparison against that no-op baseline), and an incidental
-  finding that ASV *ordering* is nondeterministic run-to-run on the existing
-  default backend.
+- [Minimizers as the pre-alignment screen](minimizer-screening.md) — **negative
+  result so far, and a page about being wrong twice.** On the 20-sample MiSeq SOP
+  a winnowed-minimizer screen does **not** reproduce the k-mer screen's table: it
+  fragments clusters into spurious low-abundance ASVs, one at Hamming-1 from a
+  3,066-read parent. Calibrating its cutoff cuts the disagreement from 17 churned
+  ASVs to 2 (L1 1.10% → 0.34%) but not to zero — against a control whose noise
+  floor is **exactly** zero. Falsifies two of its own design claims: that a
+  cutoff transfers between metrics sharing an algebraic form (it does not — 0.42
+  passes 27.6% of pairs on one metric and 9.0% on the other, matching at ≈0.64),
+  and that k=11 was a sane default (k=8 is). Also: the earlier revision of the
+  page concluded the *opposite* from 2-sample fixtures, so it is now the
+  reference case for **why a concordance fixture is only evidence about the part
+  of the distribution it contains** — an 8-ASV table has no low-abundance tail
+  for a screen to fragment. Independently: PacBio at k=5 measures at **100.00%**
+  pass, a literal no-op; and ASV *ordering* is nondeterministic run-to-run on the
+  existing default backend.
 - [K-mer screen size](kmer-size-screening.md) — `--kmer-size` has ~no effect on
   the final chimera-filtered table on either platform; it is a speed/memory knob,
   not an accuracy knob (k=5 Illumina, k=7 PacBio for speed).

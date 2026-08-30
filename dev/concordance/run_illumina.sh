@@ -42,6 +42,12 @@ if [ -n "$SCREEN_BACKEND" ]; then
   screen_arg=(--screen-backend "$SCREEN_BACKEND")
   [ -n "${MINIMIZER_K:-}" ] && screen_arg+=(--minimizer-k "$MINIMIZER_K")
   [ -n "${MINIMIZER_W:-}" ] && screen_arg+=(--minimizer-w "$MINIMIZER_W")
+  # The minimizer metric induces a different distance DISTRIBUTION than the
+  # frequency vector, so KDIST_CUTOFF does not transfer between backends even
+  # though the two formulas have the same shape -- at 0.42 the sketch passes
+  # ~9% of pairs where the frequency vector passes ~28%. Applied to BOTH
+  # learn-errors and dada, since both stages screen.
+  [ -n "${SCREEN_CUTOFF:-}" ] && screen_arg+=(--kdist-cutoff "$SCREEN_CUTOFF")
 fi
 
 # --- Parameters (keep in sync with write_reference.R) ---
