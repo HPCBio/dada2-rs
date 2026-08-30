@@ -1118,7 +1118,7 @@ fn nearest_parent_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::{find_derep_for_sample, load_dada, load_dada_pooled};
+    use super::{Params, ScreenBackend, find_derep_for_sample, load_dada, load_dada_pooled};
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use std::io::Write;
@@ -1157,6 +1157,31 @@ mod tests {
     /// `load_dada` has to gunzip a `.json.gz` input rather than parse the raw
     /// gzip bytes as JSON (regression for the "expected value, line 1 column 1"
     /// failure on gzipped dada outputs, e.g. those from `dada-pooled --gzip`).
+    /// Minimal `Params` for the loader tests: only `k` and the screen fields are
+    /// consulted on these paths.
+    fn test_params(k: usize) -> Params {
+        Params {
+            k,
+            screen_backend: ScreenBackend::Kmer,
+            minimizer_k: crate::minimizers::MINIMIZER_K,
+            minimizer_w: crate::minimizers::MINIMIZER_W,
+            cutoff: 0.42,
+            leak_pct: 10.0,
+            band: -1,
+            max_pairs: 0,
+            max_uniques: 0,
+            per_sample: false,
+            nearest_parent: false,
+            from_dada: false,
+            from_dada_pooled: false,
+            derep_dir: None,
+            threads: 1,
+            seed: 1,
+            output: None,
+            verbose: false,
+        }
+    }
+
     #[test]
     fn load_dada_reads_gzipped_output() {
         let d = TmpDir::new("gzdada");
@@ -1184,7 +1209,8 @@ mod tests {
         .unwrap();
         gz.finish().unwrap();
 
-        let sample = load_dada(&dada_path, &d.0, 7).expect("gzipped dada output should load");
+        let sample =
+            load_dada(&dada_path, &d.0, &test_params(7)).expect("gzipped dada output should load");
         assert_eq!(sample.name, "F3D0");
         assert_eq!(sample.enc.len(), 1);
     }
@@ -1209,7 +1235,7 @@ mod tests {
         )
         .unwrap();
 
-        let s = load_dada_pooled(&path, 5).expect("pooled record should load");
+        let s = load_dada_pooled(&path, &test_params(5)).expect("pooled record should load");
         assert_eq!(s.name, "__pooled__");
         assert_eq!(s.enc.len(), 3);
         assert_eq!(s.counts, vec![10, 3, 1]);
