@@ -207,6 +207,9 @@ fn run() -> io::Result<()> {
     // was asked for, and the entire failure mode is that nobody thinks to check
     // (#145). Two full soil-pool A/B runs were lost to exactly this.
     dada2_rs::gates::warn_unrecognised();
+    // Separately: a gate that adds validation work on top of whatever arm is
+    // running makes every timing in the log meaningless (#154).
+    dada2_rs::gates::warn_timing_invalidating();
 
     let command = match cli.command {
         Some(c) => c,

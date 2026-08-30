@@ -154,6 +154,56 @@ pub fn warn_unrecognised() -> usize {
     warnings
 }
 
+/// Gates that make a run's timings meaningless, with the reason.
+///
+/// Distinct from merely being non-default. `DADA2RS_SHUFFLE_NO_CARRY` and
+/// friends select the *other arm of an A/B* — slower on purpose, and a
+/// perfectly valid thing to time. These do not select an arm; they add
+/// validation work on top of whatever arm is running, so any number the run
+/// produces is measuring the validation.
+///
+/// Why this needs its own warning rather than the `(OVERRIDDEN)` marker in
+/// [`report`]: the first cluster A/B of the #154 prefetch looked like a **2.4x
+/// regression** until someone read the gate line closely and found
+/// `reconcile verify=on` in one arm, left over in a run script. In that line it
+/// sits mid-row between two harmless settings and looks like any other
+/// override. Something that silently invalidates every timing in the log needs
+/// more contrast than that.
+const TIMING_INVALIDATING: &[(&str, &str)] = &[(
+    "DADA2RS_RECONCILE_VERIFY",
+    "This is an O(nraw × candidates)\n\
+     [dada]          validation rescan that can make b_shuffle 8x slower on some\n\
+     [dada]          data, e.g. soil ITS2 (41.9s -> 347.4s). Timings from this\n\
+     [dada]          run are not comparable.",
+)];
+
+/// Warn when a gate that invalidates timing is active.
+///
+/// Printed regardless of `--verbose`, like [`warn_unrecognised`], and for the
+/// same reason: the operator will not think to check. Returns the number of
+/// warnings so callers and tests can assert on it.
+///
+/// Debug builds turn `DADA2RS_RECONCILE_VERIFY` on by default and are never
+/// timing runs, so the warning is release-only — otherwise every `cargo test`
+/// would carry it.
+pub fn warn_timing_invalidating() -> usize {
+    if cfg!(debug_assertions) {
+        return 0;
+    }
+    let mut warnings = 0;
+    for (name, why) in TIMING_INVALIDATING {
+        let active = match *name {
+            "DADA2RS_RECONCILE_VERIFY" => crate::cluster::reconcile_verify_gate(),
+            _ => false,
+        };
+        if active {
+            eprintln!("[dada] WARNING: {name} is on. {why}");
+            warnings += 1;
+        }
+    }
+    warnings
+}
+
 /// One resolved gate, for the `--verbose` summary.
 struct Resolved {
     label: &'static str,
@@ -284,6 +334,22 @@ mod tests {
             assert!(
                 alias_for(n).is_none(),
                 "{n} is not a gate and must not be aliased"
+            );
+        }
+    }
+
+    #[test]
+    fn timing_invalidating_gates_are_known_and_not_aliases() {
+        // A warning naming a variable the binary does not read would point the
+        // operator at something inert -- the same trap one level down.
+        for (name, _) in TIMING_INVALIDATING {
+            assert!(
+                KNOWN.contains(name),
+                "{name} is warned about but not in KNOWN"
+            );
+            assert!(
+                alias_for(name).is_none(),
+                "{name} is warned about but is a retired spelling"
             );
         }
     }
