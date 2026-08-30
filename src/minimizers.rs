@@ -23,18 +23,32 @@
 //! becomes free to raise for specificity while memory *falls*. That decouples
 //! the two knobs the frequency vector welds together.
 //!
-//! # The metric is deliberately the same shape
+//! # The metric shares a formula, but NOT an operating point
 //!
 //! [`minimizer_dist`] computes
 //!
 //! ```text
-//! dist = 1 - Σ min(count_a[m], count_b[m]) / min(|sketch_a|, |sketch_b|)
+//! dist = 1 - Σ min(count_a[m], count_b[m]) / min(total_a, total_b)
 //! ```
 //!
 //! which is [`crate::kmers::kmer_dist8`]'s formula evaluated on a winnowed
-//! subsample of the k-mer space rather than on all of it. This is a choice, not
-//! a coincidence: it keeps `KDIST_CUTOFF` interpretable across both backends, so
-//! an A/B changes *which k-mers are consulted* and nothing else about the gate.
+//! subsample of the k-mer space rather than on all of it.
+//!
+//! **The shared formula does not make `KDIST_CUTOFF` transfer, and assuming it
+//! did was a real error on this branch.** A cutoff is a property of the distance
+//! *distribution* a metric induces, not of its algebra. Measured on a MiSeq SOP
+//! sample, at the same `0.42`:
+//!
+//! | screen | pairs passed |
+//! |---|---|
+//! | k-mer, k=5 | 27.6% |
+//! | minimizer, k=8 | 9.0% |
+//!
+//! The matching operating point is near **0.64**. Running the minimizer screen
+//! at the k-mer screen's cutoff over-screens by ~3x, which starves raws of any
+//! cluster match and fragments them into spurious low-abundance ASVs. See
+//! `docs/findings/minimizer-screening.md`; a per-backend calibrated cutoff is a
+//! prerequisite for promoting this backend.
 //!
 //! [Sun et al. 2009]: https://doi.org/10.1093/nar/gkp285
 
@@ -42,13 +56,21 @@ use std::collections::HashMap;
 
 /// Default k-mer size for the minimizer sketch.
 ///
-/// Deliberately much larger than the frequency screen's `KMER_SIZE = 5`. The
-/// sketch's memory does not depend on `k`, so `k` is chosen purely for
-/// discrimination: it must be large enough that unrelated amplicons share
-/// almost no minimizers, and small enough that a single substitution — which
-/// destroys the `k` k-mers spanning it — removes only a small fraction of the
-/// sketch. At k=11 a substitution invalidates 11 of ~240 k-mer positions in a
-/// 250 bp read, i.e. ~2-3 of ~48 minimizers.
+/// Larger than the frequency screen's `KMER_SIZE = 5`, because the sketch's
+/// memory does not depend on `k` — so `k` is free to be chosen for
+/// discrimination alone.
+///
+/// **11 was a back-of-envelope choice and measurement contradicted it.** The
+/// argument was that a substitution destroys only the `k` k-mers spanning it,
+/// so ~2-3 of ~48 minimizers in a 250 bp read. True, but it ignored the
+/// aggregate pass rate: at k=11 the screen shrouds pairs the k-mer screen
+/// aligns at 6-10 substitutions (14-26 per sample on the MiSeq SOP), and k=8
+/// drives that to zero everywhere tested while still passing only ~9% of pairs.
+///
+/// Left at 11 pending the calibration work that would justify changing it, since
+/// the right value is coupled to the cutoff (see the module docs) and moving one
+/// without the other is not an improvement. `docs/findings/minimizer-screening.md`
+/// carries the sweep.
 pub const MINIMIZER_K: usize = 11;
 
 /// Default winnowing window, in k-mers.

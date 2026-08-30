@@ -307,11 +307,14 @@ pub enum Commands {
         /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
         /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
         /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
-        /// 4^k, so its k can be raised for specificity without paying for it in
-        /// memory. Both feed the same `--kdist-cutoff` gate and neither defines
-        /// the clusters. `minimizer` deviates from the reference implementation
-        /// and is not yet validated across platforms — see
-        /// docs/findings/minimizer-screening.md.
+        /// 4^k. Neither defines the clusters.
+        ///
+        /// NOT ASV-equivalent at its current defaults: on the 20-sample MiSeq
+        /// SOP it fragments clusters into spurious low-abundance ASVs. The two
+        /// metrics share a formula but NOT an operating point, so
+        /// `--kdist-cutoff 0.42` over-screens by ~3x here; ~0.64 with
+        /// `--minimizer-k 8` is much closer but still not equal. Use for
+        /// experiments only — see docs/findings/minimizer-screening.md.
         #[arg(long, value_enum)]
         screen_backend: Option<ScreenBackend>,
 
@@ -560,11 +563,14 @@ pub enum Commands {
         /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
         /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
         /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
-        /// 4^k, so its k can be raised for specificity without paying for it in
-        /// memory. Both feed the same `--kdist-cutoff` gate and neither defines
-        /// the clusters. `minimizer` deviates from the reference implementation
-        /// and is not yet validated across platforms — see
-        /// docs/findings/minimizer-screening.md.
+        /// 4^k. Neither defines the clusters.
+        ///
+        /// NOT ASV-equivalent at its current defaults: on the 20-sample MiSeq
+        /// SOP it fragments clusters into spurious low-abundance ASVs. The two
+        /// metrics share a formula but NOT an operating point, so
+        /// `--kdist-cutoff 0.42` over-screens by ~3x here; ~0.64 with
+        /// `--minimizer-k 8` is much closer but still not equal. Use for
+        /// experiments only — see docs/findings/minimizer-screening.md.
         #[arg(long, value_enum)]
         screen_backend: Option<ScreenBackend>,
 
@@ -847,11 +853,14 @@ pub enum Commands {
         /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
         /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
         /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
-        /// 4^k, so its k can be raised for specificity without paying for it in
-        /// memory. Both feed the same `--kdist-cutoff` gate and neither defines
-        /// the clusters. `minimizer` deviates from the reference implementation
-        /// and is not yet validated across platforms — see
-        /// docs/findings/minimizer-screening.md.
+        /// 4^k. Neither defines the clusters.
+        ///
+        /// NOT ASV-equivalent at its current defaults: on the 20-sample MiSeq
+        /// SOP it fragments clusters into spurious low-abundance ASVs. The two
+        /// metrics share a formula but NOT an operating point, so
+        /// `--kdist-cutoff 0.42` over-screens by ~3x here; ~0.64 with
+        /// `--minimizer-k 8` is much closer but still not equal. Use for
+        /// experiments only — see docs/findings/minimizer-screening.md.
         #[arg(long, value_enum)]
         screen_backend: Option<ScreenBackend>,
 
@@ -1939,11 +1948,14 @@ pub enum Commands {
         /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
         /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
         /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
-        /// 4^k, so its k can be raised for specificity without paying for it in
-        /// memory. Both feed the same `--kdist-cutoff` gate and neither defines
-        /// the clusters. `minimizer` deviates from the reference implementation
-        /// and is not yet validated across platforms — see
-        /// docs/findings/minimizer-screening.md.
+        /// 4^k. Neither defines the clusters.
+        ///
+        /// NOT ASV-equivalent at its current defaults: on the 20-sample MiSeq
+        /// SOP it fragments clusters into spurious low-abundance ASVs. The two
+        /// metrics share a formula but NOT an operating point, so
+        /// `--kdist-cutoff 0.42` over-screens by ~3x here; ~0.64 with
+        /// `--minimizer-k 8` is much closer but still not equal. Use for
+        /// experiments only — see docs/findings/minimizer-screening.md.
         #[arg(long, value_enum)]
         screen_backend: Option<ScreenBackend>,
 
@@ -2283,11 +2295,14 @@ pub enum Commands {
         /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
         /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
         /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
-        /// 4^k, so its k can be raised for specificity without paying for it in
-        /// memory. Both feed the same `--kdist-cutoff` gate and neither defines
-        /// the clusters. `minimizer` deviates from the reference implementation
-        /// and is not yet validated across platforms — see
-        /// docs/findings/minimizer-screening.md.
+        /// 4^k. Neither defines the clusters.
+        ///
+        /// NOT ASV-equivalent at its current defaults: on the 20-sample MiSeq
+        /// SOP it fragments clusters into spurious low-abundance ASVs. The two
+        /// metrics share a formula but NOT an operating point, so
+        /// `--kdist-cutoff 0.42` over-screens by ~3x here; ~0.64 with
+        /// `--minimizer-k 8` is much closer but still not equal. Use for
+        /// experiments only — see docs/findings/minimizer-screening.md.
         #[arg(long, value_enum)]
         screen_backend: Option<ScreenBackend>,
 
