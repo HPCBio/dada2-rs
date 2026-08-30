@@ -48,7 +48,7 @@ RUN="$HERE/concordance/run_illumina.sh"
 # sketch size, where 8 zeroed out every missed pair below 10 substitutions on the
 # SOP and 11 (the shipped default) did not.
 KS="${KS:-8 9}"
-CUTS="${CUTS:-0.55 0.60 0.65 0.70 0.72}"
+CUTS="${CUTS:-0.55 0.58 0.60 0.62 0.65 0.70 0.72}"
 
 mkdir -p "$OUT"
 
