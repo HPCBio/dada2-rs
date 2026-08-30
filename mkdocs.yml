@@ -71,6 +71,7 @@ nav:
     - Overview: findings/index.md
     - KDIST cutoff decoupling: findings/kdist-cutoff-decoupling.md
     - K-mer screen size: findings/kmer-size-screening.md
+    - Minimizers as the screen (experimental): findings/minimizer-screening.md
     - Band size & platform defaults: findings/band-size-platform-defaults.md
     - Carrying compmax across buds: findings/shuffle-compmax-carry.md
     - Redesigning b_shuffle (closed): findings/shuffle-build-scan.md

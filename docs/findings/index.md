@@ -29,6 +29,18 @@ here is the evidence, and here is the path it opens or closes."
   dada k-mer-distance cutoffs can be set independently; the dada-stage speedup is
   safe to take, while pushing the same cutoff into learn-errors perturbs the error
   model and churns real-abundance ASVs.
+- [Minimizers as the pre-alignment screen](minimizer-screening.md) — **early,
+  experimental, opt-in.** A winnowed sketch reproduces the k-mer screen's ASV
+  decisions on both platforms (93=93 PacBio, 8=8 Illumina, churn 0 at every
+  stage), passes a **strict subset** of its pairs, and disagrees **zero** times
+  below 10 substitutions. It is *not* faster than a tuned `k=7` — it matches its
+  selectivity (15.57% vs 15.78%) at **74% less resident memory** and without
+  per-platform tuning of `k`. Also the page that measured, for the first time,
+  that PacBio at the default `k=5` screens **100.00%** of pairs — a complete
+  no-op. Includes the correction of its own first framing (a "6.4× speedup" that
+  was really a comparison against that no-op baseline), and an incidental
+  finding that ASV *ordering* is nondeterministic run-to-run on the existing
+  default backend.
 - [K-mer screen size](kmer-size-screening.md) — `--kmer-size` has ~no effect on
   the final chimera-filtered table on either platform; it is a speed/memory knob,
   not an accuracy knob (k=5 Illumina, k=7 PacBio for speed).

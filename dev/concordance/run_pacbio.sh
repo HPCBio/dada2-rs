@@ -29,6 +29,17 @@ ALIGN_BACKEND="${ALIGN_BACKEND:-}"
 backend_arg=()
 [ -n "$ALIGN_BACKEND" ] && backend_arg=(--align-backend "$ALIGN_BACKEND")
 
+# Optional pre-alignment screen backend (kmer|minimizer), experimental. Applied
+# ONLY to the screening subcommands -- unlike ALIGN_BACKEND, remove-bimera-denovo
+# has no screen and rejects the flag. Unset = default (kmer).
+SCREEN_BACKEND="${SCREEN_BACKEND:-}"
+screen_arg=()
+if [ -n "$SCREEN_BACKEND" ]; then
+  screen_arg=(--screen-backend "$SCREEN_BACKEND")
+  [ -n "${MINIMIZER_K:-}" ] && screen_arg+=(--minimizer-k "$MINIMIZER_K")
+  [ -n "${MINIMIZER_W:-}" ] && screen_arg+=(--minimizer-w "$MINIMIZER_W")
+fi
+
 # --- Parameters (keep in sync with write_reference.R pacbio branch) ---
 MIN_LEN=1000
 MAX_LEN=1600
@@ -69,12 +80,12 @@ done
 echo "==> learn-errors (pacbio errfun, k=$KMER)"
 "$BIN" learn-errors "${filts[@]}" --nbases "$NBASES" --errfun pacbio \
     --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
-    ${backend_arg[@]+"${backend_arg[@]}"} -o "$OUT/err.json"
+    ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} -o "$OUT/err.json"
 
 echo "==> dada (per-sample)"
 "$BIN" dada "${filts[@]}" --error-model "$OUT/err.json" \
     --output-dir "$OUT/dada" --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
-    ${backend_arg[@]+"${backend_arg[@]}"}
+    ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
 
 echo "==> make-sequence-table"
 "$BIN" make-sequence-table "$OUT"/dada/*.json -o "$OUT/seqtab.json"

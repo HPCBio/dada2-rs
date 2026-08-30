@@ -32,6 +32,18 @@ ALIGN_BACKEND="${ALIGN_BACKEND:-}"
 backend_arg=()
 [ -n "$ALIGN_BACKEND" ] && backend_arg=(--align-backend "$ALIGN_BACKEND")
 
+# Optional pre-alignment screen backend (kmer|minimizer), experimental. Applied
+# ONLY to the screening subcommands (learn-errors, dada, dada-pseudo) -- unlike
+# ALIGN_BACKEND, remove-bimera-denovo has no screen and rejects the flag. Unset =
+# default (kmer), leaving existing behaviour unchanged.
+SCREEN_BACKEND="${SCREEN_BACKEND:-}"
+screen_arg=()
+if [ -n "$SCREEN_BACKEND" ]; then
+  screen_arg=(--screen-backend "$SCREEN_BACKEND")
+  [ -n "${MINIMIZER_K:-}" ] && screen_arg+=(--minimizer-k "$MINIMIZER_K")
+  [ -n "${MINIMIZER_W:-}" ] && screen_arg+=(--minimizer-w "$MINIMIZER_W")
+fi
+
 # --- Parameters (keep in sync with write_reference.R) ---
 TRUNC_LEN_F=240
 TRUNC_LEN_R=160
@@ -65,9 +77,9 @@ done
 
 echo "==> learn-errors (fwd, rev)"
 "$BIN" learn-errors "${filtFs[@]}" --nbases "$NBASES" --errfun loess \
-    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} -o "$OUT/errF.json"
+    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} -o "$OUT/errF.json"
 "$BIN" learn-errors "${filtRs[@]}" --nbases "$NBASES" --errfun loess \
-    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} -o "$OUT/errR.json"
+    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} -o "$OUT/errR.json"
 
 if [ "$POOL" = "pseudo" ]; then
   # Pseudo-pooling. NOTE: dada-pseudo takes -o for its output DIRECTORY, whereas
@@ -75,10 +87,10 @@ if [ "$POOL" = "pseudo" ]; then
   echo "==> dada-pseudo (fwd, rev)"
   "$BIN" dada-pseudo "${filtFs[@]}" --error-model "$OUT/errF.json" \
       -o "$OUT/dada_fwd" --priors-out "$OUT/priors_fwd.fasta" \
-      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"}
+      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
   "$BIN" dada-pseudo "${filtRs[@]}" --error-model "$OUT/errR.json" \
       -o "$OUT/dada_rev" --priors-out "$OUT/priors_rev.fasta" \
-      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"}
+      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
 
   # Positive control: did the priors actually CHANGE anything?
   #
@@ -92,7 +104,7 @@ if [ "$POOL" = "pseudo" ]; then
   echo "==> positive control: per-sample run for comparison"
   "$BIN" dada "${filtFs[@]}" --error-model "$OUT/errF.json" \
       --output-dir "$OUT/control_persample" --threads "$THREADS" \
-      ${backend_arg[@]+"${backend_arg[@]}"} > /dev/null
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} > /dev/null
   python3 - "$OUT/dada_fwd" "$OUT/control_persample" <<'PYCTL'
 import glob, json, os, sys
 def load(d):
@@ -114,9 +126,9 @@ else
   # Per-sample denoising (pool=FALSE analog) — matches R dada() default.
   echo "==> dada (fwd, rev; per-sample)"
   "$BIN" dada "${filtFs[@]}" --error-model "$OUT/errF.json" \
-      --output-dir "$OUT/dada_fwd" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"}
+      --output-dir "$OUT/dada_fwd" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
   "$BIN" dada "${filtRs[@]}" --error-model "$OUT/errR.json" \
-      --output-dir "$OUT/dada_rev" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"}
+      --output-dir "$OUT/dada_rev" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
 fi
 
 echo "==> merge-pairs"

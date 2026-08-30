@@ -8,7 +8,9 @@ use std::sync::OnceLock;
 use rayon::prelude::*;
 
 use crate::containers::{B, Bi, BirthType, Comparison};
-use crate::nwalign::{AlignBuffers, AlignParams, sub_new_with_buf};
+use crate::nwalign::{
+    AlignBuffers, AlignParams, ScreenBackend, sub_new_with_buf, sub_new_with_screen,
+};
 use crate::pval::compute_lambda;
 
 /// Default chunk size for the parallel raw-compare loop.
@@ -267,6 +269,24 @@ pub fn b_compare_parallel(
     let center_reads = b.raws[center_idx].reads;
     let nraw = b.raws.len();
     let use_quals = b.use_quals;
+    // Minimizer index (exact): one scatter over the center's posting lists
+    // yields every raw's shared-minimizer count, so the per-pair merge-join in
+    // the map below becomes an array read. Charged to setup, which is where its
+    // whole cost lives — the map then pays O(1) per comparison instead of
+    // O(sketch).
+    let shared: Option<Vec<u32>> = match (&b.minimizer_index, params.screen_backend) {
+        (Some(index), ScreenBackend::Minimizer) if params.use_kmers && !params.screen_audit => {
+            // Under audit the map must run BOTH screens per pair, so the
+            // precomputed value would suppress the very comparison being audited.
+            b.raws[center_idx].minimizers.as_ref().map(|q| {
+                let mut out = Vec::new();
+                index.shared_counts(q, &mut out);
+                out
+            })
+        }
+        _ => None,
+    };
+    let center_sketch = b.raws[center_idx].minimizers.as_ref();
     let setup_dur = t_setup.elapsed();
     let t_map = std::time::Instant::now();
 
@@ -312,7 +332,14 @@ pub fn b_compare_parallel(
                     let lambda = compute_lambda(raw, None, err_mat, ncol, use_quals);
                     (lambda, u32::MAX, true)
                 } else {
-                    let sub = sub_new_with_buf(&raws[center_idx], raw, params, buf);
+                    let screen_d = shared.as_ref().map(|sh| {
+                        crate::minimizers::screen_dist(
+                            sh[index],
+                            center_sketch,
+                            raw.minimizers.as_ref(),
+                        )
+                    });
+                    let sub = sub_new_with_screen(&raws[center_idx], raw, params, buf, screen_d);
                     let lambda = compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
                     let hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
                     (lambda, hamming, false)
@@ -1844,6 +1871,10 @@ mod compare_fold_tests {
             homo_gap_p: -1,
             use_kmers: true,
             kdist_cutoff: 0.42,
+            screen_backend: ScreenBackend::Kmer,
+            minimizer_k: crate::minimizers::MINIMIZER_K,
+            minimizer_w: crate::minimizers::MINIMIZER_W,
+            screen_audit: false,
             kmer_size: K,
             band: 16,
             vectorized: true,

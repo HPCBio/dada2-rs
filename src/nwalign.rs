@@ -1299,6 +1299,26 @@ pub fn raw_align_with_buf(
     p: &AlignParams,
     buf: &mut AlignBuffers,
 ) -> Option<()> {
+    raw_align_with_screen(raw1, raw2, p, buf, None)
+}
+
+/// [`raw_align_with_buf`] with the screen distance optionally supplied by the
+/// caller.
+///
+/// `screen` short-circuits the pairwise screen computation only — the value is
+/// used exactly as the computed one would have been, for the cutoff gate and for
+/// the DP's banding decisions alike. Its purpose is
+/// [`crate::minimizers::MinimizerIndex`], which derives the same distance for
+/// every raw against one cluster center in a single scatter pass, making the
+/// per-pair merge-join redundant. Passing a value that differs from what the
+/// pairwise path would compute changes the run's output.
+pub fn raw_align_with_screen(
+    raw1: &Raw,
+    raw2: &Raw,
+    p: &AlignParams,
+    buf: &mut AlignBuffers,
+    screen: Option<f64>,
+) -> Option<()> {
     // --- K-mer screening ---
     // Timed under `buf.measure` (#127). The screen and the alignment are the
     // two halves of a comparison's cost, and only the second is avoidable —
@@ -1315,33 +1335,36 @@ pub fn raw_align_with_buf(
 
     if p.use_kmers {
         let k = p.kmer_size;
-        kdist = match p.screen_backend {
-            ScreenBackend::Kmer => {
-                // Prefer 8-bit kmer distance; fall back to 16-bit on overflow.
-                match (&raw1.kmer8, &raw2.kmer8) {
-                    (Some(k1), Some(k2)) => {
-                        let d8 = k1.dist8(k2, raw1.len(), raw2.len(), k);
-                        if d8 < 0.0 {
-                            // Overflow (a k-mer occurs ≥255× in both seqs): fall
-                            // back to the exact 16-bit distance. The u16 vectors
-                            // are not kept resident (issue #32), so recompute
-                            // them from sequence here — this path is essentially
-                            // never hit for amplicon data.
-                            let v1 = assign_kmer(&raw1.seq, k);
-                            let v2 = assign_kmer(&raw2.seq, k);
-                            kmer_dist(&v1, raw1.len(), &v2, raw2.len(), k)
-                        } else {
-                            d8
+        kdist = match (screen, p.screen_backend) {
+            (Some(d), _) => d,
+            (None, backend) => match backend {
+                ScreenBackend::Kmer => {
+                    // Prefer 8-bit kmer distance; fall back to 16-bit on overflow.
+                    match (&raw1.kmer8, &raw2.kmer8) {
+                        (Some(k1), Some(k2)) => {
+                            let d8 = k1.dist8(k2, raw1.len(), raw2.len(), k);
+                            if d8 < 0.0 {
+                                // Overflow (a k-mer occurs ≥255× in both seqs): fall
+                                // back to the exact 16-bit distance. The u16 vectors
+                                // are not kept resident (issue #32), so recompute
+                                // them from sequence here — this path is essentially
+                                // never hit for amplicon data.
+                                let v1 = assign_kmer(&raw1.seq, k);
+                                let v2 = assign_kmer(&raw2.seq, k);
+                                kmer_dist(&v1, raw1.len(), &v2, raw2.len(), k)
+                            } else {
+                                d8
+                            }
                         }
+                        // No 8-bit vectors built (e.g. cluster-center raws): no
+                        // k-mer screen, exactly as before — previously both kmer8
+                        // and the u16 kmer were absent together, yielding
+                        // kdist = 0.0.
+                        _ => 0.0,
                     }
-                    // No 8-bit vectors built (e.g. cluster-center raws): no
-                    // k-mer screen, exactly as before — previously both kmer8
-                    // and the u16 kmer were absent together, yielding
-                    // kdist = 0.0.
-                    _ => 0.0,
                 }
-            }
-            ScreenBackend::Minimizer => screen_dist_minimizer(raw1, raw2, p),
+                ScreenBackend::Minimizer => screen_dist_minimizer(raw1, raw2),
+            },
         };
 
         if p.screen_audit {
@@ -1357,7 +1380,7 @@ pub fn raw_align_with_buf(
                     }
                     _ => 0.0,
                 },
-                ScreenBackend::Kmer => screen_dist_minimizer(raw1, raw2, p),
+                ScreenBackend::Kmer => screen_dist_minimizer(raw1, raw2),
             };
             let (kmer_d, mini_d) = match p.screen_backend {
                 ScreenBackend::Minimizer => (other, kdist),
@@ -1405,30 +1428,15 @@ pub fn raw_align_with_buf(
 /// Minimizer-sketch screen distance for a pair (experimental,
 /// [`ScreenBackend::Minimizer`]).
 ///
-/// Returns `0.0` — "as close as possible", i.e. *screen passes* — whenever the
-/// distance cannot be trusted, matching the k-mer path's behaviour when a raw
-/// has no `kmer8` vector. There are two such cases, and both must fail open:
-///
-/// - **A sketch is missing.** Cluster-center raws built outside the normal
-///   `dada` path have none, exactly as they have no `kmer8`.
-/// - **A sequence is too short to sketch** (`len < k + w - 1`, so no full
-///   window exists). [`minimizers::minimizer_dist`] would report 1.0 for the
-///   resulting empty sketch, which is maximal distance and would screen the pair
-///   out on the basis of *no evidence at all* — a silent false negative that
-///   removes short sequences from consideration entirely. Failing open costs an
-///   alignment; failing closed would lose real ASVs.
+/// Thin wrapper over [`minimizers::screen_dist`], which owns the fail-open rule
+/// so this path and the index path in `b_compare_parallel` cannot drift apart.
 #[inline]
-fn screen_dist_minimizer(raw1: &Raw, raw2: &Raw, p: &AlignParams) -> f64 {
-    let (k, w) = (p.minimizer_k, p.minimizer_w);
-    if !minimizers::sketch_is_usable(raw1.len(), k, w)
-        || !minimizers::sketch_is_usable(raw2.len(), k, w)
-    {
-        return 0.0;
-    }
-    match (&raw1.minimizers, &raw2.minimizers) {
-        (Some(m1), Some(m2)) => minimizers::minimizer_dist(m1, m2),
-        _ => 0.0,
-    }
+fn screen_dist_minimizer(raw1: &Raw, raw2: &Raw) -> f64 {
+    let shared = match (&raw1.minimizers, &raw2.minimizers) {
+        (Some(m1), Some(m2)) => minimizers::shared_count(m1, m2),
+        _ => 0,
+    };
+    minimizers::screen_dist(shared, raw1.minimizers.as_ref(), raw2.minimizers.as_ref())
 }
 
 /// The alignment half of [`raw_align_with_buf`], split out so the k-mer screen
@@ -1554,7 +1562,19 @@ pub fn sub_new_with_buf(
     params: &AlignParams,
     buf: &mut AlignBuffers,
 ) -> Option<Sub> {
-    raw_align_with_buf(raw0, raw1, params, buf)?;
+    sub_new_with_screen(raw0, raw1, params, buf, None)
+}
+
+/// [`sub_new_with_buf`] with the screen distance optionally supplied by the
+/// caller; see [`raw_align_with_screen`].
+pub fn sub_new_with_screen(
+    raw0: &Raw,
+    raw1: &Raw,
+    params: &AlignParams,
+    buf: &mut AlignBuffers,
+    screen: Option<f64>,
+) -> Option<Sub> {
+    raw_align_with_screen(raw0, raw1, params, buf, screen)?;
     let audit = params.screen_audit && params.use_kmers;
     // Post-alignment work is charged to the alignment half (#127): it is paid
     // only by pairs the screen let through, so it belongs to what the aligner
@@ -3285,6 +3305,10 @@ mod tests {
             homo_gap_p: -1,
             use_kmers: true,
             kdist_cutoff: 0.42,
+            screen_backend: ScreenBackend::Kmer,
+            minimizer_k: crate::minimizers::MINIMIZER_K,
+            minimizer_w: crate::minimizers::MINIMIZER_W,
+            screen_audit: false,
             kmer_size: 5,
             band: 16,
             vectorized: true, // must be overridden by the homopolymer branch

@@ -323,6 +323,15 @@ pub struct B {
     /// `bi_add_raw` without updating `comp` (they carry `birth_comp` instead), so
     /// that field goes stale after a bud and would silently mis-target the scan.
     pub raw_cluster: Vec<u32>,
+    /// Minimizer posting lists over `raws`, built once when every raw carries a
+    /// sketch (i.e. under `ScreenBackend::Minimizer`).
+    ///
+    /// `b_compare` scans all raws against one cluster center, so the raws are
+    /// the stable side and the center is the query: one scatter over the
+    /// center's postings yields every raw's shared count, replacing `nraw`
+    /// independent merge-joins. An **exact** acceleration — see
+    /// [`crate::minimizers::MinimizerIndex`] — so it changes cost, never output.
+    pub minimizer_index: Option<crate::minimizers::MinimizerIndex>,
     /// Running maximum expected abundance for each Raw, indexed by Raw index.
     ///
     /// Held here rather than on [`Raw`] (issue #147). `b_compare`'s serial
@@ -349,6 +358,21 @@ impl B {
             raw.index = i as u32;
         }
         let e_minmax = vec![-999.0; raws.len()];
+        // Built here rather than plumbed from params: "every raw has a sketch"
+        // is exactly the condition under which the minimizer screen is active,
+        // so the presence of the sketches is the signal. Disable for A/B with
+        // DADA2RS_MINIMIZER_INDEX=0 — the index is exact, so the two arms must
+        // agree byte-for-byte, and that is worth being able to check.
+        let index = if !raws.is_empty()
+            && raws.iter().all(|r| r.minimizers.is_some())
+            && std::env::var_os("DADA2RS_MINIMIZER_INDEX").is_none_or(|v| v != "0")
+        {
+            let sketches: Vec<Option<crate::minimizers::MinimizerSketch>> =
+                raws.iter().map(|r| r.minimizers.clone()).collect();
+            Some(crate::minimizers::MinimizerIndex::build(&sketches))
+        } else {
+            None
+        };
         let mut b = B {
             raws,
             clusters: Vec::with_capacity(INIT_CLUSTERS_CAPACITY),
@@ -361,6 +385,7 @@ impl B {
             lams: Vec::new(),
             cdf: Vec::new(),
             raw_cluster: Vec::new(),
+            minimizer_index: index,
             e_minmax,
         };
         b.init();

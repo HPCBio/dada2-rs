@@ -90,7 +90,16 @@ fn hash64(mut x: u64) -> u64 {
 /// collapsed. Counts saturate at 255, matching the 8-bit frequency screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MinimizerSketch {
-    entries: Vec<(u64, u8)>,
+    /// Distinct minimizer hashes, ascending.
+    ///
+    /// Struct-of-arrays rather than `Vec<(u64, u8)>`: that tuple aligns to 8 and
+    /// so occupies **16** bytes per entry, of which 7 are padding — 44% of a
+    /// structure whose entire justification is being smaller than a `4^k` array.
+    /// Split, an entry costs 9 bytes. The merge-join reads `hashes` densely and
+    /// touches `counts` only on a match, which is the better access pattern
+    /// anyway.
+    hashes: Vec<u64>,
+    counts: Vec<u8>,
     /// Σ counts — the multiset size, and the denominator in [`minimizer_dist`].
     total: u32,
 }
@@ -99,12 +108,12 @@ impl MinimizerSketch {
     /// Number of *distinct* minimizers retained.
     #[inline]
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.hashes.len()
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.hashes.is_empty()
     }
 
     /// Multiset size (Σ counts), the normaliser in [`minimizer_dist`].
@@ -117,18 +126,19 @@ impl MinimizerSketch {
     /// [`crate::kmers::KmerScreen::resident_bytes`].
     #[inline]
     pub fn resident_bytes(&self) -> usize {
-        self.entries.len() * std::mem::size_of::<(u64, u8)>()
+        self.hashes.len() * std::mem::size_of::<u64>() + self.counts.len()
     }
 
     /// The distinct minimizer hashes, ascending.
     #[inline]
     pub fn hashes(&self) -> impl Iterator<Item = u64> + '_ {
-        self.entries.iter().map(|&(h, _)| h)
+        self.hashes.iter().copied()
     }
 
+    /// `(hash, count)` pairs, ascending by hash.
     #[inline]
-    fn entries(&self) -> &[(u64, u8)] {
-        &self.entries
+    fn entries(&self) -> impl Iterator<Item = (u64, u8)> + '_ {
+        self.hashes.iter().copied().zip(self.counts.iter().copied())
     }
 }
 
@@ -233,23 +243,26 @@ pub fn sketch(seq: &[u8], k: usize, w: usize) -> MinimizerSketch {
 /// Collapse selected hashes into the sorted `(hash, count)` representation.
 fn build_entries(mut selected: Vec<u64>) -> MinimizerSketch {
     selected.sort_unstable();
-    let mut entries: Vec<(u64, u8)> = Vec::with_capacity(selected.len());
-    let mut total: u32 = 0;
+    let mut hashes: Vec<u64> = Vec::with_capacity(selected.len());
+    let mut counts: Vec<u8> = Vec::with_capacity(selected.len());
     for h in selected {
-        match entries.last_mut() {
-            Some((last_h, c)) if *last_h == h => {
-                *c = c.saturating_add(1);
+        match (hashes.last(), counts.last_mut()) {
+            (Some(&last_h), Some(c)) if last_h == h => *c = c.saturating_add(1),
+            _ => {
+                hashes.push(h);
+                counts.push(1);
             }
-            _ => entries.push((h, 1)),
         }
-        total = total.saturating_add(1);
     }
-    // `total` must agree with Σ counts even after saturation, or the distance
-    // denominator and numerator would be on different scales.
-    let summed: u32 = entries.iter().map(|&(_, c)| c as u32).sum();
+    hashes.shrink_to_fit();
+    counts.shrink_to_fit();
+    // Σ counts *after* saturation, so the distance's numerator and denominator
+    // are on the same scale even in the (amplicon-implausible) saturating case.
+    let total: u32 = counts.iter().map(|&c| c as u32).sum();
     MinimizerSketch {
-        entries,
-        total: summed.min(total),
+        hashes,
+        counts,
+        total,
     }
 }
 
@@ -262,27 +275,28 @@ fn build_entries(mut selected: Vec<u64>) -> MinimizerSketch {
 /// above any usable cutoff and therefore screens the pair out — the safe
 /// direction is *not* taken here, see [`sketch_is_usable`].
 pub fn minimizer_dist(a: &MinimizerSketch, b: &MinimizerSketch) -> f64 {
-    let scale = a.total.min(b.total);
-    if scale == 0 {
-        return 1.0;
-    }
-    let (ea, eb) = (a.entries(), b.entries());
+    dist_from_shared(shared_count(a, b), a.total, b.total)
+}
+
+/// `Σ min(count_a[m], count_b[m])` over the two sketches — the numerator of
+/// [`minimizer_dist`], and the same quantity [`MinimizerIndex::shared_counts`]
+/// accumulates by scatter. Factored out so the pairwise and index paths compute
+/// one definition of "shared".
+pub fn shared_count(a: &MinimizerSketch, b: &MinimizerSketch) -> u32 {
     let mut shared: u32 = 0;
     let (mut i, mut j) = (0usize, 0usize);
-    while i < ea.len() && j < eb.len() {
-        let (ha, ca) = ea[i];
-        let (hb, cb) = eb[j];
-        match ha.cmp(&hb) {
+    while i < a.hashes.len() && j < b.hashes.len() {
+        match a.hashes[i].cmp(&b.hashes[j]) {
             std::cmp::Ordering::Less => i += 1,
             std::cmp::Ordering::Greater => j += 1,
             std::cmp::Ordering::Equal => {
-                shared += ca.min(cb) as u32;
+                shared += a.counts[i].min(b.counts[j]) as u32;
                 i += 1;
                 j += 1;
             }
         }
     }
-    1.0 - shared as f64 / scale as f64
+    shared
 }
 
 /// Whether a sequence is long enough for its sketch to mean anything.
@@ -335,7 +349,7 @@ impl MinimizerIndex {
             HashMap::with_capacity(incidences / 8 + 16);
         for (idx, s) in sketches.iter().enumerate() {
             let Some(s) = s else { continue };
-            for &(h, c) in s.entries() {
+            for (h, c) in s.entries() {
                 postings.entry(h).or_default().push((idx as u32, c));
             }
         }
@@ -370,7 +384,7 @@ impl MinimizerIndex {
     pub fn shared_counts(&self, query: &MinimizerSketch, out: &mut Vec<u32>) {
         out.clear();
         out.resize(self.nraw, 0);
-        for &(h, qc) in query.entries() {
+        for (h, qc) in query.entries() {
             let Some(list) = self.postings.get(&h) else {
                 continue;
             };
@@ -395,6 +409,31 @@ pub fn dist_from_shared(shared: u32, total_a: u32, total_b: u32) -> f64 {
         return 1.0;
     }
     1.0 - shared as f64 / scale as f64
+}
+
+/// The screen verdict for a pair, with the fail-open rule applied.
+///
+/// **This is the single definition of what the minimizer screen decides**, used
+/// by both the pairwise path and the index path so the two cannot drift. It
+/// returns `0.0` — "as close as possible", i.e. *screen passes* — whenever there
+/// is no evidence to judge on: either sketch missing, or either sketch empty.
+///
+/// Emptiness rather than sequence length is the right test. A sequence can be
+/// long enough for a window (`sketch_is_usable`) and still sketch to nothing if
+/// it is dense with non-ACGT, and in that case [`minimizer_dist`] would report
+/// 1.0 — maximal distance — and screen the pair out on the basis of no evidence
+/// at all. Failing open costs an alignment; failing closed silently loses ASVs.
+///
+/// `shared` is ignored on the fail-open paths, so the index may pass whatever it
+/// accumulated.
+#[inline]
+pub fn screen_dist(shared: u32, a: Option<&MinimizerSketch>, b: Option<&MinimizerSketch>) -> f64 {
+    match (a, b) {
+        (Some(x), Some(y)) if x.total() > 0 && y.total() > 0 => {
+            dist_from_shared(shared, x.total(), y.total())
+        }
+        _ => 0.0,
+    }
 }
 
 #[cfg(test)]
@@ -485,9 +524,8 @@ mod tests {
         let poly_a = hash64(0); // 2-bit packing of AAAA... is all zero bits
         let poly_count = s
             .entries()
-            .iter()
-            .find(|&&(h, _)| h == poly_a)
-            .map_or(0, |&(_, c)| c as usize);
+            .find(|&(h, _)| h == poly_a)
+            .map_or(0, |(_, c)| c as usize);
         assert!(
             poly_count * 4 < s.total() as usize,
             "poly-A took {poly_count} of {} sketch mass",
@@ -545,6 +583,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The screen must fail OPEN on absent or empty sketches, on both paths.
+    /// Failing closed there would drop pairs on no evidence at all.
+    #[test]
+    fn screen_fails_open_without_evidence() {
+        let full = sketch(&make_seq(250, 5), MINIMIZER_K, MINIMIZER_W);
+        let empty = sketch(&make_seq(4, 6), MINIMIZER_K, MINIMIZER_W);
+        assert!(empty.is_empty());
+        // Absent on either side.
+        assert_eq!(screen_dist(0, None, Some(&full)), 0.0);
+        assert_eq!(screen_dist(0, Some(&full), None), 0.0);
+        // Present but empty on either side -- minimizer_dist would say 1.0 here.
+        assert_eq!(minimizer_dist(&full, &empty), 1.0);
+        assert_eq!(screen_dist(0, Some(&full), Some(&empty)), 0.0);
+        assert_eq!(screen_dist(0, Some(&empty), Some(&full)), 0.0);
+        // Two usable sketches still go through the real formula.
+        assert_eq!(
+            screen_dist(0, Some(&full), Some(&full)),
+            dist_from_shared(0, full.total(), full.total())
+        );
     }
 
     #[test]
