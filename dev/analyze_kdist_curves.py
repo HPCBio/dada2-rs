@@ -47,7 +47,7 @@ CUTOFFS = [0.30, 0.40, 0.42, 0.45, 0.48, 0.50, 0.55, 0.60, 0.65, 0.70, 0.72, 0.7
 DIV_BANDS = [1, 2, 3, 5, 10]
 
 
-def scan(path, target_div):
+def scan(path, target_div, min_core=0):
     """One streaming pass. Returns tallies only -- never the rows.
 
     Both `DIV_BANDS` and `CUTOFFS` are sorted, so a row's contribution is a
@@ -58,6 +58,9 @@ def scan(path, target_div):
     """
     opener = gzip.open if path.endswith(".gz") else open
     nb, nc = len(DIV_BANDS), len(CUTOFFS)
+    NBIN = 2000
+    close_hist = [0] * (NBIN + 1)  # distance histogram over near-neighbour pairs
+    dropped = 0
     # bucket i = rows whose pd first qualifies at DIV_BANDS[i]
     band_bucket_n = [0] * (nb + 1)
     band_bucket_max = [None] * (nb + 1)
@@ -78,22 +81,35 @@ def scan(path, target_div):
             pi = header.index("pct_div")
         except ValueError:
             sys.exit(f"{path}: expected kdist,pct_div columns; got {header}")
+        ci = header.index("core_len") if "core_len" in header else None
         for row in rdr:
             try:
                 d = float(row[ki]); pd = float(row[pi])
             except (IndexError, ValueError):
                 continue
+            # `pct_div` is edits/core_len, so a pair whose ends-free alignment
+            # leaves a tiny overlapping core reports ~0% divergence while sharing
+            # almost nothing -- a FALSE near-neighbour. Rare in a small sample,
+            # but at 1e8 pairs there are enough to saturate any max statistic.
+            if ci is not None and min_core > 0:
+                try:
+                    if int(row[ci]) < min_core:
+                        dropped += 1
+                        continue
+                except (IndexError, ValueError):
+                    pass
             n += 1
             bi = bisect.bisect_left(bl, pd)
             band_bucket_n[bi] += 1
             m = band_bucket_max[bi]
             if m is None or d > m:
                 band_bucket_max[bi] = d
-            ci = bisect.bisect_left(cl, d)
-            cut_bucket_n[ci] += 1
+            cix = bisect.bisect_left(cl, d)
+            cut_bucket_n[cix] += 1
             if pd <= target_div:
                 close_n += 1
-                cut_bucket_close[ci] += 1
+                cut_bucket_close[cix] += 1
+                close_hist[min(int(d * NBIN), NBIN) if d > 0 else 0] += 1
                 if close_max is None or d > close_max:
                     close_max = d
     if n == 0:
@@ -114,8 +130,19 @@ def scan(path, target_div):
         rc += cut_bucket_close[i]
         pass_n[c], close_pass[c] = rn, rc
 
+    def q(frac):
+        """Quantile of the near-neighbour distance distribution."""
+        target = frac * close_n
+        run = 0
+        for i, c in enumerate(close_hist):
+            run += c
+            if run >= target:
+                return i / NBIN
+        return 1.0
+
     return dict(n=n, band_max=band_max, band_n=band_n, pass_n=pass_n,
-                close_pass=close_pass, close_n=close_n, close_max=close_max)
+                close_pass=close_pass, close_n=close_n, close_max=close_max,
+                dropped=dropped, q=q)
 
 
 def main():
@@ -128,13 +155,29 @@ def main():
         help="divergence (%%) defining a 'genuine near neighbour' (default 10, "
         "which is what DADA2's 0.42 was calibrated to)",
     )
+    ap.add_argument(
+        "--min-core",
+        type=int,
+        default=0,
+        help="drop pairs whose alignment core is shorter than this. pct_div is "
+        "edits/core_len, so a tiny core reports ~0%% divergence while sharing "
+        "almost nothing -- a false near-neighbour that poisons tail statistics. "
+        "0 = keep everything (default), but check the reported drop count.",
+    )
+    ap.add_argument(
+        "--match",
+        default="kmer",
+        help="label of the reference screen whose RECALL the others should be "
+        "matched to (default 'kmer'). Matching a real screen's recall is robust; "
+        "chasing 100%% is not -- see below.",
+    )
     args = ap.parse_args()
 
     data = {}
     for spec in args.curves:
         label, _, path = spec.partition("=")
         print(f"scanning {label} ({path}) ...", file=sys.stderr)
-        data[label] = scan(path, args.target_div)
+        data[label] = scan(path, args.target_div, args.min_core)
 
     counts = {k: v["n"] for k, v in data.items()}
     if len(set(counts.values())) > 1:
@@ -175,22 +218,53 @@ def main():
             line += f"{r:17.2f}%{p:15.2f}%"
         print(line)
 
-    print()
-    print("Recommended cutoff per screen = the smallest listed cutoff reaching")
-    print(f"100% recall at {tgt:g}% divergence (i.e. lossless on this data):")
     for label, v in data.items():
-        need = v["close_max"]
-        rec = next((c for c in CUTOFFS if need is not None and c >= need), None)
-        p = 100 * v["pass_n"][rec] / v["n"] if rec else float("nan")
-        print(f"  {label:>12s}: >= {need:.4f}  -> use {rec}  (passes {p:.1f}% of all pairs)")
+        if v["dropped"]:
+            print(f"\nNOTE: {label} dropped {v['dropped']:,} pairs below --min-core.")
+
     print()
-    print("DO NOT ADOPT THAT NUMBER WITHOUT CHECKING ALIGNMENT COUNT.")
-    print("b_compare is 93-97% align-dominated, so the cutoff sets the cost, and")
-    print("100% recall is the expensive end of the knob. On PacBio it picked 0.50,")
-    print("which aligns ~10% MORE pairs than the k-mer screen and runs SLOWER,")
-    print("while 0.42-0.45 aligns 7-11% FEWER for a bit-identical ASV set -- the")
-    print("last 1.5% of recall cost ~20% of the alignment work and bought nothing.")
-    print("Use this to BRACKET the region, then let a sweep choose within it.")
+    print("Near-neighbour distance distribution (the tail that sets a cutoff).")
+    print("The MAX is not usable at scale: pct_div is edits/core_len, so a pair")
+    print("whose ends-free alignment leaves a tiny core reports ~0% divergence")
+    print("while sharing nothing. At 1e8 pairs enough of those exist to pin the")
+    print("max at 1.0 for every screen, which is what happened on the full MiSeq")
+    print("run. Use the quantiles.")
+    print()
+    print(f"{'screen':>14s} {'p99':>8s} {'p99.9':>8s} {'p99.99':>8s} {'max':>8s}")
+    for label, v in data.items():
+        q = v["q"]
+        mx = v["close_max"]
+        print(f"{label:>14s} {q(0.99):8.4f} {q(0.999):8.4f} {q(0.9999):8.4f} "
+              f"{mx if mx is not None else float('nan'):8.4f}")
+
+    ref = args.match if args.match in data else next(iter(data))
+    print()
+    print(f"RECOMMENDED CUTOFF: match the '{ref}' screen's recall, not 100%.")
+    print(f"'{ref}' is the screen in production, so reproducing ITS behaviour is")
+    print("the target; 100% recall is a different and more expensive goal, and on")
+    print("PacBio it picked a cutoff that ran SLOWER for no ASV benefit.")
+    print()
+    rv = data[ref]
+    for c in CUTOFFS:
+        r = 100 * rv["close_pass"][c] / max(rv["close_n"], 1)
+        p = 100 * rv["pass_n"][c] / rv["n"]
+        print(f"  reference {ref} @ {c:.2f}: recall {r:.2f}%, passes {p:.2f}% of all pairs")
+        if c >= 0.42:
+            break
+    target_recall = 100 * rv["close_pass"][0.42] / max(rv["close_n"], 1)
+    target_pass = 100 * rv["pass_n"][0.42] / rv["n"]
+    print(f"\n  matching {ref}@0.42 (recall {target_recall:.2f}%, pass {target_pass:.2f}%):")
+    for label, v in data.items():
+        if label == ref:
+            continue
+        by_recall = next((c for c in CUTOFFS
+                          if 100 * v["close_pass"][c] / max(v["close_n"], 1) >= target_recall), None)
+        by_pass = next((c for c in CUTOFFS
+                        if 100 * v["pass_n"][c] / v["n"] >= target_pass), None)
+        print(f"    {label:>12s}: cutoff {by_recall} by recall, {by_pass} by pass-rate")
+    print()
+    print("Then SWEEP that region against the actual ASV table -- the cutoff that")
+    print("reproduces the k-mer screen's recall is a starting point, not an answer.")
 
 
 if __name__ == "__main__":
