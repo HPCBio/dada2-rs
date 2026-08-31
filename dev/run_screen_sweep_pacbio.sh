@@ -192,7 +192,11 @@ PY
 
 echo
 echo "==> wall time (arms interleaved across $REPS reps)"
-: > "$OUT/timings.tsv"
+# Append, do not truncate: timing passes are the expensive part (a pooled pass is
+# billions of comparisons), so raising REPS on a re-run should ADD replicates
+# rather than discard the ones already paid for. Each (arm, rep) is skipped if
+# already recorded.
+touch "$OUT/timings.tsv"
 declare -a T=("kmer::" "kmerctl::")
 for K in $KS; do for C in $TIME_CUTS; do T+=("mini_k${K}_c${C}:$K:$C"); done; done
 echo "    ${#T[@]} arms x $REPS reps = $(( ${#T[@]} * REPS )) denoising passes"
@@ -201,6 +205,13 @@ for rep in $(seq 1 "$REPS"); do
   for spec in "${T[@]}"; do
     name="${spec%%:*}"; rest="${spec#*:}"; K="${rest%%:*}"; C="${rest#*:}"
     extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
+    # Already timed on an earlier invocation? Skip it, so raising REPS adds
+    # replicates instead of redoing the ones already paid for.
+    if awk -F'\t' -v n="$name" -v r="$rep" '$1==n && $2==r{f=1} END{exit !f}' \
+         "$OUT/timings.tsv" 2>/dev/null; then
+      echo "    $name rep $rep (cached)"
+      continue
+    fi
     t0=$(python3 -c 'import time;print(time.time())')
     "$BIN" $DADA_CMD "${fq[@]}" --error-model "$OUT/models/err.json" --band "$BAND" \
         --kmer-size "$KMER" --threads "$THREADS" ${extra[@]+"${extra[@]}"} \

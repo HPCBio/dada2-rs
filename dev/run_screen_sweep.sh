@@ -258,7 +258,11 @@ fi
 declare -a ARMS=("kmer::" "kmerctl::")
 for K in $KS; do for C in $TIME_CUTS; do ARMS+=("mini_k${K}_c${C}:$K:$C"); done; done
 
-: > "$OUT/timings.tsv"
+# Append, do not truncate: timing passes are the expensive part (a pooled pass is
+# billions of comparisons), so raising REPS on a re-run should ADD replicates
+# rather than discard the ones already paid for. Each (arm, rep) is skipped if
+# already recorded.
+touch "$OUT/timings.tsv"
 echo "    ${#ARMS[@]} arms x $REPS reps = $(( ${#ARMS[@]} * REPS )) denoising passes"
 echo "    (narrow with TIME_CUTS=; the accuracy grid above is unaffected)"
 for rep in $(seq 1 "$REPS"); do
@@ -266,6 +270,13 @@ for rep in $(seq 1 "$REPS"); do
     name="${arm%%:*}"; rest="${arm#*:}"; K="${rest%%:*}"; C="${rest#*:}"
     extra=()
     [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
+    # Already timed on an earlier invocation? Skip it, so raising REPS adds
+    # replicates instead of redoing the ones already paid for.
+    if awk -F'\t' -v n="$name" -v r="$rep" '$1==n && $2==r{f=1} END{exit !f}' \
+         "$OUT/timings.tsv" 2>/dev/null; then
+      echo "    $name rep $rep (cached)"
+      continue
+    fi
     t0=$(python3 -c 'import time;print(time.time())')
     # Same denoising mode as the arms, or the timings describe a different
     # workload than the accuracy table above.
