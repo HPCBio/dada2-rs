@@ -112,6 +112,13 @@ ERRFUN_ARGS="${ERRFUN_ARGS:-}"
 # sub-1% screen share and be dominated entirely by alignment count.
 POOL="${POOL:-false}"
 
+# Decouple the learn-errors screen from the denoising screen, per
+# docs/findings/kdist-cutoff-decoupling.md: for the k-mer screen, keeping
+# learn-errors lenient while tightening dada was both safe and fast, while
+# tightening both churned real ASVs. Set LEARN_CUTOFF to a lenient value (e.g.
+# 0.70) and the sweep's cutoffs then apply to DENOISING only.
+LEARN_CUTOFF="${LEARN_CUTOFF:-}"
+
 mkdir -p "$OUT"/.verbose "$OUT"
 
 aligned_count() {  # sum (nalign - nshroud) over a run's forward dada outputs
@@ -134,11 +141,11 @@ PY
 }
 
 echo "==> baseline: k-mer screen (production default)"
-[ -d "$OUT/base" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" POOL="$POOL" \
+[ -d "$OUT/base" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" POOL="$POOL" LEARN_CUTOFF="$LEARN_CUTOFF" \
   bash "$RUN" "$BIN" "$DATA" "$OUT/base" "$THREADS" > "$OUT/base.log" 2>&1
 
 echo "==> control: k-mer screen AGAIN (establishes the ASV noise floor)"
-[ -d "$OUT/control" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" POOL="$POOL" \
+[ -d "$OUT/control" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" POOL="$POOL" LEARN_CUTOFF="$LEARN_CUTOFF" \
   bash "$RUN" "$BIN" "$DATA" "$OUT/control" "$THREADS" > "$OUT/control.log" 2>&1
 echo "    control vs baseline (MUST be identical, or nothing below is interpretable):"
 # compare_seqtab_matrix exits 1 when the tables differ, which for the CONTROL is
@@ -155,7 +162,7 @@ for K in $KS; do
     [ -d "$d" ] && { echo "    k=$K cutoff=$C (cached)"; continue; }
     echo "    k=$K cutoff=$C"
     SCREEN_BACKEND=minimizer MINIMIZER_K="$K" SCREEN_CUTOFF="$C" \
-      ERR_DIR="${ERR_DIR:-}" PREFILTERED="${PREFILTERED:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" POOL="$POOL" \
+      ERR_DIR="${ERR_DIR:-}" PREFILTERED="${PREFILTERED:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" POOL="$POOL" LEARN_CUTOFF="$LEARN_CUTOFF" \
       bash "$RUN" "$BIN" "$DATA" "$d" "$THREADS" > "$d.log" 2>&1
   done
 done

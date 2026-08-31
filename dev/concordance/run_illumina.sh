@@ -39,24 +39,46 @@ backend_arg=()
 # ALIGN_BACKEND, remove-bimera-denovo has no screen and rejects the flag. Unset =
 # default (kmer), leaving existing behaviour unchanged.
 SCREEN_BACKEND="${SCREEN_BACKEND:-}"
-screen_arg=()
+screen_base=()
 if [ -n "$SCREEN_BACKEND" ]; then
-  screen_arg=(--screen-backend "$SCREEN_BACKEND")
-  [ -n "${MINIMIZER_K:-}" ] && screen_arg+=(--minimizer-k "$MINIMIZER_K")
-  [ -n "${MINIMIZER_W:-}" ] && screen_arg+=(--minimizer-w "$MINIMIZER_W")
+  screen_base=(--screen-backend "$SCREEN_BACKEND")
+  [ -n "${MINIMIZER_K:-}" ] && screen_base+=(--minimizer-k "$MINIMIZER_K")
+  [ -n "${MINIMIZER_W:-}" ] && screen_base+=(--minimizer-w "$MINIMIZER_W")
 fi
 
 # The minimizer metric induces a different distance DISTRIBUTION than the
 # frequency vector, so KDIST_CUTOFF does not transfer between backends even
 # though the two formulas have the same shape -- at 0.42 the sketch passes ~9% of
-# pairs where the frequency vector passes ~28%. Applied to BOTH learn-errors and
-# dada, since both stages screen.
+# pairs where the frequency vector passes ~28%.
 #
-# Deliberately OUTSIDE the SCREEN_BACKEND guard: it must be settable for the
-# k-mer backend too, or the "both screens fully open" control silently runs the
-# k-mer arm at the default 0.42 and compares an open screen against a closed one.
-# That exact mistake invalidated two control runs.
-[ -n "${SCREEN_CUTOFF:-}" ] && screen_arg+=(--kdist-cutoff "$SCREEN_CUTOFF")
+# Deliberately settable for the k-mer backend too, or a "both screens fully open"
+# control silently runs the k-mer arm at the default 0.42 and compares an open
+# screen against a closed one. That mistake invalidated two control runs.
+SCREEN_CUTOFF="${SCREEN_CUTOFF:-}"
+
+# LEARN_CUTOFF decouples the learn-errors screen from the denoising screen.
+#
+# The lever docs/findings/kdist-cutoff-decoupling.md found for the k-mer screen:
+# keeping learn-errors LENIENT while tightening dada was safe and fast (dada
+# -32/-26%, churn 1), whereas tightening BOTH churned real-abundance ASVs. The
+# same split should apply here, since the screen is active inside build_trans_mat
+# and therefore shapes the fitted model.
+#
+# Nothing in dada2-rs couples them -- learn-errors and dada are separate
+# subcommands each taking their own --kdist-cutoff. Only this script coupled them,
+# by passing one value to both.
+LEARN_CUTOFF="${LEARN_CUTOFF:-}"
+
+screen_arg=("${screen_base[@]}")
+[ -n "$SCREEN_CUTOFF" ] && screen_arg+=(--kdist-cutoff "$SCREEN_CUTOFF")
+
+learn_screen_arg=("${screen_base[@]}")
+if [ -n "$LEARN_CUTOFF" ]; then
+  learn_screen_arg+=(--kdist-cutoff "$LEARN_CUTOFF")
+  echo "==> decoupled screens: learn-errors cutoff $LEARN_CUTOFF, dada cutoff ${SCREEN_CUTOFF:-default}"
+elif [ -n "$SCREEN_CUTOFF" ]; then
+  learn_screen_arg+=(--kdist-cutoff "$SCREEN_CUTOFF")
+fi
 
 # --- Parameters (keep in sync with write_reference.R) ---
 TRUNC_LEN_F=240
@@ -141,9 +163,9 @@ if [ -n "$ERR_DIR" ]; then
 else
 echo "==> learn-errors (fwd, rev)"
 "$BIN" learn-errors "${filtFs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
-    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} -o "$OUT/errF.json"
+    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${learn_screen_arg[@]+"${learn_screen_arg[@]}"} -o "$OUT/errF.json"
 "$BIN" learn-errors "${filtRs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
-    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} -o "$OUT/errR.json"
+    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${learn_screen_arg[@]+"${learn_screen_arg[@]}"} -o "$OUT/errR.json"
 fi
 
 if [ "$POOL" = "pseudo" ]; then
