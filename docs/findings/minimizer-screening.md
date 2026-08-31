@@ -11,7 +11,8 @@ from how a sketch works, and it took the whole experiment to see.
 | table size | **416 ASVs**, 362 samples, 2.97M reads | **1540 ASVs**, 3 samples, 542k reads |
 | ASV set | **identical at cutoff 0.70** | **identical at cutoff 0.45-0.50** |
 | count-matrix L1 | 0.0596% | **0.0053%** |
-| alignments for zero churn | **121%** (a cost) | **89-93%** (a saving) |
+| zero-churn cost | **+17% wall clock** | **7-11% fewer alignments** |
+| best speed at usable accuracy | 0.62: **5% faster**, 5 tail ASVs | 0.45: faster *and* identical |
 | cutoff for zero churn | 0.70 | **0.45-0.50** |
 
 **Why length decides it.** The sketch is `O(len/w)` entries: a 250 bp read yields
@@ -101,6 +102,59 @@ shrouds 209.4 M against the k-mer screen's 205.6 M, so it performs 24.3 M
 alignments against 28.1 M — **3.7 M fewer**. `b_compare` is 82-88%
 align-dominated on this platform ([screen vs align](compare-screen-vs-align.md)),
 so that is the half of the phase that matters.
+
+### Illumina MiSeq — the full cutoff curve, 362 samples
+
+The complete 0.40-0.80 sweep at k=8, against a bit-identical control (0 of 30,105
+count cells) and a **2.4% timing control channel**. Timing arms all share the
+baseline error model, so the wall-clock column isolates the screen.
+
+| cutoff | ASVs | churn | count L1 | max churned abundance | wall time vs k-mer |
+|---|---|---|---|---|---|
+| 0.40 | 415 | 19 | 0.4986% | 15 | **42.8%** |
+| 0.45 | 413 | 11 | 0.3140% | 13 | 52.3% |
+| 0.50 | 413 | 9 | 0.1864% | 13 | 65.8% |
+| 0.55 | 414 | 6 | 0.1132% | 13 | 78.7% |
+| 0.60 | 416 | 6 | 0.0706% | 77 | 89.6% |
+| **0.62** | 413 | 5 | **0.0612%** | 13 | **94.8%** |
+| 0.65 | 415 | 3 | 0.0660% | 9 | 103.8% |
+| **0.70** | **416** | **0** | 0.0653% | — | 116.9% |
+| 0.75 | 416 | 2 | 0.0700% | 78 | 133.6% |
+| 0.80 | 417 | 1 | 0.0843% | 78 | 149.6% |
+
+Four things fall out of this table.
+
+**1. `n_asv` is worse than useless here.** ASV *count* spans 413-417 across the
+whole range while count L1 varies **8x**. At cutoff 0.40 the table holds 415 ASVs
+against the baseline's 416 — by ASV count, indistinguishable — while 19 ASVs have
+churned and 0.5% of reads sit on the wrong variant. Any sweep judged on ASV counts
+would have called 0.40 fine.
+
+**2. A mis-set screen never loses abundant ASVs.** The maximum churned abundance
+is **15 reads at cutoff 0.40**, where the sketch retains only ~53% of
+near-neighbours. Damage is confined to the low-abundance tail at every setting;
+what changes is *where the reads go*, per
+[the mechanism section](#the-mechanism-a-mis-set-screen-moves-reads-it-does-not-lose-asvs).
+
+**3. Accuracy is U-shaped, not monotone.** L1 bottoms out at 0.62-0.70 and rises
+again to 0.0843% at 0.80. Above 0.70 the minimizer is *more* permissive than
+k-mer@0.42 and starts aligning pairs k-mer rejects, diverging in the opposite
+direction. **The optimum is where the two screens' effective behaviour matches,
+not where recall is maximal** — which is the same lesson as
+[calibration bracketing](#calibration-brackets-only-a-sweep-decides), arrived at
+from the output side.
+
+**4. Illumina does have a real operating point, and it is not free.** Wall time is
+monotone in cutoff and far outside the 2.4% control:
+
+- **0.62: 5% faster, at the L1 minimum, for 5 churned ASVs of <=13 reads.**
+- 0.60: 10% faster, 6 churned ASVs.
+- 0.70: zero churn, but **17% slower**.
+
+An earlier revision of this page called Illumina "accuracy-neutral, cost-negative".
+That was wrong — it was inferred from a 20-sample subset without timing. The real
+trade is explicit: **a handful of tail ASVs for 5-10% wall clock**, or exact
+reproduction for +17%.
 
 ### Illumina MiSeq — full run, 362 samples, 416 ASVs, 2.97 M reads
 
