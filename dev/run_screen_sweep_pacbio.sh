@@ -157,7 +157,7 @@ echo "==> wall time (arms interleaved across $REPS reps)"
 : > "$OUT/timings.tsv"
 declare -a T=("kmer::" "kmerctl::")
 for K in $KS; do for C in $TIME_CUTS; do T+=("mini_k${K}_c${C}:$K:$C"); done; done
-echo "    T arms x $REPS reps = $(( ${#T[@]} * REPS )) denoising passes"
+echo "    ${#T[@]} arms x $REPS reps = $(( ${#T[@]} * REPS )) denoising passes"
 echo "    (narrow with TIME_CUTS=; the accuracy grid above is unaffected)"
 for rep in $(seq 1 "$REPS"); do
   for spec in "${T[@]}"; do

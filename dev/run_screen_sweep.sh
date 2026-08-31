@@ -229,7 +229,7 @@ declare -a ARMS=("kmer::" "kmerctl::")
 for K in $KS; do for C in $TIME_CUTS; do ARMS+=("mini_k${K}_c${C}:$K:$C"); done; done
 
 : > "$OUT/timings.tsv"
-echo "    ARMS arms x $REPS reps = $(( ${#ARMS[@]} * REPS )) denoising passes"
+echo "    ${#ARMS[@]} arms x $REPS reps = $(( ${#ARMS[@]} * REPS )) denoising passes"
 echo "    (narrow with TIME_CUTS=; the accuracy grid above is unaffected)"
 for rep in $(seq 1 "$REPS"); do
   for arm in "${ARMS[@]}"; do
