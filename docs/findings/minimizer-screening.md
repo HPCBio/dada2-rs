@@ -49,7 +49,7 @@ What that is worth, at *matched alignment work* so the screen is the only variab
 | PacBio HiFi | per-sample | 0.45-0.50 | not resolvable on our rig | churn 0, L1 0.0053% |
 | NovaSeq soil 16S | per-sample | 0.65 | **16.6%** | churn 277/17398, L1 0.842% |
 | NovaSeq ITS2 | per-sample | 0.62 | **15%** | churn 7/3808, L1 0.365% |
-| **NovaSeq ITS2** | **pooled** | 0.62 | **30.7%** | churn 18/3028, L1 0.769% |
+| **NovaSeq ITS2** | **pooled** | 0.62-0.63 | **20-29%** (node-dependent) | churn 18/3028, L1 0.335-0.769% |
 
 **The right cutoff is the one that matches the k-mer screen's PASS RATE**, and it
 must be derived per dataset because that rate spans 0.70%-26.8% across the five
@@ -271,6 +271,43 @@ another case where the aggregate ranks the two settings the other way round.
 **Recommended for ITS2-like pools: k=8, cutoff 0.62** — 15% faster at matched
 alignment count, retention within 0.31% of the k-mer screen, worst-sample
 Bray-Curtis 0.0043.
+
+### The k-mer baseline is node-dependent; the minimizer screen is not
+
+The same pooled ITS2 sweep, same 48 threads, run on two different nodes — the
+`cpu allocation` line in the verbose block records host, job, thread count and
+core count, which is what made this visible:
+
+| | 128 physical cores | 48 physical cores |
+|---|---|---|
+| **k-mer screen ns/comp** | **1300** | **732** |
+| k-mer screen share | 76.5% | 71.3% |
+| **minimizer screen ns/comp** | **33** | **33** |
+| k-mer wall | 176.6s | 119.3s |
+| minimizer @0.62 | 125.5s (**71.1%**) | 95.3s (**79.9%**) |
+| timing control channel | 0.5% | 5.5% |
+
+**The k-mer screen is 1.8x faster on the smaller node. The minimizer screen is
+identical to the nanosecond.** That is the mechanism stated as cleanly as it can
+be: the `4^k` frequency vector is memory-bound, so its cost tracks NUMA topology
+and memory locality — spreading 48 threads across a 128-core multi-socket machine
+costs it dearly, which is the effect
+[measuring on a NUMA node](measuring-on-numa.md) documented for this codebase.
+The sketch plus index is cache-resident and indifferent.
+
+**Consequence: the speedup is node-dependent because the baseline is.** Pooled
+ITS2 is **20-29% faster** depending on the node, not the single 29% an earlier
+revision of this page quoted. The larger figure came from the run whose k-mer arm
+was most NUMA-penalised.
+
+Read the other direction, this is a point in the minimizer's favour that the
+speedup number hides: it delivers **the same absolute screen cost regardless of
+where it lands**, while the k-mer screen's cost varies 1.8x with the scheduler's
+node assignment. For reproducible timing that predictability is worth something on
+its own.
+
+Any future comparison should report the `cpu allocation` line alongside the
+timings. Two runs on "the same host" differed by 128 vs 48 physical cores here.
 
 ### The limitation: the minimizer arm's compare phase is 56% serial
 
