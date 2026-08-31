@@ -45,8 +45,15 @@ NBASES="${NBASES:-1000000000}"
 
 # Sweep grid. Cutoffs bracket the k-mer screen's own pass rate rather than
 # chasing 100% recall -- see the header.
-KS="${KS:-8 9}"
-CUTS="${CUTS:-0.40 0.42 0.45 0.48 0.50}"
+# k=8 only: it beat k=9 on ASV set agreement at every cutoff on the 362-sample
+# MiSeq run, and k=9 doubles the arm count for no benefit measured anywhere.
+KS="${KS:-8}"
+# Extended past the matched-pass point (~0.50 on HiFi) so the read-retention
+# ZERO CROSSING is inside the grid rather than interpolated off its edge. On
+# Illumina the crossing sat ~0.02 ABOVE matched-pass (0.62-0.65 matched, crossing
+# 0.636), and it is the smoothest calibration signal available -- monotone, with a
+# true zero -- where ASV churn is discrete and count L1 is a flat-bottomed U.
+CUTS="${CUTS:-0.40 0.42 0.45 0.48 0.50 0.52 0.55 0.60}"
 
 # Cutoffs to TIME. The accuracy sweep wants the whole grid; timing does not, and
 # timing all of it is where this script spends most of its wall clock:
@@ -58,7 +65,7 @@ CUTS="${CUTS:-0.40 0.42 0.45 0.48 0.50}"
 # Default: the arms actually worth a wall-clock number -- near the k-mer screen's
 # own pass rate, where alignment work is matched and the screen is the only
 # variable. Set TIME_CUTS="$CUTS" to time everything, or "" to skip timing.
-TIME_CUTS="${TIME_CUTS:-0.45 0.50}"
+TIME_CUTS="${TIME_CUTS:-0.48 0.52}"
 
 # COST WARNING. The timing and phase-split sections each run one full denoising
 # pass per (arm x rep). On a large pooled run a single pass is enormous, so use
