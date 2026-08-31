@@ -39,9 +39,15 @@ workloads above. Matched-pass predicted the sweep optimum in every case:
 |---|---|---|---|
 | ITS2 pooled | 0.70% | 0.62 | 0.62 |
 | ITS2 per-sample | 1.93% | 0.62 | 0.62 |
-| soil 16S | 5.52% | 0.65 | 0.65 |
+| soil 16S per-sample | 5.52% | 0.65 | 0.65 |
+| **pooled 16S** | **4.54%** | **0.65** | **0.65** |
 | PacBio HiFi | 10.73% | ~0.50 | 0.45-0.50 |
 | MiSeq SOP | 26.8% | ~0.80 | 0.70 (0.80 close) |
+
+Five for five on Illumina/PacBio. See also
+[calibrating on read retention](#calibrating-on-read-retention-the-cutoff-is-064),
+which converges on ~0.64 across every screen-dominated dataset and is the smoother
+signal of the two.
 
 That is what `analyze_kdist_curves.py` reports, and it is a better target than
 100% recall — which picked 0.72 on Illumina and 0.50 on PacBio, one of them
@@ -245,6 +251,40 @@ another case where the aggregate ranks the two settings the other way round.
 **Recommended for ITS2-like pools: k=8, cutoff 0.62** — 15% faster at matched
 alignment count, retention within 0.31% of the k-mer screen, worst-sample
 Bray-Curtis 0.0043.
+
+### Calibrating on read retention: the cutoff is ~0.64
+
+Read retention is the best-behaved signal for choosing a cutoff on
+screen-dominated data: unlike ASV churn (discrete, a handful of events) or count
+L1 (a flat-bottomed U), it is smooth, monotone in cutoff, and has a **true zero
+crossing** — the point where the minimizer arm recovers the same number of reads
+as the k-mer screen. Interpolating it:
+
+| dataset | retention-neutral cutoff | matched-pass cutoff |
+|---|---|---|
+| pooled 16S | **0.637** | 0.65 |
+| pooled ITS2 | **0.636** | 0.62 |
+| per-sample ITS2 | **0.639** | 0.62 |
+| per-sample soil 16S | 0.663 | 0.65 |
+| MiSeq SOP 16S | none — retention flat (<0.02%) | ~0.80 |
+
+**Three of four land at 0.636-0.639**, across two amplicons and both pooling
+modes — a much tighter target than matched-pass-rate, which spans 0.50 (PacBio)
+to 0.80 (MiSeq SOP). So **~0.64 is a reasonable single default for
+screen-dominated Illumina data**, with a per-dataset sweep to confirm.
+
+The two targets are systematically offset, retention-neutral sitting **~0.02
+above** matched-pass in every case. That follows from the screens being different
+*sets* rather than different *rates*: matching the pass rate matches alignment
+count, but the minimizer's misses are not the k-mer screen's misses, so it drops
+slightly more reads and needs a little more permissiveness to break even on
+recovery. Which of the two to target is a real choice — matched-pass maximises
+speed at equal work, retention-neutral preserves read recovery — and they differ
+by about one grid step.
+
+MiSeq SOP has no crossing at all: its retention moves <0.02% across the whole
+0.40-0.80 range, because at 26.8% pass rate almost every raw finds a cluster. The
+signal exists only where the screen dominates, which is where the cutoff matters.
 
 ### Soil 16S: the same effect, from diversity alone
 
