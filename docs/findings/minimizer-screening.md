@@ -12,14 +12,27 @@ runs on almost none. And the k-mer screen's share is not a constant; it grows wi
 the working set, because the frequency vector is `4^k` bytes per raw and its cost
 is bound by whether those vectors fit cache:
 
-| workload | k-mer pass rate | **k-mer screen ns/comp** | **k-mer screen share** | minimizer ns/comp |
-|---|---|---|---|---|
-| MiSeq SOP 16S, one sample | 26.8% | 44 | **0.9%** | ~20 |
-| PacBio HiFi, per-sample | 9.9% | 660 | 4.0% | 20 |
-| MiSeq 16S, pooled (#127) | 25.0% | 841 | 16.7% | — |
-| NovaSeq soil 16S, per-sample | 5.52% | 454 | **29.8%** | 30 |
-| NovaSeq ITS2, per-sample | 1.74% | 308 | **43.9%** | 30 |
-| **NovaSeq ITS2, pooled** | **0.70%** | **1305** | **76.5%** | **33** |
+| workload | build | k-mer pass rate | **k-mer screen ns/comp** | **k-mer screen share** | minimizer ns/comp |
+|---|---|---|---|---|---|
+| MiSeq SOP 16S, one sample | dev | 26.8% | 44 | **0.9%** | ~20 |
+| PacBio HiFi, per-sample | dev | 9.9% | 660 | 4.0% | 20 |
+| MiSeq 16S, pooled (#127) | native | 25.0% | 841 | 16.7% | — |
+| NovaSeq soil 16S, per-sample | native | 5.52% | 454 | **29.8%** | 30 |
+| NovaSeq ITS2, per-sample | native | 1.74% | 308 | **43.9%** | 30 |
+| **NovaSeq ITS2, pooled** | native | **0.70%** | **1305** | **76.5%** | **33** |
+
+> **Two build configurations appear here.** Rows marked *native* are
+> `RUSTFLAGS="-C target-cpu=native" --profile release-native` on the cluster;
+> *dev* rows are a plain `--release` developer build on Apple Silicon. That
+> matters for the k-mer column specifically: `kmers.rs`'s `sum-of-min` sweep is
+> written to auto-vectorise under `target-cpu=native`, so a dev build understates
+> what the k-mer screen can do, while the minimizer's branchy, scatter-write path
+> gains little from vectorisation. The *native* rows are therefore the fair
+> comparison, and they are the ones every screen-share and speed claim on this
+> page rests on. The dev rows are included for the working-set trend only, where
+> the effect is an order of magnitude larger than any codegen difference — and if
+> anything a native dev build would push the 44 ns figure *lower*, widening the
+> range rather than narrowing it.
 
 **The k-mer screen goes 44 -> 1305 ns/comp (30x) across these; the minimizer goes
 20 -> 33 (1.7x).** The frequency vector is `4^k` bytes per raw and its cost is
