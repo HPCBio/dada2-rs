@@ -136,6 +136,74 @@ An ITS2 run is still worth doing — as a third dataset, and to measure the
 screen/align split on a high-diversity pool, where a low pass rate raises the
 screen's share of runtime. It is not worth doing to test a length mechanism.
 
+### ITS2: the screen-dominated case, and a failure mode 16S never showed
+
+NovaSeq ITS2, 30 sample pairs, cutadapt-trimmed, per-sample `dada`, 3,808 ASVs.
+Control channel bit-identical (0 of 8,395 cells); timing control 2.6%.
+
+**The pass rate is the whole story.** ITS2 is far more diverse than 16S, so most
+pairs are genuinely dissimilar and the screen rejects nearly everything:
+
+| dataset | k-mer pass rate | predicted screen share |
+|---|---|---|
+| MiSeq SOP 16S | 26.8% | ~0.9% (measured 0.9%) |
+| PacBio HiFi | 9.9% | ~4% (measured 4.0%) |
+| **ITS2** | **1.74%** | **~12%** |
+
+Since the screen is paid on every comparison and the aligner only on survivors,
+`share = 1 / (1 + pass x align_ns / screen_ns)`. At 1.74% the screen finally
+matters.
+
+| cutoff | churn | count L1 | pass% | aligned | **wall time** | reads vs base |
+|---|---|---|---|---|---|---|
+| 0.40 | 58 | 5.569% | 0.96% | 57.9% | 72.0% | **-122,492 (-5.3%)** |
+| 0.50 | 30 | 2.592% | 1.20% | 70.2% | 75.2% | -56,670 |
+| 0.60 | 7 | 0.642% | 1.61% | 92.9% | 81.6% | -13,287 |
+| **0.62** | 7 | 0.365% | **1.74%** | **100.2%** | **84.9%** | -7,145 |
+| 0.65 | 6 | 0.349% | 2.02% | 115.7% | 92.6% | +3,958 |
+| 0.80 | 29 | 1.525% | 8.26% | 470.4% | 231.2% | +31,925 |
+
+**At 0.62 the two arms perform the same number of alignments (100.2%) and the
+minimizer runs in 84.9% of the time.** Alignment work held constant, wall clock
+down **15%** — a difference that can only be the screen, and the first clean
+isolation of the screen's contribution on this branch. It matches the ~12%
+the pass-rate formula predicts, against a 2.6% control channel.
+
+#### Read retention, not reassignment
+
+`net/gross` on shared ASVs is **0.868** at 0.62 — systematic, where 16S and
+PacBio both sat near 0.15 (cancelling). The cause is not bias in *where* reads go
+but in *whether they survive*:
+
+| cutoff range 0.40 - 0.80 | worst change in total reads |
+|---|---|
+| 16S, 26.8% pass | **0.073%** |
+| ITS2, 1.74% pass | **5.3%** |
+
+Read retention is ~70x more cutoff-sensitive on ITS2. Same shroud ->
+`lambda = 0` chain as the [reassignment mechanism](#the-mechanism-a-mis-set-screen-moves-reads-it-does-not-lose-asvs),
+but with a different endpoint: a raw shrouded from *every* cluster fails the
+abundance test and is **dropped from the table entirely**, taking its reads with
+it. At 26.8% pass almost every raw finds a cluster and this is negligible; at
+1.74% pass a large population sits near the shroud boundary and the cutoff
+directly governs how many reads survive. Retention crosses the k-mer screen's at
+**~0.63**.
+
+This is the metric to watch on any high-diversity pool, and neither ASV churn nor
+count L1 exposes it — the ASV count moves only 3,800-3,832 across a range that
+loses 5.3% of reads.
+
+#### Ecological magnitude
+
+Bray-Curtis on shared ASVs, 30 samples: median 0.0016, max **0.0043** at 0.62
+(no sample above 0.01). At 0.65 the median is lower but the max is **0.0186**,
+with one sample above 0.01 — the same tail-versus-centre trade seen on 16S, and
+another case where the aggregate ranks the two settings the other way round.
+
+**Recommended for ITS2-like pools: k=8, cutoff 0.62** — 15% faster at matched
+alignment count, retention within 0.31% of the k-mer screen, worst-sample
+Bray-Curtis 0.0043.
+
 ### Is the count matrix *distorted*, or just perturbed?### Is the count matrix *distorted*, or just perturbed?
 
 Count L1 is a global sum, and three different situations produce the same number:
