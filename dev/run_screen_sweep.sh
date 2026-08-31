@@ -33,6 +33,13 @@
 #   <sop-style-dir> holds paired <sample>F.fastq.gz / <sample>R.fastq.gz (the
 #   layout dev/concordance/run_illumina.sh expects). For the MiSeq SOP, symlink
 #   the _R1_001/_R2_001 names across first.
+#
+#   PREFILTERED=1 when the inputs are ALREADY trimmed and filtered. Required for
+#   ITS2, whose primers sit behind heterogeneity spacers and must come off with
+#   cutadapt first (docs/findings/reading-the-prep.md). Without it this script
+#   re-runs filter-and-trim with --trunc-len, and FIXED-LENGTH truncation on a
+#   length-variable amplicon destroys the length variation being studied -- which
+#   for ITS2 is the whole point of the test.
 set -euo pipefail
 
 BIN="${1:?usage: run_screen_sweep.sh <binary> <data-dir> <out-dir> [threads] [reps]}"
@@ -80,10 +87,12 @@ PY
 }
 
 echo "==> baseline: k-mer screen (production default)"
-[ -d "$OUT/base" ] || bash "$RUN" "$BIN" "$DATA" "$OUT/base" "$THREADS" > "$OUT/base.log" 2>&1
+[ -d "$OUT/base" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" \
+  bash "$RUN" "$BIN" "$DATA" "$OUT/base" "$THREADS" > "$OUT/base.log" 2>&1
 
 echo "==> control: k-mer screen AGAIN (establishes the ASV noise floor)"
-[ -d "$OUT/control" ] || bash "$RUN" "$BIN" "$DATA" "$OUT/control" "$THREADS" > "$OUT/control.log" 2>&1
+[ -d "$OUT/control" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" \
+  bash "$RUN" "$BIN" "$DATA" "$OUT/control" "$THREADS" > "$OUT/control.log" 2>&1
 echo "    control vs baseline (MUST be identical, or nothing below is interpretable):"
 # compare_seqtab_matrix exits 1 when the tables differ, which for the CONTROL is
 # a finding to print, not a reason to abort.
@@ -99,7 +108,7 @@ for K in $KS; do
     [ -d "$d" ] && { echo "    k=$K cutoff=$C (cached)"; continue; }
     echo "    k=$K cutoff=$C"
     SCREEN_BACKEND=minimizer MINIMIZER_K="$K" SCREEN_CUTOFF="$C" \
-      ERR_DIR="${ERR_DIR:-}" \
+      ERR_DIR="${ERR_DIR:-}" PREFILTERED="${PREFILTERED:-}" \
       bash "$RUN" "$BIN" "$DATA" "$d" "$THREADS" > "$d.log" 2>&1
   done
 done
@@ -167,7 +176,17 @@ echo "Arms interleaved across $REPS reps; the k-mer arm appears twice so the"
 echo "control channel carries the same thermal/cache exposure as the test arms."
 echo "Timing the dada step only -- filter/merge/chimera are identical across arms."
 
-filtF=("$OUT"/base/filtered/*_F_filt.fastq.gz)
+# Under PREFILTERED the run wrote no filtered/ dir -- it used the inputs
+# directly, so the timing arms must too.
+if [ -n "${PREFILTERED:-}" ]; then
+  filtF=("$DATA"/*F.fastq.gz)
+else
+  filtF=("$OUT"/base/filtered/*_F_filt.fastq.gz)
+fi
+if [ ${#filtF[@]} -eq 0 ]; then
+  echo "    (no forward reads found for timing; skipping)" >&2
+  REPS=0
+fi
 declare -a ARMS=("kmer::" "kmerctl::")
 for K in $KS; do for C in $CUTS; do ARMS+=("mini_k${K}_c${C}:$K:$C"); done; done
 

@@ -72,12 +72,28 @@ if [ ! -e "${fwds[0]}" ]; then
   exit 1
 fi
 
+# PREFILTERED=1: the inputs are ALREADY trimmed and filtered, so use them as-is.
+#
+# Required for any amplicon prepared outside this script -- ITS2 in particular,
+# where primers sit behind heterogeneity spacers and must be removed with
+# cutadapt first (see docs/findings/reading-the-prep.md, where untrimmed
+# degenerate primers inflated a table 3-4x and REVERSED the direction of an
+# effect). Re-running filter-and-trim over such data is not merely redundant:
+# --trunc-len applies FIXED-LENGTH truncation, and on a length-variable amplicon
+# like ITS2 that destroys exactly the length variation under study. The DADA2 ITS
+# workflow says not to use truncLen there for the same reason.
+PREFILTERED="${PREFILTERED:-}"
+
 filtFs=(); filtRs=()
 for f in "${fwds[@]}"; do
   base=$(basename "$f")
   name=${base%F.fastq.gz}
   r="$DATA/${name}R.fastq.gz"
   [ -e "$r" ] || { echo "run_illumina.sh: missing reverse mate for $f" >&2; exit 1; }
+  if [ -n "$PREFILTERED" ]; then
+    filtFs+=("$f"); filtRs+=("$r")
+    continue
+  fi
   ff="$OUT/filtered/${name}_F_filt.fastq.gz"
   fr="$OUT/filtered/${name}_R_filt.fastq.gz"
   echo "==> filter-and-trim $name"
@@ -86,6 +102,9 @@ for f in "${fwds[@]}"; do
       --max-ee "$MAX_EE" "$MAX_EE" --trunc-q "$TRUNC_Q" --compress
   filtFs+=("$ff"); filtRs+=("$fr")
 done
+if [ -n "$PREFILTERED" ]; then
+  echo "==> PREFILTERED: using ${#filtFs[@]} input pairs as-is (no filter-and-trim)"
+fi
 
 # Optional: reuse an existing error model instead of learning one. Lets the
 # denoising-stage screen effect be isolated from the error-model effect, which
