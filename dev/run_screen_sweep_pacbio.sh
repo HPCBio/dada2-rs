@@ -55,7 +55,7 @@ CUTS="${CUTS:-0.40 0.42 0.45 0.48 0.50}"
 CAL_PAIRS="${CAL_PAIRS:-300000}"
 CAL_UNIQUES="${CAL_UNIQUES:-3000}"
 
-mkdir -p "$OUT"/{derep,models,arms}
+mkdir -p "$OUT"/{derep,models,arms,.timing,.verbose}
 
 shopt -s nullglob
 fq=("$DATA"/*.fastq.gz "$DATA"/*.fq.gz "$DATA"/*.fastq "$DATA"/*.fq)
@@ -152,7 +152,7 @@ for rep in $(seq 1 "$REPS"); do
     t0=$(python3 -c 'import time;print(time.time())')
     "$BIN" dada "${fq[@]}" --error-model "$OUT/models/err.json" --band "$BAND" \
         --kmer-size "$KMER" --threads "$THREADS" ${extra[@]+"${extra[@]}"} \
-        -o /dev/null > /dev/null 2>&1
+        --output-dir "$OUT/.timing" > /dev/null 2>&1
     t1=$(python3 -c 'import time;print(time.time())')
     printf "%s\t%s\t%s\n" "$name" "$rep" "$(python3 -c "print(f'{$t1-$t0:.2f}')")" >> "$OUT/timings.tsv"
   done

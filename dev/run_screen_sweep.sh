@@ -73,7 +73,7 @@ CUTS="${CUTS:-0.40 0.45 0.50 0.55 0.60 0.62 0.65 0.70 0.75 0.80}"
 # ASV comparisons are valid either way -- those compare complete configurations.
 ERR_DIR="${ERR_DIR:-}"
 
-mkdir -p "$OUT"
+mkdir -p "$OUT"/.verbose "$OUT"
 
 aligned_count() {  # sum (nalign - nshroud) over a run's forward dada outputs
   python3 - "$1" <<'PY'
@@ -213,13 +213,14 @@ echo "the screen's share rises as the pass rate falls. A diverse pool (ITS2) is"
 echo "where a cheaper screen stops being capped at a few percent -- this is the"
 echo "number that says whether the wall-clock result was screen- or align-driven."
 {
-  for spec in "${T[@]}"; do
+  for spec in "${ARMS[@]}"; do
     name="${spec%%:*}"; rest="${spec#*:}"; K="${rest%%:*}"; C="${rest#*:}"
     [ "$name" = "kmerctl" ] && continue
     extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
     echo "--- $name"
     "$BIN" dada "${filtF[@]}" --error-model "$OUT/base/errF.json" \
-        --threads "$THREADS" --verbose ${extra[@]+"${extra[@]}"} -o /dev/null 2>&1 \
+        --threads "$THREADS" --verbose ${extra[@]+"${extra[@]}"} \
+        --output-dir "$OUT/.verbose" 2>&1 \
       | grep -E "kmer screen|align total|dp kernel|passed the screen" || echo "    (no split reported)"
   done
 } | tee "$OUT/phase_split.txt"
