@@ -274,18 +274,26 @@ pub fn b_compare_parallel(
     // the map below becomes an array read. Charged to setup, which is where its
     // whole cost lives — the map then pays O(1) per comparison instead of
     // O(sketch).
-    let shared: Option<Vec<u32>> = match (&b.minimizer_index, params.screen_backend) {
+    //
+    // The count buffer lives on `B` and is reused across clusters: allocating
+    // and zeroing it per cluster was ~11 GB of serial memset on a pooled ITS2
+    // run and 23.7% of this phase.
+    let mut counts = std::mem::take(&mut b.screen_shared);
+    let have_shared = match (&b.minimizer_index, params.screen_backend) {
         (Some(index), ScreenBackend::Minimizer) if params.use_kmers && !params.screen_audit => {
             // Under audit the map must run BOTH screens per pair, so the
             // precomputed value would suppress the very comparison being audited.
-            b.raws[center_idx].minimizers.as_ref().map(|q| {
-                let mut out = Vec::new();
-                index.shared_counts(q, &mut out);
-                out
-            })
+            match b.raws[center_idx].minimizers.as_ref() {
+                Some(q) => {
+                    index.shared_counts(q, &mut counts);
+                    true
+                }
+                None => false,
+            }
         }
-        _ => None,
+        _ => false,
     };
+    let shared: Option<&[u32]> = if have_shared { Some(&counts) } else { None };
     let center_sketch = b.raws[center_idx].minimizers.as_ref();
     let setup_dur = t_setup.elapsed();
     let t_map = std::time::Instant::now();
@@ -332,7 +340,7 @@ pub fn b_compare_parallel(
                     let lambda = compute_lambda(raw, None, err_mat, ncol, use_quals);
                     (lambda, u32::MAX, true)
                 } else {
-                    let screen_d = shared.as_ref().map(|sh| {
+                    let screen_d = shared.map(|sh| {
                         crate::minimizers::screen_dist(
                             sh[index],
                             center_sketch,
@@ -448,6 +456,9 @@ pub fn b_compare_parallel(
     let t_free = std::time::Instant::now();
     drop(comps);
     let free_dur = t_free.elapsed();
+    // Hand the buffer back so the next cluster reuses it rather than mmap-ing a
+    // fresh multi-megabyte allocation.
+    b.screen_shared = counts;
     CompareTiming {
         map: map_dur,
         serial: serial_dur,

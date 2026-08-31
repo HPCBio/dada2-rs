@@ -141,6 +141,12 @@ fn build_learned_err_params(
     }
 }
 
+/// `screen_backend` is omitted from output when it is the default, so a k-mer run's
+/// JSON is unchanged from before the backend existed.
+fn is_default_screen(b: &ScreenBackend) -> bool {
+    *b == ScreenBackend::Kmer
+}
+
 #[derive(Serialize, Copy, Clone)]
 struct DadaRunParams {
     omega_a: f64,
@@ -161,6 +167,22 @@ struct DadaRunParams {
     kdist_cutoff: f64,
     kmer_size: usize,
     use_kmers: bool,
+    /// Which pre-alignment screen ran. Recorded so a run's output says what
+    /// produced it: the two backends give closely-agreeing but not identical
+    /// tables, so "which screen" is part of a result's provenance, not a detail.
+    ///
+    /// Omitted for the default `kmer` backend, which keeps every existing output
+    /// byte-identical (AGENTS.md: do not alter the flat JSON output shape). Its
+    /// absence therefore means `kmer`.
+    #[serde(skip_serializing_if = "is_default_screen")]
+    screen_backend: ScreenBackend,
+    /// Sketch parameters, emitted only under the minimizer backend so every
+    /// existing k-mer output keeps its exact shape (AGENTS.md: do not alter the
+    /// flat JSON output shape).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    minimizer_k: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    minimizer_w: Option<usize>,
     /// Denoising mode: false = independent per-sample (`dada`), true = full
     /// pooling across samples (`dada-pooled`, R DADA2 pool=TRUE).
     pool: bool,
@@ -4485,7 +4507,14 @@ fn resolve_dada_params(
     let max_clust = resolve!(max_clust, max_clust, 0);
     let greedy = resolve!(greedy, greedy, true);
     let use_quals = resolve!(use_quals, use_quals, true);
-    let kdist_cutoff = resolve!(kdist_cutoff, kdist_cutoff, 0.42);
+    // The cutoff default is per-BACKEND: 0.42 is calibrated for the frequency
+    // vector and over-screens the sketch ~3x (see minimizers::MINIMIZER_KDIST_CUTOFF).
+    // An explicit --kdist-cutoff, or an inherited one, still wins.
+    let backend_default_cutoff = match screen_backend.unwrap_or_default() {
+        ScreenBackend::Minimizer => minimizers::MINIMIZER_KDIST_CUTOFF,
+        ScreenBackend::Kmer => 0.42,
+    };
+    let kdist_cutoff = resolve!(kdist_cutoff, kdist_cutoff, backend_default_cutoff);
     let kmer_size = resolve!(kmer_size, kmer_size, 5);
     let use_kmers = match (no_kmer_screen, inherit_err_params, p) {
         (Some(no), _, _) => !no,
@@ -4624,6 +4653,15 @@ fn resolve_dada_params(
     };
 
     let run = DadaRunParams {
+        screen_backend: align_params.screen_backend,
+        minimizer_k: match align_params.screen_backend {
+            ScreenBackend::Minimizer => Some(align_params.minimizer_k),
+            ScreenBackend::Kmer => None,
+        },
+        minimizer_w: match align_params.screen_backend {
+            ScreenBackend::Minimizer => Some(align_params.minimizer_w),
+            ScreenBackend::Kmer => None,
+        },
         omega_a,
         omega_c,
         omega_p,

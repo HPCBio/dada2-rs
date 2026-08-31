@@ -67,11 +67,31 @@ use std::collections::HashMap;
 /// aligns at 6-10 substitutions (14-26 per sample on the MiSeq SOP), and k=8
 /// drives that to zero everywhere tested while still passing only ~9% of pairs.
 ///
-/// Left at 11 pending the calibration work that would justify changing it, since
-/// the right value is coupled to the cutoff (see the module docs) and moving one
-/// without the other is not an improvement. `docs/findings/minimizer-screening.md`
-/// carries the sweep.
-pub const MINIMIZER_K: usize = 11;
+/// Now **8**, the value the sweeps settled on. 11 was a back-of-envelope choice:
+/// a substitution destroys only the `k` k-mers spanning it, so ~2-3 of ~48
+/// minimizers in a 250 bp read. True, but it ignored the aggregate pass rate --
+/// at k=11 the screen shrouds pairs the k-mer screen aligns at 6-10 substitutions
+/// (14-26 per sample on the MiSeq SOP), and k=8 drives that to zero everywhere
+/// tested. k=8 also beat k=9 on ASV set agreement at every cutoff on the
+/// 362-sample MiSeq run.
+pub const MINIMIZER_K: usize = 8;
+
+/// Default screen cutoff for the minimizer backend, replacing `KDIST_CUTOFF`'s
+/// 0.42 when the cutoff is not given explicitly.
+///
+/// A cutoff is a property of the distance *distribution* a metric induces, not of
+/// its algebra, so 0.42 does not carry over: it passes ~28% of pairs on the
+/// frequency vector and ~9% on the sketch, over-screening ~3x and fragmenting
+/// clusters. Sweeps put the useful region at **0.62-0.65** on Illumina, with a
+/// sharp count-L1 minimum at 0.63 on pooled ITS2 and the read-retention crossing
+/// at ~0.636.
+///
+/// This is a *starting point*, not a substitute for calibration. The right value
+/// tracks the k-mer screen's pass rate, which spans 0.70%-26.8% across measured
+/// workloads: PacBio HiFi wants ~0.50 and low-diversity MiSeq ~0.70-0.80. Derive
+/// it with `kdist-calibrate --screen-backend minimizer` and confirm by sweep; see
+/// `docs/findings/minimizer-screening.md`.
+pub const MINIMIZER_KDIST_CUTOFF: f64 = 0.63;
 
 /// Default winnowing window, in k-mers.
 ///
@@ -400,12 +420,39 @@ impl MinimizerIndex {
     /// Scatter `query`'s minimizers over the postings, writing each raw's shared
     /// count into `out[raw_index]`.
     ///
-    /// `out` is resized to `nraw` and fully cleared, so the caller may reuse one
-    /// buffer across clusters. Clearing is `O(nraw)` sequential — cheaper than
-    /// tracking touched indices, and `b_compare` walks all `nraw` regardless.
-    pub fn shared_counts(&self, query: &MinimizerSketch, out: &mut Vec<u32>) {
-        out.clear();
-        out.resize(self.nraw, 0);
+    /// `counts` is owned by the caller (`B`) and reused across clusters, grown to
+    /// `nraw` on first use and zeroed each call.
+    ///
+    /// # Where this phase's time actually goes
+    ///
+    /// This runs in `b_compare_parallel`'s **serial** setup, and on pooled ITS2 it
+    /// measured 23.7% of the compare phase. Two things it is *not*:
+    ///
+    /// - **Not the zeroing.** A 3.3 MB memset is ~165 us, so ~0.6 s across 3,414
+    ///   clusters. A variant that tracked touched indices to skip it added a
+    ///   branch and a push per increment below and measured **20% slower** setup
+    ///   on PacBio (5.97 -> 7.70 s). Removed.
+    /// - **Not measurably the allocation either**, at least at PacBio's scale.
+    ///   Reusing the buffer instead of allocating per cluster is 6.06 vs 5.97 s
+    ///   there — inside noise. The reuse is kept because at pooled-ITS2's 3.3 MB
+    ///   the allocation crosses glibc's mmap threshold (an mmap plus ~825
+    ///   first-touch page faults plus munmap per cluster) whereas PacBio's 300 KB
+    ///   does not, so the two workloads are not expected to behave alike. **That
+    ///   is a mechanism argument, not a measurement** — it is untested at 3.3 MB.
+    ///
+    /// What remains is **the scatter itself**, which is the bulk of the phase on
+    /// both workloads measured: ~9 s of 15.2 on pooled ITS2, ~5.7 s of 6.0 on
+    /// PacBio. It is `O(Σ|posting(h)|)` over the centre's minimizers and
+    /// single-threaded, so it is the Amdahl term worth attacking next — by
+    /// parallelising it, or by asking whether the index earns its keep at high
+    /// thread counts at all, since the pairwise merge-join it replaces is `O(sketch)`
+    /// per pair but fully parallel (`DADA2RS_MINIMIZER_INDEX=0` measures that).
+    /// See `docs/findings/minimizer-screening.md`.
+    pub fn shared_counts(&self, query: &MinimizerSketch, counts: &mut Vec<u32>) {
+        if counts.len() < self.nraw {
+            counts.resize(self.nraw, 0);
+        }
+        counts[..self.nraw].fill(0);
         for (h, qc) in query.entries() {
             let Some(list) = self.postings.get(&h) else {
                 continue;
@@ -413,7 +460,7 @@ impl MinimizerIndex {
             for &(idx, c) in list {
                 // Σ min(count_query, count_raw) — the same numerator the
                 // pairwise merge-join accumulates.
-                out[idx as usize] += qc.min(c) as u32;
+                counts[idx as usize] += qc.min(c) as u32;
             }
         }
     }

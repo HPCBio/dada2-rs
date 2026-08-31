@@ -332,6 +332,14 @@ pub struct B {
     /// independent merge-joins. An **exact** acceleration — see
     /// [`crate::minimizers::MinimizerIndex`] — so it changes cost, never output.
     pub minimizer_index: Option<crate::minimizers::MinimizerIndex>,
+    /// Reusable scratch for the minimizer index's per-cluster scatter: shared
+    /// minimizer count per raw.
+    ///
+    /// Held on `B` so it survives across `b_compare` calls. At 825k raws the
+    /// buffer is 3.3 MB, above glibc's mmap threshold, so allocating it per
+    /// cluster meant an mmap plus ~825 first-touch page faults plus munmap every
+    /// time -- roughly 3-6 s across a pooled ITS2 run's 3,414 clusters.
+    pub screen_shared: Vec<u32>,
     /// Running maximum expected abundance for each Raw, indexed by Raw index.
     ///
     /// Held here rather than on [`Raw`] (issue #147). `b_compare`'s serial
@@ -386,6 +394,7 @@ impl B {
             cdf: Vec::new(),
             raw_cluster: Vec::new(),
             minimizer_index: index,
+            screen_shared: Vec::new(),
             e_minmax,
         };
         b.init();
