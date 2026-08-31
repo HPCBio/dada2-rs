@@ -130,11 +130,20 @@ import glob, json, os, sys
 root = sys.argv[1]
 def load(d):
     asv, al = {}, 0
+    stats = []
     for p in sorted(glob.glob(os.path.join(d, "*.json"))):
         j = json.load(open(p)); s = j["stats"]
-        al += s["nalign"] - s["nshroud"]
+        stats.append((s["nalign"], s["nshroud"]))
         for a in j["asvs"]:
             asv[(os.path.basename(p), a["sequence"])] = a["abundance"]
+    # `dada-pooled` runs ONCE and writes the SAME global stats into every
+    # per-sample output, so summing them multiplies the true count by the sample
+    # number. Identical stats across every file is the tell (a per-sample run
+    # essentially never produces that), and then one value is the whole run.
+    if stats and len(set(stats)) == 1 and len(stats) > 1:
+        al = stats[0][0] - stats[0][1]
+    else:
+        al = sum(a - b for a, b in stats)
     return asv, al
 base, bal = load(os.path.join(root, "kmer"))
 print(f"{'arm':>18s} {'ASVs':>7s} {'only_k':>7s} {'only_m':>7s} {'abund L1':>10s} {'aligned':>13s} {'vs kmer':>9s}")

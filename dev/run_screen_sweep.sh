@@ -110,10 +110,18 @@ mkdir -p "$OUT"/.verbose "$OUT"
 aligned_count() {  # sum (nalign - nshroud) over a run's forward dada outputs
   python3 - "$1" <<'PY'
 import glob, json, os, sys
-na = ns = 0
+stats = []
 for p in glob.glob(os.path.join(sys.argv[1], "dada_fwd", "*.json")):
     s = json.load(open(p))["stats"]
-    na += s["nalign"]; ns += s["nshroud"]
+    stats.append((s["nalign"], s["nshroud"]))
+# `dada-pooled` runs ONCE and writes the SAME global stats into every per-sample
+# output, so summing them multiplies the true count by the sample number.
+# Identical stats across every file is the tell -- a per-sample run essentially
+# never produces that -- and then one value is the whole run.
+if stats and len(set(stats)) == 1 and len(stats) > 1:
+    na, ns = stats[0]
+else:
+    na = sum(a for a, _ in stats); ns = sum(b for _, b in stats)
 print(f"{na} {ns} {na - ns}")
 PY
 }
