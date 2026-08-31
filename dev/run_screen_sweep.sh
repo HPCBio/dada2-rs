@@ -47,8 +47,24 @@ RUN="$HERE/concordance/run_illumina.sh"
 # Grid. Cutoffs span the fragmentation end to the over-alignment end; k is the
 # sketch size, where 8 zeroed out every missed pair below 10 substitutions on the
 # SOP and 11 (the shipped default) did not.
-KS="${KS:-8 9}"
-CUTS="${CUTS:-0.55 0.58 0.60 0.62 0.65 0.70 0.72}"
+KS="${KS:-8}"
+# Deliberately spans BELOW the k-mer screen's own 0.42 and ABOVE the zero-churn
+# point, so the failure modes at both ends are visible rather than inferred: too
+# tight shrouds genuine neighbours and fragments clusters, too loose aligns far
+# more pairs for nothing. A grid that only covers the good region cannot show
+# where the edges are.
+CUTS="${CUTS:-0.40 0.45 0.50 0.55 0.60 0.62 0.65 0.70 0.75 0.80}"
+
+# Reuse an existing error model for EVERY arm instead of learning one per arm.
+#
+# The screen is active inside learn-errors (build_trans_mat aligns each raw
+# against its centre THROUGH the screen), so per-arm models make the arms differ
+# in two ways at once and their ALIGNMENT COUNTS stop being comparable. The
+# 362-sample MiSeq sweep ran without this and its work columns carry that caveat.
+# Point ERR_DIR at a completed k-mer run to hold the model fixed:
+#     ERR_DIR=/path/to/base bash dev/run_screen_sweep.sh ...
+# ASV comparisons are valid either way -- those compare complete configurations.
+ERR_DIR="${ERR_DIR:-}"
 
 mkdir -p "$OUT"
 
@@ -69,9 +85,11 @@ echo "==> baseline: k-mer screen (production default)"
 echo "==> control: k-mer screen AGAIN (establishes the ASV noise floor)"
 [ -d "$OUT/control" ] || bash "$RUN" "$BIN" "$DATA" "$OUT/control" "$THREADS" > "$OUT/control.log" 2>&1
 echo "    control vs baseline (MUST be identical, or nothing below is interpretable):"
-python3 "$HERE/compare_seqtab_matrix.py" \
+# compare_seqtab_matrix exits 1 when the tables differ, which for the CONTROL is
+# a finding to print, not a reason to abort.
+{ python3 "$HERE/compare_seqtab_matrix.py" \
     "$OUT/base/seqtab.nochim.json" "$OUT/control/seqtab.nochim.json" \
-    --label-a base --label-b control | tail -2 | sed 's/^/      /'
+    --label-a base --label-b control || true; } | tail -2 | sed 's/^/      /'
 
 echo
 echo "==> sweeping the (k, cutoff) grid"
@@ -81,9 +99,39 @@ for K in $KS; do
     [ -d "$d" ] && { echo "    k=$K cutoff=$C (cached)"; continue; }
     echo "    k=$K cutoff=$C"
     SCREEN_BACKEND=minimizer MINIMIZER_K="$K" SCREEN_CUTOFF="$C" \
+      ERR_DIR="${ERR_DIR:-}" \
       bash "$RUN" "$BIN" "$DATA" "$d" "$THREADS" > "$d.log" 2>&1
   done
 done
+
+echo
+echo "==> error-model provenance"
+python3 - "$OUT" <<'PY'
+import glob, json, os, sys
+root = sys.argv[1]
+def flat(p):
+    j = json.load(open(p))
+    return [x for r in j["err_out"] for x in r]
+base = os.path.join(root, "base", "errF.json")
+if not os.path.exists(base):
+    print("    (no errF.json; skipping)")
+    raise SystemExit
+b = flat(base)
+same = diff = 0
+for f in sorted(glob.glob(os.path.join(root, "*", "errF.json"))):
+    if flat(f) == b:
+        same += 1
+    else:
+        diff += 1
+print(f"    arms sharing the baseline error model: {same}; differing: {diff}")
+if diff == 0:
+    print("    => alignment counts across arms are COMPARABLE.")
+else:
+    print("    => alignment counts across arms are NOT comparable: each arm")
+    print("       learned its own model, and the screen shapes the model.")
+    print("       Re-run with ERR_DIR=<base-run> to isolate the screen.")
+    print("       ASV columns below are unaffected.")
+PY
 
 echo
 echo "======================= ACCURACY + WORK ======================="
@@ -98,11 +146,16 @@ for K in $KS; do
     [ -d "$d" ] || continue
     read -r na ns al <<< "$(aligned_count "$d")"
     n=$(python3 -c "import json;print(len(json.load(open('$d/seqtab.nochim.json'))['sequences']))")
+    # `|| true` on both: these pipelines end in grep, and under `set -o pipefail`
+    # a grep that matches nothing returns 1, which `set -e` turns into an abort.
+    # A zero-churn arm produces exactly that -- so without this the script dies on
+    # its own best result.
     churn=$(python3 "$HERE/compare_asvs.py" --baseline k="$OUT/base/seqtab.nochim.json" \
-              --compare m="$d/seqtab.nochim.json" 2>/dev/null | grep -o "churn=[0-9]*" | head -1 | cut -d= -f2)
+              --compare m="$d/seqtab.nochim.json" 2>/dev/null \
+              | grep -o "churn=[0-9]*" | head -1 | cut -d= -f2 || true)
     l1=$(python3 "$HERE/compare_seqtab_matrix.py" "$OUT/base/seqtab.nochim.json" \
               "$d/seqtab.nochim.json" --label-a k --label-b m 2>/dev/null \
-           | grep -o "L1 = [0-9]* reads ([0-9.]*%" | grep -o "([0-9.]*%" | tr -d '(')
+           | grep -o "L1 = [0-9]* reads ([0-9.]*%" | grep -o "([0-9.]*%" | tr -d '(' || true)
     printf "%-22s %8s %8s %12s %9s%% %s\n" "mini k=$K cut=$C" "$n" "${churn:-?}" "$al" \
         "$(python3 -c "print(f'{100*$al/$bal:.1f}')")" "${l1:-?}"
   done
