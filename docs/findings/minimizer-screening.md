@@ -682,6 +682,39 @@ Full 362-sample MiSeq, **169.2 M sampled pairs per curve**, `--min-core 200`
 
 Two results here, and the second is the one that matters.
 
+### Why cutoff decoupling helps here for a different reason
+
+[KDIST cutoff decoupling](kdist-cutoff-decoupling.md) found that keeping
+`learn-errors` lenient while tightening `dada` was safe and fast. That works
+because it is **one metric at two thresholds**: the strict set is a *nested
+subset* of the lenient one, so the extra pairs denoising drops are by
+construction pairs the lenient learn phase already saw and judged irrelevant.
+That nesting is what makes "headroom" a meaningful idea.
+
+Across two *mechanisms* the nesting breaks — but only because the calibrated
+cutoffs differ. The [pair-level audit](#the-pair-level-audit) found the minimizer
+screen is a strict subset of the k-mer screen **at equal cutoff**
+(minimizer-only = 0 in every configuration tested). Running them at their own
+operating points — 0.64 against 0.42 — makes them two subsets of *different*
+parents: overlapping, neither containing the other. Hence
+["a different 11%"](#matching-recall-does-not-reproduce-the-table), and hence no
+headroom argument. A lenient learn cutoff cannot recover the k-mer answer, because
+the difference lives in the denoising *mechanism*, not in its threshold.
+
+**But there is a distinct reason to decouple here.** As the screen opens, both
+mechanisms converge on the same thing — with both screens fully open they are
+**bit-identical** ([control](#the-fix-and-what-it-says-about-the-k-mer-screen)),
+because an unscreened comparison has no mechanism. So a *lenient* learn cutoff
+makes the fitted error model approach mechanism-neutral, removing the model term
+from the difference and leaving only the denoising-stage effect. That is worth
+having for two reasons: the resulting model is directly comparable to a
+k-mer-trained one, and it isolates the screen for measurement without the
+`ERR_DIR` gymnastics used above.
+
+The payoff is bounded — the model term is only ~16% of the difference on the SOP —
+so this buys interpretability more than accuracy. `LEARN_CUTOFF` in
+`dev/run_screen_sweep.sh` exposes it.
+
 ### DADA2's own 0.42 is not lossless at scale
 
 **The k-mer screen at `KDIST_CUTOFF = 0.42` retains only 88.45%** of pairs within
