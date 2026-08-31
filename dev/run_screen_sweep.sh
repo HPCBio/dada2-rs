@@ -206,6 +206,24 @@ for rep in $(seq 1 "$REPS"); do
   done
 done
 
+echo
+echo "==> phase split (one --verbose pass per arm; NOT part of the timed reps)"
+echo "The screen is paid on EVERY comparison, the aligner only on survivors, so"
+echo "the screen's share rises as the pass rate falls. A diverse pool (ITS2) is"
+echo "where a cheaper screen stops being capped at a few percent -- this is the"
+echo "number that says whether the wall-clock result was screen- or align-driven."
+{
+  for spec in "${T[@]}"; do
+    name="${spec%%:*}"; rest="${spec#*:}"; K="${rest%%:*}"; C="${rest#*:}"
+    [ "$name" = "kmerctl" ] && continue
+    extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
+    echo "--- $name"
+    "$BIN" dada "${filtF[@]}" --error-model "$OUT/base/errF.json" \
+        --threads "$THREADS" --verbose ${extra[@]+"${extra[@]}"} -o /dev/null 2>&1 \
+      | grep -E "kmer screen|align total|dp kernel|passed the screen" || echo "    (no split reported)"
+  done
+} | tee "$OUT/phase_split.txt"
+
 python3 - "$OUT/timings.tsv" <<'PY'
 import statistics, sys
 from collections import defaultdict
