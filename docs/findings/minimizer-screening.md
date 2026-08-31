@@ -103,6 +103,41 @@ alignments against 28.1 M — **3.7 M fewer**. `b_compare` is 82-88%
 align-dominated on this platform ([screen vs align](compare-screen-vs-align.md)),
 so that is the half of the phase that matters.
 
+### The length-variability rationale is weaker than proposed
+
+A minimizer sketch normalises by `min(total_a, total_b)` — what each read actually
+contains — while `kmer_dist8` normalises by `min(len) - k + 1`. That difference
+can only engage when the reads being compared have **different lengths**, which
+suggested length-variable amplicons (ITS2) as a promising short-read case.
+
+It is checkable on data already in hand, and mostly does not hold. PacBio HiFi
+reads here are variable-length (**1093-1543 bp, 85% off-mode**), so the mechanism
+was live in the PacBio result all along:
+
+| | Illumina (fixed-length, 240 bp) | PacBio (variable-length) |
+|---|---|---|
+| net / gross change | 0.150 | **0.172** |
+| Pearson r, log10 | 0.9956 | 0.999995 |
+| cells within 2x | 99.73% | 100.000% |
+| Bray-Curtis max | 0.0092 | **0.000039** |
+
+`net/gross` is essentially identical across the two regimes: **reassignment in
+both, directional bias in neither.** A length-normalisation artefact should have
+appeared as systematic bias on the variable-length arm and did not.
+
+That does not close the ITS2 question — PacBio's length variation is *technical*
+(truncation, quality trimming), while ITS2's is *biological* and correlated with
+taxonomy, which could behave differently. But the mechanism is no longer a
+prediction with evidence behind it, and an ITS2 run should be framed as
+exploratory rather than as confirming a proposed effect.
+
+**Check the precondition before running it.** The screen operates on per-sample
+uniques *before* merging, so if filtering applied a fixed `truncLen` the reads
+reaching `dada` are all the same length and the mechanism cannot engage at all —
+the length variation would exist only post-merge, after the screen has run.
+`dev/check_read_lengths.py` reports this and says plainly whether a given dataset
+can test the hypothesis.
+
 ### Is the count matrix *distorted*, or just perturbed?
 
 Count L1 is a global sum, and three different situations produce the same number:
