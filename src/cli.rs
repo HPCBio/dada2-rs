@@ -304,17 +304,28 @@ pub enum Commands {
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
-        /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
-        /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
-        /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
-        /// 4^k. Neither defines the clusters.
+        /// EXPERIMENTAL alternative to the k-mer screen. `kmer` (default) is
+        /// the ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses;
+        /// `minimizer` is a winnowed-minimizer sketch. Neither defines the
+        /// clusters — both only decide which pairs are worth aligning.
         ///
-        /// NOT ASV-equivalent at its current defaults: on the 20-sample MiSeq
-        /// SOP it fragments clusters into spurious low-abundance ASVs. The two
-        /// metrics share a formula but NOT an operating point, so
-        /// `--kdist-cutoff 0.42` over-screens by ~3x here; ~0.64 with
-        /// `--minimizer-k 8` is much closer but still not equal. Use for
-        /// experiments only — see docs/findings/minimizer-screening.md.
+        /// EXPECT MOSTLY-CONCORDANT BUT NOT IDENTICAL RESULTS. On every dataset
+        /// tested the ASV sets and counts agree closely, but there are real
+        /// differences: typically a fraction of a percent of reads and a small
+        /// number of low-abundance ASVs (all under ~15 reads in the datasets
+        /// measured). This is not a drop-in replacement for the k-mer screen.
+        ///
+        /// It pays off where a lot of screening happens — diverse pools, where
+        /// most pairs are dissimilar so the screen runs on everything and the
+        /// aligner on almost nothing. There the k-mer screen can reach 44-77% of
+        /// denoising time and this replaces it with under 10%. On low-diversity
+        /// data the screen is ~1% of runtime and there is nothing to win.
+        ///
+        /// REQUIRES TUNING. The default `--kdist-cutoff 0.42` is wrong for this
+        /// backend (it over-screens ~3x). Use `--minimizer-k 8` with a cutoff
+        /// derived for your data — ~0.64 on diverse Illumina pools, ~0.50 on
+        /// PacBio HiFi — via `kdist-calibrate --screen-backend minimizer`.
+        /// See docs/findings/minimizer-screening.md.
         #[arg(long, value_enum)]
         screen_backend: Option<ScreenBackend>,
 
@@ -560,17 +571,28 @@ pub enum Commands {
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
-        /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
-        /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
-        /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
-        /// 4^k. Neither defines the clusters.
+        /// EXPERIMENTAL alternative to the k-mer screen. `kmer` (default) is
+        /// the ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses;
+        /// `minimizer` is a winnowed-minimizer sketch. Neither defines the
+        /// clusters — both only decide which pairs are worth aligning.
         ///
-        /// NOT ASV-equivalent at its current defaults: on the 20-sample MiSeq
-        /// SOP it fragments clusters into spurious low-abundance ASVs. The two
-        /// metrics share a formula but NOT an operating point, so
-        /// `--kdist-cutoff 0.42` over-screens by ~3x here; ~0.64 with
-        /// `--minimizer-k 8` is much closer but still not equal. Use for
-        /// experiments only — see docs/findings/minimizer-screening.md.
+        /// EXPECT MOSTLY-CONCORDANT BUT NOT IDENTICAL RESULTS. On every dataset
+        /// tested the ASV sets and counts agree closely, but there are real
+        /// differences: typically a fraction of a percent of reads and a small
+        /// number of low-abundance ASVs (all under ~15 reads in the datasets
+        /// measured). This is not a drop-in replacement for the k-mer screen.
+        ///
+        /// It pays off where a lot of screening happens — diverse pools, where
+        /// most pairs are dissimilar so the screen runs on everything and the
+        /// aligner on almost nothing. There the k-mer screen can reach 44-77% of
+        /// denoising time and this replaces it with under 10%. On low-diversity
+        /// data the screen is ~1% of runtime and there is nothing to win.
+        ///
+        /// REQUIRES TUNING. The default `--kdist-cutoff 0.42` is wrong for this
+        /// backend (it over-screens ~3x). Use `--minimizer-k 8` with a cutoff
+        /// derived for your data — ~0.64 on diverse Illumina pools, ~0.50 on
+        /// PacBio HiFi — via `kdist-calibrate --screen-backend minimizer`.
+        /// See docs/findings/minimizer-screening.md.
         #[arg(long, value_enum)]
         screen_backend: Option<ScreenBackend>,
 
@@ -850,17 +872,28 @@ pub enum Commands {
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
-        /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
-        /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
-        /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
-        /// 4^k. Neither defines the clusters.
+        /// EXPERIMENTAL alternative to the k-mer screen. `kmer` (default) is
+        /// the ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses;
+        /// `minimizer` is a winnowed-minimizer sketch. Neither defines the
+        /// clusters — both only decide which pairs are worth aligning.
         ///
-        /// NOT ASV-equivalent at its current defaults: on the 20-sample MiSeq
-        /// SOP it fragments clusters into spurious low-abundance ASVs. The two
-        /// metrics share a formula but NOT an operating point, so
-        /// `--kdist-cutoff 0.42` over-screens by ~3x here; ~0.64 with
-        /// `--minimizer-k 8` is much closer but still not equal. Use for
-        /// experiments only — see docs/findings/minimizer-screening.md.
+        /// EXPECT MOSTLY-CONCORDANT BUT NOT IDENTICAL RESULTS. On every dataset
+        /// tested the ASV sets and counts agree closely, but there are real
+        /// differences: typically a fraction of a percent of reads and a small
+        /// number of low-abundance ASVs (all under ~15 reads in the datasets
+        /// measured). This is not a drop-in replacement for the k-mer screen.
+        ///
+        /// It pays off where a lot of screening happens — diverse pools, where
+        /// most pairs are dissimilar so the screen runs on everything and the
+        /// aligner on almost nothing. There the k-mer screen can reach 44-77% of
+        /// denoising time and this replaces it with under 10%. On low-diversity
+        /// data the screen is ~1% of runtime and there is nothing to win.
+        ///
+        /// REQUIRES TUNING. The default `--kdist-cutoff 0.42` is wrong for this
+        /// backend (it over-screens ~3x). Use `--minimizer-k 8` with a cutoff
+        /// derived for your data — ~0.64 on diverse Illumina pools, ~0.50 on
+        /// PacBio HiFi — via `kdist-calibrate --screen-backend minimizer`.
+        /// See docs/findings/minimizer-screening.md.
         #[arg(long, value_enum)]
         screen_backend: Option<ScreenBackend>,
 
@@ -1945,17 +1978,28 @@ pub enum Commands {
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
-        /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
-        /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
-        /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
-        /// 4^k. Neither defines the clusters.
+        /// EXPERIMENTAL alternative to the k-mer screen. `kmer` (default) is
+        /// the ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses;
+        /// `minimizer` is a winnowed-minimizer sketch. Neither defines the
+        /// clusters — both only decide which pairs are worth aligning.
         ///
-        /// NOT ASV-equivalent at its current defaults: on the 20-sample MiSeq
-        /// SOP it fragments clusters into spurious low-abundance ASVs. The two
-        /// metrics share a formula but NOT an operating point, so
-        /// `--kdist-cutoff 0.42` over-screens by ~3x here; ~0.64 with
-        /// `--minimizer-k 8` is much closer but still not equal. Use for
-        /// experiments only — see docs/findings/minimizer-screening.md.
+        /// EXPECT MOSTLY-CONCORDANT BUT NOT IDENTICAL RESULTS. On every dataset
+        /// tested the ASV sets and counts agree closely, but there are real
+        /// differences: typically a fraction of a percent of reads and a small
+        /// number of low-abundance ASVs (all under ~15 reads in the datasets
+        /// measured). This is not a drop-in replacement for the k-mer screen.
+        ///
+        /// It pays off where a lot of screening happens — diverse pools, where
+        /// most pairs are dissimilar so the screen runs on everything and the
+        /// aligner on almost nothing. There the k-mer screen can reach 44-77% of
+        /// denoising time and this replaces it with under 10%. On low-diversity
+        /// data the screen is ~1% of runtime and there is nothing to win.
+        ///
+        /// REQUIRES TUNING. The default `--kdist-cutoff 0.42` is wrong for this
+        /// backend (it over-screens ~3x). Use `--minimizer-k 8` with a cutoff
+        /// derived for your data — ~0.64 on diverse Illumina pools, ~0.50 on
+        /// PacBio HiFi — via `kdist-calibrate --screen-backend minimizer`.
+        /// See docs/findings/minimizer-screening.md.
         #[arg(long, value_enum)]
         screen_backend: Option<ScreenBackend>,
 
@@ -2292,17 +2336,28 @@ pub enum Commands {
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
-        /// EXPERIMENTAL: pre-alignment screen backend. `kmer` (default) is the
-        /// ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses; `minimizer`
-        /// is a winnowed-minimizer sketch whose size is O(len/w) rather than
-        /// 4^k. Neither defines the clusters.
+        /// EXPERIMENTAL alternative to the k-mer screen. `kmer` (default) is
+        /// the ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses;
+        /// `minimizer` is a winnowed-minimizer sketch. Neither defines the
+        /// clusters — both only decide which pairs are worth aligning.
         ///
-        /// NOT ASV-equivalent at its current defaults: on the 20-sample MiSeq
-        /// SOP it fragments clusters into spurious low-abundance ASVs. The two
-        /// metrics share a formula but NOT an operating point, so
-        /// `--kdist-cutoff 0.42` over-screens by ~3x here; ~0.64 with
-        /// `--minimizer-k 8` is much closer but still not equal. Use for
-        /// experiments only — see docs/findings/minimizer-screening.md.
+        /// EXPECT MOSTLY-CONCORDANT BUT NOT IDENTICAL RESULTS. On every dataset
+        /// tested the ASV sets and counts agree closely, but there are real
+        /// differences: typically a fraction of a percent of reads and a small
+        /// number of low-abundance ASVs (all under ~15 reads in the datasets
+        /// measured). This is not a drop-in replacement for the k-mer screen.
+        ///
+        /// It pays off where a lot of screening happens — diverse pools, where
+        /// most pairs are dissimilar so the screen runs on everything and the
+        /// aligner on almost nothing. There the k-mer screen can reach 44-77% of
+        /// denoising time and this replaces it with under 10%. On low-diversity
+        /// data the screen is ~1% of runtime and there is nothing to win.
+        ///
+        /// REQUIRES TUNING. The default `--kdist-cutoff 0.42` is wrong for this
+        /// backend (it over-screens ~3x). Use `--minimizer-k 8` with a cutoff
+        /// derived for your data — ~0.64 on diverse Illumina pools, ~0.50 on
+        /// PacBio HiFi — via `kdist-calibrate --screen-backend minimizer`.
+        /// See docs/findings/minimizer-screening.md.
         #[arg(long, value_enum)]
         screen_backend: Option<ScreenBackend>,
 

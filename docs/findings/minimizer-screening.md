@@ -1,9 +1,16 @@
 # Minimizers as the pre-alignment screen
 
-**Verdict: this is a screen for screen-dominated workloads.** Where the
-pre-alignment screen is a small share of runtime, replacing it buys nothing. Where
-it dominates, it buys a lot — and the k-mer screen's share is not a constant, it
-grows with the working set:
+**An experimental alternative to k-mer screening that shows promise where a lot
+of screening happens.** Users trying it should expect results that are **mostly
+concordant but not identical**: the ASV sets and counts agree closely on every
+dataset tested, with real differences of typically a fraction of a percent of
+reads and a small number of low-abundance ASVs. It is not a drop-in replacement.
+
+Where it pays off is where the screen dominates — diverse pools, in which most
+pairs are dissimilar, so the screen runs on every comparison while the aligner
+runs on almost none. And the k-mer screen's share is not a constant; it grows with
+the working set, because the frequency vector is `4^k` bytes per raw and its cost
+is bound by whether those vectors fit cache:
 
 | workload | k-mer pass rate | **k-mer screen ns/comp** | **k-mer screen share** | minimizer ns/comp |
 |---|---|---|---|---|
