@@ -259,6 +259,55 @@ another case where the aggregate ranks the two settings the other way round.
 alignment count, retention within 0.31% of the k-mer screen, worst-sample
 Bray-Curtis 0.0043.
 
+### The limitation: the minimizer arm's compare phase is 56% serial
+
+Pooled ITS2, 48 threads, timing control **0.5%**. Full split in
+`docs/findings/data/its2-pooled-phase-split-rerun.txt`:
+
+```text
+k-mer      compare=110.76s (map= 94.01 parallel, store=15.44 serial)               -> 14% serial
+minimizer  compare= 63.98s (setup=15.19 + map=28.22 parallel + store=20.57 serial) -> 56% serial
+```
+
+| arm | setup (serial) | map | map efficiency | screen share |
+|---|---|---|---|---|
+| k-mer | **0.0%** | 84.9% | **90%** | 76.5% |
+| minimizer @0.62 | **23.7%** (15.19s) | 44.1% | **76%** | 7.8% |
+
+Two separate problems, and the first is a design fault in this branch.
+
+**1. `shared_counts` is serial, `O(nraw)` per cluster — 23.7% of compare.** The
+inverted index moves screen work *out* of the parallel map and into
+single-threaded setup. That is what makes the per-pair cost `O(1)`, and it is why
+the screen drops from 76.5% to 7.8% — but the work does not vanish, it becomes
+serial. An earlier revision of this page predicted ~11% at 48 threads from an
+8-thread measurement; the actual is **23.7%**, so the prediction was optimistic by
+2x.
+
+The buffer clear is the obvious suspect: `shared_counts` zeroes the whole `nraw`
+array per cluster, chosen over tracking touched indices on the reasoning that
+"`b_compare` walks all `nraw` anyway". True of the *map*, false of *setup*. At
+825k uniques x 3,414 clusters that is ~2.8e9 serial writes.
+
+**2. Map efficiency falls 90% -> 76%, inside the parallel region.** Separate from
+setup, which sits outside it. The cause is the per-item work collapsing: at 33
+ns/comparison instead of 1300, rayon's scheduling overhead and tail imbalance stop
+being negligible. This is the regime where alignment is rare enough that most
+items are a single array read. `DADA2RS_PAR_GRAIN` is the existing knob.
+
+**Consequence: the measured speedup is a floor.** Fixing both would take the
+minimizer arm from 71% to ~60% of k-mer wall clock — from 29% faster to ~40%:
+
+| | measured | if setup parallelised + efficiency restored |
+|---|---|---|
+| compare | 64.1s | ~44.5s |
+| arm total vs k-mer | 71% | ~60% |
+
+That also reframes the store. At 20.57s serial (32% of compare) it is now the
+*largest* single term on this arm, against 15.44s on the k-mer arm — so
+[the store scan](compare-store-scan.md), previously optimised against an
+align-dominated workload, becomes the next target once the screen is cheap.
+
 ### Calibrating on read retention: the cutoff is ~0.64
 
 Read retention is the best-behaved signal for choosing a cutoff on
