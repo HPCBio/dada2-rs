@@ -73,6 +73,12 @@ CUTS="${CUTS:-0.40 0.45 0.50 0.55 0.60 0.62 0.65 0.70 0.75 0.80}"
 # ASV comparisons are valid either way -- those compare complete configurations.
 ERR_DIR="${ERR_DIR:-}"
 
+# Error-fitting function, passed through to run_illumina.sh and held FIXED across
+# every arm. `loess` is the default; NovaSeq / binned-quality runs (soil 16S,
+# ITS2) may want `binned-qual`. Holding it fixed is what keeps this a screen
+# comparison rather than a screen-and-errfun comparison.
+ERRFUN="${ERRFUN:-loess}"
+
 mkdir -p "$OUT"/.verbose "$OUT"
 
 aligned_count() {  # sum (nalign - nshroud) over a run's forward dada outputs
@@ -87,11 +93,11 @@ PY
 }
 
 echo "==> baseline: k-mer screen (production default)"
-[ -d "$OUT/base" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" \
+[ -d "$OUT/base" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" \
   bash "$RUN" "$BIN" "$DATA" "$OUT/base" "$THREADS" > "$OUT/base.log" 2>&1
 
 echo "==> control: k-mer screen AGAIN (establishes the ASV noise floor)"
-[ -d "$OUT/control" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" \
+[ -d "$OUT/control" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" \
   bash "$RUN" "$BIN" "$DATA" "$OUT/control" "$THREADS" > "$OUT/control.log" 2>&1
 echo "    control vs baseline (MUST be identical, or nothing below is interpretable):"
 # compare_seqtab_matrix exits 1 when the tables differ, which for the CONTROL is
@@ -108,7 +114,7 @@ for K in $KS; do
     [ -d "$d" ] && { echo "    k=$K cutoff=$C (cached)"; continue; }
     echo "    k=$K cutoff=$C"
     SCREEN_BACKEND=minimizer MINIMIZER_K="$K" SCREEN_CUTOFF="$C" \
-      ERR_DIR="${ERR_DIR:-}" PREFILTERED="${PREFILTERED:-}" \
+      ERR_DIR="${ERR_DIR:-}" PREFILTERED="${PREFILTERED:-}" ERRFUN="$ERRFUN" \
       bash "$RUN" "$BIN" "$DATA" "$d" "$THREADS" > "$d.log" 2>&1
   done
 done

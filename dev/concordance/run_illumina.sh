@@ -62,7 +62,18 @@ TRUNC_LEN_R=160
 MAX_EE=2
 TRUNC_Q=2
 MAX_N=0
-NBASES=20000000   # learn-errors subsampling cap; small data uses all reads anyway
+NBASES="${NBASES:-20000000}"   # learn-errors subsampling cap; small data uses all reads anyway
+
+# Error-fitting function. Overridable because it is NOT a neutral default on
+# every platform: NovaSeq and other binned-quality instruments emit a handful of
+# discrete Q values, and `binned-qual` exists for them. This repo's own
+# binned-quality findings measured errfun choice reaching the final table as an
+# ABUNDANCE error (Jaccard 0.706, L1 22% on shared ASVs, one arm retaining 17%
+# more reads on soil 16S), so it is a real experimental axis, not a formality.
+#
+# For a SCREEN comparison, what matters most is holding it FIXED across arms --
+# otherwise a screen effect and an errfun effect stack. Set it once here.
+ERRFUN="${ERRFUN:-loess}"
 
 mkdir -p "$OUT"/{filtered,dada_fwd,dada_rev,control_persample}
 
@@ -117,9 +128,9 @@ if [ -n "$ERR_DIR" ]; then
   cp "$ERR_DIR/errR.json" "$OUT/errR.json"
 else
 echo "==> learn-errors (fwd, rev)"
-"$BIN" learn-errors "${filtFs[@]}" --nbases "$NBASES" --errfun loess \
+"$BIN" learn-errors "${filtFs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" \
     --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} -o "$OUT/errF.json"
-"$BIN" learn-errors "${filtRs[@]}" --nbases "$NBASES" --errfun loess \
+"$BIN" learn-errors "${filtRs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" \
     --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} -o "$OUT/errR.json"
 fi
 
