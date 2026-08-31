@@ -289,15 +289,26 @@ echo "changes the split changes the right thread count with it, and shrinking"
 echo "b_compare raises the serial phases' share (Amdahl), which caps the speedup"
 echo "and idles cores. Peak RSS is recorded per arm for the same reason: the"
 echo "screen structures are the largest resident allocation."
-TIMEV=""
-if /usr/bin/time -l true 2>/dev/null; then TIMEV="-l"; elif /usr/bin/time -v true 2>/dev/null; then TIMEV="-v"; fi
+# Peak RSS via /usr/bin/time is OPTIONAL. It is absent or flag-incompatible on
+# many cluster nodes, and making it a hard dependency of this block meant a
+# missing binary silently killed the entire phase-split capture -- which is what
+# happened on the first pooled ITS2 run. dada's own `resident Raw footprint` line
+# reports the screen structures' size regardless, which is the number that matters
+# here.
+TIMER=()
+if command -v /usr/bin/time > /dev/null 2>&1; then
+  if /usr/bin/time -l true > /dev/null 2>&1; then TIMER=(/usr/bin/time -l)
+  elif /usr/bin/time -v true > /dev/null 2>&1; then TIMER=(/usr/bin/time -v)
+  fi
+fi
+[ ${#TIMER[@]} -eq 0 ] && echo "    (note: /usr/bin/time unavailable; peak RSS omitted, verbose block still captured)"
 {
   for spec in "${ARMS[@]}"; do
     name="${spec%%:*}"; rest="${spec#*:}"; K="${rest%%:*}"; C="${rest#*:}"
     [ "$name" = "kmerctl" ] && continue
     extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
     echo "===== $name"
-    /usr/bin/time $TIMEV "$BIN" $DADA_CMD "${filtF[@]}" \
+    ${TIMER[@]+"${TIMER[@]}"} "$BIN" $DADA_CMD "${filtF[@]}" \
         --error-model "$OUT/base/errF.json" --threads "$THREADS" --verbose \
         ${extra[@]+"${extra[@]}"} --output-dir "$OUT/.verbose" 2>&1 \
       | grep -E "^\[dada\]|maximum resident|Maximum resident|elapsed|real" \
