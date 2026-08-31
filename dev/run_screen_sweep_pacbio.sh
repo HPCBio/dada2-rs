@@ -159,21 +159,30 @@ for rep in $(seq 1 "$REPS"); do
 done
 
 echo
-echo "==> phase split (one --verbose pass per arm; NOT part of the timed reps)"
-echo "The screen is paid on EVERY comparison, the aligner only on survivors, so"
-echo "screen share = 1 / (1 + pass_rate * align_ns / screen_ns). A diverse pool"
-echo "drives the pass rate down and the screen's share up; this is the number"
-echo "that says whether a wall-clock result was screen- or align-driven."
+echo "==> phase split + resource use (one --verbose pass per arm; NOT timed reps)"
+echo "Captures the FULL verbose block, not just the screen/align lines: parallel"
+echo "efficiency, resident footprint, and the later phases (shuffle, p_update)."
+echo "That matters because the screen's share is not fixed -- it ranges 0.9% to"
+echo "76.5% across datasets -- and thread-scaling-and-placement.md found the"
+echo "optimal thread count is PREDICTED by the screen/align split. A backend that"
+echo "changes the split changes the right thread count with it, and shrinking"
+echo "b_compare raises the serial phases' share (Amdahl), which caps the speedup"
+echo "and idles cores. Peak RSS is recorded per arm for the same reason: the"
+echo "screen structures are the largest resident allocation."
+TIMEV=""
+if /usr/bin/time -l true 2>/dev/null; then TIMEV="-l"; elif /usr/bin/time -v true 2>/dev/null; then TIMEV="-v"; fi
 {
   for spec in "${T[@]}"; do
     name="${spec%%:*}"; rest="${spec#*:}"; K="${rest%%:*}"; C="${rest#*:}"
     [ "$name" = "kmerctl" ] && continue
     extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
-    echo "--- $name"
-    "$BIN" dada "${fq[@]}" --error-model "$OUT/models/err.json" --band "$BAND" \
-        --kmer-size "$KMER" --threads "$THREADS" --verbose \
+    echo "===== $name"
+    /usr/bin/time $TIMEV "$BIN" dada "${fq[@]}" \
+        --error-model "$OUT/models/err.json" --band "$BAND" --kmer-size "$KMER" \
+        --threads "$THREADS" --verbose \
         ${extra[@]+"${extra[@]}"} --output-dir "$OUT/.verbose" 2>&1 \
-      | grep -E "kmer screen|align total|dp kernel|passed the screen" || echo "    (no split reported)"
+      | grep -E "^\[dada\]|maximum resident|Maximum resident|elapsed|real" \
+      || echo "    (no output)"
   done
 } | tee "$OUT/phase_split.txt"
 
