@@ -8,11 +8,11 @@ from how a sketch works, and it took the whole experiment to see.
 
 | | Illumina MiSeq (250 bp) | **PacBio HiFi (1490 bp)** |
 |---|---|---|
-| table size | 232 ASVs, 20 samples | **1540 ASVs**, 3 samples, 542k reads |
-| ASV set | 1-2 churned | **identical, churn 0** |
+| table size | **416 ASVs**, 362 samples, 2.97M reads | **1540 ASVs**, 3 samples, 542k reads |
+| ASV set | **identical at cutoff 0.70** | **identical at cutoff 0.45-0.50** |
 | count-matrix L1 | 0.0596% | **0.0053%** |
-| alignments vs k-mer | 83-104% | **89-93%** (cutoff 0.42-0.45) |
-| equivalent cutoff | 0.72 | **0.50** |
+| alignments for zero churn | **121%** (a cost) | **89-93%** (a saving) |
+| cutoff for zero churn | 0.70 | **0.45-0.50** |
 
 **Why length decides it.** The sketch is `O(len/w)` entries: a 250 bp read yields
 ~48 minimizers, a 1490 bp read ~500. The distance estimate is a sample, and its
@@ -101,6 +101,43 @@ shrouds 209.4 M against the k-mer screen's 205.6 M, so it performs 24.3 M
 alignments against 28.1 M — **3.7 M fewer**. `b_compare` is 82-88%
 align-dominated on this platform ([screen vs align](compare-screen-vs-align.md)),
 so that is the half of the phase that matters.
+
+### Illumina MiSeq — full run, 362 samples, 416 ASVs, 2.97 M reads
+
+The `(k, cutoff)` grid, against a control channel (k-mer run twice) that is
+bit-identical: **0 of 30,105 count cells**.
+
+| k=8, cutoff | ASV churn | count L1 | aligned vs k-mer |
+|---|---|---|---|
+| 0.55 | 6 | 0.1132% | 75.4% |
+| 0.58 | 4 | 0.0938% | 84.0% |
+| 0.60 | 6 | 0.0706% | 90.3% |
+| 0.62 | 5 | 0.0612% | **95.7%** |
+| 0.65 | 3 | 0.0660% | 104.6% |
+| **0.70** | **0** | 0.0653% | **121.3%** |
+| 0.72 | 1 | 0.0730% | 128.4% |
+
+k=9 is worse than k=8 on set agreement at every cutoff and is not recommended.
+
+**There is no cutoff on Illumina that buys both.** Zero ASV churn requires 0.70,
+which costs **+21% alignment work**; cost parity sits near 0.63, which churns 3-5
+ASVs of 416. Compare PacBio, where zero churn arrives *with* 7-11% **fewer**
+alignments. That is the platform split in one line: **long reads get accuracy and
+speed together, short reads must trade one against the other.**
+
+It also corrects a recommendation made from the 20-sample SOP subset, which
+suggested 0.58-0.65. At 362 samples the answer is 0.70: more samples means more
+marginal ASVs with a chance to churn, so more recall is needed. The subset
+under-estimated the cutoff, which is the
+[fixture lesson](#how-the-fixtures-misled) one scale up.
+
+> **The alignment column carries a confound.** 14 of the 16 arms ran their own
+> `learn-errors`, so they do not share an error model, and the screen shapes the
+> model. The monotone trend with cutoff is plainly cutoff-driven, but the exact
+> percentages would move under a shared model — which is what
+> `dev/run_screen_sweep_pacbio.sh` enforces structurally and what an `ERR_DIR=`
+> re-run would give for Illumina. The ASV columns are unaffected: those are
+> legitimate end-to-end comparisons of complete configurations.
 
 ### Illumina MiSeq SOP — 20 samples
 
