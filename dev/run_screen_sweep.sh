@@ -60,7 +60,7 @@ KS="${KS:-8}"
 # tight shrouds genuine neighbours and fragments clusters, too loose aligns far
 # more pairs for nothing. A grid that only covers the good region cannot show
 # where the edges are.
-CUTS="${CUTS:-0.40 0.45 0.50 0.55 0.60 0.62 0.65 0.70 0.75 0.80}"
+CUTS="${CUTS:-0.40 0.45 0.50 0.55 0.60 0.62 0.63 0.64 0.65 0.70 0.75 0.80}"
 
 # Cutoffs to TIME. The accuracy sweep wants the whole grid; timing does not, and
 # timing all of it is where this script spends most of its wall clock:
@@ -72,7 +72,14 @@ CUTS="${CUTS:-0.40 0.45 0.50 0.55 0.60 0.62 0.65 0.70 0.75 0.80}"
 # Default: the arms actually worth a wall-clock number -- near the k-mer screen's
 # own pass rate, where alignment work is matched and the screen is the only
 # variable. Set TIME_CUTS="$CUTS" to time everything, or "" to skip timing.
-TIME_CUTS="${TIME_CUTS:-0.60 0.62 0.65}"
+TIME_CUTS="${TIME_CUTS:-0.62 0.64}"
+
+# COST WARNING. The timing and phase-split sections each run one full denoising
+# pass per (arm x rep), and on a large pooled run a single pass is enormous --
+# pooled soil 16S is 11.8 BILLION comparisons. A 3-rep x 12-arm timing section is
+# 36 such passes and will not finish. For pooled runs use REPS=1 and one or two
+# TIME_CUTS; the accuracy grid above is cheap by comparison because it is one pass
+# per arm and its arms are cached across re-runs.
 
 # Reuse an existing error model for EVERY arm instead of learning one per arm.
 #
@@ -185,16 +192,24 @@ PY
 echo
 echo "======================= ACCURACY + WORK ======================="
 read -r bna bns bal <<< "$(aligned_count "$OUT/base")"
-printf "%-22s %8s %8s %12s %10s %s\n" "arm" "ASVs" "churn" "aligned" "vs kmer" "count-matrix L1"
-printf "%-22s %8s %8s %12s %10s %s\n" "k-mer (baseline)" \
+printf "%-22s %8s %8s %12s %10s %12s %s\n" "arm" "ASVs" "churn" "aligned" "vs kmer" "reads vs base" "count-matrix L1"
+printf "%-22s %8s %8s %12s %10s %12s %s\n" "k-mer (baseline)" \
     "$(python3 -c "import json;print(len(json.load(open('$OUT/base/seqtab.nochim.json'))['sequences']))")" \
-    "-" "$bal" "100.0%" "-"
+    "-" "$bal" "100.0%" "-" "-"
 for K in $KS; do
   for C in $CUTS; do
     d="$OUT/mini_k${K}_c${C}"
     [ -d "$d" ] || continue
     read -r na ns al <<< "$(aligned_count "$d")"
     n=$(python3 -c "import json;print(len(json.load(open('$d/seqtab.nochim.json'))['sequences']))")
+    # Read retention vs baseline: the calibration signal that is monotone in
+    # cutoff and crosses zero where the minimizer recovers as many reads as the
+    # k-mer screen (~0.64 on every screen-dominated dataset measured).
+    rd=$(python3 -c "
+import json
+a=json.load(open('$OUT/base/seqtab.nochim.json')); b=json.load(open('$d/seqtab.nochim.json'))
+ta=sum(sum(r) for r in a['counts']); tb=sum(sum(r) for r in b['counts'])
+print(f'{tb-ta:+d}')")
     # `|| true` on both: these pipelines end in grep, and under `set -o pipefail`
     # a grep that matches nothing returns 1, which `set -e` turns into an abort.
     # A zero-churn arm produces exactly that -- so without this the script dies on
@@ -205,8 +220,8 @@ for K in $KS; do
     l1=$(python3 "$HERE/compare_seqtab_matrix.py" "$OUT/base/seqtab.nochim.json" \
               "$d/seqtab.nochim.json" --label-a k --label-b m 2>/dev/null \
            | grep -o "L1 = [0-9]* reads ([0-9.]*%" | grep -o "([0-9.]*%" | tr -d '(' || true)
-    printf "%-22s %8s %8s %12s %9s%% %s\n" "mini k=$K cut=$C" "$n" "${churn:-?}" "$al" \
-        "$(python3 -c "print(f'{100*$al/$bal:.1f}')")" "${l1:-?}"
+    printf "%-22s %8s %8s %12s %9s%% %12s %s\n" "mini k=$K cut=$C" "$n" "${churn:-?}" "$al" \
+        "$(python3 -c "print(f'{100*$al/$bal:.1f}')")" "${rd:-?}" "${l1:-?}"
   done
 done
 

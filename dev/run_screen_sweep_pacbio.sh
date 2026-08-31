@@ -58,7 +58,12 @@ CUTS="${CUTS:-0.40 0.42 0.45 0.48 0.50}"
 # Default: the arms actually worth a wall-clock number -- near the k-mer screen's
 # own pass rate, where alignment work is matched and the screen is the only
 # variable. Set TIME_CUTS="$CUTS" to time everything, or "" to skip timing.
-TIME_CUTS="${TIME_CUTS:-0.60 0.62 0.65}"
+TIME_CUTS="${TIME_CUTS:-0.45 0.50}"
+
+# COST WARNING. The timing and phase-split sections each run one full denoising
+# pass per (arm x rep). On a large pooled run a single pass is enormous, so use
+# REPS=1 and one or two TIME_CUTS there; the accuracy grid is cheap by comparison
+# (one pass per arm, and arms are cached across re-runs).
 
 # Bound kdist-calibrate: it aligns every sampled pair UNBANDED (deliberately --
 # a band would truncate the divergence of distant pairs, which is the quantity
@@ -146,7 +151,7 @@ def load(d):
         al = sum(a - b for a, b in stats)
     return asv, al
 base, bal = load(os.path.join(root, "kmer"))
-print(f"{'arm':>18s} {'ASVs':>7s} {'only_k':>7s} {'only_m':>7s} {'abund L1':>10s} {'aligned':>13s} {'vs kmer':>9s}")
+print(f"{'arm':>18s} {'ASVs':>7s} {'only_k':>7s} {'only_m':>7s} {'abund L1':>10s} {'aligned':>13s} {'vs kmer':>9s} {'reads vs base':>13s}")
 print(f"{'kmer (baseline)':>18s} {len(base):7d} {'-':>7s} {'-':>7s} {'-':>10s} {bal:13,d} {'100.0%':>9s}")
 for d in sorted(glob.glob(os.path.join(root, "*"))):
     n = os.path.basename(d)
@@ -155,8 +160,12 @@ for d in sorted(glob.glob(os.path.join(root, "*"))):
     sh = set(base) & set(a)
     l1 = sum(abs(base[k] - a[k]) for k in sh)
     tot = sum(base.values())
+    # Read retention vs baseline: monotone in cutoff, crosses zero where the
+    # minimizer recovers as many reads as the k-mer screen. The smoothest
+    # calibration signal available -- churn is discrete and L1 is a flat U.
+    reads = sum(a.values()) - sum(base.values())
     print(f"{n:>18s} {len(a):7d} {len(set(base)-set(a)):7d} {len(set(a)-set(base)):7d} "
-          f"{100*l1/max(tot,1):9.4f}% {al:13,d} {100*al/bal:8.1f}%")
+          f"{100*l1/max(tot,1):9.4f}% {al:13,d} {100*al/bal:8.1f}% {reads:+12,d}")
 print("\nkmerctl MUST be identical to the baseline (0 / 0 / 0.0000%).")
 print("If it is not, the run is nondeterministic and nothing below is a result.")
 PY
