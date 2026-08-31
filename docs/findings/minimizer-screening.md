@@ -294,6 +294,43 @@ cutoff safe to tighten while tightening the *learn* stage churned real ASVs.
 > `nbases`. An `--nbases` ladder is owed before any of the error-model numbers
 > here are treated as settled.
 
+## The mechanism: a mis-set screen moves reads, it does not lose ASVs
+
+A too-tight screen degrades **abundance**, not richness, and the stage
+responsible is **`b_shuffle`'s raw-to-cluster assignment**, not budding.
+
+20-sample MiSeq SOP, shared error model, k=8:
+
+| cutoff | uniques reassigned to a different ASV | Abundance births (base -> arm) | churn | count L1 |
+|---|---|---|---|---|
+| 0.42 (too tight, ~60% recall) | **201 of 35,722 (0.563%)** | 2187 -> 2198 (**+11**) | 13 | **0.4257%** |
+| 0.80 (too loose) | 8 (0.022%) | 2187 -> 2185 (-2) | 1 | 0.0201% |
+
+Reassignment outnumbers budding **18:1**. The causal chain:
+
+> shrouded pair -> `sub = None` -> `lambda = 0` -> the raw's best cluster is
+> invisible to it -> it joins its **second-best** -> its reads land on a
+> different ASV, and **both ASVs survive**.
+
+The set survives because reassignment moves a raw between clusters that both
+already exist and both keep other members. A cluster only disappears if it loses
+*every* member, which is why the churn that does occur is confined to 2-7-read
+ASVs — few enough members that losing a couple empties them. At cutoff 0.42, 12
+of 13 churned ASVs hold 2-7 reads and only one exceeds 13.
+
+Budding does respond in the expected direction, just weakly. It takes over only
+at far worse recall: the original k=11 default shrouded raws from *every* cluster,
+so `lambda` collapsed everywhere, abundance p-values went to zero and clusters
+fragmented — which is when the ASV *set* genuinely broke (241 vs 232).
+
+**Consequence for how these sweeps are read:** a screen sweep judged on ASV counts
+would rate cutoff 0.42 as nearly fine — 13 churned ASVs of 232, all but one in the
+low-abundance tail — while reads are being reassigned at 7x the rate of the good
+range. Only the count matrix sees it. This is the same abundance-not-richness
+shape as the [NovaSeq binned-quality result](binned-quality-illumina-novaseq.md),
+arrived at through a completely different mechanism, and it is why
+`dev/compare_seqtab_matrix.py` exists alongside `compare_asvs.py`.
+
 ## The residual is not the screen at all: the gapless shortcut switches off
 
 Calibrating the cutoff (below) takes the disagreement from 1.10% to 0.34% L1 and
