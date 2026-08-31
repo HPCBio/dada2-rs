@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
-"""check_read_lengths.py — do the reads reaching `dada` actually vary in length?
+"""check_read_lengths.py — how length-variable are the reads reaching `dada`?
 
-The pre-alignment screen runs on per-sample uniques, per orientation, BEFORE
-merging. `kmer_dist8` normalises by `min(len) - k + 1`, so its length behaviour
-only differs from a minimizer sketch's `min(total_a, total_b)` when the reads
-being compared have DIFFERENT lengths.
+Reports the read-length distribution per file, and specifically the fraction of
+reads that differ from the modal length, which is the number that matters and the
+one a min/median/max summary hides.
 
-That makes this a precondition check, not a curiosity. On a length-variable
-amplicon such as ITS2 the interesting mechanism is live only if the reads fed to
-`dada` are still variable-length. If filtering applied a fixed `truncLen`, every
-read is the same length, the mechanism never engages, and a sweep on that data
-cannot test it — the length variation would exist only after merging, by which
-point the screen has already run.
+WHAT THIS IS *NOT* FOR. An earlier version of this script claimed that a length
+difference makes the k-mer screen and a minimizer sketch behave differently,
+because `kmer_dist8` normalises by `min(len) - k + 1` while a sketch normalises
+by `min(total_a, total_b)`. **That distinction is false.** A length-L read has
+exactly `L - k + 1` k-mers, so
 
-Running this first avoids the failure this project keeps hitting: an instrument
-that cannot exhibit the effect it is pointed at.
+    min(len_a, len_b) - k + 1  ==  min(#kmers_a, #kmers_b)
+
+which is the *same* min-based normalisation the sketch uses. Both screens are
+length-adaptive in the same way. The real difference between them is WHAT IS
+COUNTED -- every k-mer versus a winnowed sample -- not how it is scaled.
+
+Empirically the two agree with this: PacBio HiFi is 85% off-modal-length and
+shows no systematic bias between the screens (net/gross 0.172, indistinguishable
+from fixed-length Illumina's 0.150).
+
+So read length is still worth knowing -- it drives alignment cost, band
+sufficiency, and whether merging will overlap -- but do not expect it to predict
+a screen difference.
 
 Usage:
   check_read_lengths.py <fastq.gz> [<fastq.gz> ...]
@@ -56,7 +65,7 @@ def main():
         sys.exit("no FASTQ found")
 
     print(f"{'file':>44s} {'reads':>9s} {'min':>6s} {'median':>7s} {'max':>6s} {'distinct':>9s} {'%!=mode':>8s}")
-    all_uniform = True
+    offs = []
     for f in files:
         ls = lengths(f)
         if not ls:
@@ -65,28 +74,31 @@ def main():
         mode = statistics.mode(ls)
         off = sum(1 for x in ls if x != mode)
         distinct = len(set(ls))
-        if distinct > 1 and off / len(ls) > 0.01:
-            all_uniform = False
+        offs.append(100 * off / len(ls))
         print(f"{os.path.basename(f)[-44:]:>44s} {len(ls):9,d} {min(ls):6d} "
               f"{int(statistics.median(ls)):7d} {max(ls):6d} {distinct:9d} {100*off/len(ls):7.2f}%")
 
     print()
-    if all_uniform:
-        print("VERDICT: reads are effectively FIXED-LENGTH.")
-        print("  The k-mer screen's `min(len) - k + 1` normalisation never sees a")
-        print("  length mismatch, so a minimizer sketch cannot differ from it for")
-        print("  length reasons on this data. A sweep here measures the screens'")
-        print("  general behaviour -- it does NOT test the length-variability")
-        print("  hypothesis. If that is the question, the filtering step applied a")
-        print("  fixed truncLen and needs to be re-run without one (the DADA2 ITS")
-        print("  workflow omits truncLen for exactly this reason).")
+    if not offs:
+        return
+    med_off = statistics.median(offs)
+    print(f"SUMMARY: median {med_off:.2f}% of reads differ from the modal length "
+          f"(range {min(offs):.2f}-{max(offs):.2f}% across {len(offs)} files).")
+    print()
+    print("  For scale, on datasets already measured in this project:")
+    print("    MiSeq SOP, truncLen applied :  0.00% off-mode  (fixed length)")
+    print("    PacBio HiFi, quality-trimmed : 85.30% off-mode")
+    print()
+    if med_off < 0.5:
+        print("  These reads are effectively FIXED-LENGTH. If a fixed truncLen was")
+        print("  applied, note that it also caps any biological length variation:")
+        print("  on a length-variable amplicon the variation then exists only")
+        print("  post-merge, after the screen has already run.")
     else:
-        print("VERDICT: reads are VARIABLE-LENGTH.")
-        print("  The length-normalisation difference between the two screens is")
-        print("  live on this data, so a sweep here can test it. Watch net/gross in")
-        print("  compare_counts_correlation.py: a length artefact should show up as")
-        print("  SYSTEMATIC bias (net/gross well above 0.3), not as the cancelling")
-        print("  reassignment seen on fixed-length 16S.")
+        print("  These reads are variable-length. That affects alignment cost and")
+        print("  merge overlap. It does NOT by itself predict a difference between")
+        print("  the k-mer and minimizer screens -- both normalise by the shorter")
+        print("  sequence, and PacBio at 85% off-mode shows no bias between them.")
 
 
 if __name__ == "__main__":

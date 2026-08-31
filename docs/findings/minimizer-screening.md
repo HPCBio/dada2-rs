@@ -103,42 +103,40 @@ alignments against 28.1 M — **3.7 M fewer**. `b_compare` is 82-88%
 align-dominated on this platform ([screen vs align](compare-screen-vs-align.md)),
 so that is the half of the phase that matters.
 
-### The length-variability rationale is weaker than proposed
+### The length-variability rationale was wrong, not merely weak
 
-A minimizer sketch normalises by `min(total_a, total_b)` — what each read actually
-contains — while `kmer_dist8` normalises by `min(len) - k + 1`. That difference
-can only engage when the reads being compared have **different lengths**, which
-suggested length-variable amplicons (ITS2) as a promising short-read case.
+I proposed length-variable amplicons (ITS2) as a promising short-read case on the
+grounds that `kmer_dist8` normalises by `min(len) - k + 1` while a sketch
+normalises by `min(total_a, total_b)` — "what each read actually contains". **The
+distinction does not exist.** A length-L read has exactly `L - k + 1` k-mers, so
 
-It is checkable on data already in hand, and mostly does not hold. PacBio HiFi
-reads here are variable-length (**1093-1543 bp, 85% off-mode**), so the mechanism
-was live in the PacBio result all along:
+```text
+min(len_a, len_b) - k + 1  ==  min(#kmers_a, #kmers_b)
+```
 
-| | Illumina (fixed-length, 240 bp) | PacBio (variable-length) |
+which is the *same* min-based normalisation. Both screens are length-adaptive in
+identical fashion. The real difference between them is **what is counted** — every
+k-mer versus a winnowed sample — not how it is scaled. This was derivable in one
+line and I did not derive it before offering it as motivation.
+
+The measurements agree. PacBio HiFi reads are strongly variable-length and show no
+directional bias between the screens:
+
+| dataset | % reads off modal length | net / gross |
 |---|---|---|
-| net / gross change | 0.150 | **0.172** |
-| Pearson r, log10 | 0.9956 | 0.999995 |
-| cells within 2x | 99.73% | 100.000% |
-| Bray-Curtis max | 0.0092 | **0.000039** |
+| MiSeq SOP (`truncLen` applied) | 0.00% | 0.150 |
+| **ITS2 (cutadapt-trimmed)** | **6.08%** (range 1.4-50.4%) | — |
+| PacBio HiFi | **85.30%** | 0.172 |
 
-`net/gross` is essentially identical across the two regimes: **reassignment in
-both, directional bias in neither.** A length-normalisation artefact should have
-appeared as systematic bias on the variable-length arm and did not.
+`net/gross` is indistinguishable between a fixed-length and an 85%-variable
+dataset: reassignment in both, bias in neither. And ITS2 turns out **less**
+length-variable by this measure than the dataset that already showed no effect.
 
-That does not close the ITS2 question — PacBio's length variation is *technical*
-(truncation, quality trimming), while ITS2's is *biological* and correlated with
-taxonomy, which could behave differently. But the mechanism is no longer a
-prediction with evidence behind it, and an ITS2 run should be framed as
-exploratory rather than as confirming a proposed effect.
+An ITS2 run is still worth doing — as a third dataset, and to measure the
+screen/align split on a high-diversity pool, where a low pass rate raises the
+screen's share of runtime. It is not worth doing to test a length mechanism.
 
-**Check the precondition before running it.** The screen operates on per-sample
-uniques *before* merging, so if filtering applied a fixed `truncLen` the reads
-reaching `dada` are all the same length and the mechanism cannot engage at all —
-the length variation would exist only post-merge, after the screen has run.
-`dev/check_read_lengths.py` reports this and says plainly whether a given dataset
-can test the hypothesis.
-
-### Is the count matrix *distorted*, or just perturbed?
+### Is the count matrix *distorted*, or just perturbed?### Is the count matrix *distorted*, or just perturbed?
 
 Count L1 is a global sum, and three different situations produce the same number:
 a small error spread over every cell, a few samples wrecked while the rest are
