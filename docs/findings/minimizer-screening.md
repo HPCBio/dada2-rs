@@ -294,6 +294,48 @@ cutoff safe to tighten while tightening the *learn* stage churned real ASVs.
 > `nbases`. An `--nbases` ladder is owed before any of the error-model numbers
 > here are treated as settled.
 
+## Calibration brackets; only a sweep decides
+
+Full 362-sample MiSeq, **169.2 M sampled pairs per curve**, `--min-core 200`
+(16,699 pairs dropped, 0.01%):
+
+| | k-mer | minimizer k=8 |
+|---|---|---|
+| p99 / p99.9 near-neighbour distance | 0.4785 / 0.5255 | 0.5730 / 0.6180 |
+| recall at 0.42 | **88.45%** | 61.06% |
+| recall at 0.50 | 99.68% | 89.88% |
+| recall at 0.60 | 100.00% | 99.73% |
+| cutoff matching k-mer@0.42 | — | **0.50 by recall AND by pass-rate** |
+
+Two results here, and the second is the one that matters.
+
+### DADA2's own 0.42 is not lossless at scale
+
+**The k-mer screen at `KDIST_CUTOFF = 0.42` retains only 88.45%** of pairs within
+10% true divergence, and does not reach 100% until ~0.60. On a 200k-pair sample it
+measured as exactly 100% — 200k pairs simply do not reach the tail. This is a
+finding about the *production* screen, independent of minimizers, and it sits
+beside the other one on this page: 0.42 is also not lossless against
+[unscreened denoising](#which-arm-is-actually-more-faithful).
+
+### Matching recall does not reproduce the table
+
+Both calibration criteria agree the minimizer should use **0.50** to match
+k-mer@0.42. The sweep says **0.70** for zero ASV churn; 0.55-0.60 churn 6.
+
+The calibration is not wrong — it answers a different question. **Aggregate recall
+matching is not set matching.** The pair-level audit established the minimizer
+screen is a strict *subset* of the k-mer screen at equal cutoff, so at 0.50 it
+rejects ~11% of near-neighbours, but a **different** 11% than k-mer rejects at
+0.42. Reproducing k-mer's ASV output requires never dropping a pair k-mer kept —
+which means being strictly **more permissive than k-mer**, not equally permissive.
+Hence 0.70, where minimizer recall reaches 100% against k-mer's 88.45%.
+
+**So the rule is:** calibrate to bracket the region, then sweep against the actual
+table, and expect the sweep to land *above* what recall-matching predicts. Two
+screens with the same aggregate recall are not interchangeable; only a superset
+is safe.
+
 ## The mechanism: a mis-set screen moves reads, it does not lose ASVs
 
 A too-tight screen degrades **abundance**, not richness, and the stage
