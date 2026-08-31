@@ -48,6 +48,18 @@ NBASES="${NBASES:-1000000000}"
 KS="${KS:-8 9}"
 CUTS="${CUTS:-0.40 0.42 0.45 0.48 0.50}"
 
+# Cutoffs to TIME. The accuracy sweep wants the whole grid; timing does not, and
+# timing all of it is where this script spends most of its wall clock:
+# REPS x (2 + |KS|x|CUTS|) full denoising passes, and the loose-cutoff arms are
+# the expensive ones -- measured at 312% of baseline on soil 16S and 818% of
+# baseline ALIGNMENTS on pooled ITS2. Timing a cutoff nobody would deploy costs
+# more than timing the one they would.
+#
+# Default: the arms actually worth a wall-clock number -- near the k-mer screen's
+# own pass rate, where alignment work is matched and the screen is the only
+# variable. Set TIME_CUTS="$CUTS" to time everything, or "" to skip timing.
+TIME_CUTS="${TIME_CUTS:-0.60 0.62 0.65}"
+
 # Bound kdist-calibrate: it aligns every sampled pair UNBANDED (deliberately --
 # a band would truncate the divergence of distant pairs, which is the quantity
 # being calibrated), and emits one CSV row per pair. On 1.5 kb reads that is the
@@ -144,7 +156,9 @@ echo
 echo "==> wall time (arms interleaved across $REPS reps)"
 : > "$OUT/timings.tsv"
 declare -a T=("kmer::" "kmerctl::")
-for K in $KS; do for C in $CUTS; do T+=("mini_k${K}_c${C}:$K:$C"); done; done
+for K in $KS; do for C in $TIME_CUTS; do T+=("mini_k${K}_c${C}:$K:$C"); done; done
+echo "    T arms x $REPS reps = $(( ${#T[@]} * REPS )) denoising passes"
+echo "    (narrow with TIME_CUTS=; the accuracy grid above is unaffected)"
 for rep in $(seq 1 "$REPS"); do
   for spec in "${T[@]}"; do
     name="${spec%%:*}"; rest="${spec#*:}"; K="${rest%%:*}"; C="${rest#*:}"

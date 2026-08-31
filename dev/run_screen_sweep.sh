@@ -62,6 +62,18 @@ KS="${KS:-8}"
 # where the edges are.
 CUTS="${CUTS:-0.40 0.45 0.50 0.55 0.60 0.62 0.65 0.70 0.75 0.80}"
 
+# Cutoffs to TIME. The accuracy sweep wants the whole grid; timing does not, and
+# timing all of it is where this script spends most of its wall clock:
+# REPS x (2 + |KS|x|CUTS|) full denoising passes, and the loose-cutoff arms are
+# the expensive ones -- measured at 312% of baseline on soil 16S and 818% of
+# baseline ALIGNMENTS on pooled ITS2. Timing a cutoff nobody would deploy costs
+# more than timing the one they would.
+#
+# Default: the arms actually worth a wall-clock number -- near the k-mer screen's
+# own pass rate, where alignment work is matched and the screen is the only
+# variable. Set TIME_CUTS="$CUTS" to time everything, or "" to skip timing.
+TIME_CUTS="${TIME_CUTS:-0.60 0.62 0.65}"
+
 # Reuse an existing error model for EVERY arm instead of learning one per arm.
 #
 # The screen is active inside learn-errors (build_trans_mat aligns each raw
@@ -214,9 +226,11 @@ if [ ${#filtF[@]} -eq 0 ]; then
   REPS=0
 fi
 declare -a ARMS=("kmer::" "kmerctl::")
-for K in $KS; do for C in $CUTS; do ARMS+=("mini_k${K}_c${C}:$K:$C"); done; done
+for K in $KS; do for C in $TIME_CUTS; do ARMS+=("mini_k${K}_c${C}:$K:$C"); done; done
 
 : > "$OUT/timings.tsv"
+echo "    ARMS arms x $REPS reps = $(( ${#ARMS[@]} * REPS )) denoising passes"
+echo "    (narrow with TIME_CUTS=; the accuracy grid above is unaffected)"
 for rep in $(seq 1 "$REPS"); do
   for arm in "${ARMS[@]}"; do
     name="${arm%%:*}"; rest="${arm#*:}"; K="${rest%%:*}"; C="${rest#*:}"
