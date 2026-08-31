@@ -49,7 +49,7 @@ What that is worth, at *matched alignment work* so the screen is the only variab
 | PacBio HiFi | per-sample | 0.45-0.50 | not resolvable on our rig | churn 0, L1 0.0053% |
 | NovaSeq soil 16S | per-sample | 0.65 | **16.6%** | churn 277/17398, L1 0.842% |
 | NovaSeq ITS2 | per-sample | 0.62 | **15%** | churn 7/3808, L1 0.365% |
-| **NovaSeq ITS2** | **pooled** | 0.62-0.63 | **~20%** (exclusive node; 29% vs a contended baseline) | churn 18/3028, L1 0.335-0.769% |
+| **NovaSeq ITS2** | **pooled** | 0.62-0.63 | **~20%** (exclusive node; 29% under a wider affinity mask) | churn 18/3028, L1 0.335-0.769% |
 
 **The right cutoff is the one that matches the k-mer screen's PASS RATE**, and it
 must be derived per dataset because that rate spans 0.70%-26.8% across the five
@@ -272,48 +272,52 @@ another case where the aggregate ranks the two settings the other way round.
 alignment count, retention within 0.31% of the k-mer screen, worst-sample
 Bray-Curtis 0.0043.
 
-### Node contention hits the k-mer screen 1.8x and the minimizer screen not at all
+### The k-mer screen's cost varies 1.8x with thread placement; the minimizer's does not
 
-The same pooled ITS2 sweep, same node, same 48 threads. The only difference was
-`--exclusive`:
+Two pooled ITS2 sweeps, **same node, same binary, same 48 threads**, identical
+SBATCH settings (`--cpus-per-task=48 --threads-per-core=1 --mem=256g`) except that
+the second added `--exclusive`:
 
 | | job 2367726 | job 2367778 |
 |---|---|---|
 | host | `compute-5-6` | `compute-5-6` (same node) |
-| `--exclusive` | **no — node shared with other jobs** | **yes** |
-| CPUs allowed the process | 256 logical / 128 physical | 96 logical / 48 physical |
+| `--exclusive` | no | **yes** |
+| CPUs allowed the process | **256 logical / 128 physical** | **96 logical / 48 physical** |
 | threads | 48 | 48 |
 | **k-mer screen ns/comp** | **1300** | **732** |
 | k-mer screen share | 76.5% | 71.3% |
 | **minimizer screen ns/comp** | **33** | **33** |
 | k-mer wall | 176.6s | 119.3s |
-| minimizer @0.62 | 125.5s (**71.1%**) | 95.3s (**79.9%**) |
-| timing control channel | 0.5% | 5.5% |
+| minimizer @0.62 | 125.5s (71.1%) | 95.3s (**79.9%**) |
+| timing control | 0.5% | 5.5% |
 
-The non-exclusive job saw a *wider* affinity mask but shared the machine; the
-exclusive job saw a narrower mask and had it to itself. (`cpu_allocation()` reads
-`Cpus_allowed_list` from `/proc/self/status`, so those counts are the process's
-affinity mask, not the hardware — the node is the same 128-core machine in both.)
+`cpu_allocation()` reads `Cpus_allowed_list` from `/proc/self/status`, so those
+are the process's **affinity mask**, not the hardware. Without `--exclusive` the
+mask spanned the whole 128-core node; with it, only the 48 allocated cores.
 
-**Co-tenancy cost the k-mer screen 1.8x and cost the minimizer screen nothing.**
-That is the memory-bandwidth story in its clearest form: the `4^k` frequency
-vector streams from RAM, so a noisy neighbour competing for bandwidth hurts it
-directly, while a cache-resident sketch plus index never leaves the core's own
-levels.
+**What is established:** at identical thread count on identical hardware, the
+k-mer screen cost **1.8x more** under the wider mask, and the minimizer screen
+cost the same to the nanosecond.
 
-Two consequences:
+**What is inference:** the likely cause is thread *placement*. A 256-CPU mask lets
+the scheduler spread 48 threads across many CCDs and NUMA domains of an EPYC node,
+so the memory-bound `4^k` sweep crosses fabric; the narrower mask packs them. That
+is [measuring on a NUMA node](measuring-on-numa.md)'s effect arriving
+unintentionally, through mask width rather than deliberate pinning. **Co-tenancy
+is ruled out** — no other jobs were on the node. But two runs cannot separate
+placement from any other consequence of `--exclusive`, so this is the leading
+explanation, not a demonstrated one. `dev/numa_pin.sh` is the tool for settling it.
 
-- **Use the exclusive run for the headline.** Pooled ITS2 is **~20% faster**
-  on an uncontended node. The 29% figure an earlier revision quoted was measured
-  against a baseline degraded by co-tenancy, which flatters the minimizer. The
-  honest range across both jobs is 20-29%, and 20% is the number to quote.
-- **Robustness to contention is a real property, and a speedup ratio hides it.**
-  On shared hardware the k-mer screen's cost is not predictable from a benchmark;
-  the minimizer's is. For anyone sizing jobs on a busy cluster that may matter
-  more than the mean.
+Either way, the reportable consequences do not depend on which:
 
-Report the `cpu allocation` line and the exclusivity setting beside any timing.
-Two jobs on one host at one thread count differed 1.8x on the phase under study.
+- **Quote ~20% for pooled ITS2**, from the `--exclusive` run. The 29% figure an
+  earlier revision gave was measured against a baseline degraded by whatever this
+  is, which flatters the minimizer.
+- **The k-mer screen's cost is not a property of the workload alone**; it varies
+  1.8x with how the scheduler places threads. The minimizer's does not. A speedup
+  ratio cannot express that, and for sizing jobs on a shared cluster the
+  predictability may matter as much as the mean.
+- **Report the `cpu allocation` line and the exclusivity setting with any timing.**
 
 ### The limitation: the minimizer arm's compare phase is 56% serial
 
