@@ -141,18 +141,39 @@ screen's share of runtime. It is not worth doing to test a length mechanism.
 NovaSeq ITS2, 30 sample pairs, cutadapt-trimmed, per-sample `dada`, 3,808 ASVs.
 Control channel bit-identical (0 of 8,395 cells); timing control 2.6%.
 
-**The pass rate is the whole story.** ITS2 is far more diverse than 16S, so most
-pairs are genuinely dissimilar and the screen rejects nearly everything:
+**On ITS2 the k-mer screen is the single largest cost in `b_compare`.** Measured
+over 30 samples (`docs/findings/data/its2-phase-split.txt`):
 
-| dataset | k-mer pass rate | predicted screen share |
-|---|---|---|
-| MiSeq SOP 16S | 26.8% | ~0.9% (measured 0.9%) |
-| PacBio HiFi | 9.9% | ~4% (measured 4.0%) |
-| **ITS2** | **1.74%** | **~12%** |
+| arm | screen share | screen ns/comp | align share | pass rate |
+|---|---|---|---|---|
+| **k-mer, k=5** | **43.9%** | **308 ns** | 40.6% | 1.93% |
+| minimizer k=8 @0.62 | **7.5%** | **30 ns** | 63.8% | 1.92% |
 
-Since the screen is paid on every comparison and the aligner only on survivors,
-`share = 1 / (1 + pass x align_ns / screen_ns)`. At 1.74% the screen finally
-matters.
+A **36-point swing in screen share at a matched pass rate**, and the source of the
+15% wall-clock win below.
+
+Two effects compound to get there, and only the first was predicted:
+
+1. **The pass rate collapses.** ITS2 is diverse enough that the screen rejects
+   nearly everything, and the screen is paid on all of it while the aligner is
+   paid only on survivors:
+
+   | dataset | k-mer pass rate | measured screen share |
+   |---|---|---|
+   | MiSeq SOP 16S | 26.8% | 0.9% |
+   | PacBio HiFi | 9.9% | 4.0% |
+   | **ITS2** | **1.74%** | **43.9%** |
+
+2. **The screen's own per-comparison cost rises 7x** — 308 ns against the 44 ns
+   measured on a 1,979-unique 16S sample. Same k, same 1 KB vector. This is the
+   working-set effect: ITS2 samples are individually diverse enough that their
+   k-mer vectors leave cache *in per-sample mode*, without any pooling.
+
+`share = 1 / (1 + pass x align_ns / screen_ns)` predicts 43.9% from those inputs.
+An earlier revision of this page predicted ~12% from the same formula using the
+16S screen cost — the formula was right and the input was wrong, and the error
+was in failing to apply a cache effect this page had already identified for
+pooled runs to a dataset that reaches it per-sample.
 
 | cutoff | churn | count L1 | pass% | aligned | **wall time** | reads vs base |
 |---|---|---|---|---|---|---|
@@ -166,8 +187,9 @@ matters.
 **At 0.62 the two arms perform the same number of alignments (100.2%) and the
 minimizer runs in 84.9% of the time.** Alignment work held constant, wall clock
 down **15%** — a difference that can only be the screen, and the first clean
-isolation of the screen's contribution on this branch. It matches the ~12%
-the pass-rate formula predicts, against a 2.6% control channel.
+isolation of the screen's contribution on this branch, against a 2.6% control
+channel. The phase split above shows where it comes from: 43.9% -> 7.5% of
+`b_compare` busy time.
 
 #### Read retention, not reassignment
 
