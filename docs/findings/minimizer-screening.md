@@ -590,19 +590,32 @@ against cluster 0 sets `kdist_cutoff = 1.0`, which disables the distance gate fo
 both backends identically — `minimizer_dist` is bounded by 1.0 and the gate is
 strict `>`. That covers only that pass.)
 
-Holding the error model fixed and varying one factor at a time decomposes it:
+Holding the error model fixed and varying one factor at a time decomposes it.
+**Measured after the gapless fix** — an earlier revision reported this pre-fix,
+where ~80% of the "denoising" term was actually the gapless method-selection bug
+rather than screening (20-sample MiSeq SOP, k=8, cutoff 0.65):
 
-| config | arm | churn | count L1 |
-|---|---|---|---|
-| **k=11, cut 0.42** | both changed | 17 | 1.10% |
-| | k-mer model + **minimizer screen** | 16 | **0.98%** |
-| | **minimizer model** + k-mer screen | 1 | 0.24% |
-| **k=8, cut 0.65** | both changed | 2 | 0.34% |
-| | k-mer model + **minimizer screen** | 2 | **0.32%** |
-| | **minimizer model** + k-mer screen | 0 | 0.03% |
+| arm | ASV churn | count L1 | share | `err_out` vs baseline |
+|---|---|---|---|---|
+| k-mer model + **minimizer denoising** | 2 | 0.0555% | **85%** | 1.00x (uses baseline model) |
+| **minimizer model** + k-mer denoising | **0** | 0.0105% | 16% | 1.05x |
+| both changed | 2 | 0.0652% | — | 1.05x |
 
-**The denoising-stage screen dominates in both configurations**, so the
-fragmentation verdict survives the confound. Two things worth keeping:
+**The denoising-stage screen dominates ~5:1.** A 5% error-model difference yields
+*zero* ASV churn and 0.0105% L1; swapping the denoising screen yields churn 2 and
+0.0555%. So **whichever screen you denoise with determines the answer, almost
+regardless of which screen trained the model.**
+
+The gapless correction did move the balance: pre-fix the split read 94%/8%,
+post-fix it is 85%/16%, so the model's relative contribution doubled even as the
+absolute numbers shrank 5x. Worth noting because it is the direction that would,
+if it continued, eventually make the model the dominant term — and this is
+low-diversity data, where the screen is 0.9% of runtime and shapes little of what
+reaches `build_trans_mat`. On a pooled ITS2 pool the screen is 76.5% and the model
+difference should be much larger, so the decomposition is worth repeating there
+before this is treated as general.
+
+Two further points worth keeping:
 
 - **The error model is remarkably robust to this.** A 90.9% relative change in
   `err_out` propagated to 0.24% read-level L1 and a single churned ASV. Whatever

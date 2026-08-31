@@ -69,10 +69,10 @@ SCREEN_CUTOFF="${SCREEN_CUTOFF:-}"
 # by passing one value to both.
 LEARN_CUTOFF="${LEARN_CUTOFF:-}"
 
-screen_arg=("${screen_base[@]}")
+screen_arg=(${screen_base[@]+"${screen_base[@]}"})
 [ -n "$SCREEN_CUTOFF" ] && screen_arg+=(--kdist-cutoff "$SCREEN_CUTOFF")
 
-learn_screen_arg=("${screen_base[@]}")
+learn_screen_arg=(${screen_base[@]+"${screen_base[@]}"})
 if [ -n "$LEARN_CUTOFF" ]; then
   learn_screen_arg+=(--kdist-cutoff "$LEARN_CUTOFF")
   echo "==> decoupled screens: learn-errors cutoff $LEARN_CUTOFF, dada cutoff ${SCREEN_CUTOFF:-default}"
