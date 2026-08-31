@@ -82,6 +82,17 @@ ERRFUN="${ERRFUN:-loess}"
 #   ERRFUN=binned-qual ERRFUN_ARGS='--binned-quals 2,12,23,37'
 ERRFUN_ARGS="${ERRFUN_ARGS:-}"
 
+# Denoising mode, passed to run_illumina.sh: unset/false = per-sample `dada`,
+# pseudo = `dada-pseudo`, true = `dada-pooled`.
+#
+# POOL=true is the configuration in which a SCREEN comparison is most
+# informative. The screen is memory-bound, so its per-comparison cost scales with
+# the working set rather than the vector size: the same k=5 vector costs 44
+# ns/comp on a 1,979-unique sample (0.9% of busy time) and 841 ns/comp on a
+# 272,574-unique pooled run (16.7%). A per-sample sweep will therefore show a
+# sub-1% screen share and be dominated entirely by alignment count.
+POOL="${POOL:-false}"
+
 mkdir -p "$OUT"/.verbose "$OUT"
 
 aligned_count() {  # sum (nalign - nshroud) over a run's forward dada outputs
@@ -96,11 +107,11 @@ PY
 }
 
 echo "==> baseline: k-mer screen (production default)"
-[ -d "$OUT/base" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" \
+[ -d "$OUT/base" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" POOL="$POOL" \
   bash "$RUN" "$BIN" "$DATA" "$OUT/base" "$THREADS" > "$OUT/base.log" 2>&1
 
 echo "==> control: k-mer screen AGAIN (establishes the ASV noise floor)"
-[ -d "$OUT/control" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" \
+[ -d "$OUT/control" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" POOL="$POOL" \
   bash "$RUN" "$BIN" "$DATA" "$OUT/control" "$THREADS" > "$OUT/control.log" 2>&1
 echo "    control vs baseline (MUST be identical, or nothing below is interpretable):"
 # compare_seqtab_matrix exits 1 when the tables differ, which for the CONTROL is
@@ -117,7 +128,7 @@ for K in $KS; do
     [ -d "$d" ] && { echo "    k=$K cutoff=$C (cached)"; continue; }
     echo "    k=$K cutoff=$C"
     SCREEN_BACKEND=minimizer MINIMIZER_K="$K" SCREEN_CUTOFF="$C" \
-      ERR_DIR="${ERR_DIR:-}" PREFILTERED="${PREFILTERED:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" \
+      ERR_DIR="${ERR_DIR:-}" PREFILTERED="${PREFILTERED:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" POOL="$POOL" \
       bash "$RUN" "$BIN" "$DATA" "$d" "$THREADS" > "$d.log" 2>&1
   done
 done
@@ -184,6 +195,12 @@ echo "========================== WALL TIME =========================="
 echo "Arms interleaved across $REPS reps; the k-mer arm appears twice so the"
 echo "control channel carries the same thermal/cache exposure as the test arms."
 echo "Timing the dada step only -- filter/merge/chimera are identical across arms."
+case "$POOL" in
+  true)   DADA_CMD="dada-pooled" ;;
+  pseudo) DADA_CMD="dada-pseudo" ;;
+  *)      DADA_CMD="dada" ;;
+esac
+echo "Denoising mode: $DADA_CMD (POOL=$POOL)"
 
 # Under PREFILTERED the run wrote no filtered/ dir -- it used the inputs
 # directly, so the timing arms must too.
@@ -206,7 +223,9 @@ for rep in $(seq 1 "$REPS"); do
     extra=()
     [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
     t0=$(python3 -c 'import time;print(time.time())')
-    "$BIN" dada "${filtF[@]}" --error-model "$OUT/base/errF.json" \
+    # Same denoising mode as the arms, or the timings describe a different
+    # workload than the accuracy table above.
+    "$BIN" $DADA_CMD "${filtF[@]}" --error-model "$OUT/base/errF.json" \
         --output-dir "$OUT/.timing" --threads "$THREADS" \
         ${extra[@]+"${extra[@]}"} > /dev/null 2>&1
     t1=$(python3 -c 'import time;print(time.time())')
@@ -227,7 +246,7 @@ echo "number that says whether the wall-clock result was screen- or align-driven
     [ "$name" = "kmerctl" ] && continue
     extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
     echo "--- $name"
-    "$BIN" dada "${filtF[@]}" --error-model "$OUT/base/errF.json" \
+    "$BIN" $DADA_CMD "${filtF[@]}" --error-model "$OUT/base/errF.json" \
         --threads "$THREADS" --verbose ${extra[@]+"${extra[@]}"} \
         --output-dir "$OUT/.verbose" 2>&1 \
       | grep -E "kmer screen|align total|dp kernel|passed the screen" || echo "    (no split reported)"

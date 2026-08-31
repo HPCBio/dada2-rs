@@ -22,9 +22,11 @@ THREADS="${4:-2}"
 # concordance guardrail can run the whole pipeline with WFA. Unset = default
 # (nw), leaving existing behavior unchanged. The `+"${...}"` form keeps the
 # empty-array expansion safe under `set -u`.
-# POOL=pseudo switches the two denoising steps from per-sample `dada` to
-# `dada-pseudo` (R `dada(pool="pseudo")`). Unset/false = per-sample, the original
-# behaviour. The reference CSV must have been generated with the SAME pool mode --
+# POOL selects the denoising mode for both orientations:
+#   unset/false : per-sample `dada`      (R pool=FALSE, the original behaviour)
+#   pseudo      : `dada-pseudo`          (R pool="pseudo")
+#   true        : `dada-pooled`          (R pool=TRUE)
+# The reference CSV must have been generated with the SAME pool mode --
 # write_reference.R takes a matching argument.
 POOL="${POOL:-false}"
 
@@ -185,6 +187,27 @@ if pseudo == ctrl:
 gained = sum(len(pseudo[s] - ctrl[s]) for s in ctrl if s in pseudo)
 print(f"==> control OK: pseudo rescued {gained} ASV(s) a per-sample run did not call")
 PYCTL
+elif [ "$POOL" = "true" ]; then
+  # Full pooling (R DADA2 pool=TRUE). All per-sample uniques are merged into one
+  # table, DADA2 runs once, and one JSON per sample is written back out -- so the
+  # downstream merge/chimera steps are unchanged.
+  #
+  # This is the configuration where a screen comparison is most informative. The
+  # screen is memory-bound, so its cost per comparison scales with the WORKING
+  # SET, not the vector size: the same k=5 vector measured 44 ns/comp on a single
+  # 1,979-unique sample (screen = 0.9% of busy time) and 841 ns/comp on a
+  # 272,574-unique pooled run (16.7%), because 272 MB of k-mer vectors do not fit
+  # cache and 2 MB do. See docs/findings/compare-screen-vs-align.md.
+  #
+  # MEMORY: pooling holds every sample's uniques at once. Budget accordingly --
+  # docs/findings has pooled peaks in the tens of GB for diverse soil runs.
+  echo "==> dada-pooled (fwd, rev; full pooling)"
+  "$BIN" dada-pooled "${filtFs[@]}" --error-model "$OUT/errF.json" \
+      -o "$OUT/dada_fwd" --threads "$THREADS" \
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
+  "$BIN" dada-pooled "${filtRs[@]}" --error-model "$OUT/errR.json" \
+      -o "$OUT/dada_rev" --threads "$THREADS" \
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
 else
   # Per-sample denoising (pool=FALSE analog) — matches R dada() default.
   echo "==> dada (fwd, rev; per-sample)"
