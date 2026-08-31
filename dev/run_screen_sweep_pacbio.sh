@@ -41,6 +41,17 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 BAND="${BAND:-32}"
 KMER="${KMER:-7}"          # k-mer screen size; 7 is the dada2-rs PacBio recommendation
 ERRFUN="${ERRFUN:-pacbio}"
+
+# Denoising mode: unset/false = per-sample `dada`, true = `dada-pooled`
+# (R pool=TRUE). Pooling is where a screen comparison is most informative, because
+# the k-mer screen is memory-bound and its cost tracks the working set: on ITS2 it
+# went from 43.9% of the compare phase per-sample to 76.5% pooled, purely because
+# the frequency vectors stopped fitting cache. The minimizer's stayed flat.
+POOL="${POOL:-false}"
+case "$POOL" in
+  true) DADA_CMD="dada-pooled" ;;
+  *)    DADA_CMD="dada" ;;
+esac
 NBASES="${NBASES:-1000000000}"
 
 # Sweep grid. Cutoffs bracket the k-mer screen's own pass rate rather than
@@ -111,19 +122,21 @@ python3 "$HERE/analyze_kdist_curves.py" "${cal_args[@]}" | tee "$OUT/models/cali
 
 echo
 echo "==> [3/5] learn-errors ONCE (k-mer screen) -- shared by every arm"
+# learn-errors is unaffected by POOL: it always reads every sample. Only the
+# denoising step pools.
 [ -f "$OUT/models/err.json" ] || \
   "$BIN" learn-errors "${fq[@]}" --nbases "$NBASES" --errfun "$ERRFUN" \
       --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
       -o "$OUT/models/err.json" > /dev/null
 
-echo "==> [4/5] denoise: baseline, control, and the grid (all on the shared model)"
+echo "==> [4/5] denoise with $DADA_CMD (POOL=$POOL): baseline, control, grid (shared model)"
 run_arm() {  # name, extra args...
   local name="$1"; shift
   local d="$OUT/arms/$name"
   [ -d "$d" ] && { echo "    $name (cached)"; return; }
   mkdir -p "$d"
   echo "    $name"
-  "$BIN" dada "${fq[@]}" --error-model "$OUT/models/err.json" \
+  "$BIN" $DADA_CMD "${fq[@]}" --error-model "$OUT/models/err.json" \
       --band "$BAND" --kmer-size "$KMER" --output-dir "$d" \
       --threads "$THREADS" "$@" > /dev/null
 }
@@ -189,7 +202,7 @@ for rep in $(seq 1 "$REPS"); do
     name="${spec%%:*}"; rest="${spec#*:}"; K="${rest%%:*}"; C="${rest#*:}"
     extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
     t0=$(python3 -c 'import time;print(time.time())')
-    "$BIN" dada "${fq[@]}" --error-model "$OUT/models/err.json" --band "$BAND" \
+    "$BIN" $DADA_CMD "${fq[@]}" --error-model "$OUT/models/err.json" --band "$BAND" \
         --kmer-size "$KMER" --threads "$THREADS" ${extra[@]+"${extra[@]}"} \
         --output-dir "$OUT/.timing" > /dev/null 2>&1
     t1=$(python3 -c 'import time;print(time.time())')
@@ -227,7 +240,7 @@ fi
     [ "$name" = "kmerctl" ] && continue
     extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
     echo "===== $name"
-    ${TIMER[@]+"${TIMER[@]}"} "$BIN" dada "${fq[@]}" \
+    ${TIMER[@]+"${TIMER[@]}"} "$BIN" $DADA_CMD "${fq[@]}" \
         --error-model "$OUT/models/err.json" --band "$BAND" --kmer-size "$KMER" \
         --threads "$THREADS" --verbose \
         ${extra[@]+"${extra[@]}"} --output-dir "$OUT/.verbose" 2>&1 \

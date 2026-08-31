@@ -272,14 +272,16 @@ another case where the aggregate ranks the two settings the other way round.
 alignment count, retention within 0.31% of the k-mer screen, worst-sample
 Bray-Curtis 0.0043.
 
-### The k-mer baseline is node-dependent; the minimizer screen is not
+### The k-mer baseline moves with CPU *allocation*; the minimizer screen does not
 
-The same pooled ITS2 sweep, same 48 threads, run on two different nodes — the
-`cpu allocation` line in the verbose block records host, job, thread count and
-core count, which is what made this visible:
+The same pooled ITS2 sweep, same node, same 48 threads, two SLURM jobs that
+differed only in how many CPUs the cgroup allowed:
 
-| | 128 physical cores | 48 physical cores |
+| | job 2367726 | job 2367778 |
 |---|---|---|
+| host | `compute-5-6` | `compute-5-6` (**same node**) |
+| CPUs allowed the process | **256 logical / 128 physical** | **96 logical / 48 physical** |
+| threads | 48 | 48 |
 | **k-mer screen ns/comp** | **1300** | **732** |
 | k-mer screen share | 76.5% | 71.3% |
 | **minimizer screen ns/comp** | **33** | **33** |
@@ -287,27 +289,32 @@ core count, which is what made this visible:
 | minimizer @0.62 | 125.5s (**71.1%**) | 95.3s (**79.9%**) |
 | timing control channel | 0.5% | 5.5% |
 
-**The k-mer screen is 1.8x faster on the smaller node. The minimizer screen is
-identical to the nanosecond.** That is the mechanism stated as cleanly as it can
-be: the `4^k` frequency vector is memory-bound, so its cost tracks NUMA topology
-and memory locality — spreading 48 threads across a 128-core multi-socket machine
-costs it dearly, which is the effect
-[measuring on a NUMA node](measuring-on-numa.md) documented for this codebase.
-The sketch plus index is cache-resident and indifferent.
+`cpu_allocation()` reads `Cpus_allowed_list` from `/proc/self/status`, so those
+core counts are the **process affinity mask**, not the machine. Same hardware;
+the second job was simply confined to a smaller CPU set.
 
-**Consequence: the speedup is node-dependent because the baseline is.** Pooled
-ITS2 is **20-29% faster** depending on the node, not the single 29% an earlier
-revision of this page quoted. The larger figure came from the run whose k-mer arm
-was most NUMA-penalised.
+**The narrower allocation was 1.8x faster for the k-mer screen at identical
+thread count.** Fewer allowed CPUs means fewer NUMA domains spanned, and the `4^k`
+frequency vector is memory-bound, so it is exactly the phase that benefits —
+the effect [measuring on a NUMA node](measuring-on-numa.md) documented for this
+codebase, arriving here through cgroup width rather than explicit pinning.
 
-Read the other direction, this is a point in the minimizer's favour that the
-speedup number hides: it delivers **the same absolute screen cost regardless of
-where it lands**, while the k-mer screen's cost varies 1.8x with the scheduler's
-node assignment. For reproducible timing that predictability is worth something on
-its own.
+**The minimizer screen was identical to the nanosecond across both.** Cache-resident,
+so memory topology does not reach it.
 
-Any future comparison should report the `cpu allocation` line alongside the
-timings. Two runs on "the same host" differed by 128 vs 48 physical cores here.
+Two consequences:
+
+- **The speedup is allocation-dependent because the baseline is.** Pooled ITS2 is
+  **20-29% faster** depending on the CPU set, not the flat 29% an earlier revision
+  quoted; the larger figure came from the job whose k-mer arm was most
+  NUMA-penalised. (An earlier revision also mis-read this as two different nodes.
+  It was one node, two cgroups.)
+- **Predictability is itself a property worth reporting.** The minimizer screen
+  costs the same wherever it lands; the k-mer screen varies 1.8x with how wide an
+  allocation the scheduler happened to grant.
+
+Report the `cpu allocation` line beside any timing. Two jobs on the same host, at
+the same thread count, differed by 1.8x on the phase under study.
 
 ### The limitation: the minimizer arm's compare phase is 56% serial
 
