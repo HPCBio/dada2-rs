@@ -10,6 +10,7 @@ grows with the working set:
 | MiSeq SOP 16S, one sample | 26.8% | 44 | **0.9%** | ~20 |
 | PacBio HiFi, per-sample | 9.9% | 660 | 4.0% | 20 |
 | MiSeq 16S, pooled (#127) | 25.0% | 841 | 16.7% | — |
+| NovaSeq soil 16S, per-sample | 5.52% | 454 | **29.8%** | 30 |
 | NovaSeq ITS2, per-sample | 1.74% | 308 | **43.9%** | 30 |
 | **NovaSeq ITS2, pooled** | **0.70%** | **1305** | **76.5%** | **33** |
 
@@ -22,12 +23,29 @@ k-mer screen is **76.5% of `b_compare`** — the single largest cost in the pipe
 
 What that is worth, at *matched alignment work* so the screen is the only variable:
 
-| dataset | mode | speedup at matched alignments | accuracy cost |
+| dataset | mode | cutoff | speedup at matched alignments | accuracy cost |
+|---|---|---|---|---|
+| MiSeq SOP 16S | per-sample | 0.70 | ~0% (screen is 0.9%) | churn 0 |
+| PacBio HiFi | per-sample | 0.45-0.50 | not resolvable on our rig | churn 0, L1 0.0053% |
+| NovaSeq soil 16S | per-sample | 0.65 | **16.6%** | churn 277/17398, L1 0.842% |
+| NovaSeq ITS2 | per-sample | 0.62 | **15%** | churn 7/3808, L1 0.365% |
+| **NovaSeq ITS2** | **pooled** | 0.62 | **30.7%** | churn 18/3028, L1 0.769% |
+
+**The right cutoff is the one that matches the k-mer screen's PASS RATE**, and it
+must be derived per dataset because that rate spans 0.70%-26.8% across the five
+workloads above. Matched-pass predicted the sweep optimum in every case:
+
+| dataset | k-mer pass | minimizer cutoff matching it | sweep optimum |
 |---|---|---|---|
-| MiSeq 16S | per-sample | ~0% (screen is 0.9%) | — |
-| PacBio HiFi | per-sample | not resolvable on our rig | churn 0, L1 0.0053% |
-| NovaSeq ITS2 | per-sample | **15%** | churn 7/3808, L1 0.365% |
-| **NovaSeq ITS2** | **pooled** | **30.7%** | churn 18/3028, L1 0.769% |
+| ITS2 pooled | 0.70% | 0.62 | 0.62 |
+| ITS2 per-sample | 1.93% | 0.62 | 0.62 |
+| soil 16S | 5.52% | 0.65 | 0.65 |
+| PacBio HiFi | 10.73% | ~0.50 | 0.45-0.50 |
+| MiSeq SOP | 26.8% | ~0.80 | 0.70 (0.80 close) |
+
+That is what `analyze_kdist_curves.py` reports, and it is a better target than
+100% recall — which picked 0.72 on Illumina and 0.50 on PacBio, one of them
+20 points too loose.
 
 Experimental and opt-in (`--screen-backend minimizer`), default unchanged. The
 shipped defaults (k=11, cutoff 0.42) are **wrong everywhere**; use **k=8** with a
@@ -227,6 +245,39 @@ another case where the aggregate ranks the two settings the other way round.
 **Recommended for ITS2-like pools: k=8, cutoff 0.62** — 15% faster at matched
 alignment count, retention within 0.31% of the k-mer screen, worst-sample
 Bray-Curtis 0.0043.
+
+### Soil 16S: the same effect, from diversity alone
+
+NovaSeq soil 16S, 30 samples, per-sample `dada`, **17,398 ASVs** — the most
+diverse table measured here. Control bit-identical (0 of 45,934 cells); timing
+control 3.0%. Split in `docs/findings/data/soil16s-phase-split.txt`.
+
+| arm | screen share | screen ns/comp | pass rate |
+|---|---|---|---|
+| **k-mer, k=5** | **29.8%** | **454 ns** | 5.52% |
+| minimizer k=8 @0.65 | **2.7%** | **30 ns** | 5.64% |
+
+This is the control for the diversity hypothesis: same instrument and prep as
+ITS2, a *16S* amplicon, and the k-mer screen still costs **29.8%** of `b_compare`
+against 0.9% on the mouse-gut MiSeq SOP. So the driver is not the ITS2 amplicon —
+it is **how diverse the pool is**, which sets both the pass rate and the working
+set. Note soil 16S has a *higher* per-comparison cost than per-sample ITS2 (454 vs
+308 ns, a larger working set) but also a higher pass rate, so a lower share: both
+terms in `share = 1/(1 + pass x align_ns/screen_ns)` matter.
+
+| cutoff | churn | count L1 | aligned | reads vs base | wall time |
+|---|---|---|---|---|---|
+| 0.40 | 3816 | 14.677% | 21.5% | -67,726 | 34.4% |
+| 0.55 | 949 | 3.818% | 52.3% | -13,110 | 52.9% |
+| 0.62 | 273 | 0.942% | 82.6% | -3,953 | 71.2% |
+| **0.65** | 277 | **0.842%** | **102.4%** | **-911** | **83.4%** |
+| 0.70 | 483 | 1.703% | 155.5% | +2,476 | 114.5% |
+| 0.80 | 730 | 2.762% | 483.8% | +2,743 | 312.2% |
+
+**16.6% faster at matched alignment work**, with retention within 0.06% and count
+L1 at its minimum. Churn is 277 of 17,398 ASVs (1.6%) — larger in absolute terms
+than any other dataset here, and proportionally larger than ITS2's 0.6%, which is
+what a table with 17k mostly-rare ASVs should do.
 
 ### ITS2 under full pooling: the screen becomes 76.5% of the phase
 

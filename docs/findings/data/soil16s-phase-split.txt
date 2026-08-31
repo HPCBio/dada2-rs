@@ -1,0 +1,1001 @@
+--- kmer
+[dada]   kmer screen     25.18s (27.5%)       57464947 comps     438 ns/comp  (every comparison)
+[dada]   align total     55.76s (61.0%)        3499653 comps   15932 ns/comp  (6.1% passed the screen)
+[dada]     dp kernel     51.93s (56.8%)        3499653 comps   14840 ns/comp
+[dada]   kmer screen     31.19s (34.2%)       63218165 comps     493 ns/comp  (every comparison)
+[dada]   align total     49.70s (54.5%)        2999757 comps   16568 ns/comp  (4.7% passed the screen)
+[dada]     dp kernel     46.33s (50.8%)        2999757 comps   15446 ns/comp
+[dada]   kmer screen     28.43s (29.9%)       73772079 comps     385 ns/comp  (every comparison)
+[dada]   align total     55.78s (58.7%)        3406109 comps   16378 ns/comp  (4.6% passed the screen)
+[dada]     dp kernel     52.03s (54.7%)        3406109 comps   15274 ns/comp
+[dada]   kmer screen     30.84s (33.2%)       57995626 comps     532 ns/comp  (every comparison)
+[dada]   align total     52.32s (56.3%)        3137235 comps   16677 ns/comp  (5.4% passed the screen)
+[dada]     dp kernel     48.83s (52.6%)        3137235 comps   15566 ns/comp
+[dada]   kmer screen     26.33s (28.1%)       65450856 comps     402 ns/comp  (every comparison)
+[dada]   align total     57.71s (61.7%)        3480812 comps   16580 ns/comp  (5.3% passed the screen)
+[dada]     dp kernel     53.84s (57.5%)        3480812 comps   15466 ns/comp
+[dada]   kmer screen     26.17s (27.3%)       66589892 comps     393 ns/comp  (every comparison)
+[dada]   align total     59.88s (62.5%)        3609424 comps   16591 ns/comp  (5.4% passed the screen)
+[dada]     dp kernel     55.85s (58.3%)        3609424 comps   15473 ns/comp
+[dada]   kmer screen     30.96s (30.2%)       69606051 comps     445 ns/comp  (every comparison)
+[dada]   align total     60.39s (58.9%)        3671423 comps   16447 ns/comp  (5.3% passed the screen)
+[dada]     dp kernel     56.32s (55.0%)        3671423 comps   15339 ns/comp
+[dada]   kmer screen     40.91s (38.1%)       68439262 comps     598 ns/comp  (every comparison)
+[dada]   align total     53.73s (50.0%)        3220441 comps   16686 ns/comp  (4.7% passed the screen)
+[dada]     dp kernel     50.10s (46.6%)        3220441 comps   15557 ns/comp
+[dada]   kmer screen     29.72s (27.5%)       68894328 comps     431 ns/comp  (every comparison)
+[dada]   align total     66.79s (61.8%)        4032583 comps   16563 ns/comp  (5.9% passed the screen)
+[dada]     dp kernel     62.27s (57.6%)        4032583 comps   15442 ns/comp
+[dada]   kmer screen     39.03s (34.3%)       68869189 comps     567 ns/comp  (every comparison)
+[dada]   align total     62.61s (55.0%)        3761771 comps   16644 ns/comp  (5.5% passed the screen)
+[dada]     dp kernel     58.35s (51.3%)        3761771 comps   15512 ns/comp
+[dada]   kmer screen     33.52s (27.4%)       67945111 comps     493 ns/comp  (every comparison)
+[dada]   align total     77.09s (63.1%)        4607624 comps   16731 ns/comp  (6.8% passed the screen)
+[dada]     dp kernel     71.93s (58.9%)        4607624 comps   15612 ns/comp
+[dada]   kmer screen     41.12s (34.2%)       69284879 comps     593 ns/comp  (every comparison)
+[dada]   align total     66.23s (55.2%)        3950721 comps   16763 ns/comp  (5.7% passed the screen)
+[dada]     dp kernel     61.72s (51.4%)        3950721 comps   15623 ns/comp
+[dada]   kmer screen     15.40s (21.7%)       51796613 comps     297 ns/comp  (every comparison)
+[dada]   align total     48.50s (68.5%)        2989765 comps   16222 ns/comp  (5.8% passed the screen)
+[dada]     dp kernel     45.18s (63.8%)        2989765 comps   15111 ns/comp
+[dada]   kmer screen     21.31s (22.5%)       67396577 comps     316 ns/comp  (every comparison)
+[dada]   align total     63.65s (67.3%)        3878587 comps   16412 ns/comp  (5.8% passed the screen)
+[dada]     dp kernel     59.38s (62.8%)        3878587 comps   15309 ns/comp
+[dada]   kmer screen     20.69s (21.3%)       55763660 comps     371 ns/comp  (every comparison)
+[dada]   align total     67.81s (69.7%)        4161593 comps   16295 ns/comp  (7.5% passed the screen)
+[dada]     dp kernel     63.27s (65.0%)        4161593 comps   15203 ns/comp
+[dada]   kmer screen     24.37s (24.3%)       69105430 comps     353 ns/comp  (every comparison)
+[dada]   align total     65.65s (65.5%)        4028796 comps   16296 ns/comp  (5.8% passed the screen)
+[dada]     dp kernel     61.13s (61.0%)        4028796 comps   15174 ns/comp
+[dada]   kmer screen     25.11s (27.4%)       63722373 comps     394 ns/comp  (every comparison)
+[dada]   align total     57.02s (62.3%)        3513517 comps   16229 ns/comp  (5.5% passed the screen)
+[dada]     dp kernel     53.18s (58.1%)        3513517 comps   15136 ns/comp
+[dada]   kmer screen     31.75s (29.5%)       63157917 comps     503 ns/comp  (every comparison)
+[dada]   align total     64.71s (60.1%)        3959078 comps   16344 ns/comp  (6.3% passed the screen)
+[dada]     dp kernel     60.34s (56.0%)        3959078 comps   15241 ns/comp
+[dada]   kmer screen     24.72s (22.8%)       71265343 comps     347 ns/comp  (every comparison)
+[dada]   align total     73.10s (67.6%)        4471817 comps   16348 ns/comp  (6.3% passed the screen)
+[dada]     dp kernel     68.21s (63.0%)        4471817 comps   15253 ns/comp
+[dada]   kmer screen     27.13s (26.6%)       65622645 comps     413 ns/comp  (every comparison)
+[dada]   align total     64.29s (62.9%)        3951315 comps   16271 ns/comp  (6.0% passed the screen)
+[dada]     dp kernel     59.93s (58.7%)        3951315 comps   15167 ns/comp
+[dada]   kmer screen     43.39s (43.2%)       65378028 comps     664 ns/comp  (every comparison)
+[dada]   align total     45.69s (45.5%)        2799118 comps   16322 ns/comp  (4.3% passed the screen)
+[dada]     dp kernel     42.61s (42.4%)        2799118 comps   15222 ns/comp
+[dada]   kmer screen     38.46s (40.6%)       64310979 comps     598 ns/comp  (every comparison)
+[dada]   align total     45.21s (47.7%)        2813093 comps   16073 ns/comp  (4.4% passed the screen)
+[dada]     dp kernel     42.15s (44.5%)        2813093 comps   14984 ns/comp
+[dada]   kmer screen     43.97s (35.6%)       70630990 comps     623 ns/comp  (every comparison)
+[dada]   align total     66.10s (53.5%)        4074824 comps   16221 ns/comp  (5.8% passed the screen)
+[dada]     dp kernel     61.60s (49.9%)        4074824 comps   15118 ns/comp
+[dada]   kmer screen     10.20s (18.6%)       44927306 comps     227 ns/comp  (every comparison)
+[dada]   align total     37.97s (69.4%)        2375390 comps   15985 ns/comp  (5.3% passed the screen)
+[dada]     dp kernel     35.41s (64.7%)        2375390 comps   14907 ns/comp
+[dada]   kmer screen     45.41s (37.9%)       72787846 comps     624 ns/comp  (every comparison)
+[dada]   align total     60.66s (50.6%)        3724423 comps   16288 ns/comp  (5.1% passed the screen)
+[dada]     dp kernel     56.50s (47.1%)        3724423 comps   15171 ns/comp
+[dada]   kmer screen     19.18s (27.5%)       56678221 comps     338 ns/comp  (every comparison)
+[dada]   align total     42.78s (61.3%)        2689414 comps   15907 ns/comp  (4.7% passed the screen)
+[dada]     dp kernel     39.86s (57.1%)        2689414 comps   14820 ns/comp
+[dada]   kmer screen     24.50s (30.4%)       57853734 comps     423 ns/comp  (every comparison)
+[dada]   align total     46.85s (58.2%)        2943984 comps   15913 ns/comp  (5.1% passed the screen)
+[dada]     dp kernel     43.67s (54.3%)        2943984 comps   14833 ns/comp
+[dada]   kmer screen     26.75s (28.9%)       62588248 comps     427 ns/comp  (every comparison)
+[dada]   align total     55.05s (59.4%)        3500248 comps   15728 ns/comp  (5.6% passed the screen)
+[dada]     dp kernel     51.27s (55.3%)        3500248 comps   14648 ns/comp
+[dada]   kmer screen     33.32s (31.7%)       69816562 comps     477 ns/comp  (every comparison)
+[dada]   align total     58.62s (55.8%)        3846423 comps   15239 ns/comp  (5.5% passed the screen)
+[dada]     dp kernel     54.58s (51.9%)        3846423 comps   14189 ns/comp
+[dada]   kmer screen     33.82s (30.1%)       75083564 comps     450 ns/comp  (every comparison)
+[dada]   align total     62.11s (55.3%)        4022716 comps   15440 ns/comp  (5.4% passed the screen)
+[dada]     dp kernel     57.92s (51.5%)        4022716 comps   14399 ns/comp
+--- mini_k8_c0.40
+[dada]   kmer screen      1.86s (10.4%)       60962965 comps      30 ns/comp  (every comparison)
+[dada]   align total      9.96s (55.8%)         670515 comps   14860 ns/comp  (1.1% passed the screen)
+[dada]     dp kernel      9.29s (52.0%)         670515 comps   13858 ns/comp
+[dada]   kmer screen      1.80s ( 9.3%)       59646687 comps      30 ns/comp  (every comparison)
+[dada]   align total     10.64s (54.8%)         713445 comps   14908 ns/comp  (1.2% passed the screen)
+[dada]     dp kernel      9.91s (51.1%)         713445 comps   13893 ns/comp
+[dada]   kmer screen      2.04s (10.2%)       66311919 comps      31 ns/comp  (every comparison)
+[dada]   align total     10.22s (51.0%)         683849 comps   14943 ns/comp  (1.0% passed the screen)
+[dada]     dp kernel      9.51s (47.4%)         683849 comps   13906 ns/comp
+[dada]   kmer screen      2.18s (10.7%)       72000676 comps      30 ns/comp  (every comparison)
+[dada]   align total     10.92s (53.7%)         735062 comps   14853 ns/comp  (1.0% passed the screen)
+[dada]     dp kernel     10.17s (50.0%)         735062 comps   13839 ns/comp
+[dada]   kmer screen      2.09s ( 9.4%)       68693437 comps      30 ns/comp  (every comparison)
+[dada]   align total     12.75s (57.4%)         861450 comps   14795 ns/comp  (1.3% passed the screen)
+[dada]     dp kernel     11.86s (53.5%)         861450 comps   13768 ns/comp
+[dada]   kmer screen      2.17s ( 9.7%)       72021022 comps      30 ns/comp  (every comparison)
+[dada]   align total     12.08s (54.1%)         809350 comps   14923 ns/comp  (1.1% passed the screen)
+[dada]     dp kernel     11.26s (50.4%)         809350 comps   13911 ns/comp
+[dada]   kmer screen      2.07s ( 9.9%)       68382163 comps      30 ns/comp  (every comparison)
+[dada]   align total     10.44s (49.8%)         722117 comps   14460 ns/comp  (1.1% passed the screen)
+[dada]     dp kernel      9.70s (46.3%)         722117 comps   13438 ns/comp
+[dada]   kmer screen      2.28s (10.9%)       73575005 comps      31 ns/comp  (every comparison)
+[dada]   align total     11.26s (54.0%)         731684 comps   15392 ns/comp  (1.0% passed the screen)
+[dada]     dp kernel     10.49s (50.3%)         731684 comps   14338 ns/comp
+[dada]   kmer screen      2.27s ( 9.6%)       75314608 comps      30 ns/comp  (every comparison)
+[dada]   align total     12.08s (51.0%)         820434 comps   14730 ns/comp  (1.1% passed the screen)
+[dada]     dp kernel     11.25s (47.5%)         820434 comps   13715 ns/comp
+[dada]   kmer screen      2.16s ( 9.9%)       72481857 comps      30 ns/comp  (every comparison)
+[dada]   align total     10.36s (47.3%)         710127 comps   14582 ns/comp  (1.0% passed the screen)
+[dada]     dp kernel      9.65s (44.1%)         710127 comps   13586 ns/comp
+[dada]   kmer screen      2.24s ( 9.8%)       72626276 comps      31 ns/comp  (every comparison)
+[dada]   align total     12.63s (55.2%)         836295 comps   15098 ns/comp  (1.2% passed the screen)
+[dada]     dp kernel     11.76s (51.4%)         836295 comps   14065 ns/comp
+[dada]   kmer screen      2.17s ( 9.1%)       71038669 comps      31 ns/comp  (every comparison)
+[dada]   align total     13.02s (54.6%)         855736 comps   15220 ns/comp  (1.2% passed the screen)
+[dada]     dp kernel     12.15s (51.0%)         855736 comps   14199 ns/comp
+[dada]   kmer screen      1.76s (10.5%)       56347327 comps      31 ns/comp  (every comparison)
+[dada]   align total      8.65s (51.7%)         583166 comps   14839 ns/comp  (1.0% passed the screen)
+[dada]     dp kernel      8.03s (48.0%)         583166 comps   13771 ns/comp
+[dada]   kmer screen      1.98s ( 8.2%)       64132282 comps      31 ns/comp  (every comparison)
+[dada]   align total     11.59s (47.8%)         771088 comps   15026 ns/comp  (1.2% passed the screen)
+[dada]     dp kernel     10.77s (44.5%)         771088 comps   13969 ns/comp
+[dada]   kmer screen      2.25s (10.7%)       71814660 comps      31 ns/comp  (every comparison)
+[dada]   align total     11.44s (54.4%)         773199 comps   14801 ns/comp  (1.1% passed the screen)
+[dada]     dp kernel     10.60s (50.4%)         773199 comps   13714 ns/comp
+[dada]   kmer screen      2.25s ( 9.0%)       72379534 comps      31 ns/comp  (every comparison)
+[dada]   align total     11.24s (45.0%)         723495 comps   15542 ns/comp  (1.0% passed the screen)
+[dada]     dp kernel     10.44s (41.8%)         723495 comps   14425 ns/comp
+[dada]   kmer screen      1.87s ( 9.0%)       59532802 comps      31 ns/comp  (every comparison)
+[dada]   align total     11.66s (56.3%)         742344 comps   15709 ns/comp  (1.2% passed the screen)
+[dada]     dp kernel     10.86s (52.4%)         742344 comps   14623 ns/comp
+[dada]   kmer screen      2.29s ( 8.9%)       73831097 comps      31 ns/comp  (every comparison)
+[dada]   align total     12.24s (47.7%)         784650 comps   15605 ns/comp  (1.1% passed the screen)
+[dada]     dp kernel     11.39s (44.4%)         784650 comps   14510 ns/comp
+[dada]   kmer screen      2.08s ( 9.0%)       67704482 comps      31 ns/comp  (every comparison)
+[dada]   align total     12.03s (52.2%)         797781 comps   15081 ns/comp  (1.2% passed the screen)
+[dada]     dp kernel     11.17s (48.4%)         797781 comps   14005 ns/comp
+[dada]   kmer screen      2.08s ( 9.8%)       66676934 comps      31 ns/comp  (every comparison)
+[dada]   align total     10.91s (51.1%)         736398 comps   14814 ns/comp  (1.1% passed the screen)
+[dada]     dp kernel     10.11s (47.4%)         736398 comps   13732 ns/comp
+[dada]   kmer screen      2.14s (10.5%)       69291827 comps      31 ns/comp  (every comparison)
+[dada]   align total     10.10s (49.7%)         689605 comps   14644 ns/comp  (1.0% passed the screen)
+[dada]     dp kernel      9.37s (46.1%)         689605 comps   13592 ns/comp
+[dada]   kmer screen      2.08s ( 9.6%)       67061025 comps      31 ns/comp  (every comparison)
+[dada]   align total      9.88s (45.5%)         671253 comps   14722 ns/comp  (1.0% passed the screen)
+[dada]     dp kernel      9.16s (42.2%)         671253 comps   13649 ns/comp
+[dada]   kmer screen      2.27s ( 9.2%)       73168157 comps      31 ns/comp  (every comparison)
+[dada]   align total     12.84s (52.2%)         860720 comps   14921 ns/comp  (1.2% passed the screen)
+[dada]     dp kernel     11.93s (48.4%)         860720 comps   13860 ns/comp
+[dada]   kmer screen      2.38s ( 9.4%)       76127747 comps      31 ns/comp  (every comparison)
+[dada]   align total     12.03s (47.5%)         806198 comps   14924 ns/comp  (1.1% passed the screen)
+[dada]     dp kernel     11.16s (44.0%)         806198 comps   13848 ns/comp
+[dada]   kmer screen      1.34s ( 7.3%)       45288322 comps      30 ns/comp  (every comparison)
+[dada]   align total      8.49s (46.3%)         605825 comps   14019 ns/comp  (1.3% passed the screen)
+[dada]     dp kernel      7.90s (43.0%)         605825 comps   13035 ns/comp
+[dada]   kmer screen      2.18s (10.1%)       72948431 comps      30 ns/comp  (every comparison)
+[dada]   align total     11.08s (51.3%)         790057 comps   14028 ns/comp  (1.1% passed the screen)
+[dada]     dp kernel     10.29s (47.7%)         790057 comps   13021 ns/comp
+SSSS[dada]   kmer screen      1.90s ( 9.6%)       61270440 comps      31 ns/comp  (every comparison)
+[dada]   align total      9.03s (45.9%)         655121 comps   13778 ns/comp  (1.1% passed the screen)
+[dada]     dp kernel      8.37s (42.5%)         655121 comps   12770 ns/comp
+[dada]   kmer screen      1.83s ( 9.0%)       60605640 comps      30 ns/comp  (every comparison)
+[dada]   align total      8.98s (44.1%)         648416 comps   13856 ns/comp  (1.1% passed the screen)
+[dada]     dp kernel      8.34s (41.0%)         648416 comps   12856 ns/comp
+[dada]   kmer screen      1.99s ( 8.9%)       66717598 comps      30 ns/comp  (every comparison)
+[dada]   align total     10.38s (46.4%)         747263 comps   13886 ns/comp  (1.1% passed the screen)
+[dada]     dp kernel      9.62s (43.0%)         747263 comps   12876 ns/comp
+[dada]   kmer screen      2.24s ( 9.3%)       76584543 comps      29 ns/comp  (every comparison)
+[dada]   align total     10.67s (44.2%)         758500 comps   14067 ns/comp  (1.0% passed the screen)
+[dada]     dp kernel      9.92s (41.1%)         758500 comps   13075 ns/comp
+--- mini_k8_c0.45
+[dada]   kmer screen      1.75s ( 7.9%)       58746825 comps      30 ns/comp  (every comparison)
+[dada]   align total     14.12s (64.0%)         944417 comps   14948 ns/comp  (1.6% passed the screen)
+[dada]     dp kernel     13.16s (59.6%)         944417 comps   13938 ns/comp
+[dada]   kmer screen      1.78s ( 8.1%)       59592168 comps      30 ns/comp  (every comparison)
+[dada]   align total     13.70s (62.3%)         898703 comps   15245 ns/comp  (1.5% passed the screen)
+[dada]     dp kernel     12.77s (58.1%)         898703 comps   14215 ns/comp
+[dada]   kmer screen      1.97s ( 8.7%)       64994290 comps      30 ns/comp  (every comparison)
+[dada]   align total     13.50s (59.7%)         896253 comps   15062 ns/comp  (1.4% passed the screen)
+[dada]     dp kernel     12.58s (55.6%)         896253 comps   14041 ns/comp
+[dada]   kmer screen      2.04s ( 8.4%)       66861178 comps      31 ns/comp  (every comparison)
+[dada]   align total     14.85s (61.2%)         966687 comps   15363 ns/comp  (1.4% passed the screen)
+[dada]     dp kernel     13.86s (57.1%)         966687 comps   14333 ns/comp
+[dada]   kmer screen      2.13s ( 8.1%)       70703403 comps      30 ns/comp  (every comparison)
+[dada]   align total     16.62s (62.9%)        1091244 comps   15230 ns/comp  (1.5% passed the screen)
+[dada]     dp kernel     15.50s (58.7%)        1091244 comps   14201 ns/comp
+[dada]   kmer screen      2.01s ( 7.5%)       67745010 comps      30 ns/comp  (every comparison)
+[dada]   align total     17.04s (63.5%)        1125983 comps   15131 ns/comp  (1.7% passed the screen)
+[dada]     dp kernel     15.87s (59.1%)        1125983 comps   14094 ns/comp
+[dada]   kmer screen      2.12s ( 8.1%)       70506642 comps      30 ns/comp  (every comparison)
+[dada]   align total     15.44s (59.1%)        1004359 comps   15369 ns/comp  (1.4% passed the screen)
+[dada]     dp kernel     14.41s (55.2%)        1004359 comps   14348 ns/comp
+[dada]   kmer screen      1.96s ( 7.6%)       70657577 comps      28 ns/comp  (every comparison)
+[dada]   align total     13.46s (52.4%)         950581 comps   14165 ns/comp  (1.3% passed the screen)
+[dada]     dp kernel     12.53s (48.8%)         950581 comps   13181 ns/comp
+[dada]   kmer screen      2.22s ( 7.7%)       74597821 comps      30 ns/comp  (every comparison)
+[dada]   align total     16.37s (56.8%)        1096681 comps   14929 ns/comp  (1.5% passed the screen)
+[dada]     dp kernel     15.28s (53.0%)        1096681 comps   13931 ns/comp
+[dada]   kmer screen      2.18s ( 7.9%)       70616247 comps      31 ns/comp  (every comparison)
+[dada]   align total     17.56s (63.6%)        1128853 comps   15558 ns/comp  (1.6% passed the screen)
+[dada]     dp kernel     16.38s (59.3%)        1128853 comps   14511 ns/comp
+[dada]   kmer screen      2.12s ( 7.4%)       69627522 comps      31 ns/comp  (every comparison)
+[dada]   align total     18.00s (62.7%)        1154092 comps   15596 ns/comp  (1.7% passed the screen)
+[dada]     dp kernel     16.81s (58.5%)        1154092 comps   14564 ns/comp
+[dada]   kmer screen      2.18s ( 7.9%)       71948801 comps      30 ns/comp  (every comparison)
+[dada]   align total     15.46s (56.0%)         995384 comps   15534 ns/comp  (1.4% passed the screen)
+[dada]     dp kernel     14.43s (52.3%)         995384 comps   14498 ns/comp
+[dada]   kmer screen      2.19s ( 8.0%)       69907704 comps      31 ns/comp  (every comparison)
+[dada]   align total     15.41s (56.5%)         995748 comps   15472 ns/comp  (1.4% passed the screen)
+[dada]     dp kernel     14.34s (52.6%)         995748 comps   14401 ns/comp
+[dada]   kmer screen      2.23s ( 8.0%)       72373344 comps      31 ns/comp  (every comparison)
+[dada]   align total     17.02s (61.3%)        1088582 comps   15633 ns/comp  (1.5% passed the screen)
+[dada]     dp kernel     15.86s (57.1%)        1088582 comps   14570 ns/comp
+[dada]   kmer screen      1.68s ( 7.8%)       54161438 comps      31 ns/comp  (every comparison)
+[dada]   align total     12.91s (60.2%)         788718 comps   16373 ns/comp  (1.5% passed the screen)
+[dada]     dp kernel     12.06s (56.2%)         788718 comps   15285 ns/comp
+[dada]   kmer screen      1.97s ( 7.2%)       63911296 comps      31 ns/comp  (every comparison)
+[dada]   align total     15.90s (58.3%)        1021825 comps   15561 ns/comp  (1.6% passed the screen)
+[dada]     dp kernel     14.81s (54.3%)        1021825 comps   14494 ns/comp
+[dada]   kmer screen      2.22s ( 7.9%)       70808529 comps      31 ns/comp  (every comparison)
+[dada]   align total     16.67s (59.5%)        1060576 comps   15717 ns/comp  (1.5% passed the screen)
+[dada]     dp kernel     15.51s (55.3%)        1060576 comps   14624 ns/comp
+[dada]   kmer screen      1.81s ( 7.1%)       58111067 comps      31 ns/comp  (every comparison)
+[dada]   align total     16.54s (65.3%)        1039861 comps   15910 ns/comp  (1.8% passed the screen)
+[dada]     dp kernel     15.43s (60.9%)        1039861 comps   14837 ns/comp
+[dada]   kmer screen      2.00s ( 8.0%)       65243005 comps      31 ns/comp  (every comparison)
+[dada]   align total     14.67s (58.5%)         967091 comps   15169 ns/comp  (1.5% passed the screen)
+[dada]     dp kernel     13.65s (54.5%)         967091 comps   14111 ns/comp
+[dada]   kmer screen      2.15s ( 8.8%)       67687456 comps      32 ns/comp  (every comparison)
+[dada]   align total     13.48s (55.5%)         884221 comps   15242 ns/comp  (1.3% passed the screen)
+[dada]     dp kernel     12.54s (51.6%)         884221 comps   14182 ns/comp
+[dada]   kmer screen      2.03s ( 7.5%)       66557551 comps      31 ns/comp  (every comparison)
+[dada]   align total     15.98s (59.0%)        1045852 comps   15281 ns/comp  (1.6% passed the screen)
+[dada]     dp kernel     14.85s (54.8%)        1045852 comps   14200 ns/comp
+[dada]   kmer screen      2.05s ( 8.5%)       65814903 comps      31 ns/comp  (every comparison)
+[dada]   align total     13.16s (54.7%)         868312 comps   15151 ns/comp  (1.3% passed the screen)
+[dada]     dp kernel     12.24s (50.8%)         868312 comps   14091 ns/comp
+[dada]   kmer screen      2.23s ( 7.4%)       72391464 comps      31 ns/comp  (every comparison)
+[dada]   align total     18.29s (60.5%)        1157598 comps   15802 ns/comp  (1.6% passed the screen)
+[dada]     dp kernel     17.04s (56.3%)        1157598 comps   14717 ns/comp
+[dada]   kmer screen      2.30s ( 7.9%)       74528875 comps      31 ns/comp  (every comparison)
+[dada]   align total     16.24s (55.7%)        1068961 comps   15193 ns/comp  (1.4% passed the screen)
+[dada]     dp kernel     15.11s (51.9%)        1068961 comps   14138 ns/comp
+[dada]   kmer screen      1.38s ( 7.0%)       45090253 comps      31 ns/comp  (every comparison)
+[dada]   align total     11.69s (59.5%)         778342 comps   15015 ns/comp  (1.7% passed the screen)
+[dada]     dp kernel     10.87s (55.3%)         778342 comps   13966 ns/comp
+[dada]   kmer screen      1.83s ( 8.6%)       59277984 comps      31 ns/comp  (every comparison)
+[dada]   align total     12.46s (58.6%)         842602 comps   14789 ns/comp  (1.4% passed the screen)
+[dada]     dp kernel     11.58s (54.4%)         842602 comps   13741 ns/comp
+[dada]   kmer screen      1.96s ( 8.0%)       64591017 comps      30 ns/comp  (every comparison)
+[dada]   align total     14.60s (59.5%)         994072 comps   14689 ns/comp  (1.5% passed the screen)
+[dada]     dp kernel     13.58s (55.3%)         994072 comps   13657 ns/comp
+[dada]   kmer screen      2.09s ( 7.9%)       71302429 comps      29 ns/comp  (every comparison)
+[dada]   align total     14.64s (55.8%)        1048348 comps   13968 ns/comp  (1.5% passed the screen)
+[dada]     dp kernel     13.61s (51.8%)        1048348 comps   12986 ns/comp
+[dada]   kmer screen      2.28s ( 8.4%)       76238270 comps      30 ns/comp  (every comparison)
+[dada]   align total     15.60s (57.8%)        1050231 comps   14858 ns/comp  (1.4% passed the screen)
+[dada]     dp kernel     14.54s (53.8%)        1050231 comps   13846 ns/comp
+[dada]   kmer screen      1.78s ( 7.1%)       59385116 comps      30 ns/comp  (every comparison)
+[dada]   align total     12.91s (51.7%)         874491 comps   14766 ns/comp  (1.5% passed the screen)
+[dada]     dp kernel     12.01s (48.1%)         874491 comps   13738 ns/comp
+--- mini_k8_c0.50
+[dada]   kmer screen      1.75s ( 5.9%)       57914510 comps      30 ns/comp  (every comparison)
+[dada]   align total     20.68s (69.9%)        1297456 comps   15936 ns/comp  (2.2% passed the screen)
+[dada]     dp kernel     19.27s (65.1%)        1297456 comps   14852 ns/comp
+[dada]   kmer screen      1.79s ( 6.1%)       58701419 comps      30 ns/comp  (every comparison)
+[dada]   align total     19.56s (66.4%)        1239929 comps   15773 ns/comp  (2.1% passed the screen)
+[dada]     dp kernel     18.27s (62.0%)        1239929 comps   14737 ns/comp
+[dada]   kmer screen      2.23s ( 6.7%)       74248279 comps      30 ns/comp  (every comparison)
+[dada]   align total     23.11s (69.8%)        1497277 comps   15433 ns/comp  (2.0% passed the screen)
+[dada]     dp kernel     21.57s (65.2%)        1497277 comps   14408 ns/comp
+[dada]   kmer screen      1.91s ( 5.9%)       64017642 comps      30 ns/comp  (every comparison)
+[dada]   align total     19.30s (60.0%)        1220841 comps   15808 ns/comp  (1.9% passed the screen)
+[dada]     dp kernel     17.99s (56.0%)        1220841 comps   14737 ns/comp
+[dada]   kmer screen      2.12s ( 6.8%)       69301135 comps      31 ns/comp  (every comparison)
+[dada]   align total     20.66s (66.6%)        1308576 comps   15787 ns/comp  (1.9% passed the screen)
+[dada]     dp kernel     19.27s (62.1%)        1308576 comps   14729 ns/comp
+[dada]   kmer screen      2.03s ( 5.9%)       66992237 comps      30 ns/comp  (every comparison)
+[dada]   align total     23.96s (70.2%)        1514543 comps   15820 ns/comp  (2.3% passed the screen)
+[dada]     dp kernel     22.32s (65.4%)        1514543 comps   14737 ns/comp
+[dada]   kmer screen      2.04s ( 6.4%)       66127390 comps      31 ns/comp  (every comparison)
+[dada]   align total     21.29s (67.1%)        1342365 comps   15857 ns/comp  (2.0% passed the screen)
+[dada]     dp kernel     19.83s (62.5%)        1342365 comps   14772 ns/comp
+[dada]   kmer screen      2.12s ( 6.3%)       70222639 comps      30 ns/comp  (every comparison)
+[dada]   align total     23.88s (70.3%)        1512418 comps   15787 ns/comp  (2.2% passed the screen)
+[dada]     dp kernel     22.30s (65.7%)        1512418 comps   14741 ns/comp
+[dada]   kmer screen      2.03s ( 5.7%)       69605275 comps      29 ns/comp  (every comparison)
+[dada]   align total     23.34s (65.6%)        1427275 comps   16351 ns/comp  (2.1% passed the screen)
+[dada]     dp kernel     21.80s (61.2%)        1427275 comps   15274 ns/comp
+[dada]   kmer screen      2.13s ( 6.0%)       69725083 comps      31 ns/comp  (every comparison)
+[dada]   align total     25.07s (70.9%)        1576998 comps   15899 ns/comp  (2.3% passed the screen)
+[dada]     dp kernel     23.41s (66.2%)        1576998 comps   14844 ns/comp
+[dada]   kmer screen      2.15s ( 6.1%)       69981261 comps      31 ns/comp  (every comparison)
+[dada]   align total     25.02s (70.9%)        1419222 comps   17630 ns/comp  (2.0% passed the screen)
+[dada]     dp kernel     23.32s (66.1%)        1419222 comps   16435 ns/comp
+[dada]   kmer screen      2.09s ( 5.4%)       68504139 comps      30 ns/comp  (every comparison)
+[dada]   align total     26.02s (67.2%)        1629290 comps   15970 ns/comp  (2.4% passed the screen)
+[dada]     dp kernel     24.29s (62.7%)        1629290 comps   14909 ns/comp
+[dada]   kmer screen      1.62s ( 6.4%)       52790281 comps      31 ns/comp  (every comparison)
+[dada]   align total     17.31s (68.3%)        1104544 comps   15670 ns/comp  (2.1% passed the screen)
+[dada]     dp kernel     16.10s (63.5%)        1104544 comps   14579 ns/comp
+[dada]   kmer screen      2.11s ( 6.5%)       68710113 comps      31 ns/comp  (every comparison)
+[dada]   align total     22.58s (69.9%)        1423403 comps   15862 ns/comp  (2.1% passed the screen)
+[dada]     dp kernel     21.02s (65.1%)        1423403 comps   14768 ns/comp
+[dada]   kmer screen      1.94s ( 6.6%)       64331486 comps      30 ns/comp  (every comparison)
+[dada]   align total     20.37s (68.9%)        1331712 comps   15294 ns/comp  (2.1% passed the screen)
+[dada]     dp kernel     18.97s (64.2%)        1331712 comps   14248 ns/comp
+[dada]   kmer screen      1.97s ( 6.9%)       64651335 comps      30 ns/comp  (every comparison)
+[dada]   align total     18.12s (63.4%)        1170385 comps   15481 ns/comp  (1.8% passed the screen)
+[dada]     dp kernel     16.88s (59.0%)        1170385 comps   14423 ns/comp
+[dada]   kmer screen      2.00s ( 6.1%)       66070013 comps      30 ns/comp  (every comparison)
+[dada]   align total     22.67s (69.3%)        1442267 comps   15718 ns/comp  (2.2% passed the screen)
+[dada]     dp kernel     21.10s (64.5%)        1442267 comps   14629 ns/comp
+[dada]   kmer screen      2.04s ( 6.7%)       66180314 comps      31 ns/comp  (every comparison)
+[dada]   align total     18.87s (62.3%)        1194826 comps   15793 ns/comp  (1.8% passed the screen)
+[dada]     dp kernel     17.59s (58.1%)        1194826 comps   14722 ns/comp
+[dada]   kmer screen      1.93s ( 5.5%)       63563211 comps      30 ns/comp  (every comparison)
+[dada]   align total     22.57s (64.4%)        1419134 comps   15902 ns/comp  (2.2% passed the screen)
+[dada]     dp kernel     21.04s (60.1%)        1419134 comps   14823 ns/comp
+[dada]   kmer screen      2.17s ( 6.0%)       71124630 comps      30 ns/comp  (every comparison)
+[dada]   align total     25.18s (69.6%)        1616671 comps   15575 ns/comp  (2.3% passed the screen)
+[dada]     dp kernel     23.47s (64.9%)        1616671 comps   14519 ns/comp
+[dada]   kmer screen      2.19s ( 5.5%)       71694517 comps      31 ns/comp  (every comparison)
+[dada]   align total     25.27s (63.5%)        1567167 comps   16126 ns/comp  (2.2% passed the screen)
+[dada]     dp kernel     23.58s (59.3%)        1567167 comps   15043 ns/comp
+[dada]   kmer screen      1.77s ( 5.1%)       57126403 comps      31 ns/comp  (every comparison)
+[dada]   align total     24.59s (70.2%)        1520164 comps   16173 ns/comp  (2.7% passed the screen)
+[dada]     dp kernel     22.95s (65.6%)        1520164 comps   15096 ns/comp
+[dada]   kmer screen      2.16s ( 6.4%)       69984588 comps      31 ns/comp  (every comparison)
+[dada]   align total     24.00s (70.7%)        1495941 comps   16043 ns/comp  (2.1% passed the screen)
+[dada]     dp kernel     22.35s (65.9%)        1495941 comps   14938 ns/comp
+[dada]   kmer screen      2.27s ( 5.9%)       73562338 comps      31 ns/comp  (every comparison)
+[dada]   align total     24.09s (62.8%)        1480058 comps   16278 ns/comp  (2.0% passed the screen)
+[dada]     dp kernel     22.48s (58.6%)        1480058 comps   15191 ns/comp
+[dada]   kmer screen      1.35s ( 5.8%)       44948889 comps      30 ns/comp  (every comparison)
+[dada]   align total     16.33s (70.0%)        1057030 comps   15452 ns/comp  (2.4% passed the screen)
+[dada]     dp kernel     15.22s (65.2%)        1057030 comps   14398 ns/comp
+[dada]   kmer screen      1.78s ( 6.9%)       57851319 comps      31 ns/comp  (every comparison)
+[dada]   align total     17.28s (66.7%)        1135199 comps   15226 ns/comp  (2.0% passed the screen)
+[dada]     dp kernel     16.09s (62.1%)        1135199 comps   14171 ns/comp
+[dada]   kmer screen      1.91s ( 6.1%)       63356087 comps      30 ns/comp  (every comparison)
+[dada]   align total     21.04s (67.1%)        1372059 comps   15335 ns/comp  (2.2% passed the screen)
+[dada]     dp kernel     19.60s (62.6%)        1372059 comps   14287 ns/comp
+[dada]   kmer screen      1.76s ( 5.4%)       58274643 comps      30 ns/comp  (every comparison)
+[dada]   align total     19.16s (58.6%)        1225374 comps   15632 ns/comp  (2.1% passed the screen)
+[dada]     dp kernel     17.85s (54.6%)        1225374 comps   14570 ns/comp
+[dada]   kmer screen      2.23s ( 6.3%)       75618655 comps      29 ns/comp  (every comparison)
+[dada]   align total     22.95s (64.9%)        1502499 comps   15275 ns/comp  (2.0% passed the screen)
+[dada]     dp kernel     21.40s (60.5%)        1502499 comps   14244 ns/comp
+[dada]   kmer screen      2.08s ( 5.6%)       70595459 comps      29 ns/comp  (every comparison)
+[dada]   align total     22.10s (60.0%)        1461121 comps   15126 ns/comp  (2.1% passed the screen)
+[dada]     dp kernel     20.57s (55.8%)        1461121 comps   14075 ns/comp
+--- mini_k8_c0.55
+[dada]   kmer screen      1.93s ( 5.5%)       63651374 comps      30 ns/comp  (every comparison)
+[dada]   align total     25.84s (74.0%)        1612179 comps   16030 ns/comp  (2.5% passed the screen)
+[dada]     dp kernel     24.12s (69.1%)        1612179 comps   14962 ns/comp
+[dada]   kmer screen      1.74s ( 4.7%)       57633799 comps      30 ns/comp  (every comparison)
+[dada]   align total     28.67s (77.0%)        1737310 comps   16500 ns/comp  (3.0% passed the screen)
+[dada]     dp kernel     26.77s (72.0%)        1737310 comps   15409 ns/comp
+[dada]   kmer screen      1.79s ( 5.0%)       58409693 comps      31 ns/comp  (every comparison)
+[dada]   align total     27.24s (76.1%)        1656152 comps   16445 ns/comp  (2.8% passed the screen)
+[dada]     dp kernel     25.45s (71.2%)        1656152 comps   15370 ns/comp
+[dada]   kmer screen      1.99s ( 5.1%)       65810211 comps      30 ns/comp  (every comparison)
+[dada]   align total     28.79s (74.3%)        1800042 comps   15996 ns/comp  (2.7% passed the screen)
+[dada]     dp kernel     26.89s (69.4%)        1800042 comps   14938 ns/comp
+[dada]   kmer screen      2.01s ( 4.8%)       66751736 comps      30 ns/comp  (every comparison)
+[dada]   align total     31.75s (75.5%)        1976457 comps   16062 ns/comp  (3.0% passed the screen)
+[dada]     dp kernel     29.65s (70.6%)        1976457 comps   15002 ns/comp
+[dada]   kmer screen      2.10s ( 5.0%)       69253934 comps      30 ns/comp  (every comparison)
+[dada]   align total     31.71s (75.1%)        1955147 comps   16219 ns/comp  (2.8% passed the screen)
+[dada]     dp kernel     29.63s (70.2%)        1955147 comps   15153 ns/comp
+[dada]   kmer screen      2.06s ( 5.1%)       68803401 comps      30 ns/comp  (every comparison)
+[dada]   align total     28.42s (70.1%)        1741979 comps   16316 ns/comp  (2.5% passed the screen)
+[dada]     dp kernel     26.52s (65.4%)        1741979 comps   15224 ns/comp
+[dada]   kmer screen      2.23s ( 5.1%)       74055589 comps      30 ns/comp  (every comparison)
+[dada]   align total     31.34s (71.2%)        1957820 comps   16006 ns/comp  (2.6% passed the screen)
+[dada]     dp kernel     29.29s (66.5%)        1957820 comps   14959 ns/comp
+[dada]   kmer screen      2.11s ( 4.9%)       69659705 comps      30 ns/comp  (every comparison)
+[dada]   align total     33.03s (76.2%)        2012478 comps   16411 ns/comp  (2.9% passed the screen)
+[dada]     dp kernel     30.84s (71.1%)        2012478 comps   15327 ns/comp
+[dada]   kmer screen      2.03s ( 4.6%)       69658535 comps      29 ns/comp  (every comparison)
+[dada]   align total     30.99s (69.7%)        1955406 comps   15849 ns/comp  (2.8% passed the screen)
+[dada]     dp kernel     28.94s (65.1%)        1955406 comps   14800 ns/comp
+[dada]   kmer screen      2.07s ( 4.3%)       68308015 comps      30 ns/comp  (every comparison)
+[dada]   align total     36.45s (76.6%)        2228939 comps   16354 ns/comp  (3.3% passed the screen)
+[dada]     dp kernel     34.07s (71.6%)        2228939 comps   15287 ns/comp
+[dada]   kmer screen      2.00s ( 4.2%)       69304876 comps      29 ns/comp  (every comparison)
+[dada]   align total     33.08s (69.5%)        2104766 comps   15715 ns/comp  (3.0% passed the screen)
+[dada]     dp kernel     30.88s (64.9%)        2104766 comps   14673 ns/comp
+[dada]   kmer screen      1.92s ( 4.7%)       63276631 comps      30 ns/comp  (every comparison)
+[dada]   align total     30.96s (75.6%)        1920665 comps   16119 ns/comp  (3.0% passed the screen)
+[dada]     dp kernel     28.88s (70.5%)        1920665 comps   15037 ns/comp
+[dada]   kmer screen      1.61s ( 4.7%)       52230588 comps      31 ns/comp  (every comparison)
+[dada]   align total     24.12s (70.2%)        1496649 comps   16115 ns/comp  (2.9% passed the screen)
+[dada]     dp kernel     22.50s (65.5%)        1496649 comps   15033 ns/comp
+[dada]   kmer screen      2.17s ( 4.7%)       71462296 comps      30 ns/comp  (every comparison)
+[dada]   align total     35.47s (76.7%)        2168757 comps   16356 ns/comp  (3.0% passed the screen)
+[dada]     dp kernel     33.06s (71.5%)        2168757 comps   15245 ns/comp
+[dada]   kmer screen      2.09s ( 4.6%)       67933527 comps      31 ns/comp  (every comparison)
+[dada]   align total     31.68s (69.4%)        1952813 comps   16223 ns/comp  (2.9% passed the screen)
+[dada]     dp kernel     29.55s (64.8%)        1952813 comps   15134 ns/comp
+[dada]   kmer screen      1.97s ( 5.8%)       64435025 comps      31 ns/comp  (every comparison)
+[dada]   align total     24.62s (71.8%)        1555614 comps   15829 ns/comp  (2.4% passed the screen)
+[dada]     dp kernel     22.98s (67.0%)        1555614 comps   14770 ns/comp
+[dada]   kmer screen      2.15s ( 4.9%)       69574294 comps      31 ns/comp  (every comparison)
+[dada]   align total     32.88s (74.5%)        2029079 comps   16204 ns/comp  (2.9% passed the screen)
+[dada]     dp kernel     30.65s (69.4%)        2029079 comps   15106 ns/comp
+[dada]   kmer screen      1.96s ( 4.9%)       63903993 comps      31 ns/comp  (every comparison)
+[dada]   align total     28.79s (72.2%)        1799561 comps   15998 ns/comp  (2.8% passed the screen)
+[dada]     dp kernel     26.85s (67.3%)        1799561 comps   14918 ns/comp
+[dada]   kmer screen      2.01s ( 5.3%)       65653723 comps      31 ns/comp  (every comparison)
+[dada]   align total     25.42s (66.5%)        1590118 comps   15984 ns/comp  (2.4% passed the screen)
+[dada]     dp kernel     23.71s (62.0%)        1590118 comps   14908 ns/comp
+[dada]   kmer screen      1.74s ( 4.0%)       56525551 comps      31 ns/comp  (every comparison)
+[dada]   align total     34.17s (79.5%)        2090927 comps   16340 ns/comp  (3.7% passed the screen)
+[dada]     dp kernel     31.93s (74.3%)        2090927 comps   15271 ns/comp
+[dada]   kmer screen      2.00s ( 4.7%)       65826810 comps      30 ns/comp  (every comparison)
+[dada]   align total     31.72s (75.1%)        1954458 comps   16232 ns/comp  (3.0% passed the screen)
+[dada]     dp kernel     29.56s (69.9%)        1954458 comps   15123 ns/comp
+[dada]   kmer screen      2.16s ( 4.7%)       70557157 comps      31 ns/comp  (every comparison)
+[dada]   align total     34.17s (73.7%)        2159799 comps   15823 ns/comp  (3.1% passed the screen)
+[dada]     dp kernel     31.88s (68.8%)        2159799 comps   14762 ns/comp
+[dada]   kmer screen      2.23s ( 4.9%)       73128456 comps      30 ns/comp  (every comparison)
+[dada]   align total     31.90s (70.6%)        1989780 comps   16030 ns/comp  (2.7% passed the screen)
+[dada]     dp kernel     29.74s (65.8%)        1989780 comps   14944 ns/comp
+[dada]   kmer screen      1.35s ( 4.6%)       44952199 comps      30 ns/comp  (every comparison)
+[dada]   align total     21.89s (73.7%)        1394635 comps   15696 ns/comp  (3.1% passed the screen)
+[dada]     dp kernel     20.43s (68.8%)        1394635 comps   14648 ns/comp
+[dada]   kmer screen      1.75s ( 5.0%)       57297914 comps      31 ns/comp  (every comparison)
+[dada]   align total     23.26s (66.0%)        1491909 comps   15593 ns/comp  (2.6% passed the screen)
+[dada]     dp kernel     21.65s (61.4%)        1491909 comps   14511 ns/comp
+[dada]   kmer screen      1.77s ( 4.5%)       58006150 comps      31 ns/comp  (every comparison)
+[dada]   align total     25.51s (65.2%)        1647047 comps   15488 ns/comp  (2.8% passed the screen)
+[dada]     dp kernel     23.78s (60.8%)        1647047 comps   14441 ns/comp
+[dada]   kmer screen      1.92s ( 4.7%)       63225684 comps      30 ns/comp  (every comparison)
+[dada]   align total     29.04s (70.8%)        1828242 comps   15885 ns/comp  (2.9% passed the screen)
+[dada]     dp kernel     27.09s (66.1%)        1828242 comps   14816 ns/comp
+[dada]   kmer screen      2.03s ( 4.7%)       70082937 comps      29 ns/comp  (every comparison)
+[dada]   align total     29.77s (68.9%)        1973175 comps   15086 ns/comp  (2.8% passed the screen)
+[dada]     dp kernel     27.76s (64.2%)        1973175 comps   14069 ns/comp
+[dada]   kmer screen      2.16s ( 4.3%)       75302971 comps      29 ns/comp  (every comparison)
+[dada]   align total     31.27s (62.4%)        2056178 comps   15209 ns/comp  (2.7% passed the screen)
+[dada]     dp kernel     29.18s (58.2%)        2056178 comps   14191 ns/comp
+--- mini_k8_c0.60
+SSSSSSSS[dada]   kmer screen      1.77s ( 3.7%)       58159386 comps      30 ns/comp  (every comparison)
+[dada]   align total     37.61s (79.0%)        2288599 comps   16432 ns/comp  (3.9% passed the screen)
+[dada]     dp kernel     35.16s (73.9%)        2288599 comps   15365 ns/comp
+[dada]   kmer screen      1.92s ( 4.0%)       63400991 comps      30 ns/comp  (every comparison)
+[dada]   align total     35.91s (74.4%)        2214288 comps   16215 ns/comp  (3.5% passed the screen)
+[dada]     dp kernel     33.49s (69.4%)        2214288 comps   15123 ns/comp
+[dada]   kmer screen      1.74s ( 3.5%)       57568271 comps      30 ns/comp  (every comparison)
+[dada]   align total     40.35s (80.9%)        2422248 comps   16659 ns/comp  (4.2% passed the screen)
+[dada]     dp kernel     37.68s (75.6%)        2422248 comps   15557 ns/comp
+[dada]   kmer screen      1.99s ( 3.9%)       65539030 comps      30 ns/comp  (every comparison)
+[dada]   align total     40.48s (80.2%)        2511260 comps   16117 ns/comp  (3.8% passed the screen)
+[dada]     dp kernel     37.78s (74.8%)        2511260 comps   15043 ns/comp
+[dada]   kmer screen      2.07s ( 3.9%)       68474270 comps      30 ns/comp  (every comparison)
+[dada]   align total     39.88s (75.8%)        2413515 comps   16524 ns/comp  (3.5% passed the screen)
+[dada]     dp kernel     37.19s (70.7%)        2413515 comps   15407 ns/comp
+[dada]   kmer screen      1.95s ( 3.5%)       66763091 comps      29 ns/comp  (every comparison)
+[dada]   align total     41.47s (74.0%)        2671727 comps   15522 ns/comp  (4.0% passed the screen)
+[dada]     dp kernel     38.61s (68.9%)        2671727 comps   14452 ns/comp
+[dada]   kmer screen      2.24s ( 3.8%)       73888349 comps      30 ns/comp  (every comparison)
+[dada]   align total     43.00s (73.7%)        2645133 comps   16255 ns/comp  (3.6% passed the screen)
+[dada]     dp kernel     40.15s (68.8%)        2645133 comps   15178 ns/comp
+[dada]   kmer screen      2.11s ( 3.6%)       69595110 comps      30 ns/comp  (every comparison)
+[dada]   align total     45.08s (77.7%)        2759076 comps   16339 ns/comp  (4.0% passed the screen)
+[dada]     dp kernel     42.11s (72.6%)        2759076 comps   15263 ns/comp
+[dada]   kmer screen      2.09s ( 3.6%)       68970186 comps      30 ns/comp  (every comparison)
+[dada]   align total     45.66s (77.7%)        2773533 comps   16461 ns/comp  (4.0% passed the screen)
+[dada]     dp kernel     42.61s (72.5%)        2773533 comps   15363 ns/comp
+[dada]   kmer screen      2.11s ( 3.7%)       69574060 comps      30 ns/comp  (every comparison)
+[dada]   align total     46.29s (80.5%)        2788928 comps   16598 ns/comp  (4.0% passed the screen)
+[dada]     dp kernel     43.18s (75.1%)        2788928 comps   15484 ns/comp
+[dada]   kmer screen      2.08s ( 3.4%)       69146282 comps      30 ns/comp  (every comparison)
+[dada]   align total     47.05s (76.0%)        2907855 comps   16180 ns/comp  (4.2% passed the screen)
+[dada]     dp kernel     43.81s (70.8%)        2907855 comps   15066 ns/comp
+[dada]   kmer screen      2.06s ( 3.2%)       67976233 comps      30 ns/comp  (every comparison)
+[dada]   align total     51.99s (80.8%)        3135477 comps   16582 ns/comp  (4.6% passed the screen)
+[dada]     dp kernel     48.47s (75.3%)        3135477 comps   15460 ns/comp
+[dada]   kmer screen      1.56s ( 3.8%)       51983626 comps      30 ns/comp  (every comparison)
+[dada]   align total     33.74s (81.2%)        2106377 comps   16019 ns/comp  (4.1% passed the screen)
+SSSS[dada]     dp kernel     31.47s (75.7%)        2106377 comps   14938 ns/comp
+[dada]   kmer screen      2.05s ( 3.7%)       67694459 comps      30 ns/comp  (every comparison)
+[dada]   align total     45.08s (80.4%)        2769096 comps   16279 ns/comp  (4.1% passed the screen)
+[dada]     dp kernel     42.02s (74.9%)        2769096 comps   15174 ns/comp
+[dada]   kmer screen      1.90s ( 3.4%)       63216836 comps      30 ns/comp  (every comparison)
+[dada]   align total     43.98s (78.7%)        2704320 comps   16261 ns/comp  (4.3% passed the screen)
+[dada]     dp kernel     41.04s (73.4%)        2704320 comps   15177 ns/comp
+[dada]   kmer screen      1.97s ( 4.3%)       65369746 comps      30 ns/comp  (every comparison)
+[dada]   align total     34.59s (75.8%)        2162634 comps   15994 ns/comp  (3.3% passed the screen)
+[dada]     dp kernel     32.23s (70.7%)        2162634 comps   14904 ns/comp
+[dada]   kmer screen      2.10s ( 3.7%)       69400332 comps      30 ns/comp  (every comparison)
+[dada]   align total     46.46s (81.0%)        2837854 comps   16371 ns/comp  (4.1% passed the screen)
+[dada]     dp kernel     43.36s (75.6%)        2837854 comps   15277 ns/comp
+[dada]   kmer screen      1.94s ( 4.2%)       64307696 comps      30 ns/comp  (every comparison)
+[dada]   align total     34.21s (73.4%)        2142519 comps   15965 ns/comp  (3.3% passed the screen)
+[dada]     dp kernel     31.85s (68.4%)        2142519 comps   14864 ns/comp
+[dada]   kmer screen      1.92s ( 3.6%)       63718764 comps      30 ns/comp  (every comparison)
+[dada]   align total     41.02s (76.4%)        2537615 comps   16166 ns/comp  (4.0% passed the screen)
+[dada]     dp kernel     38.25s (71.3%)        2537615 comps   15072 ns/comp
+[dada]   kmer screen      1.68s ( 2.9%)       55813133 comps      30 ns/comp  (every comparison)
+[dada]   align total     47.73s (83.3%)        2919540 comps   16347 ns/comp  (5.2% passed the screen)
+[dada]     dp kernel     44.53s (77.7%)        2919540 comps   15252 ns/comp
+[dada]   kmer screen      1.96s ( 3.5%)       65651169 comps      30 ns/comp  (every comparison)
+[dada]   align total     44.60s (79.6%)        2742281 comps   16263 ns/comp  (4.2% passed the screen)
+[dada]     dp kernel     41.58s (74.2%)        2742281 comps   15163 ns/comp
+[dada]   kmer screen      2.13s ( 3.5%)       70578328 comps      30 ns/comp  (every comparison)
+[dada]   align total     48.13s (78.3%)        2987239 comps   16110 ns/comp  (4.2% passed the screen)
+[dada]     dp kernel     44.92s (73.0%)        2987239 comps   15038 ns/comp
+[dada]   kmer screen      2.16s ( 3.2%)       71345359 comps      30 ns/comp  (every comparison)
+[dada]   align total     51.50s (75.8%)        3093514 comps   16649 ns/comp  (4.3% passed the screen)
+[dada]     dp kernel     47.97s (70.6%)        3093514 comps   15508 ns/comp
+[dada]   kmer screen      2.16s ( 3.7%)       72916208 comps      30 ns/comp  (every comparison)
+[dada]   align total     44.20s (75.1%)        2745102 comps   16101 ns/comp  (3.8% passed the screen)
+[dada]     dp kernel     41.13s (69.9%)        2745102 comps   14985 ns/comp
+[dada]   kmer screen      1.34s ( 3.6%)       44925228 comps      30 ns/comp  (every comparison)
+[dada]   align total     29.16s (78.6%)        1838218 comps   15864 ns/comp  (4.1% passed the screen)
+[dada]     dp kernel     27.22s (73.4%)        1838218 comps   14809 ns/comp
+[dada]   kmer screen      1.72s ( 3.9%)       56800168 comps      30 ns/comp  (every comparison)
+[dada]   align total     32.31s (73.9%)        2024517 comps   15960 ns/comp  (3.6% passed the screen)
+[dada]     dp kernel     30.14s (68.9%)        2024517 comps   14886 ns/comp
+[dada]   kmer screen      1.73s ( 3.6%)       57903625 comps      30 ns/comp  (every comparison)
+[dada]   align total     35.63s (73.4%)        2256501 comps   15791 ns/comp  (3.9% passed the screen)
+[dada]     dp kernel     33.24s (68.5%)        2256501 comps   14730 ns/comp
+[dada]   kmer screen      2.05s ( 3.7%)       69932236 comps      29 ns/comp  (every comparison)
+[dada]   align total     43.32s (78.4%)        2763860 comps   15674 ns/comp  (4.0% passed the screen)
+[dada]     dp kernel     40.42s (73.2%)        2763860 comps   14624 ns/comp
+[dada]   kmer screen      1.84s ( 3.4%)       62821626 comps      29 ns/comp  (every comparison)
+[dada]   align total     40.61s (76.0%)        2530056 comps   16053 ns/comp  (4.0% passed the screen)
+[dada]     dp kernel     37.83s (70.8%)        2530056 comps   14951 ns/comp
+[dada]   kmer screen      2.06s ( 3.6%)       75149306 comps      27 ns/comp  (every comparison)
+[dada]   align total     42.68s (75.5%)        2892445 comps   14754 ns/comp  (3.8% passed the screen)
+[dada]     dp kernel     39.81s (70.4%)        2892445 comps   13764 ns/comp
+--- mini_k8_c0.62
+[dada]   kmer screen      1.77s ( 3.3%)       58122702 comps      30 ns/comp  (every comparison)
+[dada]   align total     43.92s (82.7%)        2607520 comps   16843 ns/comp  (4.5% passed the screen)
+[dada]     dp kernel     41.09s (77.4%)        2607520 comps   15759 ns/comp
+[dada]   kmer screen      1.95s ( 3.5%)       63366500 comps      31 ns/comp  (every comparison)
+[dada]   align total     42.09s (76.6%)        2523941 comps   16676 ns/comp  (4.0% passed the screen)
+[dada]     dp kernel     39.24s (71.4%)        2523941 comps   15548 ns/comp
+[dada]   kmer screen      1.75s ( 3.0%)       57536024 comps      30 ns/comp  (every comparison)
+[dada]   align total     45.98s (79.2%)        2770994 comps   16595 ns/comp  (4.8% passed the screen)
+[dada]     dp kernel     42.91s (73.9%)        2770994 comps   15486 ns/comp
+[dada]   kmer screen      1.99s ( 3.5%)       65543542 comps      30 ns/comp  (every comparison)
+[dada]   align total     47.11s (82.0%)        2870693 comps   16410 ns/comp  (4.4% passed the screen)
+[dada]     dp kernel     43.96s (76.5%)        2870693 comps   15312 ns/comp
+[dada]   kmer screen      2.09s ( 3.7%)       68567723 comps      30 ns/comp  (every comparison)
+[dada]   align total     45.71s (80.5%)        2757691 comps   16577 ns/comp  (4.0% passed the screen)
+[dada]     dp kernel     42.64s (75.0%)        2757691 comps   15461 ns/comp
+[dada]   kmer screen      2.24s ( 3.6%)       73863072 comps      30 ns/comp  (every comparison)
+[dada]   align total     49.08s (78.6%)        2985669 comps   16439 ns/comp  (4.0% passed the screen)
+[dada]     dp kernel     45.81s (73.3%)        2985669 comps   15344 ns/comp
+[dada]   kmer screen      2.02s ( 3.3%)       66693215 comps      30 ns/comp  (every comparison)
+[dada]   align total     49.31s (80.1%)        3009636 comps   16386 ns/comp  (4.5% passed the screen)
+[dada]     dp kernel     46.00s (74.7%)        3009636 comps   15284 ns/comp
+[dada]   kmer screen      2.08s ( 3.2%)       68938267 comps      30 ns/comp  (every comparison)
+[dada]   align total     52.25s (79.1%)        3178999 comps   16435 ns/comp  (4.6% passed the screen)
+[dada]     dp kernel     48.71s (73.8%)        3178999 comps   15321 ns/comp
+[dada]   kmer screen      2.12s ( 3.2%)       69679349 comps      30 ns/comp  (every comparison)
+[dada]   align total     51.26s (77.0%)        3118666 comps   16436 ns/comp  (4.5% passed the screen)
+[dada]     dp kernel     47.83s (71.8%)        3118666 comps   15336 ns/comp
+[dada]   kmer screen      2.10s ( 3.0%)       69148895 comps      30 ns/comp  (every comparison)
+[dada]   align total     54.74s (78.8%)        3302892 comps   16573 ns/comp  (4.8% passed the screen)
+[dada]     dp kernel     51.09s (73.6%)        3302892 comps   15470 ns/comp
+[dada]   kmer screen      2.13s ( 3.1%)       69429900 comps      31 ns/comp  (every comparison)
+[dada]   align total     54.27s (78.6%)        3222222 comps   16842 ns/comp  (4.6% passed the screen)
+[dada]     dp kernel     50.62s (73.3%)        3222222 comps   15710 ns/comp
+[dada]   kmer screen      2.07s ( 2.8%)       67938017 comps      31 ns/comp  (every comparison)
+[dada]   align total     60.61s (83.0%)        3592602 comps   16871 ns/comp  (5.3% passed the screen)
+[dada]     dp kernel     56.56s (77.4%)        3592602 comps   15744 ns/comp
+[dada]   kmer screen      2.08s ( 3.3%)       67637999 comps      31 ns/comp  (every comparison)
+[dada]   align total     52.65s (82.6%)        3177477 comps   16568 ns/comp  (4.7% passed the screen)
+[dada]     dp kernel     49.03s (76.9%)        3177477 comps   15431 ns/comp
+[dada]   kmer screen      1.92s ( 3.0%)       63219112 comps      30 ns/comp  (every comparison)
+[dada]   align total     51.57s (80.7%)        3087235 comps   16703 ns/comp  (4.9% passed the screen)
+[dada]     dp kernel     48.05s (75.2%)        3087235 comps   15564 ns/comp
+[dada]   kmer screen      1.95s ( 3.2%)       63720024 comps      31 ns/comp  (every comparison)
+[dada]   align total     48.27s (80.0%)        2905149 comps   16616 ns/comp  (4.6% passed the screen)
+[dada]     dp kernel     44.99s (74.6%)        2905149 comps   15487 ns/comp
+[dada]   kmer screen      2.13s ( 3.2%)       70628880 comps      30 ns/comp  (every comparison)
+[dada]   align total     55.31s (82.4%)        3393420 comps   16299 ns/comp  (4.8% passed the screen)
+[dada]     dp kernel     51.61s (76.9%)        3393420 comps   15208 ns/comp
+[dada]   kmer screen      1.59s ( 3.2%)       51922783 comps      31 ns/comp  (every comparison)
+[dada]   align total     39.91s (80.3%)        2410509 comps   16558 ns/comp  (4.6% passed the screen)
+[dada]     dp kernel     37.19s (74.8%)        2410509 comps   15428 ns/comp
+[dada]   kmer screen      2.11s ( 3.2%)       69284775 comps      31 ns/comp  (every comparison)
+[dada]   align total     53.67s (81.1%)        3238877 comps   16570 ns/comp  (4.7% passed the screen)
+[dada]     dp kernel     50.05s (75.6%)        3238877 comps   15453 ns/comp
+[dada]   kmer screen      1.95s ( 3.8%)       64220053 comps      30 ns/comp  (every comparison)
+[dada]   align total     39.78s (77.4%)        2429577 comps   16372 ns/comp  (3.8% passed the screen)
+[dada]     dp kernel     37.06s (72.1%)        2429577 comps   15253 ns/comp
+[dada]   kmer screen      1.71s ( 2.6%)       55871027 comps      31 ns/comp  (every comparison)
+[dada]   align total     55.44s (84.2%)        3315764 comps   16719 ns/comp  (5.9% passed the screen)
+[dada]     dp kernel     51.73s (78.5%)        3315764 comps   15603 ns/comp
+[dada]   kmer screen      1.99s ( 3.8%)       65375200 comps      30 ns/comp  (every comparison)
+[dada]   align total     40.41s (76.6%)        2452211 comps   16480 ns/comp  (3.8% passed the screen)
+[dada]     dp kernel     37.69s (71.4%)        2452211 comps   15371 ns/comp
+[dada]   kmer screen      2.17s ( 2.9%)       71347112 comps      30 ns/comp  (every comparison)
+[dada]   align total     60.08s (80.4%)        3565314 comps   16852 ns/comp  (5.0% passed the screen)
+[dada]     dp kernel     55.97s (74.9%)        3565314 comps   15697 ns/comp
+[dada]   kmer screen      1.98s ( 3.0%)       65581922 comps      30 ns/comp  (every comparison)
+[dada]   align total     52.53s (79.1%)        3146299 comps   16695 ns/comp  (4.8% passed the screen)
+[dada]     dp kernel     48.94s (73.7%)        3146299 comps   15555 ns/comp
+[dada]   kmer screen      2.20s ( 3.4%)       72874793 comps      30 ns/comp  (every comparison)
+[dada]   align total     51.23s (79.2%)        3116758 comps   16436 ns/comp  (4.3% passed the screen)
+[dada]     dp kernel     47.74s (73.8%)        3116758 comps   15316 ns/comp
+[dada]   kmer screen      1.35s ( 3.3%)       44925647 comps      30 ns/comp  (every comparison)
+[dada]   align total     32.74s (79.1%)        2048063 comps   15984 ns/comp  (4.6% passed the screen)
+[dada]     dp kernel     30.53s (73.7%)        2048063 comps   14909 ns/comp
+[dada]   kmer screen      1.71s ( 3.4%)       57793560 comps      30 ns/comp  (every comparison)
+[dada]   align total     40.36s (80.2%)        2548329 comps   15839 ns/comp  (4.4% passed the screen)
+[dada]     dp kernel     37.66s (74.9%)        2548329 comps   14778 ns/comp
+[dada]   kmer screen      1.72s ( 3.5%)       56801267 comps      30 ns/comp  (every comparison)
+[dada]   align total     36.92s (74.3%)        2286959 comps   16144 ns/comp  (4.0% passed the screen)
+[dada]     dp kernel     34.36s (69.2%)        2286959 comps   15024 ns/comp
+[dada]   kmer screen      2.17s ( 3.3%)       75117170 comps      29 ns/comp  (every comparison)
+[dada]   align total     51.20s (78.0%)        3295620 comps   15536 ns/comp  (4.4% passed the screen)
+[dada]     dp kernel     47.81s (72.8%)        3295620 comps   14507 ns/comp
+[dada]   kmer screen      1.84s ( 3.0%)       62773058 comps      29 ns/comp  (every comparison)
+[dada]   align total     45.78s (73.9%)        2877489 comps   15908 ns/comp  (4.6% passed the screen)
+[dada]     dp kernel     42.64s (68.8%)        2877489 comps   14818 ns/comp
+[dada]   kmer screen      2.02s ( 3.0%)       69894951 comps      29 ns/comp  (every comparison)
+[dada]   align total     49.68s (73.6%)        3161451 comps   15715 ns/comp  (4.5% passed the screen)
+[dada]     dp kernel     46.25s (68.5%)        3161451 comps   14629 ns/comp
+--- mini_k8_c0.65
+[dada]   kmer screen      1.94s ( 3.0%)       63302491 comps      31 ns/comp  (every comparison)
+[dada]   align total     52.24s (81.4%)        3147399 comps   16599 ns/comp  (5.0% passed the screen)
+[dada]     dp kernel     48.71s (75.9%)        3147399 comps   15477 ns/comp
+[dada]   kmer screen      1.73s ( 2.6%)       58040367 comps      30 ns/comp  (every comparison)
+[dada]   align total     53.13s (79.7%)        3232738 comps   16434 ns/comp  (5.6% passed the screen)
+[dada]     dp kernel     49.60s (74.4%)        3232738 comps   15342 ns/comp
+[dada]   kmer screen      1.76s ( 2.5%)       57539371 comps      31 ns/comp  (every comparison)
+[dada]   align total     58.45s (83.8%)        3478301 comps   16805 ns/comp  (6.0% passed the screen)
+[dada]     dp kernel     54.52s (78.1%)        3478301 comps   15674 ns/comp
+[dada]   kmer screen      2.24s ( 3.0%)       73804846 comps      30 ns/comp  (every comparison)
+[dada]   align total     60.47s (81.9%)        3649784 comps   16569 ns/comp  (4.9% passed the screen)
+[dada]     dp kernel     56.43s (76.4%)        3649784 comps   15461 ns/comp
+[dada]   kmer screen      2.02s ( 2.8%)       66663218 comps      30 ns/comp  (every comparison)
+[dada]   align total     61.70s (84.2%)        3698643 comps   16681 ns/comp  (5.5% passed the screen)
+[dada]     dp kernel     57.57s (78.5%)        3698643 comps   15564 ns/comp
+[dada]   kmer screen      1.97s ( 2.7%)       65498623 comps      30 ns/comp  (every comparison)
+[dada]   align total     58.96s (81.2%)        3594193 comps   16405 ns/comp  (5.5% passed the screen)
+[dada]     dp kernel     55.01s (75.8%)        3594193 comps   15306 ns/comp
+[dada]   kmer screen      2.09s ( 2.8%)       68531959 comps      30 ns/comp  (every comparison)
+[dada]   align total     60.09s (80.8%)        3441072 comps   17463 ns/comp  (5.0% passed the screen)
+[dada]     dp kernel     55.98s (75.3%)        3441072 comps   16269 ns/comp
+[dada]   kmer screen      2.10s ( 2.7%)       68909036 comps      30 ns/comp  (every comparison)
+[dada]   align total     66.04s (83.8%)        3976002 comps   16610 ns/comp  (5.8% passed the screen)
+[dada]     dp kernel     61.63s (78.2%)        3976002 comps   15501 ns/comp
+[dada]   kmer screen      2.12s ( 2.7%)       69647182 comps      30 ns/comp  (every comparison)
+[dada]   align total     63.83s (81.5%)        3836188 comps   16638 ns/comp  (5.5% passed the screen)
+[dada]     dp kernel     59.50s (76.0%)        3836188 comps   15510 ns/comp
+[dada]   kmer screen      2.10s ( 2.4%)       69069374 comps      30 ns/comp  (every comparison)
+[dada]   align total     68.71s (80.0%)        4081037 comps   16836 ns/comp  (5.9% passed the screen)
+[dada]     dp kernel     63.97s (74.5%)        4081037 comps   15676 ns/comp
+[dada]   kmer screen      2.12s ( 2.4%)       69339414 comps      31 ns/comp  (every comparison)
+[dada]   align total     70.99s (81.7%)        4095887 comps   17332 ns/comp  (5.9% passed the screen)
+[dada]     dp kernel     66.18s (76.2%)        4095887 comps   16157 ns/comp
+[dada]   kmer screen      2.08s ( 2.3%)       67944422 comps      31 ns/comp  (every comparison)
+[dada]   align total     76.02s (84.4%)        4510100 comps   16855 ns/comp  (6.6% passed the screen)
+[dada]     dp kernel     70.89s (78.7%)        4510100 comps   15718 ns/comp
+[dada]   kmer screen      1.55s ( 2.7%)       51798460 comps      30 ns/comp  (every comparison)
+[dada]   align total     48.49s (85.2%)        2999120 comps   16169 ns/comp  (5.8% passed the screen)
+[dada]     dp kernel     45.22s (79.5%)        2999120 comps   15078 ns/comp
+[dada]   kmer screen      1.88s ( 2.5%)       63191961 comps      30 ns/comp  (every comparison)
+[dada]   align total     63.61s (84.2%)        3855939 comps   16497 ns/comp  (6.1% passed the screen)
+[dada]     dp kernel     59.34s (78.6%)        3855939 comps   15390 ns/comp
+[dada]   kmer screen      2.08s ( 2.6%)       69226791 comps      30 ns/comp  (every comparison)
+[dada]   align total     65.75s (83.5%)        4011700 comps   16389 ns/comp  (5.8% passed the screen)
+[dada]     dp kernel     61.30s (77.9%)        4011700 comps   15280 ns/comp
+[dada]   kmer screen      1.89s ( 2.7%)       63770339 comps      30 ns/comp  (every comparison)
+[dada]   align total     59.50s (83.5%)        3643858 comps   16330 ns/comp  (5.7% passed the screen)
+[dada]     dp kernel     55.51s (77.9%)        3643858 comps   15235 ns/comp
+[dada]   kmer screen      2.02s ( 2.5%)       67458520 comps      30 ns/comp  (every comparison)
+[dada]   align total     65.30s (81.8%)        3946902 comps   16545 ns/comp  (5.9% passed the screen)
+[dada]     dp kernel     60.85s (76.2%)        3946902 comps   15418 ns/comp
+[dada]   kmer screen      1.66s ( 2.2%)       55707807 comps      30 ns/comp  (every comparison)
+[dada]   align total     67.14s (86.8%)        4059945 comps   16538 ns/comp  (7.3% passed the screen)
+[dada]     dp kernel     62.73s (81.1%)        4059945 comps   15451 ns/comp
+[dada]   kmer screen      2.11s ( 2.6%)       70632129 comps      30 ns/comp  (every comparison)
+[dada]   align total     68.01s (83.4%)        4194461 comps   16214 ns/comp  (5.9% passed the screen)
+[dada]     dp kernel     63.44s (77.8%)        4194461 comps   15124 ns/comp
+[dada]   kmer screen      1.97s ( 3.0%)       65227811 comps      30 ns/comp  (every comparison)
+[dada]   align total     49.93s (77.5%)        3021794 comps   16523 ns/comp  (4.6% passed the screen)
+[dada]     dp kernel     46.46s (72.1%)        3021794 comps   15376 ns/comp
+[dada]   kmer screen      1.94s ( 3.1%)       64222926 comps      30 ns/comp  (every comparison)
+[dada]   align total     50.18s (79.3%)        3025653 comps   16585 ns/comp  (4.7% passed the screen)
+[dada]     dp kernel     46.77s (73.9%)        3025653 comps   15457 ns/comp
+[dada]   kmer screen      2.13s ( 2.4%)       71309559 comps      30 ns/comp  (every comparison)
+[dada]   align total     74.07s (84.4%)        4472372 comps   16562 ns/comp  (6.3% passed the screen)
+[dada]     dp kernel     69.11s (78.7%)        4472372 comps   15453 ns/comp
+[dada]   kmer screen      1.97s ( 2.4%)       65623197 comps      30 ns/comp  (every comparison)
+[dada]   align total     66.71s (80.8%)        3974883 comps   16783 ns/comp  (6.1% passed the screen)
+[dada]     dp kernel     62.10s (75.2%)        3974883 comps   15623 ns/comp
+[dada]   kmer screen      2.16s ( 2.9%)       72699173 comps      30 ns/comp  (every comparison)
+[dada]   align total     62.32s (82.8%)        3833016 comps   16258 ns/comp  (5.3% passed the screen)
+[dada]     dp kernel     58.09s (77.2%)        3833016 comps   15156 ns/comp
+[dada]   kmer screen      1.35s ( 2.7%)       44926707 comps      30 ns/comp  (every comparison)
+[dada]   align total     39.80s (80.3%)        2466641 comps   16136 ns/comp  (5.5% passed the screen)
+[dada]     dp kernel     37.15s (74.9%)        2466641 comps   15060 ns/comp
+[dada]   kmer screen      1.70s ( 3.1%)       56679470 comps      30 ns/comp  (every comparison)
+[dada]   align total     45.40s (81.8%)        2803595 comps   16192 ns/comp  (4.9% passed the screen)
+[dada]     dp kernel     42.28s (76.2%)        2803595 comps   15081 ns/comp
+[dada]   kmer screen      1.70s ( 2.8%)       57742594 comps      29 ns/comp  (every comparison)
+[dada]   align total     49.30s (80.9%)        3106067 comps   15872 ns/comp  (5.4% passed the screen)
+[dada]     dp kernel     46.00s (75.5%)        3106067 comps   14808 ns/comp
+[dada]   kmer screen      1.81s ( 2.6%)       62685639 comps      29 ns/comp  (every comparison)
+[dada]   align total     56.66s (81.7%)        3597880 comps   15749 ns/comp  (5.7% passed the screen)
+[dada]     dp kernel     52.76s (76.0%)        3597880 comps   14664 ns/comp
+[dada]   kmer screen      1.99s ( 2.7%)       69858191 comps      29 ns/comp  (every comparison)
+[dada]   align total     61.22s (81.9%)        3952174 comps   15490 ns/comp  (5.7% passed the screen)
+[dada]     dp kernel     57.08s (76.4%)        3952174 comps   14444 ns/comp
+[dada]   kmer screen      2.12s ( 2.7%)       75159159 comps      28 ns/comp  (every comparison)
+[dada]   align total     62.94s (80.0%)        4078822 comps   15430 ns/comp  (5.4% passed the screen)
+[dada]     dp kernel     58.72s (74.6%)        4078822 comps   14396 ns/comp
+--- mini_k8_c0.70
+[dada]   kmer screen      1.93s ( 2.0%)       63194842 comps      31 ns/comp  (every comparison)
+[dada]   align total     82.07s (86.2%)        4858536 comps   16892 ns/comp  (7.7% passed the screen)
+[dada]     dp kernel     76.41s (80.2%)        4858536 comps   15727 ns/comp
+[dada]   kmer screen      1.76s ( 1.7%)       57471428 comps      31 ns/comp  (every comparison)
+[dada]   align total     91.73s (88.0%)        5347155 comps   17155 ns/comp  (9.3% passed the screen)
+[dada]     dp kernel     85.51s (82.0%)        5347155 comps   15991 ns/comp
+[dada]   kmer screen      1.78s ( 1.8%)       58042743 comps      31 ns/comp  (every comparison)
+[dada]   align total     83.67s (83.0%)        4917744 comps   17014 ns/comp  (8.5% passed the screen)
+[dada]     dp kernel     77.96s (77.3%)        4917744 comps   15854 ns/comp
+[dada]   kmer screen      2.13s ( 2.1%)       68498126 comps      31 ns/comp  (every comparison)
+[dada]   align total     89.28s (87.4%)        5296419 comps   16856 ns/comp  (7.7% passed the screen)
+[dada]     dp kernel     83.20s (81.4%)        5296419 comps   15708 ns/comp
+[dada]   kmer screen      2.25s ( 2.1%)       73778644 comps      30 ns/comp  (every comparison)
+[dada]   align total     91.89s (86.0%)        5514828 comps   16663 ns/comp  (7.5% passed the screen)
+[dada]     dp kernel     85.68s (80.1%)        5514828 comps   15536 ns/comp
+[dada]   kmer screen      1.98s ( 1.9%)       66600013 comps      30 ns/comp  (every comparison)
+[dada]   align total     90.35s (85.4%)        5586179 comps   16175 ns/comp  (8.4% passed the screen)
+[dada]     dp kernel     84.11s (79.5%)        5586179 comps   15058 ns/comp
+[dada]   kmer screen      2.00s ( 1.9%)       65363001 comps      31 ns/comp  (every comparison)
+[dada]   align total     93.33s (87.4%)        5561305 comps   16781 ns/comp  (8.5% passed the screen)
+[dada]     dp kernel     86.98s (81.5%)        5561305 comps   15641 ns/comp
+[dada]   kmer screen      2.13s ( 1.9%)       69579464 comps      31 ns/comp  (every comparison)
+[dada]   align total     97.36s (85.8%)        5782717 comps   16836 ns/comp  (8.3% passed the screen)
+[dada]     dp kernel     90.72s (79.9%)        5782717 comps   15689 ns/comp
+[dada]   kmer screen      2.09s ( 1.8%)       68879980 comps      30 ns/comp  (every comparison)
+[dada]   align total    101.91s (87.0%)        6102799 comps   16699 ns/comp  (8.9% passed the screen)
+[dada]     dp kernel     94.98s (81.1%)        6102799 comps   15563 ns/comp
+[dada]   kmer screen      2.10s ( 1.7%)       68986541 comps      30 ns/comp  (every comparison)
+[dada]   align total    104.32s (84.9%)        6133748 comps   17008 ns/comp  (8.9% passed the screen)
+[dada]     dp kernel     97.04s (79.0%)        6133748 comps   15820 ns/comp
+[dada]   kmer screen      2.13s ( 1.7%)       69394845 comps      31 ns/comp  (every comparison)
+[dada]   align total    109.76s (87.4%)        6423445 comps   17088 ns/comp  (9.3% passed the screen)
+[dada]     dp kernel    102.22s (81.4%)        6423445 comps   15914 ns/comp
+[dada]   kmer screen      2.09s ( 1.6%)       67908054 comps      31 ns/comp  (every comparison)
+[dada]   align total    117.26s (87.6%)        6925168 comps   16932 ns/comp  (10.2% passed the screen)
+[dada]     dp kernel    109.24s (81.6%)        6925168 comps   15774 ns/comp
+[dada]   kmer screen      1.57s ( 1.8%)       51736815 comps      30 ns/comp  (every comparison)
+[dada]   align total     75.15s (88.2%)        4547249 comps   16527 ns/comp  (8.8% passed the screen)
+[dada]     dp kernel     69.99s (82.2%)        4547249 comps   15393 ns/comp
+[dada]   kmer screen      2.07s ( 1.8%)       67340326 comps      31 ns/comp  (every comparison)
+[dada]   align total     98.15s (87.4%)        5905514 comps   16620 ns/comp  (8.8% passed the screen)
+[dada]     dp kernel     91.36s (81.4%)        5905514 comps   15471 ns/comp
+[dada]   kmer screen      1.98s ( 1.8%)       63198661 comps      31 ns/comp  (every comparison)
+[dada]   align total     97.55s (87.7%)        5850547 comps   16674 ns/comp  (9.3% passed the screen)
+[dada]     dp kernel     90.95s (81.8%)        5850547 comps   15545 ns/comp
+[dada]   kmer screen      1.70s ( 1.5%)       55767016 comps      30 ns/comp  (every comparison)
+[dada]   align total     98.41s (88.7%)        5943461 comps   16558 ns/comp  (10.7% passed the screen)
+[dada]     dp kernel     91.66s (82.6%)        5943461 comps   15421 ns/comp
+[dada]   kmer screen      1.97s ( 1.8%)       63680529 comps      31 ns/comp  (every comparison)
+[dada]   align total     94.03s (85.2%)        5618142 comps   16736 ns/comp  (8.8% passed the screen)
+[dada]     dp kernel     87.51s (79.3%)        5618142 comps   15577 ns/comp
+[dada]   kmer screen      1.99s ( 2.1%)       65282054 comps      31 ns/comp  (every comparison)
+[dada]   align total     78.24s (84.0%)        4621038 comps   16930 ns/comp  (7.1% passed the screen)
+[dada]     dp kernel     72.83s (78.2%)        4621038 comps   15761 ns/comp
+[dada]   kmer screen      2.11s ( 1.8%)       69049682 comps      31 ns/comp  (every comparison)
+[dada]   align total    101.05s (86.5%)        6004541 comps   16829 ns/comp  (8.7% passed the screen)
+[dada]     dp kernel     94.02s (80.5%)        6004541 comps   15658 ns/comp
+[dada]   kmer screen      2.17s ( 1.8%)       70546090 comps      31 ns/comp  (every comparison)
+[dada]   align total    103.67s (87.4%)        6334374 comps   16366 ns/comp  (9.0% passed the screen)
+[dada]     dp kernel     96.62s (81.5%)        6334374 comps   15253 ns/comp
+[dada]   kmer screen      2.00s ( 2.1%)       64226666 comps      31 ns/comp  (every comparison)
+[dada]   align total     77.44s (82.2%)        4666139 comps   16597 ns/comp  (7.3% passed the screen)
+[dada]     dp kernel     72.11s (76.6%)        4666139 comps   15455 ns/comp
+[dada]   kmer screen      2.19s ( 1.7%)       71313197 comps      31 ns/comp  (every comparison)
+[dada]   align total    114.63s (88.1%)        6845998 comps   16743 ns/comp  (9.6% passed the screen)
+[dada]     dp kernel    106.85s (82.1%)        6845998 comps   15607 ns/comp
+[dada]   kmer screen      1.99s ( 1.7%)       65594681 comps      30 ns/comp  (every comparison)
+[dada]   align total    104.78s (88.3%)        6193749 comps   16917 ns/comp  (9.4% passed the screen)
+[dada]     dp kernel     97.61s (82.3%)        6193749 comps   15759 ns/comp
+[dada]   kmer screen      2.24s ( 2.0%)       72705872 comps      31 ns/comp  (every comparison)
+[dada]   align total     95.51s (84.1%)        5758126 comps   16587 ns/comp  (7.9% passed the screen)
+[dada]     dp kernel     88.96s (78.3%)        5758126 comps   15450 ns/comp
+[dada]   kmer screen      1.36s ( 2.0%)       44928840 comps      30 ns/comp  (every comparison)
+[dada]   align total     59.29s (86.2%)        3633889 comps   16315 ns/comp  (8.1% passed the screen)
+[dada]     dp kernel     55.30s (80.4%)        3633889 comps   15216 ns/comp
+[dada]   kmer screen      1.73s ( 2.2%)       56432121 comps      31 ns/comp  (every comparison)
+[dada]   align total     68.10s (85.5%)        4147029 comps   16421 ns/comp  (7.3% passed the screen)
+[dada]     dp kernel     63.40s (79.6%)        4147029 comps   15289 ns/comp
+[dada]   kmer screen      1.72s ( 2.0%)       57747384 comps      30 ns/comp  (every comparison)
+[dada]   align total     73.46s (85.8%)        4552020 comps   16137 ns/comp  (7.9% passed the screen)
+[dada]     dp kernel     68.36s (79.8%)        4552020 comps   15017 ns/comp
+[dada]   kmer screen      1.82s ( 1.8%)       62454385 comps      29 ns/comp  (every comparison)
+[dada]   align total     89.06s (86.1%)        5517702 comps   16141 ns/comp  (8.8% passed the screen)
+[dada]     dp kernel     82.98s (80.2%)        5517702 comps   15039 ns/comp
+[dada]   kmer screen      2.07s ( 1.8%)       69659382 comps      30 ns/comp  (every comparison)
+[dada]   align total     95.98s (85.6%)        6084712 comps   15774 ns/comp  (8.7% passed the screen)
+[dada]     dp kernel     89.35s (79.7%)        6084712 comps   14684 ns/comp
+[dada]   kmer screen      2.12s ( 1.8%)       75029607 comps      28 ns/comp  (every comparison)
+[dada]   align total     97.10s (81.3%)        6132697 comps   15833 ns/comp  (8.2% passed the screen)
+[dada]     dp kernel     90.48s (75.7%)        6132697 comps   14754 ns/comp
+--- mini_k8_c0.75
+[dada]   kmer screen      1.77s ( 1.1%)       57960112 comps      31 ns/comp  (every comparison)
+[dada]   align total    142.32s (90.9%)        8306726 comps   17133 ns/comp  (14.3% passed the screen)
+[dada]     dp kernel    132.55s (84.7%)        8306726 comps   15957 ns/comp
+[dada]   kmer screen      1.92s ( 1.1%)       63119332 comps      30 ns/comp  (every comparison)
+[dada]   align total    152.94s (90.3%)        8887413 comps   17209 ns/comp  (14.1% passed the screen)
+[dada]     dp kernel    142.41s (84.1%)        8887413 comps   16023 ns/comp
+[dada]   kmer screen      1.74s ( 1.0%)       57437526 comps      30 ns/comp  (every comparison)
+[dada]   align total    157.63s (89.8%)        9232624 comps   17073 ns/comp  (16.1% passed the screen)
+[dada]     dp kernel    146.81s (83.6%)        9232624 comps   15901 ns/comp
+[dada]   kmer screen      2.00s ( 1.1%)       65271189 comps      31 ns/comp  (every comparison)
+[dada]   align total    161.79s (88.7%)        9545973 comps   16949 ns/comp  (14.6% passed the screen)
+[dada]     dp kernel    150.60s (82.6%)        9545973 comps   15776 ns/comp
+[dada]   kmer screen      2.10s ( 1.1%)       68418680 comps      31 ns/comp  (every comparison)
+[dada]   align total    164.39s (88.8%)        9567933 comps   17181 ns/comp  (14.0% passed the screen)
+[dada]     dp kernel    152.90s (82.6%)        9567933 comps   15980 ns/comp
+[dada]   kmer screen      2.01s ( 1.1%)       66567706 comps      30 ns/comp  (every comparison)
+[dada]   align total    168.45s (89.5%)        9844243 comps   17112 ns/comp  (14.8% passed the screen)
+[dada]     dp kernel    156.77s (83.3%)        9844243 comps   15925 ns/comp
+[dada]   kmer screen      2.25s ( 1.2%)       73659497 comps      31 ns/comp  (every comparison)
+[dada]   align total    167.17s (88.1%)        9828374 comps   17009 ns/comp  (13.3% passed the screen)
+[dada]     dp kernel    155.63s (82.1%)        9828374 comps   15835 ns/comp
+[dada]   kmer screen      2.08s ( 1.1%)       69353164 comps      30 ns/comp  (every comparison)
+[dada]   align total    168.23s (88.1%)       10080316 comps   16689 ns/comp  (14.5% passed the screen)
+[dada]     dp kernel    156.54s (82.0%)       10080316 comps   15530 ns/comp
+[dada]   kmer screen      2.09s ( 1.1%)       68946650 comps      30 ns/comp  (every comparison)
+[dada]   align total    176.88s (90.8%)       10396459 comps   17013 ns/comp  (15.1% passed the screen)
+[dada]     dp kernel    164.64s (84.5%)       10396459 comps   15836 ns/comp
+[dada]   kmer screen      2.10s ( 1.0%)       68885206 comps      30 ns/comp  (every comparison)
+[dada]   align total    179.57s (88.5%)       10511548 comps   17084 ns/comp  (15.3% passed the screen)
+[dada]     dp kernel    167.01s (82.3%)       10511548 comps   15889 ns/comp
+[dada]   kmer screen      2.08s ( 1.0%)       69014621 comps      30 ns/comp  (every comparison)
+[dada]   align total    191.71s (89.4%)       11251514 comps   17039 ns/comp  (16.3% passed the screen)
+[dada]     dp kernel    178.20s (83.1%)       11251514 comps   15838 ns/comp
+[dada]   kmer screen      2.07s ( 0.9%)       67910107 comps      30 ns/comp  (every comparison)
+[dada]   align total    200.61s (90.3%)       11748664 comps   17075 ns/comp  (17.3% passed the screen)
+[dada]     dp kernel    186.47s (84.0%)       11748664 comps   15872 ns/comp
+[dada]   kmer screen      2.00s ( 1.1%)       67220992 comps      30 ns/comp  (every comparison)
+[dada]   align total    162.55s (90.8%)        9724484 comps   16716 ns/comp  (14.5% passed the screen)
+[dada]     dp kernel    151.16s (84.4%)        9724484 comps   15544 ns/comp
+[dada]   kmer screen      1.55s ( 1.1%)       51801543 comps      30 ns/comp  (every comparison)
+[dada]   align total    127.10s (90.0%)        7640279 comps   16635 ns/comp  (14.7% passed the screen)
+[dada]     dp kernel    118.19s (83.7%)        7640279 comps   15470 ns/comp
+[dada]   kmer screen      1.65s ( 1.0%)       55659462 comps      30 ns/comp  (every comparison)
+[dada]   align total    153.92s (91.1%)        9284251 comps   16579 ns/comp  (16.7% passed the screen)
+[dada]     dp kernel    143.35s (84.9%)        9284251 comps   15440 ns/comp
+[dada]   kmer screen      2.05s ( 1.1%)       69051434 comps      30 ns/comp  (every comparison)
+[dada]   align total    167.99s (90.9%)       10027019 comps   16754 ns/comp  (14.5% passed the screen)
+[dada]     dp kernel    156.38s (84.6%)       10027019 comps   15596 ns/comp
+[dada]   kmer screen      1.95s ( 1.2%)       65187930 comps      30 ns/comp  (every comparison)
+[dada]   align total    142.39s (88.1%)        8240061 comps   17280 ns/comp  (12.6% passed the screen)
+[dada]     dp kernel    132.36s (81.9%)        8240061 comps   16062 ns/comp
+[dada]   kmer screen      1.91s ( 1.2%)       64230337 comps      30 ns/comp  (every comparison)
+[dada]   align total    138.61s (89.1%)        8326423 comps   16648 ns/comp  (13.0% passed the screen)
+[dada]     dp kernel    129.00s (82.9%)        8326423 comps   15493 ns/comp
+[dada]   kmer screen      1.92s ( 1.0%)       63682661 comps      30 ns/comp  (every comparison)
+[dada]   align total    162.17s (88.5%)        9608528 comps   16878 ns/comp  (15.1% passed the screen)
+[dada]     dp kernel    150.83s (82.3%)        9608528 comps   15698 ns/comp
+[dada]   kmer screen      2.12s ( 1.0%)       71358785 comps      30 ns/comp  (every comparison)
+[dada]   align total    194.50s (91.1%)       11520631 comps   16883 ns/comp  (16.1% passed the screen)
+[dada]     dp kernel    181.13s (84.8%)       11520631 comps   15722 ns/comp
+[dada]   kmer screen      1.89s ( 1.0%)       63166302 comps      30 ns/comp  (every comparison)
+[dada]   align total    171.04s (88.2%)        9930471 comps   17224 ns/comp  (15.7% passed the screen)
+[dada]     dp kernel    158.93s (82.0%)        9930471 comps   16004 ns/comp
+[dada]   kmer screen      2.12s ( 1.0%)       70549559 comps      30 ns/comp  (every comparison)
+[dada]   align total    180.30s (88.4%)       10729912 comps   16804 ns/comp  (15.2% passed the screen)
+[dada]     dp kernel    167.75s (82.3%)       10729912 comps   15634 ns/comp
+[dada]   kmer screen      1.95s ( 1.0%)       65597754 comps      30 ns/comp  (every comparison)
+[dada]   align total    186.46s (91.0%)       10977194 comps   16986 ns/comp  (16.7% passed the screen)
+[dada]     dp kernel    173.55s (84.7%)       10977194 comps   15810 ns/comp
+[dada]   kmer screen      2.16s ( 1.2%)       72664227 comps      30 ns/comp  (every comparison)
+[dada]   align total    166.74s (89.6%)       10000873 comps   16673 ns/comp  (13.8% passed the screen)
+[dada]     dp kernel    155.07s (83.4%)       10000873 comps   15506 ns/comp
+[dada]   kmer screen      1.33s ( 1.1%)       44900016 comps      30 ns/comp  (every comparison)
+[dada]   align total    104.28s (89.7%)        6308344 comps   16530 ns/comp  (14.0% passed the screen)
+[dada]     dp kernel     97.08s (83.5%)        6308344 comps   15390 ns/comp
+[dada]   kmer screen      1.69s ( 1.3%)       56434986 comps      30 ns/comp  (every comparison)
+[dada]   align total    119.13s (88.8%)        7139579 comps   16686 ns/comp  (12.7% passed the screen)
+[dada]     dp kernel    110.75s (82.6%)        7139579 comps   15512 ns/comp
+[dada]   kmer screen      1.69s ( 1.2%)       57805403 comps      29 ns/comp  (every comparison)
+[dada]   align total    124.15s (88.0%)        7659130 comps   16209 ns/comp  (13.2% passed the screen)
+[dada]     dp kernel    115.54s (81.9%)        7659130 comps   15085 ns/comp
+[dada]   kmer screen      1.95s ( 1.0%)       69704485 comps      28 ns/comp  (every comparison)
+[dada]   align total    168.09s (88.3%)       10722686 comps   15676 ns/comp  (15.4% passed the screen)
+[dada]     dp kernel    156.29s (82.1%)       10722686 comps   14576 ns/comp
+[dada]   kmer screen      1.75s ( 1.0%)       62459359 comps      28 ns/comp  (every comparison)
+[dada]   align total    155.43s (87.8%)        9713859 comps   16001 ns/comp  (15.6% passed the screen)
+[dada]     dp kernel    144.40s (81.5%)        9713859 comps   14865 ns/comp
+[dada]   kmer screen      2.06s ( 1.1%)       75034710 comps      27 ns/comp  (every comparison)
+[dada]   align total    158.95s (85.0%)       10335334 comps   15379 ns/comp  (13.8% passed the screen)
+[dada]     dp kernel    147.82s (79.1%)       10335334 comps   14302 ns/comp
+--- mini_k8_c0.80
+[dada]   kmer screen      1.82s ( 0.7%)       57787745 comps      32 ns/comp  (every comparison)
+[dada]   align total    250.66s (91.4%)       14805390 comps   16930 ns/comp  (25.6% passed the screen)
+[dada]     dp kernel    233.36s (85.1%)       14805390 comps   15762 ns/comp
+[dada]   kmer screen      1.73s ( 0.6%)       57476203 comps      30 ns/comp  (every comparison)
+[dada]   align total    281.40s (92.6%)       16492230 comps   17063 ns/comp  (28.7% passed the screen)
+[dada]     dp kernel    261.75s (86.2%)       16492230 comps   15871 ns/comp
+[dada]   kmer screen      1.95s ( 0.6%)       65179352 comps      30 ns/comp  (every comparison)
+[dada]   align total    290.51s (92.3%)       17217122 comps   16873 ns/comp  (26.4% passed the screen)
+[dada]     dp kernel    270.25s (85.8%)       17217122 comps   15697 ns/comp
+[dada]   kmer screen      1.91s ( 0.6%)       63125373 comps      30 ns/comp  (every comparison)
+[dada]   align total    288.48s (90.9%)       16814236 comps   17157 ns/comp  (26.6% passed the screen)
+[dada]     dp kernel    268.32s (84.6%)       16814236 comps   15958 ns/comp
+[dada]   kmer screen      2.08s ( 0.6%)       69316712 comps      30 ns/comp  (every comparison)
+[dada]   align total    310.57s (92.3%)       18488945 comps   16798 ns/comp  (26.7% passed the screen)
+[dada]     dp kernel    288.86s (85.9%)       18488945 comps   15624 ns/comp
+[dada]   kmer screen      2.21s ( 0.7%)       73598546 comps      30 ns/comp  (every comparison)
+[dada]   align total    312.80s (92.0%)       18580805 comps   16834 ns/comp  (25.2% passed the screen)
+[dada]     dp kernel    290.75s (85.5%)       18580805 comps   15648 ns/comp
+[dada]   kmer screen      2.06s ( 0.6%)       68422001 comps      30 ns/comp  (every comparison)
+[dada]   align total    313.06s (91.8%)       18316014 comps   17092 ns/comp  (26.8% passed the screen)
+[dada]     dp kernel    290.94s (85.3%)       18316014 comps   15884 ns/comp
+[dada]   kmer screen      2.06s ( 0.6%)       68889236 comps      30 ns/comp  (every comparison)
+[dada]   align total    321.49s (92.8%)       19024811 comps   16899 ns/comp  (27.6% passed the screen)
+[dada]     dp kernel    298.98s (86.3%)       19024811 comps   15715 ns/comp
+[dada]   kmer screen      2.00s ( 0.6%)       66534968 comps      30 ns/comp  (every comparison)
+[dada]   align total    314.19s (91.9%)       18171280 comps   17291 ns/comp  (27.3% passed the screen)
+[dada]     dp kernel    292.18s (85.5%)       18171280 comps   16079 ns/comp
+[dada]   kmer screen      2.06s ( 0.6%)       68861703 comps      30 ns/comp  (every comparison)
+[dada]   align total    313.11s (91.4%)       18526725 comps   16900 ns/comp  (26.9% passed the screen)
+[dada]     dp kernel    290.87s (84.9%)       18526725 comps   15700 ns/comp
+[dada]   kmer screen      2.03s ( 0.5%)       67867601 comps      30 ns/comp  (every comparison)
+[dada]   align total    346.62s (92.9%)       20615922 comps   16813 ns/comp  (30.4% passed the screen)
+[dada]     dp kernel    322.34s (86.4%)       20615922 comps   15636 ns/comp
+[dada]   kmer screen      2.07s ( 0.6%)       68966920 comps      30 ns/comp  (every comparison)
+[dada]   align total    347.02s (92.3%)       20354263 comps   17049 ns/comp  (29.5% passed the screen)
+[dada]     dp kernel    322.34s (85.8%)       20354263 comps   15836 ns/comp
+[dada]   kmer screen      1.54s ( 0.6%)       51801987 comps      30 ns/comp  (every comparison)
+[dada]   align total    226.95s (92.9%)       13555117 comps   16743 ns/comp  (26.2% passed the screen)
+[dada]     dp kernel    210.98s (86.3%)       13555117 comps   15565 ns/comp
+[dada]   kmer screen      2.08s ( 0.6%)       66918845 comps      31 ns/comp  (every comparison)
+[dada]   align total    309.59s (92.9%)       17133866 comps   18069 ns/comp  (25.6% passed the screen)
+[dada]     dp kernel    288.96s (86.7%)       17133866 comps   16865 ns/comp
+[dada]   kmer screen      1.93s ( 0.7%)       65189348 comps      30 ns/comp  (every comparison)
+[dada]   align total    264.14s (92.2%)       15486469 comps   17056 ns/comp  (23.8% passed the screen)
+[dada]     dp kernel    245.59s (85.7%)       15486469 comps   15858 ns/comp
+[dada]   kmer screen      1.65s ( 0.6%)       55437784 comps      30 ns/comp  (every comparison)
+[dada]   align total    278.49s (93.2%)       15193884 comps   18329 ns/comp  (27.4% passed the screen)
+[dada]     dp kernel    260.27s (87.1%)       15193884 comps   17130 ns/comp
+[dada]   kmer screen      1.88s ( 0.6%)       63168462 comps      30 ns/comp  (every comparison)
+[dada]   align total    301.32s (92.2%)       17582690 comps   17137 ns/comp  (27.8% passed the screen)
+[dada]     dp kernel    280.17s (85.7%)       17582690 comps   15934 ns/comp
+[dada]   kmer screen      2.05s ( 0.6%)       69052508 comps      30 ns/comp  (every comparison)
+[dada]   align total    305.77s (92.6%)       17850324 comps   17130 ns/comp  (25.9% passed the screen)
+[dada]     dp kernel    284.49s (86.1%)       17850324 comps   15938 ns/comp
+[dada]   kmer screen      1.91s ( 0.7%)       64231575 comps      30 ns/comp  (every comparison)
+[dada]   align total    259.99s (92.1%)       15561646 comps   16707 ns/comp  (24.2% passed the screen)
+[dada]     dp kernel    241.70s (85.6%)       15561646 comps   15532 ns/comp
+[dada]   kmer screen      1.90s ( 0.6%)       63733686 comps      30 ns/comp  (every comparison)
+[dada]   align total    289.76s (91.7%)       17125908 comps   16920 ns/comp  (26.9% passed the screen)
+[dada]     dp kernel    269.48s (85.3%)       17125908 comps   15735 ns/comp
+[dada]   kmer screen      2.12s ( 0.6%)       71319319 comps      30 ns/comp  (every comparison)
+[dada]   align total    341.33s (92.7%)       20261784 comps   16846 ns/comp  (28.4% passed the screen)
+[dada]     dp kernel    317.34s (86.2%)       20261784 comps   15662 ns/comp
+[dada]   kmer screen      2.09s ( 0.6%)       70596855 comps      30 ns/comp  (every comparison)
+[dada]   align total    320.28s (92.0%)       19185843 comps   16694 ns/comp  (27.2% passed the screen)
+[dada]     dp kernel    297.70s (85.5%)       19185843 comps   15517 ns/comp
+[dada]   kmer screen      2.15s ( 0.6%)       72710458 comps      30 ns/comp  (every comparison)
+[dada]   align total    307.67s (92.2%)       18315673 comps   16798 ns/comp  (25.2% passed the screen)
+[dada]     dp kernel    285.92s (85.6%)       18315673 comps   15611 ns/comp
+[dada]   kmer screen      1.95s ( 0.5%)       65598678 comps      30 ns/comp  (every comparison)
+[dada]   align total    338.68s (92.4%)       19833133 comps   17076 ns/comp  (30.2% passed the screen)
+[dada]     dp kernel    314.87s (85.9%)       19833133 comps   15876 ns/comp
+[dada]   kmer screen      1.34s ( 0.6%)       44900276 comps      30 ns/comp  (every comparison)
+[dada]   align total    191.34s (91.8%)       11497170 comps   16642 ns/comp  (25.6% passed the screen)
+[dada]     dp kernel    178.00s (85.4%)       11497170 comps   15482 ns/comp
+[dada]   kmer screen      1.76s ( 0.7%)       56436391 comps      31 ns/comp  (every comparison)
+[dada]   align total    218.57s (92.0%)       13131628 comps   16645 ns/comp  (23.3% passed the screen)
+[dada]     dp kernel    203.06s (85.5%)       13131628 comps   15463 ns/comp
+[dada]   kmer screen      1.67s ( 0.6%)       57806247 comps      29 ns/comp  (every comparison)
+[dada]   align total    243.88s (92.3%)       13895522 comps   17551 ns/comp  (24.0% passed the screen)
+[dada]     dp kernel    227.61s (86.1%)       13895522 comps   16380 ns/comp
+[dada]   kmer screen      1.75s ( 0.6%)       62511169 comps      28 ns/comp  (every comparison)
+[dada]   align total    287.15s (91.4%)       17843548 comps   16093 ns/comp  (28.5% passed the screen)
+[dada]     dp kernel    266.83s (85.0%)       17843548 comps   14954 ns/comp
+[dada]   kmer screen      1.95s ( 0.6%)       69707501 comps      28 ns/comp  (every comparison)
+[dada]   align total    309.93s (91.4%)       19574235 comps   15834 ns/comp  (28.1% passed the screen)
+[dada]     dp kernel    287.91s (84.9%)       19574235 comps   14709 ns/comp
+[dada]   kmer screen      2.09s ( 0.6%)       75001345 comps      28 ns/comp  (every comparison)
+[dada]   align total    294.58s (91.2%)       18733195 comps   15725 ns/comp  (25.0% passed the screen)
+[dada]     dp kernel    273.55s (84.7%)       18733195 comps   14603 ns/comp
