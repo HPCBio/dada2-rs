@@ -103,6 +103,49 @@ alignments against 28.1 M — **3.7 M fewer**. `b_compare` is 82-88%
 align-dominated on this platform ([screen vs align](compare-screen-vs-align.md)),
 so that is the half of the phase that matters.
 
+### Is the count matrix *distorted*, or just perturbed?
+
+Count L1 is a global sum, and three different situations produce the same number:
+a small error spread over every cell, a few samples wrecked while the rest are
+exact, or a systematic bias that shifts every composition. `dev/compare_counts_correlation.py`
+separates them. Against the k-mer baseline on 362 samples (control arm reads
+1.000000 / 100% exact, as it must):
+
+| | k=8 @ 0.62 | k=8 @ 0.70 |
+|---|---|---|
+| Pearson r, **raw** counts | 0.999976 | 0.999969 |
+| Pearson r, log10 counts | 0.995613 | 0.995445 |
+| Spearman rho | 0.998261 | 0.997911 |
+| cells exactly equal | 98.578% | 98.836% |
+| cells within 10% | 99.615% | 99.672% |
+| **net / gross change** | **0.150** | **0.107** |
+| Bray-Curtis median | 0.000070 | 0.000053 |
+| **Bray-Curtis max** | **0.0092** | **0.0267** |
+| **samples with BC > 0.01** | **0** | **3** |
+
+**Raw-count Pearson is not diagnostic** — 0.99998 for an arm with 19 churned
+ASVs and 0.5% of reads misplaced, because abundant ASVs pin it. Any correlation
+check here has to be on log counts or ranks.
+
+**The disagreement is reassignment, not bias.** `net/gross` of 0.10-0.15 means the
+changes very nearly cancel: reads move *between* ASVs rather than appearing or
+vanishing. That is the
+[shuffle mechanism](#the-mechanism-a-mis-set-screen-moves-reads-it-does-not-lose-asvs)
+confirmed from the count matrix, independently of the `map` diff that first found
+it.
+
+**And a result L1 concealed: 0.70 has a worse tail than 0.62.** Their L1s are
+nearly equal (0.0653% vs 0.0612%), but 0.70 — the *zero-churn* setting —
+concentrates its error into three samples, one at Bray-Curtis 0.027, while 0.62
+never exceeds 0.0092 and leaves no sample above 0.01. **0.62 is better on
+worst-case per-sample dissimilarity and 5% faster; its cost is 5 tail ASVs.** An
+aggregate metric ranked these the other way round.
+
+Error by ASV abundance decile at 0.62 confirms the shape is benign: the most
+abundant decile holds 84% of all reads and moves **0.0421%**, while relative
+deviation rises to ~2% only in decile 9 (644 reads total), which is counting
+noise at that magnitude.
+
 ### Illumina MiSeq — the full cutoff curve, 362 samples
 
 The complete 0.40-0.80 sweep at k=8, against a bit-identical control (0 of 30,105
