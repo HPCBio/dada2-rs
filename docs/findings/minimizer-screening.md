@@ -359,7 +359,7 @@ against accuracy.
 Read retention behaves as per-sample, scaled up: -260k reads (-11.6%) at 0.40,
 crossing the k-mer screen's retention near 0.63.
 
-### Is the count matrix *distorted*, or just perturbed?### Is the count matrix *distorted*, or just perturbed?
+### Is the count matrix *distorted*, or just perturbed?
 
 Count L1 is a global sum, and three different situations produce the same number:
 a small error spread over every cell, a few samples wrecked while the rest are
@@ -980,25 +980,54 @@ map-length check in `merge-pairs` turned it into a visible error instead of
 silently merging mismatched samples. Fixed by enumerating the JSONs from the
 filtered lists.
 
-## What would change the verdict
+## Status: experimental, and what promotion would require
 
-0. **Done on this branch:** `screen_backend`/`minimizer_k`/`minimizer_w` are now
-   recorded in the error model's `params` and checked on mismatch.
-1. **Calibrate the cutoff properly, per backend**, in `kdist-calibrate` rather
-   than by the hand sweep used here — and teach `--screen-audit` to hold a
-   separate cutoff per screen so the two can be compared at their own operating
-   points.
-2. **Close the residual 2-ASV / 0.34% gap, or explain it.** The calibrated arm is
-   close but not equal, against a zero noise floor. Either it reduces to a
-   remaining pass-rate mismatch (test: sweep cutoff finer around 0.64 and watch
-   churn), or something structural remains.
-3. **Re-run PacBio at scale** — `PacBioFull`, not the 2-sample fixture — now that
-   the fixture-scale PacBio result is known to be underpowered.
-4. **Re-check memory at calibrated parameters**, and consider whether `kord`
-   (2,982 B/raw on HiFi, *larger than the sketch itself*) can be dropped on this
-   path; it is retained only for the gapless fast path.
-5. **Only then, a wall-clock A/B** — pinned, replicated, with a control channel.
-   No timing claim is made anywhere on this page, deliberately.
+**This stays experimental and opt-in.** `--screen-backend minimizer` is off by
+default, on the same footing as the [WFA alignment backend](https://github.com/HPCBio/dada2-rs/issues/51),
+and nothing here argues for flipping the default. The evidence base is five
+workloads, each against a bit-identical control, but every one of them is a single
+dataset per configuration.
+
+What has been settled:
+
+- ✅ Per-backend cutoff calibration exists (`kdist-calibrate --screen-backend`)
+  and its recommendation is derived, not guessed.
+- ✅ The screen is recorded in the error model's `params` and checked on mismatch.
+- ✅ The gapless method-selection coupling is fixed, and the k-mer backend is
+  bit-identical through that change.
+- ✅ PacBio is measured at scale (`PacBioFull`, 542k reads), not on the 2-sample
+  fixture.
+- ✅ Wall clock is measured with control channels on four workloads. The earlier
+  claim that "no timing claim is made anywhere on this page" is superseded.
+- ✅ Memory is measured at calibrated parameters (−74% resident screen on HiFi).
+
+What promotion would require, in order:
+
+1. **A judgement about the accuracy cost, which is real and not zero.** At the
+   recommended cutoffs: 473-580 churned ASVs of 22,359 on pooled 16S, 1.2% count
+   L1; 18 of 3,028 and 0.77% on pooled ITS2. Churn is confined to the rare tail
+   (≤15 reads in every dataset checked) and Bray-Curtis stays under 0.02 per
+   sample, but whether that is acceptable depends on what the tables are used
+   for. **This is not a question the data answers.**
+2. **Replication.** One dataset per configuration. A second diverse pool per
+   platform would say whether ~0.64 is a default or a coincidence.
+3. **The serial `setup` phase.** The inverted index moves screen work out of the
+   parallel map into single-threaded setup, `O(nraw)` per cluster — measured at
+   2.0% of `compare` at 8 threads, predicted ~11% at 48. If that holds it caps the
+   speedup, and the fix is bounded: parallelise the scatter, or track touched
+   indices instead of clearing all `nraw`.
+4. **A default-selection story.** The right cutoff varies with pass rate
+   (0.50-0.80 across workloads), so a fixed default cannot be right everywhere.
+   Either ship the calibration as a required step, or auto-derive the cutoff from
+   a cheap pass-rate probe at run start.
+5. **Dropping `kord` on this path**, if possible — 2,982 B/raw on HiFi, *larger
+   than the sketch itself*, and retained only for the no-indel predicate, which
+   now derives both of its counts from it.
+
+Worth splitting out separately: **the gapless decoupling is a fix to existing
+code** and stands whether or not this backend ever ships. `kdist` was serving an
+undocumented second role as an input to alignment method selection, and any future
+screen replacement inherits that trap.
 
 ## Reproducing
 
