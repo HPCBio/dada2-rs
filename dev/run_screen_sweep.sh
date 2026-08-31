@@ -78,6 +78,9 @@ ERR_DIR="${ERR_DIR:-}"
 # ITS2) may want `binned-qual`. Holding it fixed is what keeps this a screen
 # comparison rather than a screen-and-errfun comparison.
 ERRFUN="${ERRFUN:-loess}"
+# Companion flags for errfuns that need them, e.g.
+#   ERRFUN=binned-qual ERRFUN_ARGS='--binned-quals 2,12,23,37'
+ERRFUN_ARGS="${ERRFUN_ARGS:-}"
 
 mkdir -p "$OUT"/.verbose "$OUT"
 
@@ -93,11 +96,11 @@ PY
 }
 
 echo "==> baseline: k-mer screen (production default)"
-[ -d "$OUT/base" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" \
+[ -d "$OUT/base" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" \
   bash "$RUN" "$BIN" "$DATA" "$OUT/base" "$THREADS" > "$OUT/base.log" 2>&1
 
 echo "==> control: k-mer screen AGAIN (establishes the ASV noise floor)"
-[ -d "$OUT/control" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" \
+[ -d "$OUT/control" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" \
   bash "$RUN" "$BIN" "$DATA" "$OUT/control" "$THREADS" > "$OUT/control.log" 2>&1
 echo "    control vs baseline (MUST be identical, or nothing below is interpretable):"
 # compare_seqtab_matrix exits 1 when the tables differ, which for the CONTROL is
@@ -114,7 +117,7 @@ for K in $KS; do
     [ -d "$d" ] && { echo "    k=$K cutoff=$C (cached)"; continue; }
     echo "    k=$K cutoff=$C"
     SCREEN_BACKEND=minimizer MINIMIZER_K="$K" SCREEN_CUTOFF="$C" \
-      ERR_DIR="${ERR_DIR:-}" PREFILTERED="${PREFILTERED:-}" ERRFUN="$ERRFUN" \
+      ERR_DIR="${ERR_DIR:-}" PREFILTERED="${PREFILTERED:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" \
       bash "$RUN" "$BIN" "$DATA" "$d" "$THREADS" > "$d.log" 2>&1
   done
 done

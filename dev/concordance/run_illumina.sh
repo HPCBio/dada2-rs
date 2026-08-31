@@ -75,6 +75,16 @@ NBASES="${NBASES:-20000000}"   # learn-errors subsampling cap; small data uses a
 # otherwise a screen effect and an errfun effect stack. Set it once here.
 ERRFUN="${ERRFUN:-loess}"
 
+# Extra arguments for the chosen errfun, whitespace-split. Needed because some
+# errfuns take a companion flag:
+#   --errfun binned-qual  requires --binned-quals "0,10,20,30,40" (the anchor Q
+#                         values; `dada2-rs summary --report` detects a run's bins)
+#   --errfun external     requires --errfun-cmd "..."
+# e.g. ERRFUN=binned-qual ERRFUN_ARGS='--binned-quals 2,12,23,37'
+ERRFUN_ARGS="${ERRFUN_ARGS:-}"
+# shellcheck disable=SC2206
+errfun_extra=($ERRFUN_ARGS)
+
 mkdir -p "$OUT"/{filtered,dada_fwd,dada_rev,control_persample}
 
 fwds=("$DATA"/*F.fastq.gz)
@@ -128,9 +138,9 @@ if [ -n "$ERR_DIR" ]; then
   cp "$ERR_DIR/errR.json" "$OUT/errR.json"
 else
 echo "==> learn-errors (fwd, rev)"
-"$BIN" learn-errors "${filtFs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" \
+"$BIN" learn-errors "${filtFs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
     --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} -o "$OUT/errF.json"
-"$BIN" learn-errors "${filtRs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" \
+"$BIN" learn-errors "${filtRs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
     --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} -o "$OUT/errR.json"
 fi
 
