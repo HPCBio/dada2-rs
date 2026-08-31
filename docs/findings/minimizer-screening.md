@@ -1,43 +1,45 @@
 # Minimizers as the pre-alignment screen
 
-**Verdict: this is a long-read screen.** On PacBio HiFi it is **ASV-identical to
-the k-mer screen (1540 = 1540, churn 0)** while doing **13.3% fewer alignments**
-and using ~74% less resident memory. On Illumina it is merely *equivalent* — 1-2
-ASVs of 232 — at best-case parity on cost. That split is not a quirk; it follows
-from how a sketch works, and it took the whole experiment to see.
+**Verdict: this is a screen for screen-dominated workloads.** Where the
+pre-alignment screen is a small share of runtime, replacing it buys nothing. Where
+it dominates, it buys a lot — and the k-mer screen's share is not a constant, it
+grows with the working set:
 
-| | Illumina MiSeq (250 bp) | **PacBio HiFi (1490 bp)** |
-|---|---|---|
-| table size | **416 ASVs**, 362 samples, 2.97M reads | **1540 ASVs**, 3 samples, 542k reads |
-| ASV set | **identical at cutoff 0.70** | **identical at cutoff 0.45-0.50** |
-| count-matrix L1 | 0.0596% | **0.0053%** |
-| zero-churn cost | **+17% wall clock** | **7-11% fewer alignments** |
-| best speed at usable accuracy | 0.62: **5% faster**, 5 tail ASVs | 0.45: faster *and* identical |
-| cutoff for zero churn | 0.70 | **0.45-0.50** |
+| workload | k-mer pass rate | **k-mer screen ns/comp** | **k-mer screen share** | minimizer ns/comp |
+|---|---|---|---|---|
+| MiSeq SOP 16S, one sample | 26.8% | 44 | **0.9%** | ~20 |
+| PacBio HiFi, per-sample | 9.9% | 660 | 4.0% | 20 |
+| MiSeq 16S, pooled (#127) | 25.0% | 841 | 16.7% | — |
+| NovaSeq ITS2, per-sample | 1.74% | 308 | **43.9%** | 30 |
+| **NovaSeq ITS2, pooled** | **0.70%** | **1305** | **76.5%** | **33** |
 
-**Why length decides it.** The sketch is `O(len/w)` entries: a 250 bp read yields
-~48 minimizers, a 1490 bp read ~500. The distance estimate is a sample, and its
-precision scales with the sample size. On short reads the estimate is coarse, so
-a cutoff loose enough not to lose real neighbours (0.72) also admits far more
-strangers — hence +29% alignments at full recall. On long reads the estimate is
-sharp: full recall arrives at 0.50 while *fewer* pairs pass than the k-mer screen.
-At the very same 0.42, PacBio gets 98.45% recall passing 9.36% of pairs against
-k-mer's 10.73% — better and cheaper — where Illumina gets 60.81%.
+**The k-mer screen goes 44 -> 1305 ns/comp (30x) across these; the minimizer goes
+20 -> 33 (1.7x).** The frequency vector is `4^k` bytes per raw and its cost is
+bound by whether those vectors fit cache; the sketch is ~10x smaller and the
+inverted index localises access, so pool size barely registers. On pooled ITS2 the
+k-mer screen is **76.5% of `b_compare`** — the single largest cost in the pipeline
+— and the minimizer replaces it with 9.3%.
 
-This is the original hypothesis, confirmed only after being wrong about it twice.
-The k-mer screen has the opposite length behaviour — its `4^k` vector saturates
-as reads get longer, which is why PacBio needs k=7 and why at k=5 it degenerates
-to passing **100.00%** of pairs. Sketch precision *rises* with read length exactly
-where frequency-vector precision falls.
+What that is worth, at *matched alignment work* so the screen is the only variable:
+
+| dataset | mode | speedup at matched alignments | accuracy cost |
+|---|---|---|---|
+| MiSeq 16S | per-sample | ~0% (screen is 0.9%) | — |
+| PacBio HiFi | per-sample | not resolvable on our rig | churn 0, L1 0.0053% |
+| NovaSeq ITS2 | per-sample | **15%** | churn 7/3808, L1 0.365% |
+| **NovaSeq ITS2** | **pooled** | **30.7%** | churn 18/3028, L1 0.769% |
 
 Experimental and opt-in (`--screen-backend minimizer`), default unchanged. The
-shipped defaults (k=11, cutoff 0.42) are **wrong on both platforms**; use k=8 with
-a cutoff derived per platform by `kdist-calibrate --screen-backend minimizer`
-(0.50 PacBio, ~0.58-0.65 Illumina).
+shipped defaults (k=11, cutoff 0.42) are **wrong everywhere**; use **k=8** with a
+cutoff swept per dataset — **0.62** on both ITS2 modes, 0.45-0.50 on PacBio,
+0.62-0.70 on 16S.
 
-**This page reported the opposite twice before reaching that.** An early revision
-concluded equivalence from 2-sample fixtures; a later one concluded irreparable
-fragmentation. Both were wrong — see
+**This page reached that verdict after being wrong three times**: it first
+concluded equivalence from 2-sample fixtures, then irreparable fragmentation, then
+"a long-read screen" from PacBio alone. The last was closest but still wrong about
+the mechanism — long reads matter because they enlarge the working set, not
+because of read length as such, which is why a 250 bp high-diversity pool reaches
+a *higher* screen share than 1.5 kb HiFi. See
 [How the fixtures misled](#how-the-fixtures-misled) and
 [the gapless section](#the-residual-is-not-the-screen-at-all-the-gapless-shortcut-switches-off).
 
@@ -225,6 +227,46 @@ another case where the aggregate ranks the two settings the other way round.
 **Recommended for ITS2-like pools: k=8, cutoff 0.62** — 15% faster at matched
 alignment count, retention within 0.31% of the k-mer screen, worst-sample
 Bray-Curtis 0.0043.
+
+### ITS2 under full pooling: the screen becomes 76.5% of the phase
+
+Same 30 ITS2 samples, `dada-pooled` (R `pool=TRUE`), 3,028 ASVs, 2.39 **billion**
+comparisons. Control bit-identical (0 of 13,651 cells); timing control 2.8%.
+Raw split in `docs/findings/data/its2-pooled-phase-split.txt`.
+
+| arm | screen share | screen ns/comp | align share | pass rate |
+|---|---|---|---|---|
+| **k-mer, k=5** | **76.5%** | **1305 ns** | 6.7% | 0.70% |
+| minimizer k=8 @0.62 | **9.3%** | **33 ns** | 34.0% | 0.70% |
+
+Pooling raises the k-mer screen from 43.9% to **76.5%** of busy time and its
+per-comparison cost from 308 to **1305 ns**, while the minimizer's stays at 33.
+Nothing about the algorithm changed — only how much memory the screen structures
+occupy, which is the point.
+
+| cutoff | churn | count L1 | aligned | reads vs base | wall time |
+|---|---|---|---|---|---|
+| 0.40 | 91 | 11.829% | 30.2% | -260,246 | 94.4% |
+| 0.50 | 56 | 6.090% | 49.4% | -133,444 | 81.2% |
+| 0.60 | 23 | 1.351% | 88.5% | -28,930 | 73.7% |
+| **0.62** | 18 | 0.769% | **101.3%** | -15,830 | **69.3%** |
+| 0.65 | 14 | 0.810% | 128.2% | +14,024 | 71.6% |
+| 0.80 | 53 | 3.669% | 818.4% | +78,855 | 82.6% |
+
+**At 0.62 alignment work is matched (101.3%) and wall clock is 69.3% — a 30.7%
+speedup attributable to the screen alone**, against a 2.8% control channel, and
+double the 15% seen per-sample.
+
+**Wall time is non-monotonic**, which per-sample runs did not show: 0.40 is
+*slower* (94.4%) than 0.62 despite performing only 30.2% of the alignments,
+because it yields 3,069 ASVs against 3,026 and more clusters means more
+`b_compare` invocations and more shuffle/bud work. Under pooling, over-tight
+screening costs more in cluster proliferation than it saves in alignment — so the
+cost curve has a genuine interior optimum rather than trading monotonically
+against accuracy.
+
+Read retention behaves as per-sample, scaled up: -260k reads (-11.6%) at 0.40,
+crossing the k-mer screen's retention near 0.63.
 
 ### Is the count matrix *distorted*, or just perturbed?### Is the count matrix *distorted*, or just perturbed?
 
