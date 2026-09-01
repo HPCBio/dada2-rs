@@ -330,8 +330,10 @@ pub enum Commands {
         screen_backend: Option<ScreenBackend>,
 
         /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
-        /// minimizer sketch [default: 11]. Independent of `--kmer-size`, which
-        /// still governs the frequency screen. Range 7-31.
+        /// minimizer sketch [default: 8]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 7-31. k=8 was chosen on
+        /// Illumina (a pair audit; k=11 misses real neighbours) and has NOT been
+        /// re-derived per platform the way `--kmer-size` had to be.
         #[arg(long)]
         minimizer_k: Option<usize>,
 
@@ -597,8 +599,10 @@ pub enum Commands {
         screen_backend: Option<ScreenBackend>,
 
         /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
-        /// minimizer sketch [default: 11]. Independent of `--kmer-size`, which
-        /// still governs the frequency screen. Range 7-31.
+        /// minimizer sketch [default: 8]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 7-31. k=8 was chosen on
+        /// Illumina (a pair audit; k=11 misses real neighbours) and has NOT been
+        /// re-derived per platform the way `--kmer-size` had to be.
         #[arg(long)]
         minimizer_k: Option<usize>,
 
@@ -898,8 +902,10 @@ pub enum Commands {
         screen_backend: Option<ScreenBackend>,
 
         /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
-        /// minimizer sketch [default: 11]. Independent of `--kmer-size`, which
-        /// still governs the frequency screen. Range 7-31.
+        /// minimizer sketch [default: 8]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 7-31. k=8 was chosen on
+        /// Illumina (a pair audit; k=11 misses real neighbours) and has NOT been
+        /// re-derived per platform the way `--kmer-size` had to be.
         #[arg(long)]
         minimizer_k: Option<usize>,
 
@@ -2004,8 +2010,10 @@ pub enum Commands {
         screen_backend: Option<ScreenBackend>,
 
         /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
-        /// minimizer sketch [default: 11]. Independent of `--kmer-size`, which
-        /// still governs the frequency screen. Range 7-31.
+        /// minimizer sketch [default: 8]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 7-31. k=8 was chosen on
+        /// Illumina (a pair audit; k=11 misses real neighbours) and has NOT been
+        /// re-derived per platform the way `--kmer-size` had to be.
         #[arg(long)]
         minimizer_k: Option<usize>,
 
@@ -2362,8 +2370,10 @@ pub enum Commands {
         screen_backend: Option<ScreenBackend>,
 
         /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
-        /// minimizer sketch [default: 11]. Independent of `--kmer-size`, which
-        /// still governs the frequency screen. Range 7-31.
+        /// minimizer sketch [default: 8]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 7-31. k=8 was chosen on
+        /// Illumina (a pair audit; k=11 misses real neighbours) and has NOT been
+        /// re-derived per platform the way `--kmer-size` had to be.
         #[arg(long)]
         minimizer_k: Option<usize>,
 
