@@ -117,6 +117,30 @@ fq=("$DATA"/*.fastq.gz "$DATA"/*.fq.gz "$DATA"/*.fastq "$DATA"/*.fq)
 [ ${#fq[@]} -gt 0 ] || { echo "no FASTQ in $DATA" >&2; exit 1; }
 echo "==> ${#fq[@]} pre-filtered samples"
 
+# Arm directories and timing rows are cached by NAME, and the name encodes the
+# cutoff but not the denoising mode or the error function. Pointing a POOL=true
+# run at a per-sample output directory would therefore reuse every per-sample arm
+# as though it were pooled -- silently, and with the accuracy table and timings
+# both looking plausible. Stamp the configuration and refuse to mix.
+STAMP="$OUT/.sweep_mode"
+WANT="cmd=$DADA_CMD pool=$POOL errfun=$ERRFUN"
+mkdir -p "$OUT"
+if [ -f "$STAMP" ]; then
+  HAVE="$(cat "$STAMP")"
+  if [ "$HAVE" != "$WANT" ]; then
+    echo "ERROR: $OUT was built with a different configuration." >&2
+    echo "  existing: $HAVE" >&2
+    echo "  requested: $WANT" >&2
+    echo "  Cached arms and timings are keyed by name only, so reusing this" >&2
+    echo "  directory would mix the two. Use a new out-dir. To keep the" >&2
+    echo "  expensive cached inputs, copy them over first:" >&2
+    echo "    mkdir -p <new-out> && cp -a $OUT/models $OUT/derep <new-out>/" >&2
+    exit 1
+  fi
+else
+  printf '%s' "$WANT" > "$STAMP"
+fi
+
 echo "==> [1/5] derep"
 for f in "${fq[@]}"; do
   b=$(basename "$f"); b=${b%%.*}
