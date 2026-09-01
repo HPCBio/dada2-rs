@@ -67,7 +67,7 @@ What that is worth, at *matched alignment work* so the screen is the only variab
 | PacBio HiFi, 95 samples | per-sample | 0.48 | 3.8% | none — exactly identical |
 | NovaSeq soil 16S | per-sample | 0.65 | **16.6%** | churn 277/17398, L1 0.842% |
 | NovaSeq ITS2 | per-sample | 0.62 | **15%** | churn 7/3808, L1 0.365% |
-| **NovaSeq ITS2** | **pooled** | 0.62-0.63 | **~20%** (exclusive node; 29% under a wider affinity mask) | churn 18/3028, L1 0.335-0.769% |
+| **NovaSeq ITS2** | **pooled** | 0.62-0.63 | **28.3%** (3 reps, control 0.5%; 20% on an exclusive node) | churn 18/3028, L1 0.335-0.769% |
 
 **The right cutoff is the one that matches the k-mer screen's PASS RATE**, and it
 must be derived per dataset because that rate spans 0.70%-26.8% across the five
@@ -491,19 +491,33 @@ itself.** Tightening removes alignment work, so the screen's share of
 **19.1% at 0.42** — and a cheaper screen is worth proportionally more. An index
 whose serial cost were the dominant term would trend the other way.
 
-> **This does not transfer to a pooled Illumina run, and that case is still
-> open.** Two things differ and both favour index-off there: sketches are ~4x
-> smaller on 300 bp reads than on 1.5 kb HiFi, making the merge-join
-> proportionally cheaper against a k-mer screen that costs 1300 ns/comp on that
-> workload; and a single pool at 48 threads has no cross-sample concurrency to
-> hide serial time behind, where per-sample PacBio ran 12 samples at once —
-> which is *why* setup is 23.7% of compare here and 5.7% there. Set
-> `NOIDX_CUTS` on the next pooled run to settle it.
->
-> What is settled is that the serial scatter is not a design fault to be
-> parallelised away on the strength of its share alone. An earlier revision of
-> this page said it was, and projected the arm from 71% to ~60% of k-mer wall
-> clock on that basis. That projection is unsupported.
+**Pooled ITS2 settles it the other way, by a wider margin.** This was predicted
+to be the case that *favoured* index-off — sketches are ~4x smaller on 300 bp
+reads, and a single pool at 48 threads has no cross-sample concurrency to hide
+serial time behind. Measured (3 reps, control 0.5%):
+
+| arm | screen ns/comp | screen share | `setup` | compare | wall |
+|---|---|---|---|---|---|
+| k-mer | 1383 | 77.2% | 0.00s | 116.20s | 176.57s |
+| minimizer @0.63, index **on** | **33** | 9.1% | 16.14s | **60.04s** | **126.59s** |
+| minimizer @0.63, index **off** | 1144 | 79.5% | 0.00s | 96.11s | 146.99s |
+
+**The index wins by 13.9%** (126.59s vs 146.99s, replicate ranges 125.99-127.10
+and 145.56-148.23, disjoint).
+
+The half of the prediction about sketch size was right and irrelevant. The
+merge-join *is* much cheaper here than on HiFi — **1144 ns/comp against 2272-2407**
+— and it even beats the k-mer screen it replaces (1383). But that was never the
+comparison that decides anything. **Index-off is 35x more expensive per
+comparison than index-on**, and on a workload where the screen is 77% of
+`b_compare`, 16s of serial setup against ~2650s of parallel screen work is not a
+close call. Reasoning about the merge-join versus the *k-mer screen* instead of
+versus the *index* is what made this look open.
+
+So the serial scatter is not a design fault to be parallelised away on the
+strength of its share alone. An earlier revision of this page said it was, and
+projected the arm from 71% to ~60% of k-mer wall clock on that basis. That
+projection is withdrawn; the index question is closed on both platforms.
 
 **2. Map efficiency falls 90% -> 76%, inside the parallel region.** Separate from
 setup, which sits outside it. The cause is the per-item work collapsing: at 33
@@ -1233,8 +1247,12 @@ This is the third negative result on this branch from costing a scan by
 operations rather than by access pattern, which is a general lesson about this
 codebase and not about minimizers.
 
-Still open on pooled Illumina, where sketches are ~4x smaller and a single pool
-has no cross-sample concurrency to hide serial time behind.
+**Closed on both platforms.** Pooled ITS2 was expected to favour index-off —
+4x smaller sketches, no cross-sample concurrency — and the index won there by
+**13.9%**, a wider margin than anywhere on PacBio. The merge-join is indeed
+cheaper on short reads (1144 ns/comp vs 2272-2407) and even beats the k-mer
+screen, but it is still **35x** the index's 33 ns/comp, and the screen is 77% of
+`b_compare` on that workload.
 ## The mechanism
 
 Putting the two together: the screen was simply too tight overall. Shrouding a
@@ -1372,16 +1390,17 @@ What promotion would require, in order:
    for. **This is not a question the data answers.**
 2. **Replication.** One dataset per configuration. A second diverse pool per
    platform would say whether ~0.64 is a default or a coincidence.
-3. **The serial `setup` phase — on pooled Illumina only.** ~~The fix is bounded:
-   parallelise the scatter, or track touched indices.~~ Both of those were
-   measured and both cost more than they save; on per-sample PacBio the index
-   *wins* despite its serial cost, because the alternative merge-join is
-   memory-bound at the same 2400 ns/comp as the k-mer sweep
+3. ~~**The serial `setup` phase.**~~ **Resolved, not a promotion blocker.** All
+   three ways out were measured and all cost more than they save: touched-index
+   tracking regressed 29%, and removing the index lost on *both* platforms —
+   by up to 6.0% on PacBio and **13.9% on pooled ITS2**, which was the case
+   predicted to favour it
    ([claim 3](#3-the-serial-scatter-is-the-indexs-price-and-should-be-parallelised-away-it-is-the-indexs-bargain)).
-   What remains is the pooled Illumina case, where sketches are ~4x smaller and a
-   single pool at 48 threads has no cross-sample concurrency to hide serial time
-   behind. `NOIDX_CUTS` on `dev/run_screen_sweep.sh` measures it; until then this
-   is 23.7% of `compare` of unknown recoverability, not a known cap.
+   The setup share is real but is the price of a 35-75x cheaper screen. What
+   remains here is **map efficiency** (90% -> 75%), which is separate, sits inside
+   the parallel region, and has its own knob in `DADA2RS_PAR_GRAIN` — and note
+   that index-off holds 89% efficiency, so this cost is specific to the regime
+   where per-item work collapses to a single array read.
 4. **A default-selection story.** The right cutoff varies with pass rate
    (0.45-0.80 across workloads), so a fixed default cannot be right everywhere —
    the shipped 0.63 is an Illumina value and is 0.18 too loose on HiFi.
