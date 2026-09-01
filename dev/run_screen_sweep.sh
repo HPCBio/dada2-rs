@@ -55,6 +55,25 @@ RUN="$HERE/concordance/run_illumina.sh"
 # sketch size, where 8 zeroed out every missed pair below 10 substitutions on the
 # SOP and 11 (the shipped default) did not.
 KS="${KS:-8}"
+
+# Winnowing windows to sweep. w controls SAMPLING DENSITY -- the sketch keeps
+# ~2/(w+1) of positions -- and it has never been varied on this branch, so every
+# result here is a single w=5 point.
+#
+# The reason to sweep it on Illumina is not tuning, it is a test of why the
+# platforms differ. Sketch size tracks read length: 475 entries/raw on 1.5 kb
+# HiFi, but only **74** on 231 bp ITS2. The screen distance is a sum of minima
+# over those entries, so its granularity is 1/74 against 1/475 and its relative
+# sampling error is ~2.5x larger -- and HiFi is exactly concordant while Illumina
+# churns. If churn falls monotonically as w drops (raising the entry count), the
+# platform gap is estimator variance from a small sketch, not the error-profile
+# story currently in the findings page.
+#
+# w=1 is the informative endpoint: every k-mer becomes its own window minimum, so
+# the sketch degenerates to the full k-mer multiset (bar consecutive duplicates
+# inside homopolymers, which emit once by design). That arm isolates WINNOWING
+# NOISE from the choice of k -- if w=1 churns zero, all churn is sampling.
+WS="${WS:-5}"
 # Deliberately spans BELOW the k-mer screen's own 0.42 and ABOVE the zero-churn
 # point, so the failure modes at both ends are visible rather than inferred: too
 # tight shrouds genuine neighbours and fragments clusters, too loose aligns far
@@ -197,15 +216,24 @@ echo "    control vs baseline (MUST be identical, or nothing below is interpreta
     --label-a base --label-b control || true; } | tail -2 | sed 's/^/      /'
 
 echo
-echo "==> sweeping the (k, cutoff) grid"
+# Arm name. The `_w<N>` segment appears ONLY for a non-default w, so every arm
+# already on disk from a w=5 run keeps its name and stays cached -- adding the w
+# axis must not silently invalidate a completed grid.
+arm_name() {  # k, w, cutoff
+  if [ "$2" = "5" ]; then echo "mini_k$1_c$3"; else echo "mini_k$1_w$2_c$3"; fi
+}
+
+echo "==> sweeping the (k, w, cutoff) grid"
 for K in $KS; do
-  for C in $CUTS; do
-    d="$OUT/mini_k${K}_c${C}"
-    [ -d "$d" ] && { echo "    k=$K cutoff=$C (cached)"; continue; }
-    echo "    k=$K cutoff=$C"
-    SCREEN_BACKEND=minimizer MINIMIZER_K="$K" SCREEN_CUTOFF="$C" \
-      ERR_DIR="${ERR_DIR:-}" PREFILTERED="${PREFILTERED:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" POOL="$POOL" LEARN_CUTOFF="$LEARN_CUTOFF" \
-      bash "$RUN" "$BIN" "$DATA" "$d" "$THREADS" > "$d.log" 2>&1
+  for W in $WS; do
+    for C in $CUTS; do
+      d="$OUT/$(arm_name "$K" "$W" "$C")"
+      [ -d "$d" ] && { echo "    k=$K w=$W cutoff=$C (cached)"; continue; }
+      echo "    k=$K w=$W cutoff=$C"
+      SCREEN_BACKEND=minimizer MINIMIZER_K="$K" MINIMIZER_W="$W" SCREEN_CUTOFF="$C" \
+        ERR_DIR="${ERR_DIR:-}" PREFILTERED="${PREFILTERED:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" POOL="$POOL" LEARN_CUTOFF="$LEARN_CUTOFF" \
+        bash "$RUN" "$BIN" "$DATA" "$d" "$THREADS" > "$d.log" 2>&1
+    done
   done
 done
 
@@ -297,10 +325,12 @@ if [ ${#filtF[@]} -eq 0 ]; then
   echo "    (no forward reads found for timing; skipping)" >&2
   REPS=0
 fi
-# spec = name:minimizer-k:cutoff:index  (empty k = k-mer arm; index 0 = no index)
-declare -a ARMS=("kmer:::" "kmerctl:::")
-for K in $KS; do for C in $TIME_CUTS; do ARMS+=("mini_k${K}_c${C}:$K:$C:"); done; done
-for K in $KS; do for C in $NOIDX_CUTS; do ARMS+=("mini_k${K}_c${C}_noidx:$K:$C:0"); done; done
+# spec = name:minimizer-k:cutoff:w:index  (empty k = k-mer arm; index 0 = no index)
+declare -a ARMS=("kmer::::" "kmerctl::::")
+for K in $KS; do for W in $WS; do
+  for C in $TIME_CUTS;  do ARMS+=("$(arm_name "$K" "$W" "$C"):$K:$C:$W:"); done
+  for C in $NOIDX_CUTS; do ARMS+=("$(arm_name "$K" "$W" "$C")_noidx:$K:$C:$W:0"); done
+done; done
 
 # Append, do not truncate: timing passes are the expensive part (a pooled pass is
 # billions of comparisons), so raising REPS on a re-run should ADD replicates
@@ -311,9 +341,9 @@ echo "    ${#ARMS[@]} arms x $REPS reps = $(( ${#ARMS[@]} * REPS )) denoising pa
 echo "    (narrow with TIME_CUTS=; the accuracy grid above is unaffected)"
 for rep in $(seq 1 "$REPS"); do
   for arm in "${ARMS[@]}"; do
-    IFS=: read -r name K C IDX <<< "$arm"
+    IFS=: read -r name K C W IDX <<< "$arm"
     extra=()
-    [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
+    [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --minimizer-w "$W" --kdist-cutoff "$C")
     env=(); [ -n "$IDX" ] && env=(env "DADA2RS_MINIMIZER_INDEX=$IDX")
     # Already timed on an earlier invocation? Skip it, so raising REPS adds
     # replicates instead of redoing the ones already paid for.
@@ -361,9 +391,9 @@ fi
 [ ${#TIMER[@]} -eq 0 ] && echo "    (note: /usr/bin/time unavailable; peak RSS omitted, verbose block still captured)"
 {
   for spec in "${ARMS[@]}"; do
-    IFS=: read -r name K C IDX <<< "$spec"
+    IFS=: read -r name K C W IDX <<< "$spec"
     [ "$name" = "kmerctl" ] && continue
-    extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
+    extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --minimizer-w "$W" --kdist-cutoff "$C")
     env=(); [ -n "$IDX" ] && env=(env "DADA2RS_MINIMIZER_INDEX=$IDX")
     echo "===== $name"
     ${env[@]+"${env[@]}"} ${TIMER[@]+"${TIMER[@]}"} "$BIN" $DADA_CMD "${filtF[@]}" \
