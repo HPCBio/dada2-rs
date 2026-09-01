@@ -78,6 +78,20 @@ CUTS="${CUTS:-0.40 0.42 0.45 0.48 0.50 0.52 0.55 0.60}"
 # variable. Set TIME_CUTS="$CUTS" to time everything, or "" to skip timing.
 TIME_CUTS="${TIME_CUTS:-0.48 0.52}"
 
+# Cutoffs to ALSO time with the inverted index DISABLED, as separate `_noidx`
+# arms. The index turns the screen into an O(1) array read per pair, but pays for
+# it with a SERIAL per-cluster scatter: on the per-sample PacBio run that scatter
+# was 33.7s against a 96.3s parallel map saving, so it consumed most of the gain.
+# Without the index each pair does its own merge-join over two ~475-entry
+# sketches -- more total work, but fully inside the parallel map. Which wins is
+# not predictable from the sketch size alone, so it is an arm, not an assumption.
+#
+# This MUST be a distinct arm name rather than an env var exported over the whole
+# script: timings.tsv keys on (arm, rep) so that raising REPS reuses replicates
+# already paid for, and flipping the index underneath a name that already has
+# rows would silently mix two configurations into one median.
+NOIDX_CUTS="${NOIDX_CUTS:-$TIME_CUTS}"
+
 # COST WARNING. The timing and phase-split sections each run one full denoising
 # pass per (arm x rep). On a large pooled run a single pass is enormous, so use
 # REPS=1 and one or two TIME_CUTS there; the accuracy grid is cheap by comparison
@@ -141,13 +155,14 @@ echo "==> [3/5] learn-errors ONCE (k-mer screen) -- shared by every arm"
       -o "$OUT/models/err.json" > /dev/null
 
 echo "==> [4/5] denoise with $DADA_CMD (POOL=$POOL): baseline, control, grid (shared model)"
-run_arm() {  # name, extra args...
+run_arm() {  # name, extra args...   ARM_ENV=(...) prefixes the command
   local name="$1"; shift
   local d="$OUT/arms/$name"
   [ -d "$d" ] && { echo "    $name (cached)"; return; }
   mkdir -p "$d"
   echo "    $name"
-  "$BIN" $DADA_CMD "${fq[@]}" --error-model "$OUT/models/err.json" \
+  ${ARM_ENV[@]+"${ARM_ENV[@]}"} "$BIN" $DADA_CMD "${fq[@]}" \
+      --error-model "$OUT/models/err.json" \
       --band "$BAND" --kmer-size "$KMER" --output-dir "$d" \
       --threads "$THREADS" "$@" > /dev/null
 }
@@ -156,6 +171,22 @@ run_arm kmerctl                       # control channel: identical config, run t
 for K in $KS; do
   for C in $CUTS; do
     run_arm "mini_k${K}_c${C}" --screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C"
+  done
+done
+# The inverted index is documented as an EXACT acceleration of the same screen,
+# so an index-off arm must reproduce its index-on twin cell for cell. That has
+# never been checked at scale, and it is the precondition for reading the _noidx
+# timing arms as a pure speed result rather than a different screen. Cheap: one
+# extra pass per NOIDX_CUTS entry, and step [5/5] checks the twins explicitly.
+for K in $KS; do
+  for C in $NOIDX_CUTS; do
+    # Set and unset explicitly rather than as a `VAR=x run_arm` prefix: an
+    # assignment prefixing a FUNCTION call persists in the shell afterwards in
+    # bash, which would silently disable the index for every later arm.
+    ARM_ENV=(env DADA2RS_MINIMIZER_INDEX=0)
+    run_arm "mini_k${K}_c${C}_noidx" --screen-backend minimizer \
+            --minimizer-k "$K" --kdist-cutoff "$C"
+    ARM_ENV=()
   done
 done
 
@@ -197,6 +228,23 @@ for d in sorted(glob.glob(os.path.join(root, "*"))):
     reads = sum(a.values()) - sum(base.values())
     print(f"{n:>18s} {len(a):7d} {len(set(base)-set(a)):7d} {len(set(a)-set(base)):7d} "
           f"{100*l1/max(tot,1):9.4f}% {al:13,d} {100*al/bal:8.1f}% {reads:+12,d}")
+# The index is an exact acceleration, so `_noidx` must equal its twin exactly.
+# Compared to the TWIN, not to the k-mer baseline: the twins share a screen and a
+# cutoff, so any difference between them is an index bug and nothing else.
+twins = [os.path.basename(d) for d in sorted(glob.glob(os.path.join(root, "*_noidx")))]
+if twins:
+    print("\nINDEX EXACTNESS (index-off vs its index-on twin; must be 0 / 0 / 0):")
+    for n in twins:
+        base_n = n[: -len("_noidx")]
+        if not os.path.isdir(os.path.join(root, base_n)):
+            print(f"  {n:>24s}  no index-on twin `{base_n}` -- add {base_n.split('_c')[-1]} to CUTS")
+            continue
+        x, _ = load(os.path.join(root, base_n))
+        y, _ = load(os.path.join(root, n))
+        diff = sum(abs(x.get(k, 0) - y.get(k, 0)) for k in set(x) | set(y))
+        print(f"  {n:>24s}  only_on={len(set(x)-set(y))}  only_off={len(set(y)-set(x))}  "
+              f"count L1={diff}  {'OK' if diff == 0 else '*** INDEX BUG ***'}")
+
 print("\nkmerctl MUST be identical to the baseline (0 / 0 / 0.0000%).")
 print("If it is not, the run is nondeterministic and nothing below is a result.")
 PY
@@ -208,14 +256,17 @@ echo "==> wall time (arms interleaved across $REPS reps)"
 # rather than discard the ones already paid for. Each (arm, rep) is skipped if
 # already recorded.
 touch "$OUT/timings.tsv"
-declare -a T=("kmer::" "kmerctl::")
-for K in $KS; do for C in $TIME_CUTS; do T+=("mini_k${K}_c${C}:$K:$C"); done; done
+# spec = name:minimizer-k:cutoff:index  (empty k = k-mer arm; index 0 = no index)
+declare -a T=("kmer:::" "kmerctl:::")
+for K in $KS; do for C in $TIME_CUTS; do T+=("mini_k${K}_c${C}:$K:$C:"); done; done
+for K in $KS; do for C in $NOIDX_CUTS; do T+=("mini_k${K}_c${C}_noidx:$K:$C:0"); done; done
 echo "    ${#T[@]} arms x $REPS reps = $(( ${#T[@]} * REPS )) denoising passes"
 echo "    (narrow with TIME_CUTS=; the accuracy grid above is unaffected)"
 for rep in $(seq 1 "$REPS"); do
   for spec in "${T[@]}"; do
-    name="${spec%%:*}"; rest="${spec#*:}"; K="${rest%%:*}"; C="${rest#*:}"
+    IFS=: read -r name K C IDX <<< "$spec"
     extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
+    env=(); [ -n "$IDX" ] && env=(env "DADA2RS_MINIMIZER_INDEX=$IDX")
     # Already timed on an earlier invocation? Skip it, so raising REPS adds
     # replicates instead of redoing the ones already paid for.
     if awk -F'\t' -v n="$name" -v r="$rep" '$1==n && $2==r{f=1} END{exit !f}' \
@@ -224,7 +275,8 @@ for rep in $(seq 1 "$REPS"); do
       continue
     fi
     t0=$(python3 -c 'import time;print(time.time())')
-    "$BIN" $DADA_CMD "${fq[@]}" --error-model "$OUT/models/err.json" --band "$BAND" \
+    ${env[@]+"${env[@]}"} "$BIN" $DADA_CMD "${fq[@]}" \
+        --error-model "$OUT/models/err.json" --band "$BAND" \
         --kmer-size "$KMER" --threads "$THREADS" ${extra[@]+"${extra[@]}"} \
         --output-dir "$OUT/.timing" > /dev/null 2>&1
     t1=$(python3 -c 'import time;print(time.time())')
@@ -258,11 +310,12 @@ fi
 [ ${#TIMER[@]} -eq 0 ] && echo "    (note: /usr/bin/time unavailable; peak RSS omitted, verbose block still captured)"
 {
   for spec in "${T[@]}"; do
-    name="${spec%%:*}"; rest="${spec#*:}"; K="${rest%%:*}"; C="${rest#*:}"
+    IFS=: read -r name K C IDX <<< "$spec"
     [ "$name" = "kmerctl" ] && continue
     extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
+    env=(); [ -n "$IDX" ] && env=(env "DADA2RS_MINIMIZER_INDEX=$IDX")
     echo "===== $name"
-    ${TIMER[@]+"${TIMER[@]}"} "$BIN" $DADA_CMD "${fq[@]}" \
+    ${env[@]+"${env[@]}"} ${TIMER[@]+"${TIMER[@]}"} "$BIN" $DADA_CMD "${fq[@]}" \
         --error-model "$OUT/models/err.json" --band "$BAND" --kmer-size "$KMER" \
         --threads "$THREADS" --verbose \
         ${extra[@]+"${extra[@]}"} --output-dir "$OUT/.verbose" 2>&1 \
