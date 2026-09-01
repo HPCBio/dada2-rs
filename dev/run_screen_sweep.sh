@@ -74,6 +74,22 @@ CUTS="${CUTS:-0.40 0.45 0.50 0.55 0.60 0.62 0.63 0.64 0.65 0.70 0.75 0.80}"
 # variable. Set TIME_CUTS="$CUTS" to time everything, or "" to skip timing.
 TIME_CUTS="${TIME_CUTS:-0.62 0.64}"
 
+# Cutoffs to ALSO time with the inverted index DISABLED, as separate `_noidx`
+# arms. Timing and phase-split only -- the accuracy grid here is the expensive
+# part (full pipeline per arm), and index exactness is already established on
+# PacBio, where two `_noidx` arms reproduced their index-on twins cell for cell.
+#
+# OPT-IN here, unlike the PacBio script, but the question is more open on this
+# platform, not less. On per-sample PacBio the index WON: the per-pair merge-join
+# cost 2379 ns/comp against the k-mer sweep's 2460 -- both memory-latency-bound,
+# so the serial scatter was worth paying. Two things differ on a pooled Illumina
+# run and both push the other way. Sketches are ~4x smaller on 300 bp reads than
+# on 1.5 kb HiFi, making the merge-join proportionally cheaper; and a single pool
+# at 48 threads has no cross-sample concurrency to hide serial time behind, where
+# per-sample PacBio ran 12 samples at once. Pooled ITS2 measured setup at 23.7%
+# of compare for exactly that reason. So set NOIDX_CUTS on a pooled run.
+NOIDX_CUTS="${NOIDX_CUTS:-}"
+
 # COST WARNING. The timing and phase-split sections each run one full denoising
 # pass per (arm x rep), and on a large pooled run a single pass is enormous --
 # pooled soil 16S is 11.8 BILLION comparisons. A 3-rep x 12-arm timing section is
@@ -255,8 +271,10 @@ if [ ${#filtF[@]} -eq 0 ]; then
   echo "    (no forward reads found for timing; skipping)" >&2
   REPS=0
 fi
-declare -a ARMS=("kmer::" "kmerctl::")
-for K in $KS; do for C in $TIME_CUTS; do ARMS+=("mini_k${K}_c${C}:$K:$C"); done; done
+# spec = name:minimizer-k:cutoff:index  (empty k = k-mer arm; index 0 = no index)
+declare -a ARMS=("kmer:::" "kmerctl:::")
+for K in $KS; do for C in $TIME_CUTS; do ARMS+=("mini_k${K}_c${C}:$K:$C:"); done; done
+for K in $KS; do for C in $NOIDX_CUTS; do ARMS+=("mini_k${K}_c${C}_noidx:$K:$C:0"); done; done
 
 # Append, do not truncate: timing passes are the expensive part (a pooled pass is
 # billions of comparisons), so raising REPS on a re-run should ADD replicates
@@ -267,9 +285,10 @@ echo "    ${#ARMS[@]} arms x $REPS reps = $(( ${#ARMS[@]} * REPS )) denoising pa
 echo "    (narrow with TIME_CUTS=; the accuracy grid above is unaffected)"
 for rep in $(seq 1 "$REPS"); do
   for arm in "${ARMS[@]}"; do
-    name="${arm%%:*}"; rest="${arm#*:}"; K="${rest%%:*}"; C="${rest#*:}"
+    IFS=: read -r name K C IDX <<< "$arm"
     extra=()
     [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
+    env=(); [ -n "$IDX" ] && env=(env "DADA2RS_MINIMIZER_INDEX=$IDX")
     # Already timed on an earlier invocation? Skip it, so raising REPS adds
     # replicates instead of redoing the ones already paid for.
     if awk -F'\t' -v n="$name" -v r="$rep" '$1==n && $2==r{f=1} END{exit !f}' \
@@ -280,7 +299,8 @@ for rep in $(seq 1 "$REPS"); do
     t0=$(python3 -c 'import time;print(time.time())')
     # Same denoising mode as the arms, or the timings describe a different
     # workload than the accuracy table above.
-    "$BIN" $DADA_CMD "${filtF[@]}" --error-model "$OUT/base/errF.json" \
+    ${env[@]+"${env[@]}"} "$BIN" $DADA_CMD "${filtF[@]}" \
+        --error-model "$OUT/base/errF.json" \
         --output-dir "$OUT/.timing" --threads "$THREADS" \
         ${extra[@]+"${extra[@]}"} > /dev/null 2>&1
     t1=$(python3 -c 'import time;print(time.time())')
@@ -315,11 +335,12 @@ fi
 [ ${#TIMER[@]} -eq 0 ] && echo "    (note: /usr/bin/time unavailable; peak RSS omitted, verbose block still captured)"
 {
   for spec in "${ARMS[@]}"; do
-    name="${spec%%:*}"; rest="${spec#*:}"; K="${rest%%:*}"; C="${rest#*:}"
+    IFS=: read -r name K C IDX <<< "$spec"
     [ "$name" = "kmerctl" ] && continue
     extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
+    env=(); [ -n "$IDX" ] && env=(env "DADA2RS_MINIMIZER_INDEX=$IDX")
     echo "===== $name"
-    ${TIMER[@]+"${TIMER[@]}"} "$BIN" $DADA_CMD "${filtF[@]}" \
+    ${env[@]+"${env[@]}"} ${TIMER[@]+"${TIMER[@]}"} "$BIN" $DADA_CMD "${filtF[@]}" \
         --error-model "$OUT/base/errF.json" --threads "$THREADS" --verbose \
         ${extra[@]+"${extra[@]}"} --output-dir "$OUT/.verbose" 2>&1 \
       | grep -E "^\[dada\]|maximum resident|Maximum resident|elapsed|real" \
