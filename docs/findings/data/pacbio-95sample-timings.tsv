@@ -11,3 +11,15 @@ kmer	3	73.44
 kmerctl	3	73.56
 mini_k8_c0.48	3	69.60
 mini_k8_c0.48_noidx	3	70.59
+mini_k8_c0.42	1	48.79
+mini_k8_c0.45	1	60.08
+mini_k8_c0.42_noidx	1	50.35
+mini_k8_c0.45_noidx	1	62.00
+mini_k8_c0.42	2	48.05
+mini_k8_c0.45	2	59.29
+mini_k8_c0.42_noidx	2	52.58
+mini_k8_c0.45_noidx	2	63.42
+mini_k8_c0.42	3	48.17
+mini_k8_c0.45	3	58.89
+mini_k8_c0.42_noidx	3	51.22
+mini_k8_c0.45_noidx	3	61.12

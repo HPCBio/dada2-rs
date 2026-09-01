@@ -4,10 +4,12 @@
 of screening happens.** What to expect depends on the platform, and the gap is
 wide enough to state up front:
 
-* **PacBio HiFi — exactly identical.** At a calibrated cutoff of 0.45 or above,
-  95 samples reproduced the k-mer screen's ASV calls, counts and reads bit for
-  bit, in every sample individually. And 0.45 does it with **22% fewer
-  alignments**, so the k-mer screen is over-provisioned on this platform.
+* **PacBio HiFi — exactly identical, and 18.7% faster.** At a calibrated cutoff
+  of 0.45 or above, 95 samples reproduced the k-mer screen's ASV calls, counts
+  and reads bit for bit, in every sample individually — while doing **22% fewer
+  alignments** and finishing in **59.29s against 72.94s** (3 reps, control 0.2%,
+  disjoint ranges). The k-mer screen is simply over-provisioned on this
+  platform. This is the one workload where the backend costs nothing at all.
 * **Illumina — mostly concordant, not identical.** ASV sets and counts agree
   closely on every dataset tested, with real differences of typically a fraction
   of a percent of reads and a small number of low-abundance ASVs. No cutoff was
@@ -60,8 +62,9 @@ What that is worth, at *matched alignment work* so the screen is the only variab
 | dataset | mode | cutoff | speedup at matched alignments | accuracy cost |
 |---|---|---|---|---|
 | MiSeq SOP 16S | per-sample | 0.70 | ~0% (screen is 0.9%) | churn 0 |
-| PacBio HiFi, 95 samples | per-sample | 0.48 | **3.8%** (control 0.2%) | **churn 0, L1 0.0000%** |
-| PacBio HiFi, 95 samples | per-sample | 0.45 | not yet timed; 22% fewer alignments | **churn 0, L1 0.0000%** |
+| **PacBio HiFi, 95 samples** | per-sample | **0.45** | **18.7%** (control 0.2%) | **none — exactly identical** |
+| PacBio HiFi, 95 samples | per-sample | 0.42 | **34.0%** | 3 of 2409 pooled ASVs, −16 reads |
+| PacBio HiFi, 95 samples | per-sample | 0.48 | 3.8% | none — exactly identical |
 | NovaSeq soil 16S | per-sample | 0.65 | **16.6%** | churn 277/17398, L1 0.842% |
 | NovaSeq ITS2 | per-sample | 0.62 | **15%** | churn 7/3808, L1 0.365% |
 | **NovaSeq ITS2** | **pooled** | 0.62-0.63 | **~20%** (exclusive node; 29% under a wider affinity mask) | churn 18/3028, L1 0.335-0.769% |
@@ -173,6 +176,26 @@ It also means the cutoff can be chosen on cost alone inside that window, and
 output**. The k-mer screen at 0.42 is over-provisioned on HiFi -- the same shape
 as the [band-size](band-size-platform-defaults.md) finding, arrived at
 independently.
+
+Wall clock, 3 replicates interleaved across arms, **control channel 0.2%**:
+
+| arm | median | min-max | vs k-mer | accuracy cost |
+|---|---|---|---|---|
+| k-mer (baseline) | 72.94s | 72.27-73.44 | — | — |
+| **control:** k-mer again | 73.08s | 72.94-73.56 | +0.2% | none |
+| minimizer @ 0.42 | **48.17s** | 48.05-48.79 | **−34.0%** | 3 of 2409 pooled ASVs, −16 reads |
+| **minimizer @ 0.45** | **59.29s** | 58.89-60.08 | **−18.7%** | **none — exactly identical** |
+| minimizer @ 0.48 | 70.15s | 69.60-71.48 | −3.8% | none — exactly identical |
+| minimizer @ 0.52 | 82.39s | — | +13.0% | none — exactly identical |
+
+**−18.7% for bit-identical output** is the strongest result on this page. Every
+other speedup here is bought with churn; this one is free, and its replicate
+range (58.89-60.08) is disjoint from the baseline's (72.27-73.44).
+
+The 0.52 row is the other half of the lesson: three grid steps looser costs
+**+13.0%**, because past the concordance plateau the screen only adds
+alignments. The window is asymmetric -- tightening to the plateau's cheap edge
+gains 18.7%, loosening past it loses 13%, and both produce the same ASV table.
 
 > An earlier revision of this page reported this platform from **3** Kinnex
 > samples whose two arms each ran their own `learn-errors`, and drew a "13.3%
