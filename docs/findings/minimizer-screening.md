@@ -464,23 +464,32 @@ pair does its own merge-join over two sketches, which is fully parallel and has
 no serial setup at all. Measured as a first-class arm on per-sample PacBio
 (`DADA2RS_MINIMIZER_INDEX=0`, 3 reps, control 0.2%):
 
-| arm | screen | ns/comp | `setup` (serial) | compare busy | wall |
+| arm | screen | ns/comp | screen share | `setup` (serial) | wall |
 |---|---|---|---|---|---|
-| k-mer | 325.82s | 2460 | 0.00s | 2635.76s | 72.94s |
-| minimizer, index **on** | 4.22s | **32** | **32.13s** | 2189.10s | **70.15s** |
-| minimizer, index **off** | 318.21s | **2379** | 0.00s | 2481.46s | 71.60s |
+| k-mer | 322.11s | 2408 | 12.3% | 0.00s | 72.94s |
+| minimizer @0.45, index **on** | 4.29s | **32** | 0.2% | 33.44s | **59.29s** |
+| minimizer @0.45, index **off** | 321.92s | **2407** | 15.6% | 0.00s | 62.00s |
+| minimizer @0.42, index **on** | 4.28s | **32** | 0.3% | 31.13s | **48.17s** |
+| minimizer @0.42, index **off** | 303.98s | **2272** | 19.1% | 0.00s | 51.22s |
 
-The merge-join costs **2379 ns/comp against the k-mer sweep's 2460** — the same,
-within noise. Both screens are **memory-latency-bound, not op-count-bound**: two
+The merge-join costs **2272-2407 ns/comp against the k-mer sweep's 2408** — the
+same, within noise. Both screens are **memory-latency-bound, not op-count-bound**: two
 ~475-entry sketches fetched from scattered memory cost what sweeping a `4^k`
 vector costs, however few operations you perform once the lines are resident.
 This is the third negative result on this branch from costing a scan by
 operations rather than by access pattern.
 
-So the 32.13s of serial setup **buys back 314s of parallel screen work** — at 4
-threads per sample, ~78s of map wall clock for 32s of serial, a 2.4x net win. The
+So ~31-33s of serial setup **buys back ~300s of parallel screen work**, and
+index-off is slower end to end at every cutoff tested — by 2.0% at 0.48, 4.4% at
+0.45 and **6.0% at 0.42**, with disjoint replicate ranges at the latter two. The
 index earns its serial cost, and `DADA2RS_MINIMIZER_INDEX` is a diagnostic, not a
 tuning knob.
+
+**The margin growing as the cutoff tightens is the mechanism confirming
+itself.** Tightening removes alignment work, so the screen's share of
+`b_compare` rises — 12.3% for the k-mer screen, 15.6% for index-off at 0.45,
+**19.1% at 0.42** — and a cheaper screen is worth proportionally more. An index
+whose serial cost were the dominant term would trend the other way.
 
 > **This does not transfer to a pooled Illumina run, and that case is still
 > open.** Two things differ and both favour index-off there: sketches are ~4x
@@ -1202,14 +1211,23 @@ Both ways out were measured and both cost more:
   regression (5.97 -> 7.70s), and the arithmetic never supported the clear as the
   cost in the first place — a 3.3 MB memset is ~165 us.
 * **Removing the index entirely**, so each pair does its own fully-parallel
-  merge-join with no serial setup, measured **2379 ns/comp against the k-mer
-  sweep's 2460** — no better than the screen it replaces, and slower end to end
-  than keeping the index (71.60s vs 70.15s, control 0.2%).
+  merge-join with no serial setup, measured **2272-2407 ns/comp against the
+  k-mer sweep's 2408** — no better than the screen it replaces, and slower end to
+  end at every cutoff tested (control 0.2%, disjoint ranges at 0.42 and 0.45):
+
+| cutoff | index on | index off | index better by |
+|---|---|---|---|
+| 0.42 | **48.17s** | 51.22s | **6.0%** |
+| 0.45 | **59.29s** | 62.00s | **4.4%** |
+| 0.48 | **70.15s** | 71.60s | 2.0% |
 
 Both screens are **memory-latency-bound, not op-count-bound**. Two ~475-entry
 sketches fetched from scattered memory cost what a `4^k` sweep costs, however few
-operations run once the lines are resident. So 32.13s of serial setup buys back
-314s of parallel screen work — a 2.4x net win, and the index earns its cost.
+operations run once the lines are resident. So ~31-33s of serial setup buys back
+~300s of parallel screen work, and the index's margin *grows* as the screen
+tightens — because tightening removes alignment work and raises the screen's
+share (12.3% k-mer, 19.1% index-off at 0.42). An index whose serial cost
+dominated would trend the other way.
 
 This is the third negative result on this branch from costing a scan by
 operations rather than by access pattern, which is a general lesson about this
