@@ -87,6 +87,12 @@ TIME_CUTS="${TIME_CUTS:-0.48 0.52}"
 # a band would truncate the divergence of distant pairs, which is the quantity
 # being calibrated), and emits one CSV row per pair. On 1.5 kb reads that is the
 # expensive part of this script.
+# Cost note: this is per SAMPLE per BACKEND, and every sampled pair is aligned
+# UNBANDED (deliberately -- a band would truncate the divergence of distant pairs,
+# which is the quantity being calibrated). On 1.5 kb reads that is ~2.2M DP cells
+# a pair, so this step dominates the script on PacBio. The recommendation reads off
+# a p99/p99.9 tail statistic that stabilises well before 300k, so cutting this to
+# 50000 costs little. The calibration is ADVISORY in any case -- the sweep decides.
 CAL_PAIRS="${CAL_PAIRS:-300000}"
 CAL_UNIQUES="${CAL_UNIQUES:-3000}"
 
@@ -104,17 +110,22 @@ for f in "${fq[@]}"; do
 done
 
 echo "==> [2/5] calibrate both screens (same pairs, same seed)"
-if [ ! -f "$OUT/models/cal_kmer.csv" ]; then
+# Write to a temp file and rename on success. The cache keys on file existence,
+# so a run killed mid-calibration would otherwise leave a TRUNCATED csv that the
+# next invocation silently accepts as complete -- and this step is slow enough on
+# 1.5 kb reads (every sampled pair aligned UNBANDED, ~2.2M DP cells each) that
+# killing it is a realistic thing to do.
+calibrate() {  # out-file, extra args...
+  local out="$1"; shift
+  [ -f "$out" ] && { echo "    $(basename "$out") (cached)"; return; }
   "$BIN" kdist-calibrate "$OUT"/derep/*.json --k "$KMER" --per-sample \
       --max-uniques "$CAL_UNIQUES" --max-pairs "$CAL_PAIRS" \
-      --threads "$THREADS" -o "$OUT/models/cal_kmer.csv" > /dev/null
-fi
+      --threads "$THREADS" "$@" -o "$out.partial" > /dev/null
+  mv "$out.partial" "$out"
+}
+calibrate "$OUT/models/cal_kmer.csv"
 for K in $KS; do
-  [ -f "$OUT/models/cal_mini_k$K.csv" ] && continue
-  "$BIN" kdist-calibrate "$OUT"/derep/*.json --k "$KMER" --per-sample \
-      --max-uniques "$CAL_UNIQUES" --max-pairs "$CAL_PAIRS" \
-      --screen-backend minimizer --minimizer-k "$K" \
-      --threads "$THREADS" -o "$OUT/models/cal_mini_k$K.csv" > /dev/null
+  calibrate "$OUT/models/cal_mini_k$K.csv" --screen-backend minimizer --minimizer-k "$K"
 done
 cal_args=("kmer=$OUT/models/cal_kmer.csv")
 for K in $KS; do cal_args+=("mini_k$K=$OUT/models/cal_mini_k$K.csv"); done
