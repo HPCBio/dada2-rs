@@ -49,6 +49,28 @@ from glob import glob
 # pooled across samples (abundances summed; first-seen birth_type kept).
 # ---------------------------------------------------------------------------
 
+# In per-sample mode a run is keyed by (sample, sequence) rather than by
+# sequence pooled across samples. That distinction is the whole point on a
+# per-sample `dada` run: a sequence dropped from one sample but still called in
+# another leaves the POOLED set identical, so pooling reports zero churn where
+# the per-sample tables actually disagree. The PacBio minimizer sweep is exactly
+# that case -- pooled ASV sets matched at every cutoff while 15 to 38 per-sample
+# calls flipped.
+SEP = "\t"
+
+
+def key_of(sample, seq):
+    return f"{sample}{SEP}{seq}" if sample is not None else seq
+
+
+def seq_of(key):
+    return key.rsplit(SEP, 1)[-1]
+
+
+def sample_of(key):
+    return key.rsplit(SEP, 1)[0] if SEP in key else None
+
+
 def _accumulate(acc, seq, abundance, birth=None):
     e = acc.get(seq)
     if e is None:
@@ -59,17 +81,18 @@ def _accumulate(acc, seq, abundance, birth=None):
             e["birth"] = birth
 
 
-def _load_one_json(path, acc):
+def _load_one_json(path, acc, per_sample=False):
     """Add one JSON file's ASVs to acc. Returns the detected kind."""
     with open(path) as fh:
         d = json.load(fh)
     tag = d.get("dada2_rs_command") if isinstance(d, dict) else None
 
     if tag in ("dada", "dada-pooled"):
+        smp = (d.get("sample") or os.path.basename(path)) if per_sample else None
         for a in d.get("asvs", []):
             s = a.get("sequence")
             if s:
-                _accumulate(acc, s, a.get("abundance", 0), a.get("birth_type"))
+                _accumulate(acc, key_of(smp, s), a.get("abundance", 0), a.get("birth_type"))
         return "dada"
 
     if tag in ("make-sequence-table", "remove-bimera-denovo"):
@@ -82,17 +105,24 @@ def _load_one_json(path, acc):
             for j, c in enumerate(row):
                 if j < len(totals):
                     totals[j] += c
-        for s, t in zip(seqs, totals):
-            if s:
-                _accumulate(acc, s, t)
+        if per_sample:
+            for smp, row in zip(d.get("samples", []), counts):
+                for s, c in zip(seqs, row):
+                    if s and c:
+                        _accumulate(acc, key_of(smp, s), c)
+        else:
+            for s, t in zip(seqs, totals):
+                if s:
+                    _accumulate(acc, s, t)
         return "seqtab"
 
     if tag == "merge-pairs":
         for samp in d.get("samples", []):
+            smp = (samp.get("sample") or samp.get("name")) if per_sample else None
             for m in samp.get("merged", []):
                 s = m.get("sequence")
                 if s and m.get("accept", False):
-                    _accumulate(acc, s, m.get("abundance", 0))
+                    _accumulate(acc, key_of(smp, s), m.get("abundance", 0))
         return "merged"
 
     raise ValueError(
@@ -101,7 +131,7 @@ def _load_one_json(path, acc):
     )
 
 
-def load_run(path):
+def load_run(path, per_sample=False):
     """Load a run from a file or a directory of per-sample dada JSONs.
     Returns (asv_map, kind)."""
     acc = {}
@@ -114,10 +144,10 @@ def load_run(path):
         for f in files:
             if f.endswith(".gz"):
                 raise ValueError(f"{f}: gzipped input not supported; gunzip first")
-            kinds.add(_load_one_json(f, acc))
+            kinds.add(_load_one_json(f, acc, per_sample))
         kind = kinds.pop() if len(kinds) == 1 else "mixed"
     else:
-        kind = _load_one_json(path, acc)
+        kind = _load_one_json(path, acc, per_sample)
     return acc, kind
 
 
@@ -152,12 +182,13 @@ def hamming(a, b):
     return sum(x != y for x, y in zip(a, b))
 
 
-def nearest_in(seq, pool_list):
-    """Min Hamming distance from seq to any equal-length sequence in pool_list,
-    plus that neighbor. Returns (dist, neighbor) or (None, None) if no equal-length."""
+def nearest_in(key, pool_list):
+    """Min Hamming distance from key's sequence to any equal-length sequence in
+    pool_list, plus that neighbor's KEY. (None, None) if nothing equal-length."""
+    q = seq_of(key)
     best_d, best = None, None
     for t in pool_list:
-        h = hamming(seq, t)
+        h = hamming(q, seq_of(t))
         if h is not None and (best_d is None or h < best_d):
             best_d, best = h, t
             if h == 0:
@@ -165,7 +196,55 @@ def nearest_in(seq, pool_list):
     return best_d, best
 
 
-def compare(baseline, base_map, other_label, other_map, do_hamming, n_examples):
+def flip_pairs(base_map, other_map, only_base, only_other):
+    """Pair up per-sample churn WITHIN each sample.
+
+    A per-sample run can keep every sample's ASV COUNT identical while the calls
+    themselves differ -- one sequence standing in for another. That is invisible
+    to a set diff, which just reports N lost and N gained, and it is a very
+    different finding from N deaths plus N unrelated births: a substitution moves
+    reads between neighbours, while a birth/death pair changes what was detected.
+
+    Greedy nearest-Hamming matching inside a sample, closest pair first, so the
+    reported distances are the best case available -- if even the best pairing is
+    distant, the substitution reading is wrong.
+    """
+    by_sample = {}
+    for k in only_base:
+        by_sample.setdefault(sample_of(k), ([], []))[0].append(k)
+    for k in only_other:
+        by_sample.setdefault(sample_of(k), ([], []))[1].append(k)
+
+    pairs, unpaired_base, unpaired_other = [], [], []
+    for smp, (lost, gained) in sorted(by_sample.items()):
+        cand = []
+        for a in lost:
+            for b in gained:
+                h = hamming(seq_of(a), seq_of(b))
+                if h is not None:
+                    cand.append((h, a, b))
+        cand.sort(key=lambda t: t[0])
+        used_a, used_b = set(), set()
+        for h, a, b in cand:
+            if a in used_a or b in used_b:
+                continue
+            used_a.add(a)
+            used_b.add(b)
+            pairs.append({
+                "sample": smp,
+                "hamming": h,
+                "lost_abundance": base_map[a]["abundance"],
+                "gained_abundance": other_map[b]["abundance"],
+                "gained_birth": other_map[b]["birth"],
+                "len": len(seq_of(a)),
+            })
+        unpaired_base += [a for a in lost if a not in used_a]
+        unpaired_other += [b for b in gained if b not in used_b]
+    return pairs, unpaired_base, unpaired_other
+
+
+def compare(baseline, base_map, other_label, other_map, do_hamming, n_examples,
+            per_sample=False):
     bset, oset = set(base_map), set(other_map)
     only_base = bset - oset
     only_other = oset - bset
@@ -183,6 +262,23 @@ def compare(baseline, base_map, other_label, other_map, do_hamming, n_examples):
             f"only_{other_label}": abundance_summary(other_map, only_other),
         },
     }
+    if per_sample and (only_base or only_other):
+        pairs, ub, uo = flip_pairs(base_map, other_map, only_base, only_other)
+        dh = [p["hamming"] for p in pairs]
+        result["flips"] = {
+            "n_paired": len(pairs),
+            "unpaired_lost": len(ub),
+            "unpaired_gained": len(uo),
+            "samples_affected": len({p["sample"] for p in pairs}),
+            "hamming1": sum(1 for h in dh if h == 1),
+            "hamming_le2": sum(1 for h in dh if h <= 2),
+            "hamming_median": int(statistics.median(dh)) if dh else None,
+            "hamming_max": max(dh) if dh else None,
+            "abundance_equal": sum(1 for p in pairs
+                                   if p["lost_abundance"] == p["gained_abundance"]),
+            "examples": sorted(pairs, key=lambda p: -p["gained_abundance"])[:n_examples],
+        }
+
     if do_hamming:
         # For the churned-in-other set (the "new at this run" ASVs), find nearest
         # baseline neighbor — the fragmentation signal.
@@ -239,27 +335,36 @@ def main(argv=None):
                    help="Skip nearest-neighbor Hamming analysis (faster; needed if lengths vary widely).")
     p.add_argument("--examples", type=int, default=8,
                    help="Number of top-abundance churned ASVs to detail per comparison (default 8).")
+    p.add_argument("--per-sample", action="store_true",
+                   help="Key ASVs by (sample, sequence) instead of pooling across "
+                        "samples, and report flip pairing. Use this on per-sample "
+                        "`dada` runs: a sequence dropped from one sample but still "
+                        "called in another leaves the POOLED set identical, so the "
+                        "default mode reports zero churn where the per-sample "
+                        "tables disagree.")
     p.add_argument("--json", metavar="OUT", help="Also write the full report as JSON.")
     args = p.parse_args(argv)
 
     blabel, bpath = args.baseline
-    base_map, bkind = load_run(bpath)
+    base_map, bkind = load_run(bpath, args.per_sample)
     base_map = filter_min_abund(base_map, args.min_abundance)
 
     report = {
         "baseline": {"label": blabel, "path": bpath, "kind": bkind, "n_asv": len(base_map)},
+        "per_sample": args.per_sample,
         "min_abundance": args.min_abundance,
         "comparisons": [],
     }
 
     for olabel, opath in args.compare:
-        omap, okind = load_run(opath)
+        omap, okind = load_run(opath, args.per_sample)
         omap = filter_min_abund(omap, args.min_abundance)
         if okind != bkind:
             print(f"WARNING: {olabel} kind={okind} differs from baseline kind={bkind}; "
                   f"comparing anyway by sequence.", file=sys.stderr)
         report["comparisons"].append(
-            compare(blabel, base_map, olabel, omap, not args.no_hamming, args.examples)
+            compare(blabel, base_map, olabel, omap, not args.no_hamming,
+                    args.examples, args.per_sample)
         )
 
     _print_report(report, blabel)
@@ -272,7 +377,8 @@ def main(argv=None):
 
 def _print_report(report, blabel):
     b = report["baseline"]
-    print(f"\nBaseline {b['label']} ({b['kind']}): {b['n_asv']} ASVs"
+    unit = "per-sample ASV calls" if report.get("per_sample") else "ASVs"
+    print(f"\nBaseline {b['label']} ({b['kind']}): {b['n_asv']} {unit}"
           + (f"  [min_abundance={report['min_abundance']}]" if report["min_abundance"] > 1 else ""))
     print("=" * 64)
     for c in report["comparisons"]:
@@ -286,6 +392,23 @@ def _print_report(report, blabel):
               f">=10={ab_b['ge10']} max={ab_b['max']} median={ab_b['median']}")
         print(f"  only_{ol} abundance: n={ab_o['n']} <10={ab_o['lt10']} "
               f">=10={ab_o['ge10']} max={ab_o['max']} median={ab_o['median']}")
+        if "flips" in c:
+            f = c["flips"]
+            print(f"  FLIP PAIRING (within-sample substitutions): {f['n_paired']} paired "
+                  f"across {f['samples_affected']} sample(s); "
+                  f"unpaired lost={f['unpaired_lost']} gained={f['unpaired_gained']}")
+            print(f"    pair Hamming: median={f['hamming_median']} max={f['hamming_max']} "
+                  f"H1={f['hamming1']} <=2={f['hamming_le2']}")
+            print(f"    pairs with EQUAL abundance on both sides: {f['abundance_equal']}"
+                  f" of {f['n_paired']}")
+            if f["unpaired_lost"] or f["unpaired_gained"]:
+                print("    NOTE: unpaired churn is a genuine death or birth, not a "
+                      "substitution -- read those separately.")
+            for e in f["examples"]:
+                print(f"      {e['sample'][:24]:<24} H={e['hamming']:<3} "
+                      f"lost_abund={e['lost_abundance']:>6} -> "
+                      f"gained_abund={e['gained_abundance']:>6}  "
+                      f"birth={str(e['gained_birth'])}")
         if "hamming" in c:
             h = c["hamming"]
             print(f"  nearest-baseline Hamming (only_{ol}): "
