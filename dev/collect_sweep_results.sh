@@ -32,19 +32,37 @@ mkdir -p "$STAGE/$NAME"
 shopt -s nullglob
 echo "==> collecting from $SRC"
 
+# Where the arms live. `run_screen_sweep.sh` puts them at the top level; the
+# PacBio script nests them under `arms/`. Collecting only the top level is how
+# the first pooled PacBio bundle arrived with an EMPTY align_stats.tsv and no
+# seqtab at all -- the timing and phase-split halves were fine, so nothing looked
+# broken until the accuracy table was missing. Accept both layouts.
+ARMS=("$SRC"/*/ "$SRC"/arms/*/)
+is_arm() {  # a directory of derep/model bulk is not an arm
+  case "$(basename "$1")" in derep|models|arms|.timing|.verbose) return 1 ;; esac
+  return 0
+}
+
 # One row per (arm, sample): the alignment-work numbers, extracted here so the
 # multi-GB dada JSONs stay put.
 {
   printf "arm\tstage\tsample\tnalign\tnshroud\taligned\tn_asvs\ttotal_reads\n"
-  for arm in "$SRC"/*/; do
+  for arm in "${ARMS[@]}"; do
+    is_arm "$arm" || continue
     a=$(basename "$arm")
-    for stage in dada dada_fwd dada_rev; do
+    # "." = the arm directory itself: a per-sample `dada` sweep writes its
+    # sample JSONs straight into the arm, with no `dada/` stage subdirectory.
+    for stage in . dada dada_fwd dada_rev; do
       for j in "$arm$stage"/*.json; do
         python3 - "$a" "$stage" "$j" <<'PY'
 import json, os, sys
 arm, stage, path = sys.argv[1], sys.argv[2], sys.argv[3]
 j = json.load(open(path))
-s = j.get("stats", {})
+s = j.get("stats")
+# Scanning the arm directory itself also sees seqtab / error-model JSONs. Those
+# have no `stats`, and emitting them as zero rows would quietly pad the table.
+if not isinstance(s, dict) or "nalign" not in s:
+    sys.exit(0)
 na, ns = s.get("nalign", 0), s.get("nshroud", 0)
 print(f"{arm}\t{stage}\t{j.get('sample', os.path.basename(path))}\t{na}\t{ns}\t{na-ns}"
       f"\t{len(j.get('asvs', []))}\t{j.get('total_reads', 0)}")
@@ -57,7 +75,8 @@ echo "    align_stats.tsv: $(( $(wc -l < "$STAGE/$NAME/align_stats.tsv") - 1 )) 
 
 # The chimera-filtered tables -- the actual comparison inputs.
 n=0
-for arm in "$SRC"/*/; do
+for arm in "${ARMS[@]}"; do
+  is_arm "$arm" || continue
   a=$(basename "$arm")
   for f in "$arm/seqtab.nochim.json"; do
     [ -f "$f" ] || continue
@@ -70,7 +89,8 @@ echo "    seqtab.nochim.json: $n arms"
 
 # Error models. Small, and needed to check whether the arms actually shared one
 # -- if they did not, alignment counts between arms are not comparable.
-for arm in "$SRC"/*/; do
+for arm in "${ARMS[@]}"; do
+  is_arm "$arm" || continue
   a=$(basename "$arm")
   for f in "$arm"/err*.json; do
     [ -f "$f" ] || continue
@@ -78,10 +98,19 @@ for arm in "$SRC"/*/; do
     cp "$f" "$STAGE/$NAME/$a/"
   done
 done
-for f in "$SRC"/models/*.json "$SRC"/models/*.csv "$SRC"/models/*.txt; do
+# Models and the calibration SUMMARY -- but not the calibration CSVs themselves.
+# `cal_*.csv` is one row per sampled pair: 2.3 GB on the PacBio run, which is why
+# the first bundle was 545 MB of which ~1 MB was needed. The note at the end of
+# this script always said the CSVs were excluded; the `models/*.csv` glob was
+# quietly including them anyway.
+for f in "$SRC"/models/*.json "$SRC"/models/*.txt; do
   [ -f "$f" ] || continue
   mkdir -p "$STAGE/$NAME/models"
   cp "$f" "$STAGE/$NAME/models/"
+done
+for f in "$SRC"/models/*.csv; do
+  [ -f "$f" ] || continue
+  echo "    skipping $(basename "$f") ($(du -h "$f" | cut -f1); one row per sampled pair)"
 done
 
 # Timings and logs (logs are small and carry the parameters each arm ran with).
