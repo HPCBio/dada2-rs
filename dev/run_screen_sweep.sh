@@ -162,7 +162,9 @@ PY
 # as though it were pooled -- silently, and with the accuracy table and timings
 # both looking plausible. Stamp the configuration and refuse to mix.
 STAMP="$OUT/.sweep_mode"
-WANT="cmd=$DADA_CMD pool=$POOL errfun=$ERRFUN"
+# POOL, not DADA_CMD: the two scripts define DADA_CMD at different points and
+# this guard must not depend on that ordering (it broke the ITS run once).
+WANT="pool=$POOL errfun=$ERRFUN"
 mkdir -p "$OUT"
 if [ -f "$STAMP" ]; then
   HAVE="$(cat "$STAMP")"
