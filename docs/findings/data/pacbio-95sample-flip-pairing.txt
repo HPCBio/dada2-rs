@@ -1,0 +1,56 @@
+
+Baseline kmer (dada): 21314 per-sample ASV calls
+================================================================
+
+c042 (21314 ASVs) vs kmer (21314):
+  shared=21299  only_kmer=15  only_c042=15  churn=30
+  only_kmer abundance: n=15 <10=8 >=10=7 max=24 median=9
+  only_c042 abundance: n=15 <10=8 >=10=7 max=24 median=9
+  FLIP PAIRING (within-sample substitutions): 15 paired across 11 sample(s); unpaired lost=0 gained=0
+    pair Hamming: median=3 max=908 H1=2 <=2=4
+    pairs with EQUAL abundance on both sides: 13 of 15
+      SRR28725000              H=3   lost_abund=    24 -> gained_abund=    24  birth=Abundance
+      SRR28724960              H=3   lost_abund=    17 -> gained_abund=    17  birth=Abundance
+      SRR28724937              H=12  lost_abund=    17 -> gained_abund=    16  birth=Abundance
+      SRR28724932              H=3   lost_abund=    14 -> gained_abund=    14  birth=Abundance
+      SRR28724967              H=4   lost_abund=    14 -> gained_abund=    14  birth=Abundance
+      SRR28724925              H=3   lost_abund=    13 -> gained_abund=    12  birth=Abundance
+      SRR28724960              H=2   lost_abund=    12 -> gained_abund=    12  birth=Abundance
+      SRR28724932              H=4   lost_abund=     9 -> gained_abund=     9  birth=Abundance
+  nearest-baseline Hamming (only_c042): Hamming-1=0 <=2=14 of 15 equal-length
+  top only_c042 ASVs (fragmentation check):
+    abund=    24  birth=Abundance   minH=0  neighbor_abund=31
+    abund=    17  birth=Abundance   minH=0  neighbor_abund=21
+    abund=    16  birth=Abundance   minH=0  neighbor_abund=10
+    abund=    14  birth=Abundance   minH=0  neighbor_abund=24
+    abund=    14  birth=Abundance   minH=0  neighbor_abund=7
+    abund=    12  birth=Abundance   minH=0  neighbor_abund=13
+    abund=    12  birth=Abundance   minH=0  neighbor_abund=21
+    abund=     9  birth=Abundance   minH=0  neighbor_abund=7
+
+c040 (21314 ASVs) vs kmer (21314):
+  shared=21276  only_kmer=38  only_c040=38  churn=76
+  only_kmer abundance: n=38 <10=12 >=10=26 max=31 median=12
+  only_c040 abundance: n=38 <10=12 >=10=26 max=31 median=12
+  FLIP PAIRING (within-sample substitutions): 37 paired across 25 sample(s); unpaired lost=1 gained=1
+    pair Hamming: median=4 max=12 H1=7 <=2=12
+    pairs with EQUAL abundance on both sides: 32 of 37
+    NOTE: unpaired churn is a genuine death or birth, not a substitution -- read those separately.
+      SRR28724983              H=1   lost_abund=    31 -> gained_abund=    31  birth=Abundance
+      SRR28725000              H=3   lost_abund=    24 -> gained_abund=    24  birth=Abundance
+      SRR28724967              H=2   lost_abund=    20 -> gained_abund=    20  birth=Abundance
+      SRR28724988              H=2   lost_abund=    20 -> gained_abund=    20  birth=Abundance
+      SRR28724968              H=2   lost_abund=    19 -> gained_abund=    19  birth=Abundance
+      SRR28724924              H=6   lost_abund=    17 -> gained_abund=    17  birth=Abundance
+      SRR28724921              H=2   lost_abund=    15 -> gained_abund=    16  birth=Abundance
+      SRR28724937              H=12  lost_abund=    17 -> gained_abund=    16  birth=Abundance
+  nearest-baseline Hamming (only_c040): Hamming-1=0 <=2=37 of 38 equal-length
+  top only_c040 ASVs (fragmentation check):
+    abund=    31  birth=Abundance   minH=0  neighbor_abund=17
+    abund=    24  birth=Abundance   minH=0  neighbor_abund=31
+    abund=    20  birth=Abundance   minH=0  neighbor_abund=11
+    abund=    20  birth=Abundance   minH=0  neighbor_abund=35
+    abund=    19  birth=Abundance   minH=0  neighbor_abund=17
+    abund=    17  birth=Abundance   minH=0  neighbor_abund=5
+    abund=    16  birth=Abundance   minH=0  neighbor_abund=101
+    abund=    16  birth=Abundance   minH=0  neighbor_abund=10

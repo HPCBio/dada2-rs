@@ -1,10 +1,23 @@
 # Minimizers as the pre-alignment screen
 
 **An experimental alternative to k-mer screening that shows promise where a lot
-of screening happens.** Users trying it should expect results that are **mostly
-concordant but not identical**: the ASV sets and counts agree closely on every
-dataset tested, with real differences of typically a fraction of a percent of
-reads and a small number of low-abundance ASVs. It is not a drop-in replacement.
+of screening happens.** What to expect depends on the platform, and the gap is
+wide enough to state up front:
+
+* **PacBio HiFi — exactly identical.** At a calibrated cutoff of 0.45 or above,
+  95 samples reproduced the k-mer screen's ASV calls, counts and reads bit for
+  bit, in every sample individually. And 0.45 does it with **22% fewer
+  alignments**, so the k-mer screen is over-provisioned on this platform.
+* **Illumina — mostly concordant, not identical.** ASV sets and counts agree
+  closely on every dataset tested, with real differences of typically a fraction
+  of a percent of reads and a small number of low-abundance ASVs. No cutoff was
+  ever exactly concordant.
+
+So it is a drop-in replacement on HiFi and not on Illumina. Why the platforms
+differ is not established; the working hypothesis is that HiFi's error profile
+leaves near neighbours far enough apart that both screens resolve them
+identically, while Illumina's dense 1-2 mismatch clouds sit exactly where the two
+screens' distance distributions diverge. That is untested.
 
 Where it pays off is where the screen dominates — diverse pools, in which most
 pairs are dissimilar, so the screen runs on every comparison while the aligner
@@ -16,6 +29,7 @@ is bound by whether those vectors fit cache:
 |---|---|---|---|---|---|
 | MiSeq SOP 16S, one sample | dev | 26.8% | 44 | **0.9%** | ~20 |
 | PacBio HiFi, per-sample | dev | 9.9% | 660 | 4.0% | 20 |
+| **PacBio HiFi, per-sample, 95 samples** | native | **14.07%** | **2460** | **12.2%** | **32** |
 | MiSeq 16S, pooled (#127) | native | 25.0% | 841 | 16.7% | — |
 | NovaSeq soil 16S, per-sample | native | 5.52% | 454 | **29.8%** | 30 |
 | NovaSeq ITS2, per-sample | native | 1.74% | 308 | **43.9%** | 30 |
@@ -46,7 +60,8 @@ What that is worth, at *matched alignment work* so the screen is the only variab
 | dataset | mode | cutoff | speedup at matched alignments | accuracy cost |
 |---|---|---|---|---|
 | MiSeq SOP 16S | per-sample | 0.70 | ~0% (screen is 0.9%) | churn 0 |
-| PacBio HiFi | per-sample | 0.45-0.50 | not resolvable on our rig | churn 0, L1 0.0053% |
+| PacBio HiFi, 95 samples | per-sample | 0.48 | **3.8%** (control 0.2%) | **churn 0, L1 0.0000%** |
+| PacBio HiFi, 95 samples | per-sample | 0.45 | not yet timed; 22% fewer alignments | **churn 0, L1 0.0000%** |
 | NovaSeq soil 16S | per-sample | 0.65 | **16.6%** | churn 277/17398, L1 0.842% |
 | NovaSeq ITS2 | per-sample | 0.62 | **15%** | churn 7/3808, L1 0.365% |
 | **NovaSeq ITS2** | **pooled** | 0.62-0.63 | **~20%** (exclusive node; 29% under a wider affinity mask) | churn 18/3028, L1 0.335-0.769% |
@@ -61,10 +76,14 @@ workloads above. Matched-pass predicted the sweep optimum in every case:
 | ITS2 per-sample | 1.93% | 0.62 | 0.62 |
 | soil 16S per-sample | 5.52% | 0.65 | 0.65 |
 | **pooled 16S** | **4.54%** | **0.65** | **0.65** |
-| PacBio HiFi | 10.73% | ~0.50 | 0.45-0.50 |
+| PacBio HiFi, 95 samples | 14.07% | 0.50 | **0.45** (one step tighter) |
 | MiSeq SOP | 26.8% | ~0.80 | 0.70 (0.80 close) |
 
-Five for five on Illumina/PacBio. See also
+Five for five on Illumina. **PacBio is the exception and it matters**: matched-pass
+picked 0.50, and 0.45 is equally exact for 22% fewer alignments — so the rule
+landed inside the right region but at its expensive end. On a platform with a wide
+exactly-concordant plateau, matching the pass rate is a safe starting point and
+not the answer; only the ASV table finds the cheap edge of the plateau. See also
 [calibrating on read retention](#calibrating-on-read-retention-the-cutoff-is-064),
 which converges on ~0.64 across every screen-dominated dataset and is the smoother
 signal of the two.
@@ -75,8 +94,10 @@ That is what `analyze_kdist_curves.py` reports, and it is a better target than
 
 Experimental and opt-in (`--screen-backend minimizer`), default unchanged. The
 shipped defaults (k=11, cutoff 0.42) are **wrong everywhere**; use **k=8** with a
-cutoff swept per dataset — **0.62** on both ITS2 modes, 0.45-0.50 on PacBio,
-0.62-0.70 on 16S.
+cutoff swept per dataset — **0.62** on both ITS2 modes, **0.45** on PacBio HiFi,
+0.62-0.70 on 16S. The per-backend default this branch ships (0.63) is calibrated
+for Illumina and is 0.18 too loose for HiFi, where it costs ~60% more alignments
+than 0.45 for identical output.
 
 **This page reached that verdict after being wrong three times**: it first
 concluded equivalence from 2-sample fixtures, then irreparable fragmentation, then
@@ -121,33 +142,95 @@ stable run-to-run, even though content is. See
 
 ## The result
 
-### PacBio HiFi — 3 Kinnex samples, 542,205 reads, k=7 production baseline
+### PacBio HiFi — 95 samples, shared error model, full cutoff grid
 
-| arm | ASVs | churn | count cells differing | L1 | aligned vs k-mer |
-|---|---|---|---|---|---|
-| k-mer, k=7 @ 0.42 (production) | 1540 | — | — | — | 100.0% |
-| **control:** k-mer again | 1540 | **0** | **0 / 2452** | **0.0000%** | 100.0% |
-| **minimizer, k=8 @ 0.50 (calibrated)** | **1540** | **0** | 17 / 2452 | **0.0053%** | see below |
+The authoritative PacBio result. 95 pre-filtered samples, one `learn-errors`
+model shared by every arm, `dada` per-sample at 48 threads, 3 timed replicates
+interleaved across arms, timing control channel **0.2%**.
 
-> **The alignment column is deliberately empty for this row.** These two full
-> pipeline runs each ran their own `learn-errors`, so they carry *different error
-> models* — and the screen shapes the model (next section). Their alignment counts
-> are therefore not comparable, and an earlier revision of this page reported
-> "13.3% fewer alignments" from exactly this pair. Held to a shared model, the
-> same configuration aligns ~10% **more**. The ASV comparison above is still a
-> valid end-to-end comparison of two complete configurations; the *work* counts
-> needed the model held fixed, and are reported that way in
-> [Cost](#cost-the-screen-is-33x-cheaper-and-that-is-not-where-the-win-is).
+Per-sample ASV calls, against the k-mer screen at its production 0.42:
 
-The control channel is bit-identical, so the noise floor here is **exactly zero**
-and the 17 differing cells are real signal rather than run-to-run variation —
-the same discipline that made the Illumina numbers interpretable.
+| minimizer cutoff | ASV calls | churn | abundance L1 | alignments vs k-mer |
+|---|---|---|---|---|
+| **control:** k-mer again | 21314 | **0** | **0.0000%** | 100.0% |
+| 0.40 | 21314 | 76 | 0.0016% | **49.4%** |
+| 0.42 | 21314 | 30 | 0.0003% | **59.2%** |
+| **0.45** | **21314** | **0** | **0.0000%** | **77.6%** |
+| 0.48 | 21314 | 0 | 0.0000% | 96.2% |
+| 0.50 | 21314 | 0 | 0.0000% | 109.7% |
+| 0.52 | 21314 | 0 | 0.0000% | 121.5% |
+| 0.55 | 21314 | 0 | 0.0000% | 137.0% |
+| 0.60 | 21314 | 0 | 0.0000% | 159.4% |
 
-The ASV **set is identical**. 233.6 M comparisons in each arm; the minimizer
-shrouds 209.4 M against the k-mer screen's 205.6 M, so it performs 24.3 M
-alignments against 28.1 M — **3.7 M fewer**. `b_compare` is 82-88%
-align-dominated on this platform ([screen vs align](compare-screen-vs-align.md)),
-so that is the half of the phase that matters.
+**From 0.45 through 0.60 the two screens are exactly identical** -- same ASV
+calls, same counts, same 2,434,599 reads, in all 95 samples individually as well
+as in total. This is a stronger concordance than any Illumina workload produced,
+where no cutoff was ever exactly concordant, and it is the single most important
+difference between the platforms on this page.
+
+It also means the cutoff can be chosen on cost alone inside that window, and
+**0.45 does 22% fewer alignments than the k-mer screen for bit-identical
+output**. The k-mer screen at 0.42 is over-provisioned on HiFi -- the same shape
+as the [band-size](band-size-platform-defaults.md) finding, arrived at
+independently.
+
+> An earlier revision of this page reported this platform from **3** Kinnex
+> samples whose two arms each ran their own `learn-errors`, and drew a "13.3%
+> fewer alignments" claim from that pair. Different error models make alignment
+> counts incomparable, and the claim was withdrawn. Everything above holds one
+> model fixed across every arm, which is now enforced structurally by
+> `dev/run_screen_sweep_pacbio.sh`.
+
+### What the PacBio churn below 0.45 actually is
+
+Worth characterising, because it is a different failure mode from the Illumina
+one and the obvious diagnosis is wrong. At cutoff 0.42, 30 of 21,314 per-sample
+ASV calls differ. Every sample's ASV **count** and read total are identical, so a
+set diff alone cannot say what changed. `compare_asvs.py --per-sample` pairs the
+churn up inside each sample:
+
+| at cutoff 0.42 | count | reads |
+|---|---|---|
+| within-sample substitutions | 14 | conserved (13 exact, 1 off by one) |
+| spurious greedy pairing (H=908, not a substitution) | 1 | — |
+| genuine pooled deaths | 2 | −22 |
+| genuine pooled birth | 1 | +6 |
+
+Pooled, the inventory moves from 2409 to **2408** ASVs — 3 of 2409 churn, net −1
+ASV and −16 reads out of 2.43 M. The 14 substitutions are **cross-sample
+reattributions**: each gained sequence is at Hamming **0** to a baseline ASV in a
+*different* sample, so the sequence was already known and only the sample it is
+credited to moved. Pair distances are median 3–4, not 1, so this is not
+fragmentation into a near neighbour; it is a different representative chosen from
+a small cloud of 3–4-mismatch variants. All 15 are `birth_type = Abundance`.
+
+**It is not a marginal-significance effect, and OMEGA_A is not the lever.** The
+natural reading -- borderline births flipping either side of the threshold -- is
+falsified by the birth statistics. Reproducing one flip on a single sample
+(`SRR28725000`, H=3, abundance 24 -> 24, both arms 281 calls):
+
+| | `birth_e` | `birth_fold` | vs `OMEGA_A = 1e-40` |
+|---|---|---|---|
+| lost under k-mer | 1.67e-232 | 2.39e232 | ~190 orders past |
+| gained under minimizer | 9.43e-222 | 4.24e221 | ~180 orders past |
+
+Both candidates clear the threshold by ~180-190 orders of magnitude. The least
+significant birth anywhere in that sample is `pval = 1.24e-42`, a factor of 80
+inside `OMEGA_A`, and the two arms' birth landscapes are **identical** --
+same 280 abundance births, same 209 underflows, same least-significant ASVs.
+Only the identity of one center differs.
+
+So the mechanism is the **candidate set, not the threshold**. At 0.42 the
+minimizer performs 59.2% of the k-mer screen's alignments; a pair it declines
+changes which uniques end up in a cluster, and therefore which unique is eligible
+to be its birth center. Both candidates carry the same 24 reads, which is why the
+counts are conserved exactly. Tuning `OMEGA_A` would not touch this.
+
+> **`birth_pval` is unusable for this.** It underflows to exactly 0 for **74%**
+> of ASVs in the sample (209 of 281), including both sides of the flip. Use
+> `birth_e` or `birth_fold`. `--failed-uniques` is also the wrong instrument --
+> its columns are `sequence / sample / reads` with no birth statistics, and the
+> two arms' files are byte-identical.
 
 ### The length-variability rationale was wrong, not merely weak
 
@@ -344,10 +427,51 @@ serial. An earlier revision of this page predicted ~11% at 48 threads from an
 8-thread measurement; the actual is **23.7%**, so the prediction was optimistic by
 2x.
 
-The buffer clear is the obvious suspect: `shared_counts` zeroes the whole `nraw`
-array per cluster, chosen over tracking touched indices on the reasoning that
-"`b_compare` walks all `nraw` anyway". True of the *map*, false of *setup*. At
-825k uniques x 3,414 clusters that is ~2.8e9 serial writes.
+Two candidate fixes have now been tested, and **both failed**.
+
+*The buffer clear was not the cost.* `shared_counts` zeroes the whole `nraw`
+array per cluster, and tracking touched indices instead looked obvious. Built, it
+was a **regression**: 5.97 -> 7.70s of setup on PacBio, +29%, because it adds a
+branch and a push per increment. The arithmetic never supported the clear anyway
+-- a 3.3 MB memset is ~165 us, ~0.6s across 3,414 clusters, not the 15s being
+explained. The **scatter** is the cost, not the clear.
+
+*Removing the index does not help either — it costs more.* Without the index each
+pair does its own merge-join over two sketches, which is fully parallel and has
+no serial setup at all. Measured as a first-class arm on per-sample PacBio
+(`DADA2RS_MINIMIZER_INDEX=0`, 3 reps, control 0.2%):
+
+| arm | screen | ns/comp | `setup` (serial) | compare busy | wall |
+|---|---|---|---|---|---|
+| k-mer | 325.82s | 2460 | 0.00s | 2635.76s | 72.94s |
+| minimizer, index **on** | 4.22s | **32** | **32.13s** | 2189.10s | **70.15s** |
+| minimizer, index **off** | 318.21s | **2379** | 0.00s | 2481.46s | 71.60s |
+
+The merge-join costs **2379 ns/comp against the k-mer sweep's 2460** — the same,
+within noise. Both screens are **memory-latency-bound, not op-count-bound**: two
+~475-entry sketches fetched from scattered memory cost what sweeping a `4^k`
+vector costs, however few operations you perform once the lines are resident.
+This is the third negative result on this branch from costing a scan by
+operations rather than by access pattern.
+
+So the 32.13s of serial setup **buys back 314s of parallel screen work** — at 4
+threads per sample, ~78s of map wall clock for 32s of serial, a 2.4x net win. The
+index earns its serial cost, and `DADA2RS_MINIMIZER_INDEX` is a diagnostic, not a
+tuning knob.
+
+> **This does not transfer to a pooled Illumina run, and that case is still
+> open.** Two things differ and both favour index-off there: sketches are ~4x
+> smaller on 300 bp reads than on 1.5 kb HiFi, making the merge-join
+> proportionally cheaper against a k-mer screen that costs 1300 ns/comp on that
+> workload; and a single pool at 48 threads has no cross-sample concurrency to
+> hide serial time behind, where per-sample PacBio ran 12 samples at once —
+> which is *why* setup is 23.7% of compare here and 5.7% there. Set
+> `NOIDX_CUTS` on the next pooled run to settle it.
+>
+> What is settled is that the serial scatter is not a design fault to be
+> parallelised away on the strength of its share alone. An earlier revision of
+> this page said it was, and projected the arm from 71% to ~60% of k-mer wall
+> clock on that basis. That projection is unsupported.
 
 **2. Map efficiency falls 90% -> 76%, inside the parallel region.** Separate from
 setup, which sits outside it. The cause is the per-item work collapsing: at 33
@@ -355,13 +479,14 @@ ns/comparison instead of 1300, rayon's scheduling overhead and tail imbalance st
 being negligible. This is the regime where alignment is rare enough that most
 items are a single array read. `DADA2RS_PAR_GRAIN` is the existing knob.
 
-**Consequence: the measured speedup is a floor.** Fixing both would take the
-minimizer arm from 71% to ~60% of k-mer wall clock — from 29% faster to ~40%:
-
-| | measured | if setup parallelised + efficiency restored |
-|---|---|---|
-| compare | 64.1s | ~44.5s |
-| arm total vs k-mer | 71% | ~60% |
+**Consequence: one of the two is a real headroom claim, the other is not.** Map
+efficiency at 76% is genuine headroom -- the work exists and is being lost to
+scheduling, and `DADA2RS_PAR_GRAIN` addresses it without changing what is
+computed. The setup share is *not* headroom in the same sense: the two ways to
+remove it have both been measured and both cost more than they save (above). An
+earlier revision of this page combined them into a projection of 71% -> ~60% of
+k-mer wall clock; only the efficiency half of that survives, and it has not been
+measured on its own.
 
 That also reframes the store. At 20.57s serial (32% of compare) it is now the
 *largest* single term on this arm, against 15.44s on the k-mer arm — so
@@ -995,7 +1120,7 @@ One ASV in 231 on one dataset is a modest effect — but it is measured against 
 zero noise floor, and it is a fact about the *existing* screen, not about
 minimizers.
 
-## Two claims this falsified
+## Three claims this falsified
 
 ### 1. "The cutoff transfers between backends." It does not.
 
@@ -1041,6 +1166,34 @@ F3D146, F3D149) — and yet the table *still* churned by 13 at cutoff 0.42. That
 non-result is the useful one: it proves the residual divergence is **not** driven
 by missing close pairs, which is what sent the investigation to the cutoff.
 
+
+### 3. "The serial scatter is the index's price and should be parallelised away." It is the index's bargain.
+
+The inverted index makes the screen `O(1)` per pair by scattering posting lists
+into an `nraw` array once per cluster — serially. At 23.7% of `b_compare` on
+pooled ITS2 that looked like an obvious design fault, and this page said so.
+
+Both ways out were measured and both cost more:
+
+* **Tracking touched indices instead of clearing the array** was a 29%
+  regression (5.97 -> 7.70s), and the arithmetic never supported the clear as the
+  cost in the first place — a 3.3 MB memset is ~165 us.
+* **Removing the index entirely**, so each pair does its own fully-parallel
+  merge-join with no serial setup, measured **2379 ns/comp against the k-mer
+  sweep's 2460** — no better than the screen it replaces, and slower end to end
+  than keeping the index (71.60s vs 70.15s, control 0.2%).
+
+Both screens are **memory-latency-bound, not op-count-bound**. Two ~475-entry
+sketches fetched from scattered memory cost what a `4^k` sweep costs, however few
+operations run once the lines are resident. So 32.13s of serial setup buys back
+314s of parallel screen work — a 2.4x net win, and the index earns its cost.
+
+This is the third negative result on this branch from costing a scan by
+operations rather than by access pattern, which is a general lesson about this
+codebase and not about minimizers.
+
+Still open on pooled Illumina, where sketches are ~4x smaller and a single pool
+has no cross-sample concurrency to hide serial time behind.
 ## The mechanism
 
 Putting the two together: the screen was simply too tight overall. Shrouding a
@@ -1157,29 +1310,40 @@ What has been settled:
 - ✅ The screen is recorded in the error model's `params` and checked on mismatch.
 - ✅ The gapless method-selection coupling is fixed, and the k-mer backend is
   bit-identical through that change.
-- ✅ PacBio is measured at scale (`PacBioFull`, 542k reads), not on the 2-sample
-  fixture.
+- ✅ PacBio is measured at scale — **95 samples, 2.43 M reads, one shared error
+  model, 3 timed replicates, control 0.2%** — and is **exactly concordant** at
+  cutoff ≥0.45, with 22% fewer alignments than the k-mer screen.
+- ✅ The inverted index is verified **exact** at scale: two independent index-off
+  arms reproduced their index-on twins cell for cell (`0 / 0 / 0`).
 - ✅ Wall clock is measured with control channels on four workloads. The earlier
   claim that "no timing claim is made anywhere on this page" is superseded.
 - ✅ Memory is measured at calibrated parameters (−74% resident screen on HiFi).
 
 What promotion would require, in order:
 
-1. **A judgement about the accuracy cost, which is real and not zero.** At the
-   recommended cutoffs: 473-580 churned ASVs of 22,359 on pooled 16S, 1.2% count
-   L1; 18 of 3,028 and 0.77% on pooled ITS2. Churn is confined to the rare tail
+1. **A judgement about the accuracy cost, which is real and not zero *on
+   Illumina*.** At the recommended cutoffs: 473-580 churned ASVs of 22,359 on
+   pooled 16S, 1.2% count L1; 18 of 3,028 and 0.77% on pooled ITS2. **On PacBio
+   HiFi the cost is exactly zero** at ≥0.45, so this requirement is
+   platform-specific and is already met on one platform. Churn is confined to the rare tail
    (≤15 reads in every dataset checked) and Bray-Curtis stays under 0.02 per
    sample, but whether that is acceptable depends on what the tables are used
    for. **This is not a question the data answers.**
 2. **Replication.** One dataset per configuration. A second diverse pool per
    platform would say whether ~0.64 is a default or a coincidence.
-3. **The serial `setup` phase.** The inverted index moves screen work out of the
-   parallel map into single-threaded setup, `O(nraw)` per cluster — measured at
-   2.0% of `compare` at 8 threads, predicted ~11% at 48. If that holds it caps the
-   speedup, and the fix is bounded: parallelise the scatter, or track touched
-   indices instead of clearing all `nraw`.
+3. **The serial `setup` phase — on pooled Illumina only.** ~~The fix is bounded:
+   parallelise the scatter, or track touched indices.~~ Both of those were
+   measured and both cost more than they save; on per-sample PacBio the index
+   *wins* despite its serial cost, because the alternative merge-join is
+   memory-bound at the same 2400 ns/comp as the k-mer sweep
+   ([claim 3](#3-the-serial-scatter-is-the-indexs-price-and-should-be-parallelised-away-it-is-the-indexs-bargain)).
+   What remains is the pooled Illumina case, where sketches are ~4x smaller and a
+   single pool at 48 threads has no cross-sample concurrency to hide serial time
+   behind. `NOIDX_CUTS` on `dev/run_screen_sweep.sh` measures it; until then this
+   is 23.7% of `compare` of unknown recoverability, not a known cap.
 4. **A default-selection story.** The right cutoff varies with pass rate
-   (0.50-0.80 across workloads), so a fixed default cannot be right everywhere.
+   (0.45-0.80 across workloads), so a fixed default cannot be right everywhere —
+   the shipped 0.63 is an Illumina value and is 0.18 too loose on HiFi.
    Either ship the calibration as a required step, or auto-derive the cutoff from
    a cheap pass-rate probe at run start.
 5. **Dropping `kord` on this path**, if possible — 2,982 B/raw on HiFi, *larger

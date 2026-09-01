@@ -1,0 +1,57 @@
+pairs per curve: {'kmer': 28500000, 'mini_k8': 28500000}
+
+Max screen distance among pairs at or below a given TRUE divergence.
+DADA2's 0.42 sits just above the k-mer row at 10% -- that IS the
+documented '0.42 ~ 10% divergence' calibration. Read each other
+screen's equivalent cutoff off the same row.
+
+ true div <=          n            kmer         mini_k8
+          1%    3564769          0.0682          0.0952
+          2%    4159391          0.1210          0.1560
+          3%    4269773          0.1721          0.2255
+          5%    5094325          0.2601          0.3286
+         10%    7231434          0.4402          0.5147
+
+RECALL: fraction of pairs at <= 10% true divergence that the screen
+still passes, and the share of ALL pairs it passes (the cost side).
+
+  cutoff       kmer recall       kmer pass    mini_k8 recall    mini_k8 pass
+    0.30            74.42%          18.91%            72.34%          18.36%
+    0.40            99.99%          27.91%            80.80%          21.01%
+    0.42           100.00%          28.66%            85.21%          22.63%
+    0.45           100.00%          31.06%            99.39%          27.20%
+    0.48           100.00%          32.96%            99.99%          28.45%
+    0.50           100.00%          33.89%           100.00%          30.00%
+    0.55           100.00%          37.65%           100.00%          33.16%
+    0.60           100.00%          42.71%           100.00%          36.03%
+    0.65           100.00%          49.19%           100.00%          40.07%
+    0.70           100.00%          61.17%           100.00%          43.93%
+    0.72           100.00%          78.09%           100.00%          45.21%
+    0.75           100.00%          92.45%           100.00%          49.57%
+    0.80           100.00%          99.98%           100.00%          60.35%
+
+Near-neighbour distance distribution (the tail that sets a cutoff).
+The MAX is not usable at scale: pct_div is edits/core_len, so a pair
+whose ends-free alignment leaves a tiny core reports ~0% divergence
+while sharing nothing. At 1e8 pairs enough of those exist to pin the
+max at 1.0 for every screen, which is what happened on the full MiSeq
+run. Use the quantiles.
+
+        screen      p99    p99.9   p99.99      max
+          kmer   0.3845   0.3905   0.4020   0.4402
+       mini_k8   0.4480   0.4570   0.4735   0.5147
+
+RECOMMENDED CUTOFF: match the 'kmer' screen's recall, not 100%.
+'kmer' is the screen in production, so reproducing ITS behaviour is
+the target; 100% recall is a different and more expensive goal, and on
+PacBio it picked a cutoff that ran SLOWER for no ASV benefit.
+
+  reference kmer @ 0.30: recall 74.42%, passes 18.91% of all pairs
+  reference kmer @ 0.40: recall 99.99%, passes 27.91% of all pairs
+  reference kmer @ 0.42: recall 100.00%, passes 28.66% of all pairs
+
+  matching kmer@0.42 (recall 100.00%, pass 28.66%):
+         mini_k8: cutoff 0.5 by recall, 0.5 by pass-rate
+
+Then SWEEP that region against the actual ASV table -- the cutoff that
+reproduces the k-mer screen's recall is a starting point, not an answer.
