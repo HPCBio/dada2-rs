@@ -570,6 +570,73 @@ reads, index-on and index-off alike; 0.42 differs in 9 samples. So the exactly-
 concordant plateau at >=0.45 holds in pooled mode as well as per-sample, and the
 index question is purely about speed.
 
+### The index is now chosen per workload, not always built
+
+Four configurations, and the index wins three and loses one badly — so "always
+index" is wrong and so is "never". `minimizers::decide_index` scores each pool
+and picks:
+
+```text
+score = sharing × threads / nraw          sharing = entries / distinct
+```
+
+The derivation: serial scatter costs `nclusters × entries × sharing`, the
+parallel saving it buys is `ncomps × entries × c / threads`, and
+`ncomps ≈ nclusters × nraw`, so `nclusters` and `entries` cancel. `threads` is
+`rayon::current_num_threads()` **inside** `B::new`, which is the sub-pool (4
+under per-sample concurrency, 48 pooled) — the global count would inflate the
+score ~12x and decline the index exactly where it wins.
+
+| configuration | score | measured setup/saved | index |
+|---|---|---|---|
+| pooled ITS2 | 0.073 | 0.29 | wins 13.9% |
+| per-sample PacBio | 0.185 | 0.44 | wins 4.4% |
+| pooled PacBio | **0.564** | 3.72 | **loses 31.6%** |
+
+Default threshold **0.30**, overridable with `DADA2RS_MINIMIZER_INDEX_MAX`.
+**Three points determine a bracket, not a threshold** — the crossover lies in
+0.19..0.57 — and 0.30 is deliberately biased low because the errors are not
+symmetric: indexing wrongly cost **+26%** against the k-mer screen, declining
+wrongly costs 2-4%.
+
+**Validated on pooled PacBio**, the case it exists to catch. 3 reps, control
+**0.03%**, with both forced modes run alongside:
+
+| arm | median | range | vs k-mer | `setup` |
+|---|---|---|---|---|
+| k-mer | 335.69s | 335.53-341.69 | — | 0.00s |
+| forced **on** | 423.23s | 420.20-435.89 | +26.1% | 160.09s |
+| forced **off** | 289.30s | 285.98-294.92 | −13.8% | 0.00s |
+| **auto (rule)** | **290.35s** | 288.38-297.82 | **−13.5%** | **0.00s** |
+
+```text
+[dada] minimizer index: declined (per-pair merge-join) — score 0.564
+  (= sharing 6430.3× × 48 threads / 547273 raws) vs threshold 0.300;
+  40177 distinct minimizers, 258350362 postings
+```
+
+The rule lands **+0.36% from the right choice** (overlapping ranges) and −31.4%
+from the wrong one, and `setup` is 0.00s on the auto arm — so the decision is
+real, not a fast run that happened to coincide.
+
+**The decision costs at most ~1s of 290s.** Counting 40,177 distinct minimizers
+over 258 M postings without building them was the part of this most likely to be
+too expensive to be worth it. The cached `_noidx` replicates predate the rule, so
+`auto − noidx = +1.05s` is an upper bound — inside the noise, and it also
+absorbs any other difference between the two binaries.
+
+`DADA2RS_MINIMIZER_INDEX` remains an **explicit override** (0/false/off/no,
+1/true/on/yes, or auto), and warns rather than silently defaulting on an
+unrecognised value — it used to be that any value but `0` meant on, so
+`=true` would otherwise have changed meaning when the rule landed.
+
+**Still unvalidated outside the fitted points.** Pooled soil 16S is the
+discriminating case: a large pool of *conserved* sequence like pooled PacBio, but
+with short reads and small sketches like ITS2, so the two terms pull opposite
+ways. If the auto arm there matches the slower forced arm with a score near 0.30,
+the threshold is miscalibrated and tunable; if it picks wrong with a score far
+from 0.30, the score is the wrong quantity.
+
 **The minimizer's pooled-PacBio win is not a cheaper screen.** At 3440 ns/comp
 the merge-join is *more expensive* than the k-mer sweep's 3000 here. Index-off
 still finishes 13.8% ahead purely because 0.45 passes 9.00% of pairs against the
@@ -1429,17 +1496,20 @@ What promotion would require, in order:
    for. **This is not a question the data answers.**
 2. **Replication.** One dataset per configuration. A second diverse pool per
    platform would say whether ~0.64 is a default or a coincidence.
-3. **The serial `setup` phase — reopened, and now a promotion blocker.**
+3. **The serial `setup` phase — addressed in code, pending one more workload.**
    Touched-index tracking regressed 29%, and removing the index lost on
    per-sample PacBio (up to 6.0%) and pooled ITS2 (13.9%) — but **won on pooled
    PacBio by 32.8%**, where the indexed arm is 26.4% SLOWER than the k-mer screen
    it replaces
    ([claim 3](#3-the-serial-scatter-is-the-indexs-price-and-should-be-parallelised-away-it-is-the-indexs-bargain)).
    So the index is a bargain on three configurations and a liability on the
-   fourth, and promotion needs either a rule that picks between them or a scatter
-   that stops being serial. The working model — cost scales with
-   `nraw x sketch entries` — would be such a rule if the phase split confirms it.
-   Separately, **map efficiency** (90% -> 75%) sits inside the parallel region
+   fourth. `minimizers::decide_index` now picks between them from
+   `sharing × threads / nraw`, and it is
+   [validated on pooled PacBio](#the-index-is-now-chosen-per-workload-not-always-built)
+   — the case it exists to catch — landing 0.36% from the right choice and 31.4%
+   from the wrong one, for a decision cost of at most ~1s of 290s. What is left
+   is **one more workload**: pooled soil 16S, which is outside the bracket the
+   threshold was fitted to. Separately, **map efficiency** (90% -> 75%) sits inside the parallel region
    with its own knob in `DADA2RS_PAR_GRAIN`, and index-off holds 89%, so that
    cost is specific to the regime where per-item work collapses to a single array
    read.

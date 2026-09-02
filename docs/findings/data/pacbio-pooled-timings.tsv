@@ -10,3 +10,6 @@ kmer	3	335.53
 kmerctl	3	335.60
 mini_k8_c0.45	3	423.23
 mini_k8_c0.45_noidx	3	294.92
+mini_k8_c0.45_auto	1	297.82
+mini_k8_c0.45_auto	2	290.35
+mini_k8_c0.45_auto	3	288.38
