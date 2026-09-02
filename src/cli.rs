@@ -2628,6 +2628,18 @@ pub enum Commands {
         #[arg(long)]
         derive_cutoff: bool,
 
+        /// With `--derive-cutoff`: sample pairs uniformly at random instead of
+        /// abundance-weighted. Uniform is what a calibration CURVE wants -- it
+        /// describes the metric -- but it is the wrong population for a PASS
+        /// RATE, because `b_compare` compares every raw against each cluster
+        /// CENTRE, and centres are the abundant uniques. On pooled PacBio the
+        /// minimizer/k-mer pass ratio is 0.744 on the pairs actually screened and
+        /// 0.911 on uniform pairs, so uniform sampling makes the minimizer look
+        /// 23% less selective than it is and the derived cutoff overshoots.
+        /// Kept because the published curves are uniform.
+        #[arg(long)]
+        derive_uniform_pairs: bool,
+
         /// Pooled post-inference mode: treat the positional inputs as the
         /// `_pooled.json[.gz]` record(s) written by `dada-pooled` and screen the
         /// merged unique table against the single global partition. Self-contained

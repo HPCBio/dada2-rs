@@ -136,6 +136,11 @@ pub struct Params {
     /// screen's pass rate, and nothing else. Skips alignment entirely, so it runs
     /// in seconds where the full curve takes hours.
     pub derive_cutoff: bool,
+    /// Sample pairs uniformly instead of abundance-weighted. Uniform is what a
+    /// calibration CURVE wants (it describes the metric); weighted is what a PASS
+    /// RATE wants (it describes the comparisons `b_compare` performs). Kept for
+    /// comparison, since the published curves are uniform.
+    pub derive_uniform_pairs: bool,
 }
 
 fn encode(seq: &str) -> Vec<u8> {
@@ -617,6 +622,48 @@ fn run_from_dada_pooled(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
 /// Build the (i, j) pair list for a population of `n` uniques: enumerate all if
 /// `n*(n-1)/2 <= max_pairs`, else draw `max_pairs` random pairs (with possible
 /// repeats — fine for a calibration scatter).
+/// Sample pairs the way `b_compare` forms them: one side abundance-weighted.
+///
+/// `pairs_for` samples uniformly over all pairs, which is right for a calibration
+/// curve — it describes the metric. It is **wrong for predicting a pass rate**,
+/// because `b_compare` never compares random pairs: it compares every raw against
+/// each cluster CENTRE, and centres are the abundant uniques. Measured on pooled
+/// PacBio, the minimizer/k-mer pass ratio is 0.744 on the pairs actually screened
+/// and 0.911 on uniform random pairs — so uniform sampling makes the minimizer
+/// look **23% less selective than it is**, and a cutoff matched on it overshoots.
+///
+/// One side is drawn from the abundance distribution (the centre proxy) and the
+/// other uniformly (the raw), which is the shape of a raw-vs-centre comparison.
+fn weighted_pairs_for(counts: &[u64], max_pairs: usize, seed: u64) -> Vec<(usize, usize)> {
+    let n = counts.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let mut cum: Vec<u64> = Vec::with_capacity(n);
+    let mut tot = 0u64;
+    for &c in counts {
+        tot += c.max(1);
+        cum.push(tot);
+    }
+    let mut st = seed ^ 0x9E3779B97F4A7C15;
+    let mut next = || {
+        st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+        st >> 11
+    };
+    let mut out = Vec::with_capacity(max_pairs);
+    let mut guard = 0usize;
+    while out.len() < max_pairs && guard < max_pairs * 8 {
+        guard += 1;
+        let target = next() % tot.max(1);
+        let j = cum.partition_point(|&c| c <= target).min(n - 1);
+        let i = (next() as usize) % n;
+        if i != j {
+            out.push((i, j));
+        }
+    }
+    out
+}
+
 fn pairs_for(n: usize, max_pairs: usize, seed: u64) -> Vec<(usize, usize)> {
     let total = n.saturating_mul(n.saturating_sub(1)) / 2;
     if n < 2 {
@@ -670,19 +717,20 @@ fn run_derive_cutoff(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
     // a property of the population, not the dataset: pooled ITS2 passes 0.70% and
     // the same data per-sample passes 1.93%. Deriving from the wrong one targets
     // the selectivity of a screen nobody ran.
-    let mut pops: Vec<(String, Vec<Vec<u8>>)> = Vec::new();
+    let mut pops: Vec<(String, Vec<Vec<u8>>, Vec<u64>)> = Vec::new();
     for path in inputs {
         let s = load_derep(path, &kp, p.max_uniques, p.seed)?;
         if p.per_sample {
-            pops.push((s.name, s.enc));
+            pops.push((s.name, s.enc, s.counts));
         } else {
             if pops.is_empty() {
-                pops.push(("pool".to_string(), Vec::new()));
+                pops.push(("pool".to_string(), Vec::new(), Vec::new()));
             }
             pops[0].1.extend(s.enc);
+            pops[0].2.extend(s.counts);
         }
     }
-    pops.retain(|(_, e)| e.len() >= 2);
+    pops.retain(|(_, e, _)| e.len() >= 2);
     if pops.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -690,14 +738,25 @@ fn run_derive_cutoff(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
         ));
     }
 
-    println!("# derive-cutoff: matched pass rate, no alignment performed");
+    println!(
+        "# derive-cutoff: matched pass rate, no alignment performed\n# pairs: {}",
+        if p.derive_uniform_pairs {
+            "uniform random (describes the metric; NOT the population b_compare screens)"
+        } else {
+            "abundance-weighted -- the raw-vs-centre shape b_compare actually screens"
+        }
+    );
     let mut per_pop: Vec<(String, minimizers::MatchedPass)> = Vec::new();
     let mut kd = Vec::new();
     let mut md = Vec::new();
-    for (name, enc) in &pops {
+    for (name, enc, counts) in &pops {
         let kmer = Screens::build(enc, &kp);
         let mini = Screens::build(enc, &mp);
-        let pairs = pairs_for(enc.len(), p.max_pairs, p.seed);
+        let pairs = if p.derive_uniform_pairs {
+            pairs_for(enc.len(), p.max_pairs, p.seed)
+        } else {
+            weighted_pairs_for(counts, p.max_pairs, p.seed)
+        };
         let mut pkd = Vec::with_capacity(pairs.len());
         let mut pmd = Vec::with_capacity(pairs.len());
         for &(i, j) in &pairs {
@@ -721,7 +780,7 @@ fn run_derive_cutoff(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
             "  {:>28} {:>8} {:>10} {:>8}",
             "sample", "uniques", "kmer pass", "cutoff"
         );
-        for ((name, r), (_, enc)) in per_pop.iter().zip(pops.iter()) {
+        for ((name, r), (_, enc, _)) in per_pop.iter().zip(pops.iter()) {
             println!(
                 "  {:>28} {:>8} {:>9.4}% {:>8.2}",
                 &name[name.len().saturating_sub(28)..],
@@ -748,7 +807,7 @@ fn run_derive_cutoff(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
     let r = minimizers::matched_pass_cutoff(&kd, &md, p.cutoff);
     println!(
         "\nuniques      {} in {} population(s)\npairs        {}",
-        pops.iter().map(|(_, e)| e.len()).sum::<usize>(),
+        pops.iter().map(|(_, e, _)| e.len()).sum::<usize>(),
         pops.len(),
         r.n_pairs
     );
@@ -1320,6 +1379,7 @@ mod tests {
             minimizer_k: crate::minimizers::MINIMIZER_K,
             minimizer_w: crate::minimizers::MINIMIZER_W,
             derive_cutoff: false,
+            derive_uniform_pairs: false,
             cutoff: 0.42,
             leak_pct: 10.0,
             band: -1,
