@@ -480,8 +480,9 @@ This is the third negative result on this branch from costing a scan by
 operations rather than by access pattern.
 
 So ~31-33s of serial setup **buys back ~300s of parallel screen work**, and
-index-off is slower end to end at every cutoff tested — by 2.0% at 0.48, 4.4% at
-0.45 and **6.0% at 0.42**, with disjoint replicate ranges at the latter two. The
+index-off is slower end to end at every cutoff tested — by 4.4% at 0.45 and
+**6.0% at 0.42**, both with disjoint replicate ranges. The 2.0% at 0.48 is
+**not a result**: it is below the minimizer arm's own noise floor (see below). The
 index earns its serial cost, and `DADA2RS_MINIMIZER_INDEX` is a diagnostic, not a
 tuning knob.
 
@@ -618,6 +619,20 @@ wrongly costs 2-4%.
 The rule lands **+0.36% from the right choice** (overlapping ranges) and −31.4%
 from the wrong one, and `setup` is 0.00s on the auto arm — so the decision is
 real, not a fast run that happened to coincide.
+
+**The auto arm is a second control channel, and it reads higher than the first.**
+`decide_index` runs whenever the sketches are present, *including* when the mode
+is forced — so `_auto` and a forced-on arm execute identical work: same
+distinct-count pass, same index build, same scatter. Any gap between them is
+noise **by construction**. On pooled soil 16S that gap is **1.65%** (auto 612.06s
+vs forced-on 622.34s, overlapping ranges), against a k-mer control channel of
+0.75% on the same run.
+
+That is worth more than it looks. Every control channel on this page so far has
+been k-mer-vs-k-mer, which measures the *baseline* arm's variance and not the
+arm the claims are about. The minimizer arm's own floor is roughly **double**
+it — which is why the 2.0% index margin at PacBio cutoff 0.48 is withdrawn
+above, and why the 15-28% Illumina figures are unaffected.
 
 **The decision costs at most ~1s of 290s.** Counting 40,177 distinct minimizers
 over 258 M postings without building them was the part of this most likely to be
@@ -1337,7 +1352,7 @@ Both ways out were measured and both cost more:
 |---|---|---|---|
 | 0.42 | **48.17s** | 51.22s | **6.0%** |
 | 0.45 | **59.29s** | 62.00s | **4.4%** |
-| 0.48 | **70.15s** | 71.60s | 2.0% |
+| 0.48 | 70.15s | 71.60s | 2.0% — *below the noise floor, not a result* |
 
 Both screens are **memory-latency-bound, not op-count-bound**. Two ~475-entry
 sketches fetched from scattered memory cost what a `4^k` sweep costs, however few
