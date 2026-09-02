@@ -825,6 +825,56 @@ fn run_derive_cutoff(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
         r.cutoff_rounded,
         100.0 * r.mini_pass
     );
+    // Pair-level AGREEMENT with the k-mer screen at the derived cutoff.
+    //
+    // Matching the pass RATE says the two screens admit the same NUMBER of pairs.
+    // It says nothing about whether they admit the SAME pairs, and that is what
+    // decides churn: a pair the k-mer screen aligns and the minimizer shrouds is a
+    // raw that may never reach its parent cluster. This is the pair-level recall
+    // gate this investigation opened with, and it costs nothing here -- both
+    // distances are already computed for every sampled pair.
+    //
+    // It is also the alignment-free way to compare (k, w) settings. The standing
+    // hypothesis for why Illumina churns and HiFi does not is estimator variance
+    // from a small sketch -- 74 entries/raw on 231 bp ITS2 against 475 on 1.5 kb
+    // HiFi. If that is right, lowering w raises the entry count and DISAGREEMENT
+    // here should fall. That is testable in seconds per setting, where the ASV
+    // table costs a full pipeline run per arm.
+    let c = r.cutoff_rounded;
+    let (mut both, mut neither, mut konly, mut monly) = (0usize, 0usize, 0usize, 0usize);
+    for (&a, &b) in kd.iter().zip(md.iter()) {
+        match (a <= p.cutoff, b <= c) {
+            (true, true) => both += 1,
+            (false, false) => neither += 1,
+            (true, false) => konly += 1,
+            (false, true) => monly += 1,
+        }
+    }
+    let n = r.n_pairs.max(1);
+    println!("\npair-level agreement with the k-mer screen at cutoff {c:.2}:");
+    println!(
+        "  both pass          {both:>9} ({:6.3}%)",
+        100.0 * both as f64 / n as f64
+    );
+    println!(
+        "  both shroud        {neither:>9} ({:6.3}%)",
+        100.0 * neither as f64 / n as f64
+    );
+    println!(
+        "  k-mer only         {konly:>9} ({:6.3}%)  <- SHROUDED by the minimizer; the churn risk",
+        100.0 * konly as f64 / n as f64
+    );
+    println!(
+        "  minimizer only     {monly:>9} ({:6.3}%)  <- extra alignments, cost not correctness",
+        100.0 * monly as f64 / n as f64
+    );
+    println!(
+        "  DISAGREEMENT       {:>9} ({:6.3}% of pairs)   recall vs k-mer: {:6.3}%",
+        konly + monly,
+        100.0 * (konly + monly) as f64 / n as f64,
+        100.0 * both as f64 / (both + konly).max(1) as f64
+    );
+
     // The pass-rate curve either side, so how sharply the choice matters is
     // visible rather than implied. A flat neighbourhood means the exact value
     // hardly matters; a steep one means it does.
