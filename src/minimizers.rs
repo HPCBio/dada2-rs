@@ -531,13 +531,36 @@ pub fn decide_index(
     }
 }
 
-/// `DADA2RS_MINIMIZER_INDEX`: `0` forces the merge-join, `1` forces the index,
-/// anything else (including unset) leaves the choice to [`decide_index`].
+/// `DADA2RS_MINIMIZER_INDEX` as an **explicit override**, not a fallback: when it
+/// names a mode, [`decide_index`] still computes its score for the log but the
+/// override decides. Unset (or `auto`) leaves the choice to the rule.
+///
+/// | value | effect |
+/// |---|---|
+/// | `0`, `false`, `off`, `no` | force the per-pair merge-join |
+/// | `1`, `true`, `on`, `yes` | force the inverted index |
+/// | `auto`, unset | let [`decide_index`] choose |
+///
+/// Anything else **warns and falls back to auto**. It used to be that any value
+/// other than `0` meant "on", so `DADA2RS_MINIMIZER_INDEX=true` silently changed
+/// meaning when the rule landed — and on this branch a silently-ineffective A/B
+/// arm has produced retracted results more than once. An unrecognised value is
+/// far more likely to be a typo in a sweep script than an intent to use the
+/// default, so it says so on stderr rather than quietly doing something else.
 pub fn index_env_override() -> Option<bool> {
-    match std::env::var("DADA2RS_MINIMIZER_INDEX").ok()?.as_str() {
-        "0" => Some(false),
-        "1" => Some(true),
-        _ => None,
+    let raw = std::env::var("DADA2RS_MINIMIZER_INDEX").ok()?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "0" | "false" | "off" | "no" => Some(false),
+        "1" | "true" | "on" | "yes" => Some(true),
+        "" | "auto" => None,
+        other => {
+            eprintln!(
+                "[dada] warning: DADA2RS_MINIMIZER_INDEX={other:?} is not recognised \
+                 (expected 0/1, false/true, off/on, no/yes, or auto); \
+                 leaving the index choice to the selection rule"
+            );
+            None
+        }
     }
 }
 
