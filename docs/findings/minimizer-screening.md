@@ -519,49 +519,62 @@ strength of its share alone. An earlier revision of this page said it was, and
 projected the arm from 71% to ~60% of k-mer wall clock on that basis. That
 projection is withdrawn.
 
-> **REOPENED by pooled PacBio, which reverses the sign.** Preliminary, 2 of 3
-> replicates, control channel 1.0%:
+> **REOPENED by pooled PacBio, which reverses the sign.** 3 reps, control
+> **0.03%**:
 >
-> | arm | mean | range | vs k-mer |
+> | arm | median | range | vs k-mer |
 > |---|---|---|---|
-> | k-mer | 338.69s | 335.69-341.69 | — |
-> | minimizer @0.45, index **on** | 428.04s | 420.20-435.89 | **+26.4%** |
-> | minimizer @0.45, index **off** | **287.64s** | 285.98-289.30 | **−15.1%** |
+> | k-mer | 335.69s | 335.53-341.69 | — |
+> | minimizer @0.45, index **on** | 423.23s | 420.20-435.89 | **+26.1%** |
+> | minimizer @0.45, index **off** | **289.30s** | 285.98-294.92 | **−13.8%** |
 >
-> Index-off beats index-on by **32.8%** with disjoint ranges. So the index is not
-> unconditionally a bargain: it wins on per-sample PacBio (2-6%) and on pooled
-> ITS2 (13.9%), and loses badly here.
->
-> The candidate mechanism is that the serial scatter's cost scales with
-> **nraw x sketch entries**, and pooled PacBio is the first configuration to
-> maximise both — per-sample PacBio has 475-entry sketches but only thousands of
-> raws per pool, and pooled ITS2 has ~825k raws but only 74-entry sketches. That
-> predicts a large `setup` share on this arm specifically, which the phase split
-> will confirm or refute.
->
-> Until it does, `DADA2RS_MINIMIZER_INDEX` is a **real tuning knob with a
-> workload-dependent answer**, not the diagnostic this page called it one
-> revision ago.
+> Index-off beats index-on by **31.6%**, and the indexed arm is *slower than the
+> k-mer screen it replaces* — the only configuration where that happens.
 
-**2. Map efficiency falls 90% -> 76%, inside the parallel region.** Separate from
-setup, which sits outside it. The cause is the per-item work collapsing: at 33
-ns/comparison instead of 1300, rayon's scheduling overhead and tail imbalance stop
-being negligible. This is the regime where alignment is rare enough that most
-items are a single array read. `DADA2RS_PAR_GRAIN` is the existing knob.
+**The serial scatter is confirmed as the cause.** Phase split, index-on vs the
+two arms that have no setup at all:
 
-**Consequence: one of the two is a real headroom claim, the other is not.** Map
-efficiency at 76% is genuine headroom -- the work exists and is being lost to
-scheduling, and `DADA2RS_PAR_GRAIN` addresses it without changing what is
-computed. The setup share is *not* headroom in the same sense: the two ways to
-remove it have both been measured and both cost more than they save (above). An
-earlier revision of this page combined them into a projection of 71% -> ~60% of
-k-mer wall clock; only the efficiency half of that survives, and it has not been
-measured on its own.
+| arm | screen ns/comp | align | map | **`setup`** | compare |
+|---|---|---|---|---|---|
+| k-mer | 3000 | 9926.95s | 263.28s | 0.00s | 272.88s |
+| minimizer, index **on** | **32** | 7316.50s | **169.74s** | **162.69s (46.9%)** | 347.09s |
+| minimizer, index **off** | 3440 | 7251.39s | 213.46s | 0.00s | 223.18s |
 
-That also reframes the store. At 20.57s serial (32% of compare) it is now the
-*largest* single term on this arm, against 15.44s on the k-mer arm — so
-[the store scan](compare-store-scan.md), previously optimised against an
-align-dominated workload, becomes the next target once the screen is cheap.
+The index does exactly what it is supposed to inside the parallel region — map
+drops 213.46s -> 169.74s — and then pays **162.69s of serial time**, 46.9% of the
+compare phase, for a 43.72s parallel saving. That is also why core usage visibly
+collapses on this arm.
+
+**Two things the data falsified about my own prediction.** I predicted mean
+sharing would reach 10^4-10^6 because conserved 16S saturates a small minimizer
+alphabet. Measured: **6,509x**, and the alphabet did *not* saturate — distinct
+minimizers grew from ~10.5k per sample to **40,177** in the pool. The
+conservation story was wrong. What survives is the cost ordering:
+
+| config | entries x sharing | `setup` | map saved | **setup / saved** | index verdict |
+|---|---|---|---|---|---|
+| pooled ITS2 | 93,092 | 16.14s | 56.14s | **0.29** | wins 13.9% |
+| per-sample PacBio | 207,240 | 33.44s | 76.26s | **0.44** | wins 4.4% |
+| **pooled PacBio** | **3,111,302** | **162.69s** | 43.72s | **3.72** | **loses 31.6%** |
+
+`entries x sharing` ranks all three correctly and predicts the total scatter work
+within ~3x. The decision quantity is `setup / map-saved` crossing 1, and a proxy
+computable **before any scatter runs** — `sharing x threads / nraw`, from
+`n_postings/n_keys` at index-build time — is monotone in the same order (0.073,
+0.185, 0.571). Three points bracket the crossover between **0.19 and 0.57**;
+that is a weakly determined threshold, not a calibrated one.
+
+**Concordance is unaffected by any of this.** Under pooling, cutoffs 0.45, 0.48
+and 0.50 are identical to the k-mer screen in **all 95 samples** on ASV calls and
+reads, index-on and index-off alike; 0.42 differs in 9 samples. So the exactly-
+concordant plateau at >=0.45 holds in pooled mode as well as per-sample, and the
+index question is purely about speed.
+
+**The minimizer's pooled-PacBio win is not a cheaper screen.** At 3440 ns/comp
+the merge-join is *more expensive* than the k-mer sweep's 3000 here. Index-off
+still finishes 13.8% ahead purely because 0.45 passes 9.00% of pairs against the
+k-mer screen's 12.10% — a 27% cut in alignment work. On this workload the
+minimizer is a better *filter*, not a cheaper *screen*.
 
 ### Calibrating on read retention: the cutoff is ~0.64
 
