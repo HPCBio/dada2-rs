@@ -666,38 +666,90 @@ fn run_derive_cutoff(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
     let mut mp = p.clone();
     mp.screen_backend = ScreenBackend::Minimizer;
 
-    let mut enc: Vec<Vec<u8>> = Vec::new();
-    let mut names: Vec<String> = Vec::new();
+    // Populations must match the denoising mode. The k-mer screen's pass rate is
+    // a property of the population, not the dataset: pooled ITS2 passes 0.70% and
+    // the same data per-sample passes 1.93%. Deriving from the wrong one targets
+    // the selectivity of a screen nobody ran.
+    let mut pops: Vec<(String, Vec<Vec<u8>>)> = Vec::new();
     for path in inputs {
         let s = load_derep(path, &kp, p.max_uniques, p.seed)?;
-        names.push(s.name);
-        enc.extend(s.enc);
+        if p.per_sample {
+            pops.push((s.name, s.enc));
+        } else {
+            if pops.is_empty() {
+                pops.push(("pool".to_string(), Vec::new()));
+            }
+            pops[0].1.extend(s.enc);
+        }
     }
-    if enc.len() < 2 {
+    pops.retain(|(_, e)| e.len() >= 2);
+    if pops.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("need at least 2 uniques to sample pairs; got {}", enc.len()),
+            "no population has 2 or more uniques to sample pairs from",
         ));
     }
 
-    let kmer = Screens::build(&enc, &kp);
-    let mini = Screens::build(&enc, &mp);
-    let pairs = pairs_for(enc.len(), p.max_pairs, p.seed);
+    println!("# derive-cutoff: matched pass rate, no alignment performed");
+    let mut per_pop: Vec<(String, minimizers::MatchedPass)> = Vec::new();
+    let mut kd = Vec::new();
+    let mut md = Vec::new();
+    for (name, enc) in &pops {
+        let kmer = Screens::build(enc, &kp);
+        let mini = Screens::build(enc, &mp);
+        let pairs = pairs_for(enc.len(), p.max_pairs, p.seed);
+        let mut pkd = Vec::with_capacity(pairs.len());
+        let mut pmd = Vec::with_capacity(pairs.len());
+        for &(i, j) in &pairs {
+            let (li, lj) = (enc[i].len(), enc[j].len());
+            pkd.push(kmer.dist(i, &kmer, j, li, lj, p.k));
+            pmd.push(mini.dist(i, &mini, j, li, lj, p.k));
+        }
+        per_pop.push((
+            name.clone(),
+            minimizers::matched_pass_cutoff(&pkd, &pmd, p.cutoff),
+        ));
+        kd.extend(pkd);
+        md.extend(pmd);
+    }
 
-    let mut kd = Vec::with_capacity(pairs.len());
-    let mut md = Vec::with_capacity(pairs.len());
-    for &(i, j) in &pairs {
-        let (li, lj) = (enc[i].len(), enc[j].len());
-        kd.push(kmer.dist(i, &kmer, j, li, lj, p.k));
-        md.push(mini.dist(i, &mini, j, li, lj, p.k));
+    if p.per_sample && per_pop.len() > 1 {
+        // Per-sample spread is the thing to look at: a rule that has to be
+        // applied once per run is only usable if the samples agree on it.
+        println!("\nper-sample derivation ({} populations):", per_pop.len());
+        println!(
+            "  {:>28} {:>8} {:>10} {:>8}",
+            "sample", "uniques", "kmer pass", "cutoff"
+        );
+        for ((name, r), (_, enc)) in per_pop.iter().zip(pops.iter()) {
+            println!(
+                "  {:>28} {:>8} {:>9.4}% {:>8.2}",
+                &name[name.len().saturating_sub(28)..],
+                enc.len(),
+                100.0 * r.kmer_pass,
+                r.cutoff_rounded
+            );
+        }
+        let mut cs: Vec<f64> = per_pop.iter().map(|(_, r)| r.cutoff_rounded).collect();
+        cs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!(
+            "  per-sample cutoff: median {:.2}, range {:.2}-{:.2}{}",
+            cs[cs.len() / 2],
+            cs[0],
+            cs[cs.len() - 1],
+            if cs[cs.len() - 1] - cs[0] > 0.04 {
+                "  <- SPREAD > 0.04: one run-wide cutoff is a compromise here"
+            } else {
+                ""
+            }
+        );
     }
 
     let r = minimizers::matched_pass_cutoff(&kd, &md, p.cutoff);
-    println!("# derive-cutoff: matched pass rate, no alignment performed");
     println!(
-        "uniques      {} across {} input(s)\npairs        {}",
-        enc.len(),
-        names.len(),
+        "\nuniques      {} in {} population(s)\npairs        {}",
+        pops.iter().map(|(_, e)| e.len()).sum::<usize>(),
+        pops.len(),
         r.n_pairs
     );
     println!(

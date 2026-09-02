@@ -56,6 +56,12 @@ RUN="$HERE/concordance/run_illumina.sh"
 # SOP and 11 (the shipped default) did not.
 KS="${KS:-8}"
 
+# k-mer size of the REFERENCE screen, for --derive-cutoff only. Must match what
+# the arms actually run: run_illumina.sh passes no --kmer-size, so `dada` uses its
+# default of 5. Deriving at a different k would match the pass rate of a screen
+# nobody ran.
+KMER="${KMER:-5}"
+
 # Winnowing windows to sweep. w controls SAMPLING DENSITY -- the sketch keeps
 # ~2/(w+1) of positions -- and it has never been varied on this branch, so every
 # result here is a single w=5 point.
@@ -218,7 +224,7 @@ if [ -f "$STAMP" ]; then
     echo "  Cached arms and timings are keyed by name only, so reusing this" >&2
     echo "  directory would mix the two. Use a new out-dir. To keep the" >&2
     echo "  expensive cached inputs, copy them over first:" >&2
-    echo "    mkdir -p <new-out> && cp -a $OUT/models $OUT/derep <new-out>/" >&2
+    echo "    mkdir -p <new-out> && cp -a $OUT/base $OUT/derep <new-out>/" >&2
     exit 1
   fi
 else
@@ -348,6 +354,38 @@ fi
 if [ ${#filtF[@]} -eq 0 ]; then
   echo "    (no forward reads found for timing; skipping)" >&2
   REPS=0
+fi
+
+# Dereplicate the forward reads and record what `--derive-cutoff` WOULD pick.
+#
+# This script never dereplicated: `dada` reads FASTQ directly, so unlike the
+# PacBio script there were no derep JSONs on disk and nothing that
+# `kdist-calibrate` could be pointed at. That made the one cheap validation of
+# the matched-pass rule impossible on exactly the platform the rule was fitted to.
+#
+# derep is fast (the load front measured 868 MB/s) and --derive-cutoff performs no
+# alignment at all, so this adds seconds and produces the number the sweep below
+# can be checked against: a rule that cannot be compared to the swept optimum on
+# the same dataset is not a validated rule.
+if [ ${#filtF[@]} -gt 0 ] && [ -n "$KS" ]; then
+  echo
+  echo "==> derive-cutoff (what auto-selection would choose, for comparison)"
+  mkdir -p "$OUT/derep" "$OUT/models"
+  for f in "${filtF[@]}"; do
+    b=$(basename "$f"); b=${b%%.*}
+    [ -f "$OUT/derep/$b.json" ] || "$BIN" derep "$f" -o "$OUT/derep/$b.json" > /dev/null
+  done
+  # Match the denoising mode: a pooled run screens the pool as ONE population, so
+  # a per-sample derivation would describe a different population than the one the
+  # arms above actually denoised.
+  per_sample=(); [ "$DADA_CMD" = "dada" ] && per_sample=(--per-sample)
+  for K in $KS; do for W in $WS; do
+    echo "    k=$K w=$W:"
+    "$BIN" kdist-calibrate "$OUT"/derep/*.json --k "$KMER" \
+        --derive-cutoff --minimizer-k "$K" --minimizer-w "$W" \
+        --max-pairs "${DERIVE_PAIRS:-50000}" --threads "$THREADS" \
+        ${per_sample[@]+"${per_sample[@]}"} 2>&1 | sed 's/^/      /'
+  done; done | tee "$OUT/models/derived_cutoff.txt"
 fi
 # spec = name:minimizer-k:cutoff:w:index:grain
 #   empty k     = k-mer arm
