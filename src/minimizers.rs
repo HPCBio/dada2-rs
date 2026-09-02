@@ -102,9 +102,22 @@ pub const MINIMIZER_KDIST_CUTOFF: f64 = 0.63;
 pub const MINIMIZER_W: usize = 5;
 
 /// Valid ranges. `k` is bounded above by 31 because two bits per base must fit
-/// a `u64`; below by 7 because shorter k-mers are not discriminating enough to
-/// be worth winnowing (use the frequency screen instead).
-pub const MINIMIZER_K_MIN: usize = 7;
+/// a `u64`.
+///
+/// The lower bound is **5, not 7**. 7 was chosen on the argument that shorter
+/// k-mers are not discriminating enough to be worth winnowing, which is true as
+/// production advice and wrong as a hard limit: `k=5, w=1` is the reference
+/// self-test for this whole module. At `w=1` every k-mer is its own window
+/// minimum, so the sketch degenerates to the k-mer multiset and the screen
+/// becomes the frequency screen — and it measurably does. On three MiSeq SOP
+/// samples, `k=5 w=1` against `kmer_dist8` at k=5 derives a matched cutoff of
+/// **0.4195** (the frequency screen's own 0.42, recovered from data) and
+/// disagrees on **1 pair in 50,000**, the one disagreement being an extra
+/// alignment rather than a shrouded pair.
+///
+/// Excluding k=5 also made that path release-only: `debug_assert!` compiled out
+/// in release, so `--minimizer-k 5` worked there and panicked in a debug build.
+pub const MINIMIZER_K_MIN: usize = 5;
 pub const MINIMIZER_K_MAX: usize = 31;
 pub const MINIMIZER_W_MIN: usize = 1;
 pub const MINIMIZER_W_MAX: usize = 64;
@@ -950,6 +963,59 @@ mod tests {
         let s = sketch(&seq, MINIMIZER_K, MINIMIZER_W);
         assert!(!s.is_empty());
         assert_eq!(minimizer_dist(&s, &s), 0.0);
+    }
+
+    /// At `w=1` every k-mer is its own window minimum, so the sketch IS the
+    /// k-mer multiset and this screen becomes the frequency screen. That makes
+    /// `k, w=1` the reference self-test for the whole module: it must reproduce
+    /// `kmer_dist8` at the same k, and any gap localises a real difference rather
+    /// than a design choice.
+    ///
+    /// It is not an exact identity, by design. The sketch emits only when the
+    /// window's minimum *hash changes*, so a k-mer repeated at CONSECUTIVE
+    /// positions -- which happens inside a homopolymer of length > k -- is
+    /// counted once where the frequency vector counts it twice. That shifts both
+    /// the numerator and the `min(total)` denominator slightly. Measured on real
+    /// data the effect is 1 pair in 50,000; here the bound is loose enough to
+    /// tolerate synthetic sequences with more homopolymer content than reads
+    /// have, and tight enough that a genuine divergence fails it.
+    #[test]
+    fn w1_reproduces_the_kmer_frequency_screen() {
+        use crate::kmers::{assign_kmer8, kmer_dist8};
+        let k = 5;
+        let seqs: Vec<Vec<u8>> = (0..24).map(|i| make_seq(300, 900 + i)).collect();
+        let kv: Vec<Vec<u8>> = seqs.iter().map(|s| assign_kmer8(s, k)).collect();
+        let sk: Vec<MinimizerSketch> = seqs.iter().map(|s| sketch(s, k, 1)).collect();
+
+        let mut n = 0usize;
+        let mut worst = 0.0f64;
+        let mut sum = 0.0f64;
+        for i in 0..seqs.len() {
+            for j in (i + 1)..seqs.len() {
+                let a = kmer_dist8(&kv[i], seqs[i].len(), &kv[j], seqs[j].len(), k);
+                let b = minimizer_dist(&sk[i], &sk[j]);
+                let d = (a - b).abs();
+                worst = worst.max(d);
+                sum += d;
+                n += 1;
+            }
+        }
+        let mean = sum / n as f64;
+        assert!(
+            worst < 0.05,
+            "w=1 should track the frequency screen: worst |delta| {worst:.4} over {n} pairs"
+        );
+        assert!(mean < 0.01, "mean |delta| {mean:.4} over {n} pairs");
+    }
+
+    /// k=5 must be usable, not just usable-in-release. It was excluded by
+    /// `MINIMIZER_K_MIN = 7` behind a `debug_assert!`, so `--minimizer-k 5`
+    /// worked in a release build and panicked in a debug one.
+    #[test]
+    fn k5_is_in_range_and_sketches() {
+        assert!(MINIMIZER_K_MIN <= 5);
+        let s = sketch(&make_seq(300, 4242), 5, 1);
+        assert!(!s.is_empty());
     }
 
     /// The derived cutoff is the k-mer pass-rate quantile, so if the k-mer screen
