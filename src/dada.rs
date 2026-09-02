@@ -867,6 +867,38 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     use std::time::{Duration, Instant};
     let mut bb = B::new(raws, params.omega_a, params.omega_p, params.use_quals);
 
+    // The index decision is workload-dependent and reverses between workloads
+    // (see `minimizers::decide_index`), so it is reported rather than silent —
+    // a run that unexpectedly declines the index would otherwise look like an
+    // unexplained `setup` of 0.00s in the phase split.
+    if params.verbose
+        && let Some(d) = bb.minimizer_index_decision
+    {
+        let why = match d.forced {
+            Some(true) => " [FORCED on by DADA2RS_MINIMIZER_INDEX=1]",
+            Some(false) => " [FORCED off by DADA2RS_MINIMIZER_INDEX=0]",
+            None => "",
+        };
+        eprintln!(
+            "[dada] minimizer index: {} — score {:.3} (= sharing {:.1}× × {} threads / \
+                 {} raws) vs threshold {:.3}; {} distinct minimizers, \
+                 {} postings{}",
+            if bb.minimizer_index.is_some() {
+                "BUILT (scatter per cluster)"
+            } else {
+                "declined (per-pair merge-join)"
+            },
+            d.score,
+            d.sharing,
+            rayon::current_num_threads().max(1),
+            bb.raws.len(),
+            d.threshold,
+            d.distinct,
+            d.entries,
+            why,
+        );
+    }
+
     // Cumulative phase timers. Only `b_compare_parallel` is multithreaded;
     // shuffle/bud/p_update are serial, so their share quantifies the Amdahl
     // serial fraction that caps thread utilization (printed under verbose).

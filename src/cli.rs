@@ -340,6 +340,8 @@ pub enum Commands {
         /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
         /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
         /// larger w is smaller and faster but less sensitive. Range 1-64.
+        /// Never varied in any published measurement — every result on the
+        /// findings page is a single w=5 point.
         #[arg(long)]
         minimizer_w: Option<usize>,
 
@@ -609,6 +611,8 @@ pub enum Commands {
         /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
         /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
         /// larger w is smaller and faster but less sensitive. Range 1-64.
+        /// Never varied in any published measurement — every result on the
+        /// findings page is a single w=5 point.
         #[arg(long)]
         minimizer_w: Option<usize>,
 
@@ -912,6 +916,8 @@ pub enum Commands {
         /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
         /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
         /// larger w is smaller and faster but less sensitive. Range 1-64.
+        /// Never varied in any published measurement — every result on the
+        /// findings page is a single w=5 point.
         #[arg(long)]
         minimizer_w: Option<usize>,
 
@@ -2020,6 +2026,8 @@ pub enum Commands {
         /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
         /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
         /// larger w is smaller and faster but less sensitive. Range 1-64.
+        /// Never varied in any published measurement — every result on the
+        /// findings page is a single w=5 point.
         #[arg(long)]
         minimizer_w: Option<usize>,
 
@@ -2380,6 +2388,8 @@ pub enum Commands {
         /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
         /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
         /// larger w is smaller and faster but less sensitive. Range 1-64.
+        /// Never varied in any published measurement — every result on the
+        /// findings page is a single w=5 point.
         #[arg(long)]
         minimizer_w: Option<usize>,
 

@@ -376,6 +376,171 @@ pub struct MinimizerIndex {
     nraw: usize,
 }
 
+/// Default ceiling on [`IndexDecision::score`], above which the inverted index
+/// costs more than it saves and the per-pair merge-join is used instead.
+///
+/// Three measured configurations bracket the crossover; this is not a calibrated
+/// constant, and `DADA2RS_MINIMIZER_INDEX_MAX` overrides it.
+///
+/// | configuration | score | index verdict |
+/// |---|---|---|
+/// | pooled ITS2 | 0.073 | wins by 13.9% |
+/// | per-sample PacBio | 0.185 | wins by 4.4% |
+/// | pooled PacBio | 0.571 | **loses by 31.6%** |
+///
+/// The default sits between the last win and the first loss, biased toward the
+/// low side because **the two errors are not symmetric**: choosing the index
+/// wrongly cost +26% against the k-mer screen on pooled PacBio, while declining
+/// it wrongly costs 2-4% on the configurations where it wins.
+pub const MINIMIZER_INDEX_MAX_SCORE: f64 = 0.30;
+
+/// Whether to build the inverted index for a given pool, and the evidence for it.
+#[derive(Debug, Clone, Copy)]
+pub struct IndexDecision {
+    pub use_index: bool,
+    /// Σ sketch entries over all raws — equals `n_postings` if the index is built.
+    pub entries: usize,
+    /// Distinct minimizers in the pool — equals `n_keys` if the index is built.
+    pub distinct: usize,
+    /// Mean posting-list length, `entries / distinct`.
+    pub sharing: f64,
+    /// `sharing × threads / nraw`. See [`decide_index`].
+    pub score: f64,
+    pub threshold: f64,
+    /// `Some(true|false)` when `DADA2RS_MINIMIZER_INDEX` forced the outcome.
+    pub forced: Option<bool>,
+}
+
+/// `HashSet<u64>` over values that are *already* avalanched.
+///
+/// The sketch stores SplitMix64 output, so re-hashing it with SipHash buys
+/// nothing and costs ~20 ns per probe — which matters at 262 M inserts on a
+/// pooled PacBio run. Only `write_u64` is reachable because the key is a `u64`.
+#[derive(Default, Clone, Copy)]
+struct IdentityHasher(u64);
+
+impl std::hash::Hasher for IdentityHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, _: &[u8]) {
+        unreachable!("IdentityHasher is only used for u64 keys")
+    }
+    fn write_u64(&mut self, v: u64) {
+        self.0 = v;
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+struct IdentityBuildHasher;
+
+impl std::hash::BuildHasher for IdentityBuildHasher {
+    type Hasher = IdentityHasher;
+    fn build_hasher(&self) -> IdentityHasher {
+        IdentityHasher(0)
+    }
+}
+
+/// Should this pool use the inverted index, or the per-pair merge-join?
+///
+/// # Why there is a choice at all
+///
+/// The index makes the screen `O(1)` per pair, but pays for it with a **serial**
+/// per-cluster scatter over the postings. Whether that trade is good is not a
+/// property of the backend — it is a property of the workload, and it reverses:
+///
+/// | configuration | `setup` | map saved | setup/saved | verdict |
+/// |---|---|---|---|---|
+/// | pooled ITS2 | 16.14s | 56.14s | 0.29 | index wins 13.9% |
+/// | per-sample PacBio | 33.44s | 76.26s | 0.44 | index wins 4.4% |
+/// | pooled PacBio | **162.69s** | 43.72s | **3.72** | index **loses** 31.6% |
+///
+/// On pooled PacBio the indexed arm is slower than the k-mer screen it replaces.
+/// Leaving that to an env var means the right answer depends on a flag no user
+/// would know to set, so it is decided here.
+///
+/// # The score
+///
+/// Serial scatter work is `nclusters × entries × sharing`; the parallel saving it
+/// buys is `ncomps × entries × c / threads`, and `ncomps ≈ nclusters × nraw`.
+/// The ratio drops `nclusters` and `entries`, leaving
+///
+/// ```text
+/// score = sharing × threads / nraw          where sharing = entries / distinct
+/// ```
+///
+/// which ranks the three configurations above in the correct order (0.073,
+/// 0.185, 0.571) against their measured ratios (0.29, 0.44, 3.72). **Three
+/// points determine a bracket, not a threshold** — the crossover lies somewhere
+/// in 0.19..0.57 and [`MINIMIZER_INDEX_MAX_SCORE`] picks a biased-low value
+/// inside it.
+///
+/// `threads` must be the threads that will actually run *this pool's* compare
+/// map — `rayon::current_num_threads()` inside the sub-pool, which is 4 under
+/// per-sample concurrency and 48 for a single pooled run. Passing the global
+/// count for a per-sample run inflates the score ~12x and would decline the
+/// index exactly where it wins.
+pub fn decide_index(
+    sketches: &[Option<MinimizerSketch>],
+    threads: usize,
+    forced: Option<bool>,
+) -> IndexDecision {
+    let nraw = sketches.len();
+    let entries: usize = sketches
+        .iter()
+        .map(|s| s.as_ref().map_or(0, |s| s.len()))
+        .sum();
+
+    // Distinct minimizers, counted without building the postings: a set of u64
+    // is ~40k entries where the index would allocate 262M postings, so a
+    // declined index costs a hash pass rather than a gigabyte.
+    let mut keys: std::collections::HashSet<u64, IdentityBuildHasher> =
+        std::collections::HashSet::with_capacity_and_hasher(1024, IdentityBuildHasher);
+    for s in sketches.iter().flatten() {
+        for h in s.hashes() {
+            keys.insert(h);
+        }
+    }
+    let distinct = keys.len();
+
+    let threshold = std::env::var("DADA2RS_MINIMIZER_INDEX_MAX")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .unwrap_or(MINIMIZER_INDEX_MAX_SCORE);
+
+    let sharing = if distinct == 0 {
+        0.0
+    } else {
+        entries as f64 / distinct as f64
+    };
+    let score = if nraw == 0 {
+        0.0
+    } else {
+        sharing * threads.max(1) as f64 / nraw as f64
+    };
+
+    IndexDecision {
+        use_index: forced.unwrap_or(score <= threshold),
+        entries,
+        distinct,
+        sharing,
+        score,
+        threshold,
+        forced,
+    }
+}
+
+/// `DADA2RS_MINIMIZER_INDEX`: `0` forces the merge-join, `1` forces the index,
+/// anything else (including unset) leaves the choice to [`decide_index`].
+pub fn index_env_override() -> Option<bool> {
+    match std::env::var("DADA2RS_MINIMIZER_INDEX").ok()?.as_str() {
+        "0" => Some(false),
+        "1" => Some(true),
+        _ => None,
+    }
+}
+
 impl MinimizerIndex {
     /// Build over the sketches of every raw, in `Raw::index` order.
     ///
@@ -690,6 +855,139 @@ mod tests {
         let s = sketch(&seq, MINIMIZER_K, MINIMIZER_W);
         assert!(!s.is_empty());
         assert_eq!(minimizer_dist(&s, &s), 0.0);
+    }
+
+    /// The score must reproduce the ORDER of the three measured configurations,
+    /// and the default threshold must land the index where it actually won.
+    ///
+    /// | configuration | sharing | threads | nraw | measured setup/saved |
+    /// |---|---|---|---|---|
+    /// | pooled ITS2 | 1258 | 48 | 825,214 | 0.29 — index wins |
+    /// | per-sample PacBio | 440 | 4 | 9,500 | 0.44 — index wins |
+    /// | pooled PacBio | 6509 | 48 | 547,273 | 3.72 — index LOSES |
+    #[test]
+    fn score_ranks_the_measured_configurations() {
+        let score =
+            |sharing: f64, threads: usize, nraw: usize| sharing * threads as f64 / nraw as f64;
+        let its2 = score(1258.0, 48, 825_214);
+        let pacbio_per_sample = score(440.0, 4, 9_500);
+        let pacbio_pooled = score(6509.0, 48, 547_273);
+
+        assert!(its2 < pacbio_per_sample, "{its2} !< {pacbio_per_sample}");
+        assert!(
+            pacbio_per_sample < pacbio_pooled,
+            "{pacbio_per_sample} !< {pacbio_pooled}"
+        );
+        // The two the index won stay under the default; the one it lost does not.
+        assert!(its2 <= MINIMIZER_INDEX_MAX_SCORE);
+        assert!(pacbio_per_sample <= MINIMIZER_INDEX_MAX_SCORE);
+        assert!(pacbio_pooled > MINIMIZER_INDEX_MAX_SCORE);
+    }
+
+    /// A pool of identical sequences shares every minimizer, so sharing == nraw
+    /// and the score is ~threads — the worst case, and it must decline.
+    #[test]
+    fn identical_pool_declines_the_index() {
+        let seq = make_seq(600, 42);
+        let sketches: Vec<Option<MinimizerSketch>> = (0..400)
+            .map(|_| Some(sketch(&seq, MINIMIZER_K, MINIMIZER_W)))
+            .collect();
+        let d = decide_index(&sketches, 48, None);
+        assert!(!d.use_index, "score {} should decline", d.score);
+        assert!(d.score > d.threshold);
+    }
+
+    /// A pool of unrelated sequences shares almost nothing, so posting lists are
+    /// short and the index is the right call.
+    ///
+    /// Judged at 4 threads, not 48: `nraw` is the denominator, and 400 uniques is
+    /// a pool that would never be given 48 threads. At 48 this scores 0.306 and
+    /// declines — correctly, since a serial scatter cannot pay for itself across
+    /// 400 raws no matter how diverse they are.
+    #[test]
+    fn diverse_pool_uses_the_index() {
+        let sketches: Vec<Option<MinimizerSketch>> = (0..400)
+            .map(|i| Some(sketch(&make_seq(600, 1000 + i), MINIMIZER_K, MINIMIZER_W)))
+            .collect();
+        let d = decide_index(&sketches, 4, None);
+        assert!(d.use_index, "score {} should accept", d.score);
+        assert!(d.distinct > 0 && d.entries > 0);
+    }
+
+    /// Scale-free version of the same claim: at identical `threads` and `nraw`,
+    /// sharing is the only thing that moves, and a diverse pool must score far
+    /// below a degenerate one. This is the property the rule actually relies on.
+    #[test]
+    fn diversity_dominates_the_score() {
+        let n = 400;
+        let seq = make_seq(600, 77);
+        let identical: Vec<Option<MinimizerSketch>> = (0..n)
+            .map(|_| Some(sketch(&seq, MINIMIZER_K, MINIMIZER_W)))
+            .collect();
+        let diverse: Vec<Option<MinimizerSketch>> = (0..n)
+            .map(|i| Some(sketch(&make_seq(600, 5000 + i), MINIMIZER_K, MINIMIZER_W)))
+            .collect();
+        let a = decide_index(&identical, 48, None).score;
+        let b = decide_index(&diverse, 48, None).score;
+        assert!(b * 20.0 < a, "diverse {b} vs identical {a}");
+    }
+
+    /// `entries` and `distinct` must equal what the index would report, or the
+    /// score is computed from different quantities than the ones it models.
+    #[test]
+    fn decision_counts_match_the_built_index() {
+        let sketches: Vec<Option<MinimizerSketch>> = (0..64)
+            .map(|i| Some(sketch(&make_seq(400, 7000 + i), MINIMIZER_K, MINIMIZER_W)))
+            .collect();
+        let d = decide_index(&sketches, 8, None);
+        let idx = MinimizerIndex::build(&sketches);
+        assert_eq!(d.entries, idx.n_postings());
+        assert_eq!(d.distinct, idx.n_keys());
+    }
+
+    /// The env override must win in both directions, whatever the score says.
+    #[test]
+    fn forced_override_beats_the_score() {
+        let seq = make_seq(600, 11);
+        let sketches: Vec<Option<MinimizerSketch>> = (0..400)
+            .map(|_| Some(sketch(&seq, MINIMIZER_K, MINIMIZER_W)))
+            .collect();
+        assert!(decide_index(&sketches, 48, Some(true)).use_index);
+        assert!(!decide_index(&sketches, 48, Some(false)).use_index);
+
+        let diverse: Vec<Option<MinimizerSketch>> = (0..400)
+            .map(|i| Some(sketch(&make_seq(600, 2000 + i), MINIMIZER_K, MINIMIZER_W)))
+            .collect();
+        assert!(!decide_index(&diverse, 48, Some(false)).use_index);
+        assert!(decide_index(&diverse, 48, Some(true)).use_index);
+    }
+
+    /// Threads is the pool that runs THIS compare. Reading the global count for a
+    /// per-sample run inflates the score ~12x and would decline the index exactly
+    /// where it measured a win, so the score must be sensitive to it.
+    #[test]
+    fn score_scales_with_threads() {
+        let sketches: Vec<Option<MinimizerSketch>> = (0..200)
+            .map(|i| Some(sketch(&make_seq(500, 3000 + i), MINIMIZER_K, MINIMIZER_W)))
+            .collect();
+        let a = decide_index(&sketches, 4, None).score;
+        let b = decide_index(&sketches, 48, None).score;
+        assert!((b / a - 12.0).abs() < 1e-9, "{a} -> {b}");
+    }
+
+    /// Empty and sketchless pools must not divide by zero.
+    #[test]
+    fn degenerate_pools_are_safe() {
+        let d = decide_index(&[], 8, None);
+        assert_eq!(d.score, 0.0);
+        assert!(d.use_index, "an empty pool is trivially under threshold");
+
+        let none: Vec<Option<MinimizerSketch>> = vec![None, None];
+        let d = decide_index(&none, 8, None);
+        assert_eq!(d.entries, 0);
+        assert_eq!(d.distinct, 0);
+        assert_eq!(d.sharing, 0.0);
+        assert_eq!(d.score, 0.0);
     }
 }
 

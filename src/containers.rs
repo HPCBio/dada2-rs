@@ -332,6 +332,9 @@ pub struct B {
     /// independent merge-joins. An **exact** acceleration — see
     /// [`crate::minimizers::MinimizerIndex`] — so it changes cost, never output.
     pub minimizer_index: Option<crate::minimizers::MinimizerIndex>,
+    /// Why [`B::minimizer_index`] is or is not present, for `--verbose`. `None`
+    /// when the minimizer screen is not in use at all.
+    pub minimizer_index_decision: Option<crate::minimizers::IndexDecision>,
     /// Reusable scratch for the minimizer index's per-cluster scatter: shared
     /// minimizer count per raw.
     ///
@@ -371,15 +374,30 @@ impl B {
         // so the presence of the sketches is the signal. Disable for A/B with
         // DADA2RS_MINIMIZER_INDEX=0 — the index is exact, so the two arms must
         // agree byte-for-byte, and that is worth being able to check.
-        let index = if !raws.is_empty()
-            && raws.iter().all(|r| r.minimizers.is_some())
-            && std::env::var_os("DADA2RS_MINIMIZER_INDEX").is_none_or(|v| v != "0")
-        {
+        // The index is not unconditionally worth building: it trades parallel
+        // screen work for a SERIAL per-cluster scatter, and on pooled PacBio that
+        // made the indexed arm 26% slower than the k-mer screen it replaces while
+        // winning by 4-14% on the other workloads measured. So the choice is made
+        // per pool from the sketches themselves; see `minimizers::decide_index`.
+        //
+        // `current_num_threads` is read here rather than plumbed because it must
+        // be the threads of the pool that will run THIS b_compare — under
+        // per-sample concurrency `dada_uniques` runs inside a sub-pool, so this
+        // reads 4 rather than the global 48, which is the number the score needs.
+        let (index, decision) = if !raws.is_empty() && raws.iter().all(|r| r.minimizers.is_some()) {
             let sketches: Vec<Option<crate::minimizers::MinimizerSketch>> =
                 raws.iter().map(|r| r.minimizers.clone()).collect();
-            Some(crate::minimizers::MinimizerIndex::build(&sketches))
+            let d = crate::minimizers::decide_index(
+                &sketches,
+                rayon::current_num_threads().max(1),
+                crate::minimizers::index_env_override(),
+            );
+            let idx = d
+                .use_index
+                .then(|| crate::minimizers::MinimizerIndex::build(&sketches));
+            (idx, Some(d))
         } else {
-            None
+            (None, None)
         };
         let mut b = B {
             raws,
@@ -394,6 +412,7 @@ impl B {
             cdf: Vec::new(),
             raw_cluster: Vec::new(),
             minimizer_index: index,
+            minimizer_index_decision: decision,
             screen_shared: Vec::new(),
             e_minmax,
         };
