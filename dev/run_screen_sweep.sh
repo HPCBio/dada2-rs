@@ -109,6 +109,12 @@ TIME_CUTS="${TIME_CUTS:-0.62 0.64}"
 # of compare for exactly that reason. So set NOIDX_CUTS on a pooled run.
 NOIDX_CUTS="${NOIDX_CUTS:-}"
 
+# Cutoffs to ALSO time with the index left to `decide_index` (the shipped
+# behaviour), as `_auto` arms. Once the selection rule exists this is the arm
+# that matters: `_c<C>` forces it on, `_noidx` forces it off, only `_auto`
+# measures what a user gets. Defaults to TIME_CUTS.
+AUTO_CUTS="${AUTO_CUTS:-$TIME_CUTS}"
+
 # COST WARNING. The timing and phase-split sections each run one full denoising
 # pass per (arm x rep), and on a large pooled run a single pass is enormous --
 # pooled soil 16S is 11.8 BILLION comparisons. A 3-rep x 12-arm timing section is
@@ -328,8 +334,12 @@ fi
 # spec = name:minimizer-k:cutoff:w:index  (empty k = k-mer arm; index 0 = no index)
 declare -a ARMS=("kmer::::" "kmerctl::::")
 for K in $KS; do for W in $WS; do
-  for C in $TIME_CUTS;  do ARMS+=("$(arm_name "$K" "$W" "$C"):$K:$C:$W:"); done
+  # Forced ON, not defaulted: `decide_index` now chooses, so an unqualified arm
+  # would change meaning between binaries while keeping its name -- and
+  # timings.tsv keys on (arm, rep), so old and new replicates would be pooled.
+  for C in $TIME_CUTS;  do ARMS+=("$(arm_name "$K" "$W" "$C"):$K:$C:$W:1"); done
   for C in $NOIDX_CUTS; do ARMS+=("$(arm_name "$K" "$W" "$C")_noidx:$K:$C:$W:0"); done
+  for C in $AUTO_CUTS;  do ARMS+=("$(arm_name "$K" "$W" "$C")_auto:$K:$C:$W:"); done
 done; done
 
 # Append, do not truncate: timing passes are the expensive part (a pooled pass is

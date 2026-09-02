@@ -92,6 +92,17 @@ TIME_CUTS="${TIME_CUTS:-0.48 0.52}"
 # rows would silently mix two configurations into one median.
 NOIDX_CUTS="${NOIDX_CUTS:-$TIME_CUTS}"
 
+# Cutoffs to ALSO time with the index left to `decide_index` (the shipped
+# behaviour), as `_auto` arms. This is the arm that matters once the selection
+# rule exists: `_c<C>` forces the index on and `_noidx` forces it off, so only
+# `_auto` measures what a user actually gets.
+#
+# `_c<C>` now passes DADA2RS_MINIMIZER_INDEX=1 explicitly rather than relying on
+# the old always-index default. Without that, adding the rule would silently
+# change what an arm name means, and timings.tsv keys on (arm, rep) -- replicates
+# recorded before the rule would be averaged with replicates after it.
+AUTO_CUTS="${AUTO_CUTS:-$TIME_CUTS}"
+
 # COST WARNING. The timing and phase-split sections each run one full denoising
 # pass per (arm x rep). On a large pooled run a single pass is enormous, so use
 # REPS=1 and one or two TIME_CUTS there; the accuracy grid is cheap by comparison
@@ -282,10 +293,13 @@ echo "==> wall time (arms interleaved across $REPS reps)"
 # rather than discard the ones already paid for. Each (arm, rep) is skipped if
 # already recorded.
 touch "$OUT/timings.tsv"
-# spec = name:minimizer-k:cutoff:index  (empty k = k-mer arm; index 0 = no index)
+# spec = name:minimizer-k:cutoff:index
+#   empty k     = k-mer arm
+#   index 0/1/  = force off / force on / let decide_index choose
 declare -a T=("kmer:::" "kmerctl:::")
-for K in $KS; do for C in $TIME_CUTS; do T+=("mini_k${K}_c${C}:$K:$C:"); done; done
+for K in $KS; do for C in $TIME_CUTS;  do T+=("mini_k${K}_c${C}:$K:$C:1"); done; done
 for K in $KS; do for C in $NOIDX_CUTS; do T+=("mini_k${K}_c${C}_noidx:$K:$C:0"); done; done
+for K in $KS; do for C in $AUTO_CUTS;  do T+=("mini_k${K}_c${C}_auto:$K:$C:"); done; done
 echo "    ${#T[@]} arms x $REPS reps = $(( ${#T[@]} * REPS )) denoising passes"
 echo "    (narrow with TIME_CUTS=; the accuracy grid above is unaffected)"
 for rep in $(seq 1 "$REPS"); do
