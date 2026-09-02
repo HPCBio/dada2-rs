@@ -517,7 +517,31 @@ versus the *index* is what made this look open.
 So the serial scatter is not a design fault to be parallelised away on the
 strength of its share alone. An earlier revision of this page said it was, and
 projected the arm from 71% to ~60% of k-mer wall clock on that basis. That
-projection is withdrawn; the index question is closed on both platforms.
+projection is withdrawn.
+
+> **REOPENED by pooled PacBio, which reverses the sign.** Preliminary, 2 of 3
+> replicates, control channel 1.0%:
+>
+> | arm | mean | range | vs k-mer |
+> |---|---|---|---|
+> | k-mer | 338.69s | 335.69-341.69 | — |
+> | minimizer @0.45, index **on** | 428.04s | 420.20-435.89 | **+26.4%** |
+> | minimizer @0.45, index **off** | **287.64s** | 285.98-289.30 | **−15.1%** |
+>
+> Index-off beats index-on by **32.8%** with disjoint ranges. So the index is not
+> unconditionally a bargain: it wins on per-sample PacBio (2-6%) and on pooled
+> ITS2 (13.9%), and loses badly here.
+>
+> The candidate mechanism is that the serial scatter's cost scales with
+> **nraw x sketch entries**, and pooled PacBio is the first configuration to
+> maximise both — per-sample PacBio has 475-entry sketches but only thousands of
+> raws per pool, and pooled ITS2 has ~825k raws but only 74-entry sketches. That
+> predicts a large `setup` share on this arm specifically, which the phase split
+> will confirm or refute.
+>
+> Until it does, `DADA2RS_MINIMIZER_INDEX` is a **real tuning knob with a
+> workload-dependent answer**, not the diagnostic this page called it one
+> revision ago.
 
 **2. Map efficiency falls 90% -> 76%, inside the parallel region.** Separate from
 setup, which sits outside it. The cause is the per-item work collapsing: at 33
@@ -1247,9 +1271,11 @@ This is the third negative result on this branch from costing a scan by
 operations rather than by access pattern, which is a general lesson about this
 codebase and not about minimizers.
 
-**Closed on both platforms.** Pooled ITS2 was expected to favour index-off —
-4x smaller sketches, no cross-sample concurrency — and the index won there by
-**13.9%**, a wider margin than anywhere on PacBio. The merge-join is indeed
+**Not closed — pooled PacBio reverses it.** Pooled ITS2 was expected to favour
+index-off and the index won there by **13.9%**; pooled PacBio then went the other
+way by **32.8%** (index-off 287.64s vs index-on 428.04s, 2 reps, control 1.0%).
+The answer is workload-dependent, and the working model is that the scatter costs
+`nraw x sketch entries` — a product only pooled PacBio maximises. The merge-join is indeed
 cheaper on short reads (1144 ns/comp vs 2272-2407) and even beats the k-mer
 screen, but it is still **35x** the index's 33 ns/comp, and the screen is 77% of
 `b_compare` on that workload.
@@ -1390,17 +1416,20 @@ What promotion would require, in order:
    for. **This is not a question the data answers.**
 2. **Replication.** One dataset per configuration. A second diverse pool per
    platform would say whether ~0.64 is a default or a coincidence.
-3. ~~**The serial `setup` phase.**~~ **Resolved, not a promotion blocker.** All
-   three ways out were measured and all cost more than they save: touched-index
-   tracking regressed 29%, and removing the index lost on *both* platforms —
-   by up to 6.0% on PacBio and **13.9% on pooled ITS2**, which was the case
-   predicted to favour it
+3. **The serial `setup` phase — reopened, and now a promotion blocker.**
+   Touched-index tracking regressed 29%, and removing the index lost on
+   per-sample PacBio (up to 6.0%) and pooled ITS2 (13.9%) — but **won on pooled
+   PacBio by 32.8%**, where the indexed arm is 26.4% SLOWER than the k-mer screen
+   it replaces
    ([claim 3](#3-the-serial-scatter-is-the-indexs-price-and-should-be-parallelised-away-it-is-the-indexs-bargain)).
-   The setup share is real but is the price of a 35-75x cheaper screen. What
-   remains here is **map efficiency** (90% -> 75%), which is separate, sits inside
-   the parallel region, and has its own knob in `DADA2RS_PAR_GRAIN` — and note
-   that index-off holds 89% efficiency, so this cost is specific to the regime
-   where per-item work collapses to a single array read.
+   So the index is a bargain on three configurations and a liability on the
+   fourth, and promotion needs either a rule that picks between them or a scatter
+   that stops being serial. The working model — cost scales with
+   `nraw x sketch entries` — would be such a rule if the phase split confirms it.
+   Separately, **map efficiency** (90% -> 75%) sits inside the parallel region
+   with its own knob in `DADA2RS_PAR_GRAIN`, and index-off holds 89%, so that
+   cost is specific to the regime where per-item work collapses to a single array
+   read.
 4. **A default-selection story.** The right cutoff varies with pass rate
    (0.45-0.80 across workloads), so a fixed default cannot be right everywhere —
    the shipped 0.63 is an Illumina value and is 0.18 too loose on HiFi.
