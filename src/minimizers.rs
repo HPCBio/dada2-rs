@@ -564,6 +564,78 @@ pub fn index_env_override() -> Option<bool> {
     }
 }
 
+/// Result of deriving a minimizer cutoff by matching the k-mer screen's pass rate.
+#[derive(Debug, Clone, Copy)]
+pub struct MatchedPass {
+    pub n_pairs: usize,
+    /// Fraction of sampled pairs the k-mer screen passes at its own cutoff.
+    pub kmer_pass: f64,
+    /// The derived minimizer cutoff (raw quantile).
+    pub cutoff: f64,
+    /// The same, rounded to the 0.01 grid every sweep on this branch used.
+    pub cutoff_rounded: f64,
+    /// Minimizer pass rate at `cutoff_rounded` — should sit near `kmer_pass`;
+    /// it will not match exactly, because rounding moves it.
+    pub mini_pass: f64,
+}
+
+/// Derive a minimizer cutoff that passes the same fraction of pairs as the k-mer
+/// screen does at `kmer_cutoff`.
+///
+/// # Why matched pass rate, and why it is cheap
+///
+/// The right cutoff has to be derived per dataset, because the k-mer screen's own
+/// pass rate spans **0.70%-26.8%** across the workloads measured here — a fixed
+/// minimizer cutoff cannot track that. Matching the pass rate predicted the sweep
+/// optimum on 5 of 5 Illumina workloads.
+///
+/// Stated as a quantile it costs nothing. If the k-mer screen passes `q` of
+/// pairs, the matching minimizer cutoff is simply **the `q`-quantile of the
+/// minimizer distance distribution** — so this needs the two distance
+/// distributions over a sample of pairs and *no alignment at all*. Alignment is
+/// what makes `kdist-calibrate` expensive (every sampled pair aligned unbanded,
+/// ~2.2 M DP cells on 1.5 kb reads), and it is only needed for the true-divergence
+/// columns, which this rule never consults.
+///
+/// # What it does not do
+///
+/// It reproduces the k-mer screen's *selectivity*, which is the safe target, not
+/// the cheapest cutoff that still agrees with it. On PacBio HiFi the ASV table is
+/// **identical from 0.45 to 0.60**, and matched-pass picks 0.50 — inside that
+/// plateau but at its expensive end, worth ~19 points of wall clock against 0.45.
+/// Finding the cheap edge of a plateau needs the ASV table, so a sweep still
+/// beats this; it is a default, not an answer.
+pub fn matched_pass_cutoff(kmer_d: &[f64], mini_d: &[f64], kmer_cutoff: f64) -> MatchedPass {
+    let n = kmer_d.len().min(mini_d.len());
+    if n == 0 {
+        return MatchedPass {
+            n_pairs: 0,
+            kmer_pass: 0.0,
+            cutoff: MINIMIZER_KDIST_CUTOFF,
+            cutoff_rounded: MINIMIZER_KDIST_CUTOFF,
+            mini_pass: 0.0,
+        };
+    }
+    let passed = kmer_d[..n].iter().filter(|&&d| d <= kmer_cutoff).count();
+    let kmer_pass = passed as f64 / n as f64;
+
+    let mut sorted: Vec<f64> = mini_d[..n].to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // The q-quantile, clamped so a pass rate of 0 or 1 still indexes in range.
+    let idx = ((kmer_pass * n as f64).ceil() as usize).clamp(1, n) - 1;
+    let cutoff = sorted[idx];
+    let cutoff_rounded = (cutoff * 100.0).round() / 100.0;
+    let mini_pass = sorted.iter().filter(|&&d| d <= cutoff_rounded).count() as f64 / n as f64;
+
+    MatchedPass {
+        n_pairs: n,
+        kmer_pass,
+        cutoff,
+        cutoff_rounded,
+        mini_pass,
+    }
+}
+
 impl MinimizerIndex {
     /// Build over the sketches of every raw, in `Raw::index` order.
     ///
@@ -878,6 +950,55 @@ mod tests {
         let s = sketch(&seq, MINIMIZER_K, MINIMIZER_W);
         assert!(!s.is_empty());
         assert_eq!(minimizer_dist(&s, &s), 0.0);
+    }
+
+    /// The derived cutoff is the k-mer pass-rate quantile, so if the k-mer screen
+    /// passes 30% of pairs the cutoff must sit at the 30th percentile of the
+    /// minimizer distances.
+    #[test]
+    fn matched_pass_is_the_kmer_pass_quantile() {
+        // k-mer distances 0.00..0.99; at cutoff 0.30 exactly 31 of 100 pass.
+        let kd: Vec<f64> = (0..100).map(|i| i as f64 / 100.0).collect();
+        // Minimizer distances 0.00..0.99 as well, so the quantile is readable.
+        let md: Vec<f64> = (0..100).map(|i| i as f64 / 100.0).collect();
+        let r = matched_pass_cutoff(&kd, &md, 0.30);
+        assert_eq!(r.n_pairs, 100);
+        assert!((r.kmer_pass - 0.31).abs() < 1e-9, "{}", r.kmer_pass);
+        assert!(
+            (r.cutoff_rounded - 0.30).abs() < 1e-9,
+            "{}",
+            r.cutoff_rounded
+        );
+    }
+
+    /// A cutoff must be derived, not transferred: the same pass rate maps to a
+    /// very different number when the minimizer distribution is shifted, which is
+    /// exactly why sharing `kmer_dist8`'s algebra transferred nothing.
+    #[test]
+    fn matched_pass_tracks_the_minimizer_distribution_not_the_kmer_one() {
+        let kd: Vec<f64> = (0..100).map(|i| i as f64 / 100.0).collect();
+        let shifted: Vec<f64> = (0..100).map(|i| 0.40 + i as f64 / 250.0).collect();
+        let a = matched_pass_cutoff(&kd, &kd, 0.30).cutoff_rounded;
+        let b = matched_pass_cutoff(&kd, &shifted, 0.30).cutoff_rounded;
+        assert!(b > a + 0.15, "{a} vs {b}");
+    }
+
+    /// Degenerate pass rates must still index in range rather than panic.
+    #[test]
+    fn matched_pass_handles_all_and_nothing() {
+        let md: Vec<f64> = (0..50).map(|i| i as f64 / 50.0).collect();
+        let none = vec![1.0; 50]; // k-mer screen passes nothing at 0.42
+        let all = vec![0.0; 50]; // ... or everything
+        let r0 = matched_pass_cutoff(&none, &md, 0.42);
+        assert_eq!(r0.kmer_pass, 0.0);
+        assert!(r0.cutoff.is_finite());
+        let r1 = matched_pass_cutoff(&all, &md, 0.42);
+        assert_eq!(r1.kmer_pass, 1.0);
+        assert!((r1.cutoff - 0.98).abs() < 1e-9, "{}", r1.cutoff);
+
+        let empty = matched_pass_cutoff(&[], &[], 0.42);
+        assert_eq!(empty.n_pairs, 0);
+        assert_eq!(empty.cutoff, MINIMIZER_KDIST_CUTOFF);
     }
 
     /// The score must reproduce the ORDER of the three measured configurations,

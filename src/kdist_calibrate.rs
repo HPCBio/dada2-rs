@@ -97,6 +97,7 @@ impl Screens {
 }
 
 /// Parameters for [`run`] (mirrors the CLI flags).
+#[derive(Clone)]
 pub struct Params {
     pub k: usize,
     /// Which screen to calibrate. `Kmer` reproduces the historical behaviour.
@@ -131,6 +132,10 @@ pub struct Params {
     pub seed: u64,
     pub output: Option<PathBuf>,
     pub verbose: bool,
+    /// Derive-only mode: report the minimizer cutoff that matches the k-mer
+    /// screen's pass rate, and nothing else. Skips alignment entirely, so it runs
+    /// in seconds where the full curve takes hours.
+    pub derive_cutoff: bool,
 }
 
 fn encode(seq: &str) -> Vec<u8> {
@@ -643,6 +648,100 @@ fn pairs_for(n: usize, max_pairs: usize, seed: u64) -> Vec<(usize, usize)> {
         .collect()
 }
 
+/// Derive the minimizer cutoff that reproduces the k-mer screen's pass rate.
+///
+/// The full calibration curve exists to relate a screen distance to TRUE
+/// divergence, and that is what costs the money: every sampled pair is aligned
+/// unbanded (~2.2 M DP cells on 1.5 kb reads, ~34 M alignments on the 95-sample
+/// PacBio run). The matched-pass rule never consults true divergence, so this
+/// mode computes both screens over the same sampled pairs and stops.
+///
+/// Both screens are built over the SAME encoded uniques and evaluated on the
+/// SAME pairs, which is the whole point: a cutoff is a property of the distance
+/// distribution a metric induces, so the two distributions have to be compared
+/// on identical input or the quantile is meaningless.
+fn run_derive_cutoff(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
+    let mut kp = p.clone();
+    kp.screen_backend = ScreenBackend::Kmer;
+    let mut mp = p.clone();
+    mp.screen_backend = ScreenBackend::Minimizer;
+
+    let mut enc: Vec<Vec<u8>> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    for path in inputs {
+        let s = load_derep(path, &kp, p.max_uniques, p.seed)?;
+        names.push(s.name);
+        enc.extend(s.enc);
+    }
+    if enc.len() < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("need at least 2 uniques to sample pairs; got {}", enc.len()),
+        ));
+    }
+
+    let kmer = Screens::build(&enc, &kp);
+    let mini = Screens::build(&enc, &mp);
+    let pairs = pairs_for(enc.len(), p.max_pairs, p.seed);
+
+    let mut kd = Vec::with_capacity(pairs.len());
+    let mut md = Vec::with_capacity(pairs.len());
+    for &(i, j) in &pairs {
+        let (li, lj) = (enc[i].len(), enc[j].len());
+        kd.push(kmer.dist(i, &kmer, j, li, lj, p.k));
+        md.push(mini.dist(i, &mini, j, li, lj, p.k));
+    }
+
+    let r = minimizers::matched_pass_cutoff(&kd, &md, p.cutoff);
+    println!("# derive-cutoff: matched pass rate, no alignment performed");
+    println!(
+        "uniques      {} across {} input(s)\npairs        {}",
+        enc.len(),
+        names.len(),
+        r.n_pairs
+    );
+    println!(
+        "k-mer screen k={} @ cutoff {:.2}: passes {:.4}% of pairs",
+        p.k,
+        p.cutoff,
+        100.0 * r.kmer_pass
+    );
+    println!(
+        "minimizer    k={} w={}: matching cutoff {:.4} -> **{:.2}** (passes {:.4}%)",
+        p.minimizer_k,
+        p.minimizer_w,
+        r.cutoff,
+        r.cutoff_rounded,
+        100.0 * r.mini_pass
+    );
+    // The pass-rate curve either side, so how sharply the choice matters is
+    // visible rather than implied. A flat neighbourhood means the exact value
+    // hardly matters; a steep one means it does.
+    println!("\nminimizer pass rate near the derived cutoff:");
+    for step in -4i32..=4 {
+        let c = r.cutoff_rounded + f64::from(step) * 0.01;
+        if c <= 0.0 || c >= 1.0 {
+            continue;
+        }
+        let pass = md.iter().filter(|&&d| d <= c).count() as f64 / r.n_pairs as f64;
+        println!(
+            "  {:.2}{} {:8.4}%",
+            c,
+            if step == 0 { " <-" } else { "   " },
+            100.0 * pass
+        );
+    }
+    println!(
+        "\nNOTE: this reproduces the k-mer screen's SELECTIVITY, which is the safe\n\
+         target, not the cheapest cutoff that still agrees with it. On PacBio HiFi\n\
+         the ASV table is identical from 0.45 to 0.60 and this rule picks 0.50 --\n\
+         inside the plateau but at its expensive end, worth ~19% of wall clock.\n\
+         Finding the cheap edge of a plateau needs the ASV table, so sweep if you\n\
+         can afford to."
+    );
+    Ok(())
+}
+
 pub fn run(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
     if inputs.is_empty() {
         return Err(io::Error::new(
@@ -655,6 +754,9 @@ pub fn run(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
     }
     if p.from_dada {
         return run_from_dada(inputs, p);
+    }
+    if p.derive_cutoff {
+        return run_derive_cutoff(inputs, p);
     }
     let loaded: Vec<Sample> = inputs
         .iter()

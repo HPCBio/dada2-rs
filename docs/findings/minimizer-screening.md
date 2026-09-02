@@ -80,9 +80,21 @@ workloads above. Matched-pass predicted the sweep optimum in every case:
 | soil 16S per-sample | 5.52% | 0.65 | 0.65 |
 | **pooled 16S** | **4.54%** | **0.65** | **0.65** |
 | PacBio HiFi, 95 samples | 14.07% | 0.50 | **0.45** (one step tighter) |
-| MiSeq SOP | 26.8% | ~0.80 | 0.70 (0.80 close) |
+| MiSeq SOP | 27.5% | **0.64** | 0.70 — but see below |
 
-Five for five on Illumina. **PacBio is the exception and it matters**: matched-pass
+**Four of these are real tests; one is not, and the MiSeq SOP row was wrong.**
+An earlier revision gave MiSeq SOP a matched cutoff of ~0.80, which contradicts
+this page's own pass-rate table further down — 0.65 already passes 28.9% there,
+above the 27.5% target — so the matching value is ~0.64, and
+`kdist-calibrate --derive-cutoff` computes exactly 0.64 on three SOP samples.
+Against a swept optimum of 0.70 that is a 6-point miss.
+
+It is also a workload where **nothing is at stake**: the screen is 0.9% of
+`b_compare` on the SOP and churn is 0 across a wide range, so "the optimum" there
+means "a value that churned nothing", not a performance optimum. The SOP cannot
+adjudicate this rule in either direction.
+
+**PacBio is the exception that does matter**: matched-pass
 picked 0.50, and 0.45 is equally exact for 22% fewer alignments — so the rule
 landed inside the right region but at its expensive end. On a platform with a wide
 exactly-concordant plateau, matching the pass rate is a safe starting point and

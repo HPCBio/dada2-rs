@@ -2615,6 +2615,19 @@ pub enum Commands {
         #[arg(long)]
         from_dada: bool,
 
+        /// Derive-only: report the minimizer cutoff that reproduces the k-mer
+        /// screen's PASS RATE on this data, then stop. Skips alignment entirely,
+        /// so it runs in seconds where the full curve takes hours -- the curve's
+        /// cost is aligning every sampled pair unbanded to get true divergence,
+        /// which the matched-pass rule never consults.
+        ///
+        /// Reproduces the k-mer screen's selectivity, which is the safe target,
+        /// not the cheapest cutoff that still agrees with it: on PacBio HiFi the
+        /// ASV table is identical from 0.45 to 0.60 and this picks 0.50. Sweep if
+        /// you can afford to.
+        #[arg(long)]
+        derive_cutoff: bool,
+
         /// Pooled post-inference mode: treat the positional inputs as the
         /// `_pooled.json[.gz]` record(s) written by `dada-pooled` and screen the
         /// merged unique table against the single global partition. Self-contained
