@@ -115,6 +115,24 @@ NOIDX_CUTS="${NOIDX_CUTS:-}"
 # measures what a user gets. Defaults to TIME_CUTS.
 AUTO_CUTS="${AUTO_CUTS:-$TIME_CUTS}"
 
+# Rayon chunk sizes to sweep for the compare map (DADA2RS_PAR_GRAIN, default 32),
+# as `_g<N>` timing arms. Empty = do not sweep.
+#
+# This is the LAST measured-but-unexploited headroom on the branch, and unlike the
+# index question it needs no new code. Pooled ITS2 measured map parallel
+# efficiency at **90% on the k-mer arm and 75% on the indexed minimizer arm** --
+# work that exists and is being lost to scheduling, not to a different algorithm.
+# The cause is per-item work collapsing: at ~33 ns/comparison instead of 1305,
+# rayon's per-chunk overhead and tail imbalance stop being negligible, and most
+# items are a single array read.
+#
+# Illumina-only on purpose. Pooled PacBio held 97-98% on every arm, because a
+# 1.5 kb alignment is heavy enough per item that scheduling never dominates. So
+# the effect is specific to short reads with a cheap screen, which is exactly the
+# regime this backend is FOR -- the workloads where it wins most are the ones
+# leaving the most on the table.
+GRAINS="${GRAINS:-}"
+
 # COST WARNING. The timing and phase-split sections each run one full denoising
 # pass per (arm x rep), and on a large pooled run a single pass is enormous --
 # pooled soil 16S is 11.8 BILLION comparisons. A 3-rep x 12-arm timing section is
@@ -331,8 +349,11 @@ if [ ${#filtF[@]} -eq 0 ]; then
   echo "    (no forward reads found for timing; skipping)" >&2
   REPS=0
 fi
-# spec = name:minimizer-k:cutoff:w:index  (empty k = k-mer arm; index 0 = no index)
-declare -a ARMS=("kmer::::" "kmerctl::::")
+# spec = name:minimizer-k:cutoff:w:index:grain
+#   empty k     = k-mer arm
+#   index 0/1/  = force off / force on / let decide_index choose
+#   grain        = DADA2RS_PAR_GRAIN override, empty = default
+declare -a ARMS=("kmer:::::" "kmerctl:::::")
 for K in $KS; do for W in $WS; do
   # Forced ON, not defaulted: `decide_index` now chooses, so an unqualified arm
   # would change meaning between binaries while keeping its name -- and
@@ -340,7 +361,16 @@ for K in $KS; do for W in $WS; do
   for C in $TIME_CUTS;  do ARMS+=("$(arm_name "$K" "$W" "$C"):$K:$C:$W:1"); done
   for C in $NOIDX_CUTS; do ARMS+=("$(arm_name "$K" "$W" "$C")_noidx:$K:$C:$W:0"); done
   for C in $AUTO_CUTS;  do ARMS+=("$(arm_name "$K" "$W" "$C")_auto:$K:$C:$W:"); done
+  # Grain arms are index-FORCED-ON: the efficiency loss being chased is the
+  # indexed arm's (75% vs the k-mer arm's 90%), and letting the rule choose here
+  # would confound a grain effect with a mode switch.
+  for C in $TIME_CUTS; do for G in $GRAINS; do
+    ARMS+=("$(arm_name "$K" "$W" "$C")_g${G}:$K:$C:$W:1:$G")
+  done; done
 done; done
+# A grain baseline for the k-mer arm too, or a grain result cannot be separated
+# from a backend result.
+for G in $GRAINS; do ARMS+=("kmer_g${G}:::::$G"); done
 
 # Append, do not truncate: timing passes are the expensive part (a pooled pass is
 # billions of comparisons), so raising REPS on a re-run should ADD replicates
@@ -351,10 +381,13 @@ echo "    ${#ARMS[@]} arms x $REPS reps = $(( ${#ARMS[@]} * REPS )) denoising pa
 echo "    (narrow with TIME_CUTS=; the accuracy grid above is unaffected)"
 for rep in $(seq 1 "$REPS"); do
   for arm in "${ARMS[@]}"; do
-    IFS=: read -r name K C W IDX <<< "$arm"
+    IFS=: read -r name K C W IDX G <<< "$arm"
     extra=()
     [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --minimizer-w "$W" --kdist-cutoff "$C")
-    env=(); [ -n "$IDX" ] && env=(env "DADA2RS_MINIMIZER_INDEX=$IDX")
+    env=()
+    [ -n "$IDX" ] && env+=("DADA2RS_MINIMIZER_INDEX=$IDX")
+    [ -n "$G" ] && env+=("DADA2RS_PAR_GRAIN=$G")
+    [ ${#env[@]} -gt 0 ] && env=(env "${env[@]}")
     # Already timed on an earlier invocation? Skip it, so raising REPS adds
     # replicates instead of redoing the ones already paid for.
     if awk -F'\t' -v n="$name" -v r="$rep" '$1==n && $2==r{f=1} END{exit !f}' \
@@ -401,10 +434,13 @@ fi
 [ ${#TIMER[@]} -eq 0 ] && echo "    (note: /usr/bin/time unavailable; peak RSS omitted, verbose block still captured)"
 {
   for spec in "${ARMS[@]}"; do
-    IFS=: read -r name K C W IDX <<< "$spec"
+    IFS=: read -r name K C W IDX G <<< "$spec"
     [ "$name" = "kmerctl" ] && continue
     extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --minimizer-w "$W" --kdist-cutoff "$C")
-    env=(); [ -n "$IDX" ] && env=(env "DADA2RS_MINIMIZER_INDEX=$IDX")
+    env=()
+    [ -n "$IDX" ] && env+=("DADA2RS_MINIMIZER_INDEX=$IDX")
+    [ -n "$G" ] && env+=("DADA2RS_PAR_GRAIN=$G")
+    [ ${#env[@]} -gt 0 ] && env=(env "${env[@]}")
     echo "===== $name"
     ${env[@]+"${env[@]}"} ${TIMER[@]+"${TIMER[@]}"} "$BIN" $DADA_CMD "${filtF[@]}" \
         --error-model "$OUT/base/errF.json" --threads "$THREADS" --verbose \
