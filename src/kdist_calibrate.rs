@@ -749,6 +749,10 @@ fn run_derive_cutoff(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
     let mut per_pop: Vec<(String, minimizers::MatchedPass)> = Vec::new();
     let mut kd = Vec::new();
     let mut md = Vec::new();
+    // Sketch shape, accumulated over populations for the index-viability report.
+    let mut sketch_entries = 0usize;
+    let mut sketch_nraw = 0usize;
+    let mut sketch_keys: std::collections::HashSet<u64> = std::collections::HashSet::new();
     for (name, enc, counts) in &pops {
         let kmer = Screens::build(enc, &kp);
         let mini = Screens::build(enc, &mp);
@@ -770,6 +774,13 @@ fn run_derive_cutoff(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
         ));
         kd.extend(pkd);
         md.extend(pmd);
+        if let Screens::Minimizer(sk) = &mini {
+            sketch_nraw += sk.len();
+            sketch_entries += sk.iter().map(|s| s.len()).sum::<usize>();
+            for s in sk {
+                sketch_keys.extend(s.hashes());
+            }
+        }
     }
 
     if p.per_sample && per_pop.len() > 1 {
@@ -800,6 +811,48 @@ fn run_derive_cutoff(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
                 "  <- SPREAD > 0.04: one run-wide cutoff is a compromise here"
             } else {
                 ""
+            }
+        );
+    }
+
+    // Sketch shape and index viability. Without these the (k, w) grid reads as a
+    // pure accuracy table and points at k=5 w=1 -- which is the frequency screen
+    // itself, so it "wins" by abandoning the entire reason to use a sketch.
+    //
+    // What actually keeps the screen cheap is the INDEX (32 ns/comp against
+    // 1144-3440 for a merge-join), and the index survives only while posting
+    // lists stay short. Posting length is `entries x nraw / distinct`, and
+    // `distinct` is bounded by 4^k -- at k=5 there are at most 1024 possible
+    // minimizers, so a large pool saturates them and the scatter explodes. Larger
+    // k buys index viability at the cost of emulation fidelity, and that trade is
+    // invisible unless both sides are printed.
+    {
+        let entries = sketch_entries;
+        let nraw = sketch_nraw;
+        let distinct = sketch_keys.len().max(1);
+        let sharing = entries as f64 / distinct as f64;
+        let score = sharing * p.threads.max(1) as f64 / nraw.max(1) as f64;
+        println!(
+            "\nsketch shape  {:.0} entries/raw, {} distinct of 4^{}={} possible ({:.1}% saturated)",
+            entries as f64 / nraw.max(1) as f64,
+            distinct,
+            p.minimizer_k,
+            if p.minimizer_k < 32 {
+                4usize.saturating_pow(p.minimizer_k as u32)
+            } else {
+                usize::MAX
+            },
+            100.0 * distinct as f64 / (4usize.saturating_pow(p.minimizer_k as u32) as f64).max(1.0)
+        );
+        println!(
+            "index         mean posting {:.0}, decide_index score {:.3} at {} threads -> {}",
+            sharing,
+            score,
+            p.threads,
+            if score <= minimizers::MINIMIZER_INDEX_MAX_SCORE {
+                "INDEX (screen ~32 ns/comp)"
+            } else {
+                "merge-join (screen ~1100-3400 ns/comp; the speed benefit is gone)"
             }
         );
     }
