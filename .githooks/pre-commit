@@ -11,6 +11,18 @@ fi
 echo "--- pre-commit: cargo clippy ---"
 cargo clippy -- -D warnings
 
+echo "--- pre-commit: test targets compile ---"
+# Clippy above covers lib+bin only, so adding a field to a struct that a
+# #[cfg(test)] helper constructs passes it and still breaks `cargo test`. That
+# happened when kdist_calibrate::Params gained `derive_cutoff`, and the commit
+# landed with a broken test build.
+#
+# --no-run compiles the test targets without running them, which is what catches
+# this. Deliberately not `clippy --all-targets`: that would also enforce lints on
+# test and example code, where 13 pre-existing warnings live, and clearing those
+# belongs in its own change rather than blocking every commit until then.
+cargo test --no-run --quiet
+
 echo "--- pre-commit: justfile/Makefile sync ---"
 if command -v just >/dev/null 2>&1; then
     ./scripts/check-build-sync.sh

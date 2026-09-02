@@ -1267,6 +1267,7 @@ mod tests {
             screen_backend: ScreenBackend::Kmer,
             minimizer_k: crate::minimizers::MINIMIZER_K,
             minimizer_w: crate::minimizers::MINIMIZER_W,
+            derive_cutoff: false,
             cutoff: 0.42,
             leak_pct: 10.0,
             band: -1,
