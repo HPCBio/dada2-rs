@@ -398,8 +398,9 @@ pub struct MinimizerIndex {
 /// | configuration | score | index verdict |
 /// |---|---|---|
 /// | pooled ITS2 | 0.073 | wins by 13.9% |
+/// | pooled soil 16S | 0.077 | wins by 9.1% |
 /// | per-sample PacBio | 0.185 | wins by 4.4% |
-/// | pooled PacBio | 0.571 | **loses by 31.6%** |
+/// | pooled PacBio | 0.564 | **loses by 31.6%** |
 ///
 /// The default sits between the last win and the first loss, biased toward the
 /// low side because **the two errors are not symmetric**: choosing the index
@@ -481,6 +482,24 @@ impl std::hash::BuildHasher for IdentityBuildHasher {
 /// ```text
 /// score = sharing × threads / nraw          where sharing = entries / distinct
 /// ```
+///
+/// **`nraw` then cancels too**, which is not obvious and matters for intuition.
+/// `sharing` is itself `nraw × entries_per_raw / distinct`, so
+///
+/// ```text
+/// score = entries_per_raw × threads / distinct_minimizers
+/// ```
+///
+/// exactly. **Pool size does not appear.** What drives the decision is sketch
+/// density (`entries_per_raw`, set by read length and `w`), the richness of the
+/// minimizer alphabet (`distinct`, bounded by `4^k` and by sequence diversity),
+/// and how many threads the scatter is failing to use.
+///
+/// The measurements say the same thing, so this is not just algebra: pooled soil
+/// 16S has **1,225,523** raws and scores 0.077, while pooled PacBio has **547,273**
+/// — less than half — and scores 0.564. The larger pool is the one that indexes.
+/// Read length is the driver (74 entries/raw against 478), not pool size, and
+/// "big pools need the merge-join" is precisely the wrong intuition.
 ///
 /// which ranks the three configurations above in the correct order (0.073,
 /// 0.185, 0.571) against their measured ratios (0.29, 0.44, 3.72). **Three

@@ -602,11 +602,28 @@ parallel saving it buys is `ncomps × entries × c / threads`, and
 under per-sample concurrency, 48 pooled) — the global count would inflate the
 score ~12x and decline the index exactly where it wins.
 
-| configuration | score | measured setup/saved | index |
-|---|---|---|---|
-| pooled ITS2 | 0.073 | 0.29 | wins 13.9% |
-| per-sample PacBio | 0.185 | 0.44 | wins 4.4% |
-| pooled PacBio | **0.564** | 3.72 | **loses 31.6%** |
+| configuration | entries/raw | distinct | threads | score | index |
+|---|---|---|---|---|---|
+| pooled ITS2 | 74 | 48,497 | 48 | 0.073 | wins 13.9% |
+| **pooled soil 16S** | **74** | **46,519** | 48 | **0.077** | **wins 9.1%** |
+| per-sample PacBio | 471 | ~10,500 | 4 | 0.185 | wins 4.4% |
+| pooled PacBio | 478 | 40,177 | 48 | **0.564** | **loses 31.6%** |
+
+**`nraw` cancels out of the score, and that is not a detail.** `sharing` is itself
+`nraw x entries_per_raw / distinct`, so
+
+```text
+score = entries_per_raw x threads / distinct_minimizers
+```
+
+exactly — **pool size does not appear**. The measurements say the same thing
+rather than merely permitting it: pooled soil 16S has **1,225,523** raws and
+indexes comfortably at 0.077, while pooled PacBio has **547,273** — less than half
+— and is declined at 0.564. *The larger pool is the one that indexes.* The driver
+is read length through sketch density (74 entries/raw against 478), so "big pools
+need the merge-join" is exactly the wrong intuition, and an earlier revision of
+this page invited it by writing the score only in its `sharing x threads / nraw`
+form.
 
 Default threshold **0.30**, overridable with `DADA2RS_MINIMIZER_INDEX_MAX`.
 **Three points determine a bracket, not a threshold** — the crossover lies in
@@ -659,12 +676,18 @@ absorbs any other difference between the two binaries.
 unrecognised value — it used to be that any value but `0` meant on, so
 `=true` would otherwise have changed meaning when the rule landed.
 
-**Still unvalidated outside the fitted points.** Pooled soil 16S is the
-discriminating case: a large pool of *conserved* sequence like pooled PacBio, but
-with short reads and small sketches like ITS2, so the two terms pull opposite
-ways. If the auto arm there matches the slower forced arm with a score near 0.30,
-the threshold is miscalibrated and tunable; if it picks wrong with a score far
-from 0.30, the score is the wrong quantity.
+**Validated on pooled soil 16S, in the opposite direction.** This was the
+discriminating case named in advance: a large pool of *conserved* sequence like
+pooled PacBio but with short reads like ITS2. It is the workload where the index
+**wins**, by 9.1% (forced-on 622.34s vs forced-off 684.58s), and the rule picked
+it — `_auto` 612.06s, within the arm's own 1.65% noise floor of forced-on. Score
+**0.077**, comfortably inside the threshold.
+
+So the rule has now been right in both directions on workloads where the correct
+answer differs, which is a stronger test than the four points it was fitted to.
+Note what was at stake: index-off is only 2.6% ahead of the k-mer screen there, so
+picking wrong would have cost **10%** and thrown away most of the backend's
+benefit on that workload.
 
 **The minimizer's pooled-PacBio win is not a cheaper screen.** At 3440 ns/comp
 the merge-join is *more expensive* than the k-mer sweep's 3000 here. Index-off
