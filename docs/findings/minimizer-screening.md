@@ -573,11 +573,37 @@ conservation story was wrong. What survives is the cost ordering:
 | **pooled PacBio** | **3,111,302** | **162.69s** | 43.72s | **3.72** | **loses 31.6%** |
 
 `entries x sharing` ranks all three correctly and predicts the total scatter work
-within ~3x. The decision quantity is `setup / map-saved` crossing 1, and a proxy
-computable **before any scatter runs** — `sharing x threads / nraw`, from
-`n_postings/n_keys` at index-build time — is monotone in the same order (0.073,
-0.185, 0.571). Three points bracket the crossover between **0.19 and 0.57**;
-that is a weakly determined threshold, not a calibrated one.
+within ~3x. The decision quantity is `setup / map-saved` crossing 1, and the proxy is
+computable **before any scatter runs** — from `n_postings/n_keys` at index-build
+time. A fourth measured point then falsified half of what three points suggested:
+
+| configuration | score | measured setup/map-saved | verdict |
+|---|---|---|---|
+| pooled ITS2 | 0.073 | 0.29 | index wins 13.9% |
+| pooled soil 16S | 0.077 | **0.55** | index wins 9.1% |
+| per-sample PacBio | 0.185 | **0.44** | index wins 4.4% |
+| pooled PacBio | 0.564 | 3.72 | index **loses** 31.6% |
+
+**Classification: 4 of 4.** Every configuration with score <= 0.30 has ratio < 1
+and vice versa, which is the only thing the rule is asked to do.
+
+**Ordering: falsified.** With three points the score appeared monotone in the
+measured ratio; soil 16S inverts it against per-sample PacBio (score 0.077 with
+ratio 0.55, against 0.185 with 0.44). So the score sorts configurations into the
+right *class* but does not rank how close to the crossover they are.
+
+Where the model misses is the `setup` term, not the assumption behind it. From
+ITS2 to soil 16S the modelled scatter work (`nclusters x entries_per_raw x
+sharing`) grows **4.49x** while measured `setup` grows **7.94x**, so the cost
+*per increment* is not constant across workloads. The `ncomps ~ nclusters x nraw`
+step is fine — comparisons per raw come to 98% of `nclusters` on soil 16S and 85%
+on ITS2. A non-constant per-increment cost is the same memory-latency story that
+runs through the rest of this page, now showing up in the one place the model
+assumed it away.
+
+The practical consequence is narrow: **do not read the score as a distance from
+the crossover.** Four points still bracket that crossover between **0.19 and
+0.57**, which remains a bracket rather than a calibrated threshold.
 
 **Concordance is unaffected by any of this.** Under pooling, cutoffs 0.45, 0.48
 and 0.50 are identical to the k-mer screen in **all 95 samples** on ASV calls and

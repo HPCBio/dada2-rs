@@ -501,11 +501,19 @@ impl std::hash::BuildHasher for IdentityBuildHasher {
 /// Read length is the driver (74 entries/raw against 478), not pool size, and
 /// "big pools need the merge-join" is precisely the wrong intuition.
 ///
-/// which ranks the three configurations above in the correct order (0.073,
-/// 0.185, 0.571) against their measured ratios (0.29, 0.44, 3.72). **Three
-/// points determine a bracket, not a threshold** — the crossover lies somewhere
-/// in 0.19..0.57 and [`MINIMIZER_INDEX_MAX_SCORE`] picks a biased-low value
-/// inside it.
+/// **This CLASSIFIES correctly and does not RANK.** All four measured
+/// configurations fall on the right side of the threshold (score <= 0.30 exactly
+/// when the measured `setup / map-saved` is < 1), which is the only thing the
+/// rule is asked to do. But it does not order them by distance from the
+/// crossover: pooled soil 16S scores 0.077 with a measured ratio of 0.55, while
+/// per-sample PacBio scores 0.185 with 0.44 — an inversion that three points had
+/// hidden. The miss is in the `setup` term; from ITS2 to soil 16S the modelled
+/// scatter work grows 4.49x while measured `setup` grows 7.94x, so the
+/// per-increment cost is not constant across workloads.
+///
+/// **Four points determine a bracket, not a threshold** — the crossover lies
+/// somewhere in 0.19..0.57 and [`MINIMIZER_INDEX_MAX_SCORE`] picks a biased-low
+/// value inside it. Do not read the score as a distance from the crossover.
 ///
 /// `threads` must be the threads that will actually run *this pool's* compare
 /// map — `rayon::current_num_threads()` inside the sub-pool, which is 4 under
