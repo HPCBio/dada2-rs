@@ -417,6 +417,12 @@ for G in $GRAINS; do ARMS+=("kmer_g${G}:::::$G"); done
 touch "$OUT/timings.tsv"
 echo "    ${#ARMS[@]} arms x $REPS reps = $(( ${#ARMS[@]} * REPS )) denoising passes"
 echo "    (narrow with TIME_CUTS=; the accuracy grid above is unaffected)"
+# Explicit guard rather than relying on `seq 1 0`: that prints nothing under GNU
+# coreutils but "1 0" under BSD/macOS seq, so REPS=0 would silently run two reps
+# numbered 1 and 0 on a developer machine. REPS=0 means "phase split only", which
+# is the cheap way to recover a lost phase_split.txt without re-paying the timing
+# passes -- on a pooled run those are the expensive part.
+if [ "$REPS" -gt 0 ]; then
 for rep in $(seq 1 "$REPS"); do
   for arm in "${ARMS[@]}"; do
     IFS=: read -r name K C W IDX G <<< "$arm"
@@ -445,6 +451,7 @@ for rep in $(seq 1 "$REPS"); do
         "$(python3 -c "print(f'{$t1-$t0:.2f}')")" >> "$OUT/timings.tsv"
   done
 done
+fi
 
 echo
 echo "==> phase split + resource use (one --verbose pass per arm; NOT timed reps)"
