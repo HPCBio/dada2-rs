@@ -110,7 +110,9 @@ That is what `analyze_kdist_curves.py` reports, and it is a better target than
 Experimental and opt-in (`--screen-backend minimizer`), default unchanged. The
 shipped defaults (k=11, cutoff 0.42) are **wrong everywhere**; use **k=8** with a
 cutoff swept per dataset — **0.62** on both ITS2 modes, **0.45** on PacBio HiFi,
-0.62-0.70 on 16S. The per-backend default this branch ships (0.63) is calibrated
+0.62-0.70 on 16S. **k=8 is not the fidelity optimum**: on both Illumina datasets
+k=6 emulates the k-mer screen better at every w (13-40% less pair-level
+disagreement on soil 16S), and it has never been run end-to-end. The per-backend default this branch ships (0.63) is calibrated
 for Illumina and is 0.18 too loose for HiFi, where it costs ~60% more alignments
 than 0.45 for identical output.
 
@@ -1296,6 +1298,122 @@ does without a lossy prefilter**, the minimizer is the more faithful of the two.
 One ASV in 231 on one dataset is a modest effect — but it is measured against a
 zero noise floor, and it is a fact about the *existing* screen, not about
 minimizers.
+
+## Deriving the cutoff: the rule is faithful, the reference is not
+
+`kdist-calibrate --derive-cutoff` computes the matched-pass rule as a quantile —
+if the k-mer screen passes `q` of pairs, the matching minimizer cutoff is the
+`q`-quantile of the minimizer distance distribution — so it needs both distance
+distributions over a sample of pairs and **no alignment at all**. Seconds against
+the full curve's hours. It reproduces the expensive instrument: **0.49 against the
+34 M-alignment curve's 0.50** on pooled PacBio.
+
+But both overshoot the swept optimum of 0.45, and three follow-ups locate why.
+
+### The pair population is not the explanation (my prediction, falsified)
+
+`b_compare` never screens random pairs — it compares every raw against each
+cluster **centre**, and centres are the abundant uniques. Measured on pooled
+PacBio, the minimizer/k-mer pass ratio is 0.744 over the pairs actually screened
+and 0.911 over uniform random pairs, so uniform sampling makes the minimizer look
+23% less selective than it is. I predicted abundance-weighted sampling would
+therefore derive a materially lower cutoff, and recorded that before testing it.
+
+| sampling | derived cutoff | pass rate |
+|---|---|---|
+| uniform | 0.4850 | 14.914% |
+| abundance-weighted | **0.4828** | 13.324% |
+
+Right direction, **6% of the gap**. The prediction is wrong in magnitude and the
+reason is worth keeping: reweighting moved the *pass rate* a long way (14.9% ->
+13.3%) but barely moved the *matched quantile*, because it shifts **both** screens'
+distributions together. So matched-pass is **robust to the pair population** — a
+property discovered by a failed prediction, and one that makes the derivation more
+trustworthy than I expected, not less.
+
+### The reference cutoff is the explanation
+
+The rule matches the k-mer screen at 0.42, and **0.42 was never calibrated for
+HiFi** — it is DADA2's Illumina-era default, and this page already shows the k-mer
+screen is over-provisioned there (minimizer @0.45 does 22% fewer alignments for
+bit-identical output). `--cutoff` *is* the reference cutoff in derive mode, so this
+is directly measurable:
+
+| reference k-mer cutoff | derived minimizer cutoff |
+|---|---|
+| 0.34 | 0.3950 |
+| 0.36 | 0.4243 |
+| 0.38 | 0.4416 |
+| **~0.387** | **0.45 — the swept optimum** |
+| 0.40 | 0.4647 |
+| 0.42 (production) | 0.4828 |
+
+**Matching the k-mer screen at ~0.387 derives exactly the cutoff the ASV sweep
+found**, so the production reference carries **0.033 of slack** on HiFi and
+matched-pass inherits all of it. Two independent routes agree on that number: the
+95-sample calibration put the k-mer screen's near-neighbour **p99.9 at 0.3905**
+with 100% recall already at 0.40.
+
+So the rule is faithful and the target is miscalibrated. That reframes what auto-
+selection would need: not a better rule, but a **platform-appropriate reference**,
+derivable from the k-mer screen's own near-neighbour quantile — which
+`kdist-calibrate` already computes.
+
+It is also a finding about **existing** code rather than about minimizers, and it
+is the HiFi counterpart of
+[KDIST cutoff decoupling](kdist-cutoff-decoupling.md), which already established
+that the dada-stage k-mer cutoff can be tightened well below 0.42 on Illumina
+(0.30 dada / 0.42 learn-errors, dada -32/-26%, churn 1).
+
+### Pair-level disagreement predicts churn across datasets
+
+Matching the pass *rate* says the screens admit the same *number* of pairs, not
+the same pairs — and that is what causes churn. Both distances are already
+computed, so the pair-level confusion matrix is free, and it makes `(k, w)`
+comparable without an ASV table: seconds per setting against a full pipeline arm.
+
+Disagreement at the shipped k=8, w=5, against churn measured end-to-end on the
+same pooled datasets:
+
+| dataset | disagreement | observed churn |
+|---|---|---|
+| ITS2 pooled | 0.230% | 18 / 3028 = 0.594% |
+| soil 16S pooled | 1.402% | 526 / 22359 = 2.353% |
+
+**6.1x more disagreement, 4.0x more churn** — same ordering, within ~1.5x on
+magnitude. Two points is not a calibration, but it is enough to license using the
+proxy to *rank* settings, which is all it is asked to do.
+
+### Both grids say k=8 is not the fidelity optimum
+
+Disagreement (% of sampled pairs), each setting at its **own** matched cutoff:
+
+| k | soil w=5 | w=3 | w=2 | w=1 | ITS2 w=5 | w=3 | w=2 | w=1 |
+|---|---|---|---|---|---|---|---|---|
+| 5 | 1.406 | 1.006 | 0.678 | **0.044** | 0.194 | 0.140 | 0.084 | **0.020** |
+| **6** | **1.216** | **0.978** | 0.824 | 0.618 | 0.208 | 0.158 | 0.132 | 0.094 |
+| 7 | 1.468 | 1.108 | 0.944 | 0.836 | 0.250 | 0.168 | 0.150 | 0.132 |
+| 8 | 1.402 | 1.238 | 1.118 | 1.034 | 0.230 | 0.194 | 0.186 | 0.156 |
+| 9 | 1.552 | 1.376 | — | 1.228 | 0.240 | 0.210 | 0.198 | 0.180 |
+| 10 | 1.690 | 1.544 | 1.516 | 1.432 | 0.290 | 0.246 | 0.230 | 0.202 |
+
+* **`w` is monotone on both datasets**, every k: smaller window, less disagreement.
+* **`k` is not monotone**, and on soil 16S **k=6 is the minimum** at w=5 and w=3 —
+  beating the shipped k=8 by **13% at w=5 and 40% at w=1**. On ITS2 k=6 also beats
+  k=8 at every w. Two datasets now agree the shipped k is not the fidelity optimum,
+  and **k=6 has never been run end-to-end**.
+* **`k=5, w=1` is the frequency screen**, reconfirmed on a third dataset: 0.044%
+  disagreement and **99.926% recall** on soil 16S, matching MiSeq SOP's 1-in-50,000.
+
+The grid's minimum is therefore always `k=5, w=1` — which wins by *being the screen
+it replaces*, so disagreement alone is the wrong objective. What stops `k` being
+lowered is index viability: `distinct` minimizers are bounded by `4^k`, mean
+posting length is `entries x nraw / distinct`, and at k=5 a large pool saturates
+the 1024 available minimizers, so the serial scatter explodes and the 32 ns/comp
+screen becomes a 1144-3440 ns/comp merge-join. **k buys index viability at the cost
+of fidelity** — which is a better justification for the default than the one
+originally on record ("shorter k-mers are not discriminating enough"), and it puts
+k=6 (48.8% saturated at 4^6) in the plausible-but-untested middle.
 
 ## Three claims this falsified
 

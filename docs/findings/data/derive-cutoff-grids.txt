@@ -1,0 +1,35 @@
+kdist-calibrate --derive-cutoff, alignment-free. Each setting at its OWN matched
+cutoff; disagreement is % of sampled pairs where the two screens disagree.
+
+=== pooled PacBio: reference-cutoff scan (minimizer k=8 w=5) ===
+ref k-mer cutoff -> derived minimizer cutoff
+  0.34 -> 0.3950
+  0.36 -> 0.4243
+  0.38 -> 0.4416
+  0.40 -> 0.4647
+  0.42 -> 0.4828      (production reference)
+  ~0.387 -> 0.45      (interpolated; the swept ASV optimum)
+Corroboration: 95-sample calibration put the k-mer screen's near-neighbour
+p99.9 at 0.3905, with 100% recall already at 0.40.
+
+=== pooled PacBio: pair sampling (minimizer k=8 w=5, ref 0.42) ===
+  uniform random      0.4850   passes 14.914%
+  abundance-weighted  0.4828   passes 13.324%
+
+=== pooled soil 16S: (k, w) grid, disagreement % / recall vs k-mer ===
+k    w=5              w=3              w=2              w=1
+5    1.406 / 89.003   1.006 / 90.585   0.678 / 96.249   0.044 / 99.926
+6    1.216 / 88.268   0.978 / 90.438   0.824 / 92.571   0.618 / 95.476
+7    1.468 / 86.355   1.108 / 87.900   0.944 / 91.725   0.836 / 92.350
+8    1.402 / 87.863   1.238 / 88.084   1.118 / 88.341   1.034 / 91.798
+9    1.552 / 85.656   1.376 / 87.275   (not run)        1.228 / 87.201
+10   1.690 / 81.905   1.544 / 85.068   1.516 / 87.385   1.432 / 88.378
+
+=== pooled ITS2: (k, w) grid, disagreement % ===
+k    w=5     w=3     w=2     w=1
+5    0.194   0.140   0.084   0.020
+6    0.208   0.158   0.132   0.094
+7    0.250   0.168   0.150   0.132
+8    0.230   0.194   0.186   0.156
+9    0.240   0.210   0.198   0.180
+10   0.290   0.246   0.230   0.202
