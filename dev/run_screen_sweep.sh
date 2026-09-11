@@ -436,6 +436,36 @@ echo "    (narrow with TIME_CUTS=; the accuracy grid above is unaffected)"
 # numbered 1 and 0 on a developer machine. REPS=0 means "phase split only", which
 # is the cheap way to recover a lost phase_split.txt without re-paying the timing
 # passes -- on a pooled run those are the expensive part.
+# Foreign-build check BEFORE the timing loop, not after it.
+#
+# The cache test below matches on (arm, rep) and ignores the fingerprint, so a row
+# from another build is reused as though it were current -- and the MIXED BINARIES
+# block in the summary only prints once the whole matrix has finished. That is
+# hours too late to act on. Report it up front instead, and let the operator
+# decide, because auto-invalidating every row on any rebuild would destroy the
+# incremental cache this file exists for.
+#
+# STRICT_BIN=1 treats a foreign-build row as stale and re-times it.
+STRICT_BIN="${STRICT_BIN:-}"
+if [ -s "$OUT/timings.tsv" ]; then
+  foreign=$(awk -F'\t' -v me="$BIN_ID" 'NF>=3 {fp = (NF>3 ? $4 : "pre-fingerprint"); if (fp != me) print fp}' \
+              "$OUT/timings.tsv" | sort -u | tr '\n' ' ')
+  if [ -n "$foreign" ]; then
+    echo
+    echo "*** timings.tsv holds rows from OTHER BUILDS: $foreign(current: $BIN_ID)"
+    echo "    Those rows are cached by (arm, rep) and will be REUSED, not re-timed."
+    echo "    Cross-build rows are not comparable -- on the pooled ITS2 directory this"
+    echo "    showed up as a 6.9% gap between an arm and its _auto twin, two arms that"
+    echo "    execute identical work whenever the score is under threshold."
+    if [ -n "$STRICT_BIN" ]; then
+      echo "    STRICT_BIN=1 set: re-timing them."
+    else
+      echo "    Re-run with STRICT_BIN=1 to re-time them, or move timings.tsv aside."
+    fi
+    echo
+  fi
+fi
+
 if [ "$REPS" -gt 0 ]; then
 for rep in $(seq 1 "$REPS"); do
   for arm in "${ARMS[@]}"; do
@@ -447,8 +477,11 @@ for rep in $(seq 1 "$REPS"); do
     [ -n "$G" ] && env+=("DADA2RS_PAR_GRAIN=$G")
     [ ${#env[@]} -gt 0 ] && env=(env "${env[@]}")
     # Already timed on an earlier invocation? Skip it, so raising REPS adds
-    # replicates instead of redoing the ones already paid for.
-    if awk -F'\t' -v n="$name" -v r="$rep" '$1==n && $2==r{f=1} END{exit !f}' \
+    # replicates instead of redoing the ones already paid for. Under STRICT_BIN a
+    # row only counts as cached when it came from THIS build.
+    if awk -F'\t' -v n="$name" -v r="$rep" -v me="$BIN_ID" -v strict="$STRICT_BIN" \
+         '$1==n && $2==r { fp = (NF>3 ? $4 : "pre-fingerprint");
+                           if (strict == "" || fp == me) f=1 } END{exit !f}' \
          "$OUT/timings.tsv" 2>/dev/null; then
       echo "    $name rep $rep (cached)"
       continue
