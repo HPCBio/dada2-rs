@@ -1597,10 +1597,53 @@ table; and a PacBio arm, which is the one this page would bet against — at k=6
 original k-mer work's lesson was precisely that an Illumina-safe `k` broke on long
 reads.
 
-**Incidental, and the standing `GRAINS` target**: the indexed path is the one
-losing parallelism. Map parallel efficiency is **74%** at k=8 indexed and 80% at
-k=6 indexed, against **94%** for the merge-join arm and 97-98% on pooled PacBio.
-At k=8 that is 22.16s actual against 16.3s ideal — ~5.8s, ~4.8% of wall.
+**The indexed path's low map efficiency is not recoverable, and is not a
+defect.** Map parallel efficiency is 74-75% at k=8 indexed and 80% at k=6,
+against 90% for the k-mer arm and 94-98% for merge-join, which looked like ~5.8s
+of headroom for `DADA2RS_PAR_GRAIN`. A grain sweep says no, and the arithmetic
+says the headroom was never there — see below.
+
+
+### The grain sweep is a null, and the efficiency gap was a ratio artifact
+
+Pooled ITS2, 3 reps, k-mer control channel **0.16%**, grain 8/16/64/128 against
+the default 32, run on *both* backends so the knob has a channel where it is
+expected to do little:
+
+| grain | minimizer k=8 | map eff | k-mer | map eff |
+|---|---|---|---|---|
+| 8 | 124.98s | 71% | 176.87s | 89% |
+| 16 | 125.29s | 73% | 170.34s | 90% |
+| **32 (default)** | **125.17s** | **75%** | **174.67s** | **90%** |
+| 64 | 126.37s | 75% | 174.23s | 90% |
+| 128 | 127.46s | 75% | 174.81s | 91% |
+
+**The default is already the best setting on both backends**, and a 16x sweep in
+both directions moves the minimizer arm 2.0% and the k-mer arm 3.8% — the k-mer
+channel, where less is at stake, moves *more*. The knob reaches the code (the
+phase split reports `par grain=N (OVERRIDDEN)` and `busy` shifts 802-871s), so
+this is a real null rather than an inert instrument: **map efficiency is flat at
+71-75% across a 16x grain range, and the smallest grain makes it worse.**
+
+The headroom this sweep was chasing did not exist. Efficiency is
+`busy / (map x threads)`, and in *absolute* thread-seconds the indexed arm loses
+**less** than the k-mer arm it is compared against:
+
+| arm | map | thread-seconds available | busy | lost | lost wall |
+|---|---|---|---|---|---|
+| k-mer | 104.92s | 5,036 | 4,538s | 498 | 10.4s |
+| minimizer k=8 indexed | 24.01s | 1,152 | 859s | 293 | **6.1s** |
+
+Parallel overhead is roughly constant in absolute terms; the minimizer's
+efficiency *percentage* is worse only because its `map` is 4.4x shorter, so the
+same overhead is a larger share of a much smaller denominator. **This is the same
+mistake as the index score's spurious `distinct`** — reading a ratio whose
+denominator had collapsed and attributing the movement to the numerator. There is
+no minimizer-specific parallelism defect to fix, and `GRAINS` is closed.
+
+Incidentally this replicates the headline: minimizer 125.17s against k-mer
+174.67s is **-28.3%**, against -29.5% on the independent k=6 run above.
+Forced-on 125.17s vs `_auto` 126.43s is 1.0%, inside the control.
 
 
 ## Three claims this falsified
@@ -1859,10 +1902,11 @@ What promotion would require, in order:
    index cost is `setup` and `setup` tracks `entries`. **The score must be
    replaced by cost-against-gain before `k` can be tuned**, preferably by
    deciding lazily so there is no constant left to go stale.
-   Separately, **map efficiency** (90% -> 75%) sits inside the parallel region
-   with its own knob in `DADA2RS_PAR_GRAIN`, and index-off holds 89%, so that
-   cost is specific to the regime where per-item work collapses to a single array
-   read.
+   Separately, **map efficiency** (90% -> 75%) is closed as a non-issue: a 16x
+   `DADA2RS_PAR_GRAIN` sweep leaves it flat at 71-75%, the default is already
+   optimal on both backends, and in absolute thread-seconds the indexed arm loses
+   *less* than the k-mer arm (293 vs 498). The percentage is low only because
+   `map` is 4.4x shorter.
 4. **A default-selection story.** The right cutoff varies with pass rate
    (0.45-0.80 across workloads), so a fixed default cannot be right everywhere —
    the shipped 0.63 is an Illumina value and is 0.18 too loose on HiFi. The
