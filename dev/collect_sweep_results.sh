@@ -6,6 +6,10 @@
 # reads and an intermediate seqtab. Of that, the analysis needs only:
 #
 #   * seqtab.nochim.json per arm   -- ASV set + the sample x ASV count matrix
+#   * seqtab.json per arm          -- the same, BEFORE chimera removal, so a read
+#                                     loss can be attributed to the denoiser or to
+#                                     chimera calls (the ASV inventory changes what
+#                                     removeBimeraDenovo can call bimeric)
 #   * two integers per dada JSON   -- nalign / nshroud, for alignment work
 #   * timings.tsv                  -- wall clock, if the sweep timed anything
 #   * phase_split.txt              -- screen vs align share, which says whether a
@@ -73,8 +77,15 @@ PY
 } > "$STAGE/$NAME/align_stats.tsv"
 echo "    align_stats.tsv: $(( $(wc -l < "$STAGE/$NAME/align_stats.tsv") - 1 )) rows"
 
-# The chimera-filtered tables -- the actual comparison inputs.
-n=0
+# The ASV tables -- the actual comparison inputs. BOTH the chimera-filtered
+# table and the pre-chimera one: a screen change alters the ASV inventory, which
+# alters the parent pool `removeBimeraDenovo` draws on, so an arm can lose reads
+# to *more chimera calls* rather than to the screen itself. On pooled ITS2 at
+# cutoff 0.53 the table lost 4.92% of its reads while gaining 14 ASVs, and the
+# gained/lost ASVs account for 0.05% of that -- a gap only the pre-chimera table
+# can attribute. It is the same size as the nochim one, which is why this was
+# originally dropped; that was the wrong trade.
+n=0; nc=0
 for arm in "${ARMS[@]}"; do
   is_arm "$arm" || continue
   a=$(basename "$arm")
@@ -84,8 +95,15 @@ for arm in "${ARMS[@]}"; do
     cp "$f" "$STAGE/$NAME/$a/"
     n=$((n+1))
   done
+  for f in "$arm/seqtab.json"; do
+    [ -f "$f" ] || continue
+    mkdir -p "$STAGE/$NAME/$a"
+    cp "$f" "$STAGE/$NAME/$a/"
+    nc=$((nc+1))
+  done
 done
 echo "    seqtab.nochim.json: $n arms"
+echo "    seqtab.json (pre-chimera): $nc arms"
 
 # Error models. Small, and needed to check whether the arms actually shared one
 # -- if they did not, alignment counts between arms are not comparable.
