@@ -414,6 +414,20 @@ for G in $GRAINS; do ARMS+=("kmer_g${G}:::::$G"); done
 # billions of comparisons), so raising REPS on a re-run should ADD replicates
 # rather than discard the ones already paid for. Each (arm, rep) is skipped if
 # already recorded.
+# Fingerprint of the binary being timed, recorded as a 4th column in timings.tsv.
+#
+# timings.tsv is append-only across invocations so that raising REPS reuses
+# replicates already paid for -- but that also lets rows from DIFFERENT BINARIES
+# accumulate under one arm name, and nothing caught it. On the pooled ITS2 run
+# that showed up as `mini_k8_c0.62` (forced index on) sitting 3-7% apart from
+# `mini_k8_c0.62_auto`, two arms that execute IDENTICAL work whenever the score is
+# under threshold. A 6.9% gap between identical code paths is provenance drift,
+# not noise, and it was only noticed because those two arms happen to be a control
+# channel for each other.
+#
+# cksum is POSIX and present on both Linux and macOS.
+BIN_ID="$(cksum "$BIN" 2>/dev/null | awk '{print $1}')"
+[ -n "$BIN_ID" ] || BIN_ID="unknown"
 touch "$OUT/timings.tsv"
 echo "    ${#ARMS[@]} arms x $REPS reps = $(( ${#ARMS[@]} * REPS )) denoising passes"
 echo "    (narrow with TIME_CUTS=; the accuracy grid above is unaffected)"
@@ -447,8 +461,8 @@ for rep in $(seq 1 "$REPS"); do
         --output-dir "$OUT/.timing" --threads "$THREADS" \
         ${extra[@]+"${extra[@]}"} > /dev/null 2>&1
     t1=$(python3 -c 'import time;print(time.time())')
-    printf "%s\t%s\t%s\n" "$name" "$rep" \
-        "$(python3 -c "print(f'{$t1-$t0:.2f}')")" >> "$OUT/timings.tsv"
+    printf "%s\t%s\t%s\t%s\n" "$name" "$rep" \
+        "$(python3 -c "print(f'{$t1-$t0:.2f}')")" "$BIN_ID" >> "$OUT/timings.tsv"
   done
 done
 fi
@@ -499,10 +513,29 @@ python3 - "$OUT/timings.tsv" <<'PY'
 import statistics, sys
 from collections import defaultdict
 d = defaultdict(list)
+fps = {}
 for line in open(sys.argv[1]):
-    name, rep, t = line.split()
+    parts = line.split()
+    if len(parts) < 3:
+        continue
+    name, rep, t = parts[0], parts[1], parts[2]
+    fps.setdefault(parts[3] if len(parts) > 3 else "pre-fingerprint", set()).add(name)
+    d[name].append(float(t))
     d[name].append(float(t))
 base = statistics.median(d["kmer"]) if "kmer" in d else None
+if len(fps) > 1:
+    print("\n*** MIXED BINARIES: timings.tsv holds rows from %d different builds. ***" % len(fps))
+    for fp, arms in sorted(fps.items(), key=lambda kv: -len(kv[1])):
+        print(f"    build {fp}: {len(arms)} arm(s) -- {', '.join(sorted(arms)[:6])}"
+              + (" ..." if len(arms) > 6 else ""))
+    print("    Rows from different builds are NOT comparable, and an arm whose")
+    print("    replicates span builds has a meaningless median. A `_c<C>` arm and")
+    print("    its `_auto` twin execute identical work whenever the score is under")
+    print("    threshold, so a gap between THOSE two is the cheapest tell.")
+    print("    Fix: mv timings.tsv timings.old.tsv and re-run the timing matrix in")
+    print("    one session. The accuracy arms are unaffected -- the index is exact,")
+    print("    so arm OUTPUT does not depend on which build produced it.")
+
 ctl = d.get("kmerctl")
 print(f"\n{'arm':>22s} {'median s':>10s} {'min':>8s} {'max':>8s} {'spread':>8s} {'vs kmer':>9s}")
 for name, ts in d.items():
