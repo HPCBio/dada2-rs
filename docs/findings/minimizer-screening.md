@@ -1718,6 +1718,53 @@ real; it simply has no consequence, which is a reminder that the proxy measures
 the screen and not the denoiser downstream of it.
 
 
+### Emulating the k-mer screen costs what the k-mer screen costs
+
+`w=1` removes the winnowing, so the sketch becomes the full k-mer multiset. At
+k=5 that *is* the frequency screen (pinned as a test); at the shipped k=8 it is a
+k=8 frequency screen — one step from DADA2's, and the closest thing measured end
+to end. Pooled ITS2, 3 reps, control 1.1%, k-mer baseline 172.00s:
+
+| arm | wall | vs k-mer |
+|---|---|---|
+| k=8, w=5 @0.62 | 121.24s | **-29.5%** |
+| k=8, w=1 @0.64 | 162.99s | -5.2% |
+| k=8, w=1 @0.62 | 166.74s | -3.1% |
+
+Per-sample ITS2 (control 0.3%, baseline 11.01s) goes further: w=5 reaches 9.81s
+(-10.9%) and **w=1 reaches 12.09s, 9.8% slower than the screen it replaces.**
+`w=1` hands back roughly five-sixths of the pooled win and all of the per-sample
+one.
+
+The attribution at 0.62 pooled shows this is not the screen's fault:
+
+| | k-mer screen | minimizer w=1 |
+|---|---|---|
+| screen cost | 3106.22s busy, 1301 ns/comp | 79.60s busy, **33 ns/comp** |
+| `setup` | 0.00s | **37.31s serial (43.8% of compare)** |
+| alignments | 16.26 M | 17.38 M (+6.9%) |
+| `compare` | 110.76s | 85.20s |
+
+The screen is still **39x cheaper in busy time** — `w` does not touch the flat
+33 ns/comp. What spends the win is what `w=1` does to the *sketch*: entries/raw
+goes 74 -> 223, putting 37s of serial `setup` on the critical path, and the denser
+sketch is a slightly looser filter at this cutoff so it aligns 6.9% more pairs
+than the k-mer screen does. `compare` still finishes 23% ahead; the rest of the
+wall, and the extra alignments, absorb it.
+
+**This is the `(k, w)` grid's conclusion measured on the clock.** The grid's
+fidelity minimum is always `k=5, w=1` because it *is* the screen being replaced;
+the cost table says the same thing from the other end. The backend's value comes
+entirely from the sketch being *sparse*, and every step taken toward emulating the
+k-mer screen exactly is a step back toward its cost. There is no setting that is
+both faithful by construction and fast.
+
+A true `k=5, w=1` arm is still unrun. The expectation is that it lands near these
+w=1 numbers rather than worse: `w` sets sketch density and `k` does not, so
+entries/raw stays ~223 and `setup` stays ~37s, while the ~64x longer posting lists
+are free at 33 ns/comp. Worth running once for completeness, not for a decision.
+
+
 ## Three claims this falsified
 
 ### 1. "The cutoff transfers between backends." It does not.
