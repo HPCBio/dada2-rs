@@ -721,6 +721,72 @@ still finishes 13.8% ahead purely because 0.45 passes 9.00% of pairs against the
 k-mer screen's 12.10% — a 27% cut in alignment work. On this workload the
 minimizer is a better *filter*, not a cheaper *screen*.
 
+#### The score is right for the wrong reason, and k=6 exposes it
+
+The rule classifies 4/4 above, but a k=6 arm on pooled ITS2 — the first time `k`
+was varied end to end — **declines the index and loses 13.8% for it**. That is the
+first misclassification, and it was predictable from the score alone: `distinct`
+is bounded by `4^k`, so at k=6 the denominator collapses to 3,211 and the score
+rises to **1.089**, far outside the 0.30 threshold.
+
+The cause is not a stale threshold. **`sharing` is not in the index's cost
+function at all.** Holding everything but `k` fixed multiplies posting-list
+traversal by 14.9x and changes the screen's cost by 1.4%:
+
+| arm | sharing | mean posting | screen (busy) | ns/comp |
+|---|---|---|---|---|
+| ITS2 k=6, indexed | 18,728x | 20,524 | 79.53s | **33** |
+| ITS2 k=8, indexed | 1,254x | 1,374 | 78.45s | **33** |
+| pooled PacBio, indexed | 6,430x | 6,430 | 22.38s | **32** |
+| ITS2 k=6, merge-join | — | — | 2651.13s | 1110 |
+
+The marginal cost of the extra ~4.4e9 scatter operations at k=6 is **~0.25 ns
+each**. A long posting list is a sequential scan, and the cost model priced every
+entry at random-access rates. **32-33 ns/comp is flat across every platform, pool
+and `k` measured** — a more useful constant than anything the score currently uses.
+
+The index's whole cost is `setup`, and `setup` tracks **entries**, the total
+sketch mass:
+
+| pool | entries | `setup` | ns/entry |
+|---|---|---|---|
+| ITS2 k=8 | 60,831,385 | 15.39s | 0.25 |
+| ITS2 k=6 | 60,135,053 | 25.04s | 0.42 |
+| pooled PacBio | 258,350,362 | 160.09s | 0.62 |
+
+So `score = entries_per_raw x threads / distinct` had **the right numerator and a
+spurious denominator**. `entries_per_raw` is causal — it drives `setup`, and it
+drives the merge-join's per-comparison cost. `distinct` is not, and the rule
+survived four datasets only because at k=8 `distinct` barely moves across them
+(48,497 ITS2 against 40,177 PacBio, 1.2x) while `entries_per_raw` moves 6.5x (74
+against 478). The rule was never calibrated to k=8 so much as *insulated from its
+own denominator* at k=8.
+
+Replacing it with cost against gain reproduces all three measured cases, in both
+directions:
+
+| pool | `setup` (cost) | screen saving (gain) | rule | measured |
+|---|---|---|---|---|
+| ITS2 k=6 | 25.0s | (2651-80)/48 = 53.6s | index | index wins 24.9s of compare |
+| ITS2 k=8 | 15.4s | ~53.6s (est.) | index | index wins |
+| pooled PacBio | 160.1s | (2494-22)/48 = 51.5s | decline | index loses 119s; model says 109s |
+
+The k=8 gain is estimated from k=6's merge-join rate, the two sketches being 74
+and 73 entries/raw — this run carried no k=8 index-off arm, and that is the only
+cell here without a direct measurement.
+
+**What blocks shipping the corrected form**: the gain term needs `ncomps`, which
+depends on the cluster count and is unknown at `B::new`. Since the indexed screen
+is *always* cheaper per comparison (32-33 against 1110-3748), the decision is
+purely whether the run is long enough to amortise a serial `setup` whose cost is
+predictable from `entries`. That argues for deciding **lazily** — merge-join the
+first clusters, measure, then build — which retires the calibration constant
+rather than replacing it with a second one that can go stale in the same way.
+
+Until that lands, the shipped threshold's scope is: **calibrated at k=8, w=5, and
+not valid elsewhere.** `--minimizer-k 6` currently needs `DADA2RS_MINIMIZER_INDEX=1`
+to perform.
+
 ### Calibrating on read retention: the cutoff is ~0.64
 
 Read retention is the best-behaved signal for choosing a cutoff on
@@ -1450,7 +1516,7 @@ Disagreement (% of sampled pairs), each setting at its **own** matched cutoff:
 * **`k` is not monotone**, and on soil 16S **k=6 is the minimum** at w=5 and w=3 —
   beating the shipped k=8 by **13% at w=5 and 40% at w=1**. On ITS2 k=6 also beats
   k=8 at every w. Two datasets now agree the shipped k is not the fidelity optimum,
-  and **k=6 has never been run end-to-end**.
+  and k=6 has now been run end-to-end — see below.
 * **`k=5, w=1` is the frequency screen**, reconfirmed on a third dataset: 0.044%
   disagreement and **99.926% recall** on soil 16S, matching MiSeq SOP's 1-in-50,000.
 
@@ -1463,6 +1529,79 @@ screen becomes a 1144-3440 ns/comp merge-join. **k buys index viability at the c
 of fidelity** — which is a better justification for the default than the one
 originally on record ("shorter k-mers are not discriminating enough"), and it puts
 k=6 (48.8% saturated at 4^6) in the plausible-but-untested middle.
+
+### k=6 end to end: the fidelity gain is real, and incompletely measured
+
+Pooled ITS2, clean directory, a single binary fingerprint on all 30 timing rows,
+3 reps. k-mer control channel **1.1%**; ASV control channel **churn 0**. Raw
+artifacts: `docs/findings/data/its2-k6-{timings.tsv,phase-split.txt,derived-cutoff.txt,churn.txt}`.
+
+| arm | mean wall | vs k-mer |
+|---|---|---|
+| `kmer` | 172.00s | — |
+| `kmerctl` (control) | 173.93s | +1.1% |
+| `mini_k8_c0.62` | 121.24s | **-29.5%** |
+| `mini_k8_c0.64` | 122.45s | -28.8% |
+| `mini_k8_c0.62_auto` | 125.36s | -27.1% |
+| `mini_k8_c0.64_auto` | 121.42s | -29.4% |
+| `mini_k6_c0.62` | 128.60s | -25.2% |
+| `mini_k6_c0.64` | 127.57s | -25.8% |
+| `mini_k6_c0.62_auto` | 146.04s | -15.1% |
+| `mini_k6_c0.64_auto` | 145.35s | -15.5% |
+
+**The k=8 `_c` vs `_auto` gap reported from the earlier tree was provenance
+drift.** Those arms execute identical work whenever the score is under threshold,
+so any gap between them is noise by construction; in a clean directory they
+measure 121.85 against 123.39, inside the 1.1% control. The 3.1-6.9% gap seen
+before came from a tree with mixed binaries and was never signal.
+`dev/run_screen_sweep*.sh` now stamps a binary fingerprint on every timing row and
+warns *before* the loop rather than in the summary, with `STRICT_BIN=1` to re-time
+foreign rows.
+
+**k=6 halves the churn at every shared cutoff**, against the k-mer baseline's
+3,028 ASVs:
+
+| cutoff | k=6 churn | k=8 churn |
+|---|---|---|
+| 0.45 | 36 | 72 |
+| 0.50 | 21 | 56 |
+| 0.53 | **17** | 38 |
+| 0.55 | 19 | 34 |
+
+**This does not yet establish that k=6 is more faithful at matched selectivity.**
+The `CUTS` grid was chosen for k=6, whose derived cutoff is 0.53; k=8's is
+**0.63**, so all four k=8 arms are tighter than matched and its churn is still
+falling at 0.55. The table compares k=6 at its operating point against k=8 off
+its own. Closing it needs k=8 at 0.60/0.63/0.65 — and `CUTS` has to become
+per-`k`, because the cutoff is a function of `(platform, k)` and not of platform
+alone.
+
+**Pair-level disagreement compressed the effect badly.** At their own matched
+cutoffs the proxy reads 0.208% (k=6) against 0.230% (k=8) — 104 against 115 pairs
+of 50,000, inside sampling noise — while end-to-end churn differs 2x. It ranked
+the two correctly and mis-stated the magnitude by an order of magnitude. The
+cross-*dataset* calibration above (6.1x disagreement, 4.0x churn) does not
+transfer to the `k` axis: use the proxy to rank `k` settings, never to size the
+gain.
+
+The churn stays net-gaining and fragmentation-shaped. Most gained ASVs are
+Hamming-1 from a far more abundant neighbour (abundance 169 against 18,124; 96
+against 1,686) — the screen shrouds a true parent-child pair and the child is
+never absorbed.
+
+**What promoting k=6 would require**, in order: the `decide_index` correction
+above, because on today's rule the default configuration reliably makes the wrong
+index call and k=6 is 13.8% *slower* than k=8 rather than 5.1%; a per-`k` cutoff
+table; and a PacBio arm, which is the one this page would bet against — at k=6
+`distinct` saturates at 4,096 while HiFi sketches carry ~478 entries/raw, and the
+original k-mer work's lesson was precisely that an Illumina-safe `k` broke on long
+reads.
+
+**Incidental, and the standing `GRAINS` target**: the indexed path is the one
+losing parallelism. Map parallel efficiency is **74%** at k=8 indexed and 80% at
+k=6 indexed, against **94%** for the merge-join arm and 97-98% on pooled PacBio.
+At k=8 that is 22.16s actual against 16.3s ideal — ~5.8s, ~4.8% of wall.
+
 
 ## Three claims this falsified
 
@@ -1553,6 +1692,16 @@ The answer is workload-dependent, and the working model is that the scatter cost
 cheaper on short reads (1144 ns/comp vs 2272-2407) and even beats the k-mer
 screen, but it is still **35x** the index's 33 ns/comp, and the screen is 77% of
 `b_compare` on that workload.
+
+**Resolved, and the working model above was half right.** Varying `k` separated
+the two terms: the *scatter* is essentially free (~0.25 ns per posting entry — a
+14.9x change in posting length moves the screen 1.4%, and 32-33 ns/comp holds on
+every workload measured), while the *build* is the whole cost and it scales with
+`entries` alone. So "the scatter costs `nraw x sketch entries`" named the right
+quantity for the wrong phase: `entries` is already `nraw x entries_per_raw`, and
+it prices `setup`, not the per-cluster scatter. Details and the corrected decision
+rule: [the score is right for the wrong
+reason](#the-score-is-right-for-the-wrong-reason-and-k6-exposes-it).
 ## The mechanism
 
 Putting the two together: the screen was simply too tight overall. Shrouding a
@@ -1701,15 +1850,25 @@ What promotion would require, in order:
    `sharing × threads / nraw`, and it is
    [validated on pooled PacBio](#the-index-is-now-chosen-per-workload-not-always-built)
    — the case it exists to catch — landing 0.36% from the right choice and 31.4%
-   from the wrong one, for a decision cost of at most ~1s of 290s. What is left
-   is **one more workload**: pooled soil 16S, which is outside the bracket the
-   threshold was fitted to. Separately, **map efficiency** (90% -> 75%) sits inside the parallel region
+   from the wrong one, for a decision cost of at most ~1s of 290s. Pooled soil
+   16S then confirmed it in the opposite direction (score 0.077, index wins
+   9.1%), so the rule is right on 4/4 workloads **at k=8** — but a k=6 arm
+   [breaks it](#the-score-is-right-for-the-wrong-reason-and-k6-exposes-it),
+   because `sharing` turns out not to be in the index's cost function at all.
+   The screen costs a flat 32-33 ns/comp regardless of posting length, the whole
+   index cost is `setup` and `setup` tracks `entries`. **The score must be
+   replaced by cost-against-gain before `k` can be tuned**, preferably by
+   deciding lazily so there is no constant left to go stale.
+   Separately, **map efficiency** (90% -> 75%) sits inside the parallel region
    with its own knob in `DADA2RS_PAR_GRAIN`, and index-off holds 89%, so that
    cost is specific to the regime where per-item work collapses to a single array
    read.
 4. **A default-selection story.** The right cutoff varies with pass rate
    (0.45-0.80 across workloads), so a fixed default cannot be right everywhere —
-   the shipped 0.63 is an Illumina value and is 0.18 too loose on HiFi.
+   the shipped 0.63 is an Illumina value and is 0.18 too loose on HiFi. The
+   cutoff is a function of `(platform, k)`, not of platform alone — k=6 derives
+   0.53 on the same ITS2 pool where k=8 derives 0.63 — so tuning `k` and
+   defaulting the cutoff cannot be separated.
    Either ship the calibration as a required step, or auto-derive the cutoff from
    a cheap pass-rate probe at run start.
 5. **Dropping `kord` on this path**, if possible — 2,982 B/raw on HiFi, *larger

@@ -1,0 +1,162 @@
+########## control
+
+Baseline kmer (seqtab): 3028 ASVs
+================================================================
+
+control (3028 ASVs) vs kmer (3028):
+  shared=3028  only_kmer=0  only_control=0  churn=0
+  only_kmer abundance: n=0 <10=0 >=10=0 max=0 median=0
+  only_control abundance: n=0 <10=0 >=10=0 max=0 median=0
+  nearest-baseline Hamming (only_control): Hamming-1=0 <=2=0 of 0 equal-length
+########## mini_k6_c0.45
+
+Baseline kmer (seqtab): 3028 ASVs
+================================================================
+
+mini_k6_c0.45 (3038 ASVs) vs kmer (3028):
+  shared=3015  only_kmer=13  only_mini_k6_c0.45=23  churn=36
+  only_kmer abundance: n=13 <10=2 >=10=11 max=77 median=18
+  only_mini_k6_c0.45 abundance: n=23 <10=4 >=10=19 max=169 median=29
+  nearest-baseline Hamming (only_mini_k6_c0.45): Hamming-1=10 <=2=10 of 23 equal-length
+  top only_mini_k6_c0.45 ASVs (fragmentation check):
+    abund=   169  birth=None        minH=1  neighbor_abund=18124
+    abund=    94  birth=None        minH=1  neighbor_abund=1686
+    abund=    93  birth=None        minH=88  neighbor_abund=453
+    abund=    81  birth=None        minH=1  neighbor_abund=2767
+    abund=    76  birth=None        minH=1  neighbor_abund=1422
+    abund=    74  birth=None        minH=166  neighbor_abund=116
+    abund=    58  birth=None        minH=1  neighbor_abund=895
+    abund=    40  birth=None        minH=1  neighbor_abund=41
+########## mini_k6_c0.50
+
+Baseline kmer (seqtab): 3028 ASVs
+================================================================
+
+mini_k6_c0.50 (3031 ASVs) vs kmer (3028):
+  shared=3019  only_kmer=9  only_mini_k6_c0.50=12  churn=21
+  only_kmer abundance: n=9 <10=2 >=10=7 max=77 median=15
+  only_mini_k6_c0.50 abundance: n=12 <10=3 >=10=9 max=96 median=28
+  nearest-baseline Hamming (only_mini_k6_c0.50): Hamming-1=5 <=2=5 of 12 equal-length
+  top only_mini_k6_c0.50 ASVs (fragmentation check):
+    abund=    96  birth=None        minH=1  neighbor_abund=1686
+    abund=    94  birth=None        minH=88  neighbor_abund=453
+    abund=    82  birth=None        minH=1  neighbor_abund=2767
+    abund=    76  birth=None        minH=1  neighbor_abund=1422
+    abund=    32  birth=None        minH=160  neighbor_abund=870
+    abund=    30  birth=None        minH=1  neighbor_abund=30
+    abund=    26  birth=None        minH=148  neighbor_abund=171
+    abund=    18  birth=None        minH=140  neighbor_abund=9
+########## mini_k6_c0.53
+
+Baseline kmer (seqtab): 3028 ASVs
+================================================================
+
+mini_k6_c0.53 (3035 ASVs) vs kmer (3028):
+  shared=3023  only_kmer=5  only_mini_k6_c0.53=12  churn=17
+  only_kmer abundance: n=5 <10=1 >=10=4 max=75 median=13
+  only_mini_k6_c0.53 abundance: n=12 <10=5 >=10=7 max=96 median=12
+  nearest-baseline Hamming (only_mini_k6_c0.53): Hamming-1=4 <=2=4 of 12 equal-length
+  top only_mini_k6_c0.53 ASVs (fragmentation check):
+    abund=    96  birth=None        minH=1  neighbor_abund=1686
+    abund=    82  birth=None        minH=1  neighbor_abund=2767
+    abund=    32  birth=None        minH=160  neighbor_abund=870
+    abund=    18  birth=None        minH=140  neighbor_abund=9
+    abund=    17  birth=None        minH=194  neighbor_abund=8
+    abund=    14  birth=None        minH=101  neighbor_abund=47
+    abund=    11  birth=None        minH=1  neighbor_abund=11
+    abund=     7  birth=None        minH=1  neighbor_abund=7
+########## mini_k6_c0.55
+
+Baseline kmer (seqtab): 3028 ASVs
+================================================================
+
+mini_k6_c0.55 (3031 ASVs) vs kmer (3028):
+  shared=3020  only_kmer=8  only_mini_k6_c0.55=11  churn=19
+  only_kmer abundance: n=8 <10=2 >=10=6 max=116 median=26
+  only_mini_k6_c0.55 abundance: n=11 <10=4 >=10=7 max=116 median=17
+  nearest-baseline Hamming (only_mini_k6_c0.55): Hamming-1=5 <=2=5 of 11 equal-length
+  top only_mini_k6_c0.55 ASVs (fragmentation check):
+    abund=   116  birth=None        minH=1  neighbor_abund=116
+    abund=    82  birth=None        minH=1  neighbor_abund=2767
+    abund=    29  birth=None        minH=122  neighbor_abund=10
+    abund=    26  birth=None        minH=148  neighbor_abund=171
+    abund=    19  birth=None        minH=1  neighbor_abund=39
+    abund=    17  birth=None        minH=194  neighbor_abund=8
+    abund=    13  birth=None        minH=149  neighbor_abund=61
+    abund=     7  birth=None        minH=1  neighbor_abund=7
+########## mini_k8_c0.45
+
+Baseline kmer (seqtab): 3028 ASVs
+================================================================
+
+mini_k8_c0.45 (3052 ASVs) vs kmer (3028):
+  shared=3004  only_kmer=24  only_mini_k8_c0.45=48  churn=72
+  only_kmer abundance: n=24 <10=3 >=10=21 max=116 median=18
+  only_mini_k8_c0.45 abundance: n=48 <10=18 >=10=30 max=207 median=24
+  nearest-baseline Hamming (only_mini_k8_c0.45): Hamming-1=16 <=2=18 of 48 equal-length
+  top only_mini_k8_c0.45 ASVs (fragmentation check):
+    abund=   207  birth=None        minH=1  neighbor_abund=1935
+    abund=   170  birth=None        minH=1  neighbor_abund=18124
+    abund=   157  birth=None        minH=8  neighbor_abund=124
+    abund=   140  birth=None        minH=1  neighbor_abund=4641
+    abund=   117  birth=None        minH=106  neighbor_abund=99
+    abund=   102  birth=None        minH=1  neighbor_abund=116
+    abund=    94  birth=None        minH=1  neighbor_abund=1686
+    abund=    92  birth=None        minH=1  neighbor_abund=69914
+########## mini_k8_c0.50
+
+Baseline kmer (seqtab): 3028 ASVs
+================================================================
+
+mini_k8_c0.50 (3046 ASVs) vs kmer (3028):
+  shared=3009  only_kmer=19  only_mini_k8_c0.50=37  churn=56
+  only_kmer abundance: n=19 <10=3 >=10=16 max=77 median=18
+  only_mini_k8_c0.50 abundance: n=37 <10=11 >=10=26 max=209 median=23
+  nearest-baseline Hamming (only_mini_k8_c0.50): Hamming-1=14 <=2=14 of 37 equal-length
+  top only_mini_k8_c0.50 ASVs (fragmentation check):
+    abund=   209  birth=None        minH=1  neighbor_abund=1935
+    abund=   169  birth=None        minH=1  neighbor_abund=18124
+    abund=   160  birth=None        minH=8  neighbor_abund=124
+    abund=   140  birth=None        minH=1  neighbor_abund=4641
+    abund=   118  birth=None        minH=106  neighbor_abund=99
+    abund=    94  birth=None        minH=1  neighbor_abund=1686
+    abund=    90  birth=None        minH=88  neighbor_abund=453
+    abund=    89  birth=None        minH=1  neighbor_abund=69914
+########## mini_k8_c0.53
+
+Baseline kmer (seqtab): 3028 ASVs
+================================================================
+
+mini_k8_c0.53 (3042 ASVs) vs kmer (3028):
+  shared=3016  only_kmer=12  only_mini_k8_c0.53=26  churn=38
+  only_kmer abundance: n=12 <10=0 >=10=12 max=116 median=20
+  only_mini_k8_c0.53 abundance: n=26 <10=8 >=10=18 max=171 median=23
+  nearest-baseline Hamming (only_mini_k8_c0.53): Hamming-1=9 <=2=9 of 26 equal-length
+  top only_mini_k8_c0.53 ASVs (fragmentation check):
+    abund=   171  birth=None        minH=1  neighbor_abund=18124
+    abund=   161  birth=None        minH=8  neighbor_abund=124
+    abund=   109  birth=None        minH=1  neighbor_abund=116
+    abund=    95  birth=None        minH=1  neighbor_abund=1686
+    abund=    93  birth=None        minH=88  neighbor_abund=453
+    abund=    81  birth=None        minH=1  neighbor_abund=2767
+    abund=    75  birth=None        minH=1  neighbor_abund=1422
+    abund=    74  birth=None        minH=166  neighbor_abund=116
+########## mini_k8_c0.55
+
+Baseline kmer (seqtab): 3028 ASVs
+================================================================
+
+mini_k8_c0.55 (3040 ASVs) vs kmer (3028):
+  shared=3017  only_kmer=11  only_mini_k8_c0.55=23  churn=34
+  only_kmer abundance: n=11 <10=3 >=10=8 max=77 median=15
+  only_mini_k8_c0.55 abundance: n=23 <10=6 >=10=17 max=177 median=26
+  nearest-baseline Hamming (only_mini_k8_c0.55): Hamming-1=10 <=2=10 of 23 equal-length
+  top only_mini_k8_c0.55 ASVs (fragmentation check):
+    abund=   177  birth=None        minH=1  neighbor_abund=18124
+    abund=    96  birth=None        minH=1  neighbor_abund=1686
+    abund=    93  birth=None        minH=88  neighbor_abund=453
+    abund=    82  birth=None        minH=1  neighbor_abund=2767
+    abund=    76  birth=None        minH=1  neighbor_abund=1422
+    abund=    75  birth=None        minH=166  neighbor_abund=116
+    abund=    58  birth=None        minH=1  neighbor_abund=895
+    abund=    40  birth=None        minH=1  neighbor_abund=41
