@@ -1499,7 +1499,7 @@ same pooled datasets:
 magnitude. Two points is not a calibration, but it is enough to license using the
 proxy to *rank* settings, which is all it is asked to do.
 
-### Both grids say k=8 is not the fidelity optimum
+### Both grids say k=8 is not the fidelity optimum (and both are wrong)
 
 Disagreement (% of sampled pairs), each setting at its **own** matched cutoff:
 
@@ -1517,8 +1517,9 @@ Disagreement (% of sampled pairs), each setting at its **own** matched cutoff:
   shows that gain does not reach the ASV table, at 23% more wall clock.
 * **`k` is not monotone**, and on soil 16S **k=6 is the minimum** at w=5 and w=3 —
   beating the shipped k=8 by **13% at w=5 and 40% at w=1**. On ITS2 k=6 also beats
-  k=8 at every w. Two datasets now agree the shipped k is not the fidelity optimum,
-  and k=6 has now been run end-to-end — see below.
+  k=8 at every w. **This ranking is real and meaningless**: run end-to-end at
+  matched selectivity, k=6 and k=8 churn 17 and 18 of 3,028
+  ([below](#k6-end-to-end-the-fidelity-gain-is-an-artifact-of-an-unmatched-cutoff)).
 * **`k=5, w=1` is the frequency screen**, reconfirmed on a third dataset: 0.044%
   disagreement and **99.926% recall** on soil 16S, matching MiSeq SOP's 1-in-50,000.
 
@@ -1532,7 +1533,7 @@ of fidelity** — which is a better justification for the default than the one
 originally on record ("shorter k-mers are not discriminating enough"), and it puts
 k=6 (48.8% saturated at 4^6) in the plausible-but-untested middle.
 
-### k=6 end to end: the fidelity gain is real, and incompletely measured
+### k=6 end to end: the fidelity gain is an artifact of an unmatched cutoff
 
 Pooled ITS2, clean directory, a single binary fingerprint on all 30 timing rows,
 3 reps. k-mer control channel **1.1%**; ASV control channel **churn 0**. Raw
@@ -1561,7 +1562,7 @@ warns *before* the loop rather than in the summary, with `STRICT_BIN=1` to re-ti
 foreign rows.
 
 **k=6 halves the churn at every shared cutoff**, against the k-mer baseline's
-3,028 ASVs:
+3,028 ASVs — which is the trap this section exists to spring:
 
 | cutoff | k=6 churn | k=8 churn |
 |---|---|---|
@@ -1570,34 +1571,58 @@ foreign rows.
 | 0.53 | **17** | 38 |
 | 0.55 | 19 | 34 |
 
-**This does not yet establish that k=6 is more faithful at matched selectivity.**
-The `CUTS` grid was chosen for k=6, whose derived cutoff is 0.53; k=8's is
-**0.63**, so all four k=8 arms are tighter than matched and its churn is still
-falling at 0.55. The table compares k=6 at its operating point against k=8 off
-its own. Closing it needs k=8 at 0.60/0.63/0.65 — and `CUTS` has to become
-per-`k`, because the cutoff is a function of `(platform, k)` and not of platform
-alone.
+**...and at matched selectivity the advantage vanishes entirely.** The `CUTS`
+grid above was chosen for k=6, whose derived cutoff is 0.53; k=8's is **0.63**, so
+every k=8 arm in that table is tighter than matched. Extending the grid to k=8's
+own operating point, same directory, same cached error model:
 
-**Pair-level disagreement compressed the effect badly.** At their own matched
-cutoffs the proxy reads 0.208% (k=6) against 0.230% (k=8) — 104 against 115 pairs
-of 50,000, inside sampling noise — while end-to-end churn differs 2x. It ranked
-the two correctly and mis-stated the magnitude by an order of magnitude. The
-cross-*dataset* calibration above (6.1x disagreement, 4.0x churn) does not
-transfer to the `k` axis: use the proxy to rank `k` settings, never to size the
-gain.
+| cutoff | 0.45 | 0.50 | 0.53 | 0.55 | 0.60 | 0.63 | 0.65 |
+|---|---|---|---|---|---|---|---|
+| k=6 churn | 36 | 21 | **17** | 19 | — | — | — |
+| k=8 churn | 72 | 56 | 38 | 34 | 23 | **18** | 14 |
+
+**k=6 at its derived 0.53 churns 17; k=8 at its derived 0.63 churns 18.** Of 3,028
+ASVs, with local scatter of +/-4 across neighbouring cutoffs (k=6 reads 17 at 0.53
+and 19 at 0.55; k=8 reads 18 at 0.63 and 14 at 0.65). There is no difference.
+
+The entire "k=6 halves the churn" effect was **selectivity, not sketch quality**.
+Lowering `k` shifts the minimizer distance distribution, so 0.53 at k=6 *is* 0.63
+at k=8; comparing the two at a shared numeric cutoff compares a matched screen
+against a tightened one, and tightening is what causes churn
+([the mechanism](#the-mechanism-a-mis-set-screen-moves-reads-it-does-not-lose-asvs)).
+The k=8 row is the clearest statement of that on this page: 72 -> 14 monotone as the
+screen loosens to its matched point and past it.
+
+So **`k` joins `w` as a knob with no fidelity consequence at matched selectivity**,
+and the case for k=6 collapses: it is 5.1% slower than k=8 forced-on, 13.8% slower
+on `auto`, and buys nothing. **k=8, w=5 stays the default**, now for a measured
+reason rather than an inherited one.
+
+**Pair-level disagreement does not predict churn on the `(k, w)` axes at all.**
+The proxy called k=6 better than k=8 (0.208% against 0.230%) and w=1 better than
+w=5 (0.156% against 0.230%, a 1.47x gain measured on this same pooled pool).
+Neither reaches the ASV table: 17 against 18 for `k`, and for `w` the pooled
+arms read 14/21/27 at 0.60/0.63/0.65 against w=5's 23/18/14, which at each
+setting's derived cutoff (0.61 and 0.63) is ~16 against 18.
+
+That is the proxy's second and third failure on this page. It calibrated across
+*datasets* (6.1x disagreement, 4.0x churn) where the dynamic range is large, and
+it fails on both parameter axes where the range is small. **It measures the
+screen; the denoiser is downstream of the screen and does not inherit the
+difference.** Use it to check that a setting is not grossly wrong, never to choose
+between settings that are all roughly right.
 
 The churn stays net-gaining and fragmentation-shaped. Most gained ASVs are
 Hamming-1 from a far more abundant neighbour (abundance 169 against 18,124; 96
 against 1,686) — the screen shrouds a true parent-child pair and the child is
 never absorbed.
 
-**What promoting k=6 would require**, in order: the `decide_index` correction
-above, because on today's rule the default configuration reliably makes the wrong
-index call and k=6 is 13.8% *slower* than k=8 rather than 5.1%; a per-`k` cutoff
-table; and a PacBio arm, which is the one this page would bet against — at k=6
-`distinct` saturates at 4,096 while HiFi sketches carry ~478 entries/raw, and the
-original k-mer work's lesson was precisely that an Illumina-safe `k` broke on long
-reads.
+**k=6 is withdrawn as a candidate**, so the PacBio k=6 arm this page was about to
+ask for is not needed. What survives is the `decide_index` defect the k=6 arm
+exposed: it is no longer blocking a default change, but `--minimizer-k 6` still
+costs 13.8% silently, and a cost model that is wrong about *why* it is right is a
+trap for the next person who varies a parameter. It should be fixed on its own
+merits, at its own pace.
 
 **The indexed path's low map efficiency is not recoverable, and is not a
 defect.** Map parallel efficiency is 74-75% at k=8 indexed and 80% at k=6,
@@ -1957,9 +1982,10 @@ What promotion would require, in order:
 4. **A default-selection story.** The right cutoff varies with pass rate
    (0.45-0.80 across workloads), so a fixed default cannot be right everywhere —
    the shipped 0.63 is an Illumina value and is 0.18 too loose on HiFi. The
-   cutoff is a function of `(platform, k)`, not of platform alone — k=6 derives
-   0.53 on the same ITS2 pool where k=8 derives 0.63 — so tuning `k` and
-   defaulting the cutoff cannot be separated.
+   cutoff is a function of `(platform, k, w)`, not of platform alone — the same
+   ITS2 pool derives 0.63 at k=8/w=5, 0.53 at k=6 and 0.61 at w=1 — which is
+   also why `k` and `w` looked like fidelity knobs when they are only cutoff
+   knobs.
    Either ship the calibration as a required step, or auto-derive the cutoff from
    a cheap pass-rate probe at run start.
 5. **Dropping `kord` on this path**, if possible — 2,982 B/raw on HiFi, *larger
