@@ -1512,7 +1512,9 @@ Disagreement (% of sampled pairs), each setting at its **own** matched cutoff:
 | 9 | 1.552 | 1.376 | — | 1.228 | 0.240 | 0.210 | 0.198 | 0.180 |
 | 10 | 1.690 | 1.544 | 1.516 | 1.432 | 0.290 | 0.246 | 0.230 | 0.202 |
 
-* **`w` is monotone on both datasets**, every k: smaller window, less disagreement.
+* **`w` is monotone on both datasets**, every k: smaller window, less disagreement —
+  but [the window sweep](#the-window-sweep-w-is-a-pure-cost-knob-on-this-workload)
+  shows that gain does not reach the ASV table, at 23% more wall clock.
 * **`k` is not monotone**, and on soil 16S **k=6 is the minimum** at w=5 and w=3 —
   beating the shipped k=8 by **13% at w=5 and 40% at w=1**. On ITS2 k=6 also beats
   k=8 at every w. Two datasets now agree the shipped k is not the fidelity optimum,
@@ -1644,6 +1646,51 @@ no minimizer-specific parallelism defect to fix, and `GRAINS` is closed.
 Incidentally this replicates the headline: minimizer 125.17s against k-mer
 174.67s is **-28.3%**, against -29.5% on the independent k=6 run above.
 Forced-on 125.17s vs `_auto` 126.43s is 1.0%, inside the control.
+
+
+### The window sweep: `w` is a pure cost knob on this workload
+
+`w` was the other half of the `(k, w)` grid, and the hypothesis was the user's:
+if the default window is too wide the sketch is noisier, so a narrower window
+should reduce churn. The disagreement grid supported it — `w` is monotone on both
+Illumina sets, every `k`, smaller window always better.
+
+Per-sample pooled-off ITS2, 3 reps, k-mer control channel **0.3%**, `w` 5 (default)
+/3/2/1 at five cutoffs each. Unlike `k`, **`w` barely moves the matched cutoff**
+(0.63 / 0.63 / 0.62 / 0.61), so a shared cutoff grid is a fair comparison here:
+
+| `w` | entries/raw | derived cutoff | disagreement | churn at derived | wall | vs k-mer |
+|---|---|---|---|---|---|---|
+| **5 (default)** | 74 | 0.63 | 0.375% | **6** | 9.81s | **-10.9%** |
+| 3 | 110 | 0.63 | 0.321% | 5 | 10.18s | -7.5% |
+| 2 | 148 | 0.62 | 0.304% | 5-6 | 10.95s | -0.5% |
+| 1 | 223 | 0.61 | 0.260% | 6-7 | 12.09s | **+9.8%** |
+
+**The disagreement gain does not reach the ASV table.** A 1.44x improvement in
+pair-level disagreement (0.375% -> 0.260%) produces churn of 6 against 6, out of
+3,808 ASVs. Meanwhile the cost is monotone and large: `w=1` is **23% slower than
+`w=5`** and **9.8% slower than the k-mer screen it replaces** — the sketch carries
+3.0x the entries, and `entries` is what everything on this page costs.
+
+**The instrument has dynamic range**, which is what makes this a null rather than
+a non-measurement: on the same arms the *cutoff* axis moves churn from 5 to 24,
+a 4.8x swing, while `w` moves it not at all. Whatever `w` is doing to the
+distance distribution, the denoiser does not see it.
+
+Scope, because this cuts the other way from the `k` result: per-sample ITS2 is
+already highly concordant (6 of 3,808 = 0.16% at the operating point) against
+pooled ITS2's 18 of 3,028, so there is less room here for `w` to help. And the
+screen is only ~1s of a ~10s wall in per-sample mode, so the +23% for `w=1`
+*understates* what it would cost pooled, where the screen is 76.5% of
+`b_compare` and the sketch is 3x denser. Both corrections push the same way:
+**`w` stays at 5.** `decide_index` keeps the index across the whole range
+(score 0.073 -> 0.163, all under threshold), so this is not an index-viability
+question the way `k` is.
+
+This also retires the second half of the `(k, w)` grid as a source of
+recommendations. The grid ranked `w` correctly by disagreement and the ranking is
+real; it simply has no consequence, which is a reminder that the proxy measures
+the screen and not the denoiser downstream of it.
 
 
 ## Three claims this falsified

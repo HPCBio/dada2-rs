@@ -1,0 +1,280 @@
+    k=8 w=5:
+      # derive-cutoff: matched pass rate, no alignment performed
+      # pairs: abundance-weighted -- the raw-vs-centre shape b_compare actually screens
+      
+      per-sample derivation (30 populations):
+                              sample  uniques  kmer pass   cutoff
+                       SRR39916519_F    22784   24.3540%     0.63
+                       SRR39916520_F    22260   18.9340%     0.63
+                       SRR39916521_F    27367    7.8080%     0.63
+                       SRR39916522_F    27998   12.6020%     0.63
+                       SRR39916523_F    22014   19.9240%     0.66
+                       SRR39916524_F    25586    6.2860%     0.65
+                       SRR39916525_F    29330    8.4640%     0.65
+                       SRR39916526_F    58460    4.8060%     0.63
+                       SRR39916527_F    24710    8.1520%     0.61
+                       SRR39916528_F    25225   11.2560%     0.63
+                       SRR39916530_F    38286   37.6520%     0.65
+                       SRR39916531_F    21806   19.2760%     0.63
+                       SRR39916532_F    43928    6.0700%     0.63
+                       SRR39916533_F    23212    3.2740%     0.63
+                       SRR39916534_F    26198    4.4080%     0.63
+                       SRR39916535_F    25864    5.9880%     0.64
+                       SRR39916536_F    54690   11.5800%     0.62
+                       SRR39916537_F    19501   28.2360%     0.64
+                       SRR39916538_F    23819    3.4280%     0.63
+                       SRR39916539_F    25170    2.3660%     0.62
+                       SRR39916541_F    63551   18.8280%     0.64
+                       SRR39916542_F    23119   52.7460%     0.64
+                       SRR39916543_F    21739   17.4780%     0.63
+                       SRR39916544_F    26137    8.3200%     0.62
+                       SRR39916545_F    23772    8.8760%     0.64
+                       SRR39916546_F    24506    5.5660%     0.63
+                       SRR39916547_F    29874   11.3860%     0.63
+                       SRR39916548_F    45617    3.9700%     0.61
+                       SRR39916549_F    24692    3.9800%     0.61
+                       SRR39916550_F    33229    4.7100%     0.60
+        per-sample cutoff: median 0.63, range 0.60-0.66  <- SPREAD > 0.04: one run-wide cutoff is a compromise here
+      
+      sketch shape  74 entries/raw, 48497 distinct of 4^8=65536 possible (74.0% saturated)
+      index         mean posting 1374, decide_index score 0.073 at 48 threads -> INDEX (screen ~32 ns/comp)
+      
+      uniques      904444 in 30 population(s)
+      pairs        1500000
+      k-mer screen k=5 @ cutoff 0.42: passes 12.6908% of pairs
+      minimizer    k=8 w=5: matching cutoff 0.6324 -> **0.63** (passes 12.6595%)
+      
+      pair-level agreement with the k-mer screen at cutoff 0.63:
+        both pass             187311 (12.487%)
+        both shroud          1307057 (87.137%)
+        k-mer only              3051 ( 0.203%)  <- SHROUDED by the minimizer; the churn risk
+        minimizer only          2581 ( 0.172%)  <- extra alignments, cost not correctness
+        DISAGREEMENT            5632 ( 0.375% of pairs)   recall vs k-mer: 98.397%
+      
+      minimizer pass rate near the derived cutoff:
+        0.59     12.2881%
+        0.60     12.3883%
+        0.61     12.4696%
+        0.62     12.5801%
+        0.63 <-  12.6595%
+        0.64     12.7814%
+        0.65     12.8996%
+        0.66     13.0176%
+        0.67     13.1546%
+      
+      NOTE: this reproduces the k-mer screen's SELECTIVITY, which is the safe
+      target, not the cheapest cutoff that still agrees with it. On PacBio HiFi
+      the ASV table is identical from 0.45 to 0.60 and this rule picks 0.50 --
+      inside the plateau but at its expensive end, worth ~19% of wall clock.
+      Finding the cheap edge of a plateau needs the ASV table, so sweep if you
+      can afford to.
+    k=8 w=3:
+      # derive-cutoff: matched pass rate, no alignment performed
+      # pairs: abundance-weighted -- the raw-vs-centre shape b_compare actually screens
+      
+      per-sample derivation (30 populations):
+                              sample  uniques  kmer pass   cutoff
+                       SRR39916519_F    22784   24.3540%     0.62
+                       SRR39916520_F    22260   18.9340%     0.63
+                       SRR39916521_F    27367    7.8080%     0.63
+                       SRR39916522_F    27998   12.6020%     0.63
+                       SRR39916523_F    22014   19.9240%     0.63
+                       SRR39916524_F    25586    6.2860%     0.63
+                       SRR39916525_F    29330    8.4640%     0.63
+                       SRR39916526_F    58460    4.8060%     0.62
+                       SRR39916527_F    24710    8.1520%     0.61
+                       SRR39916528_F    25225   11.2560%     0.62
+                       SRR39916530_F    38286   37.6520%     0.62
+                       SRR39916531_F    21806   19.2760%     0.62
+                       SRR39916532_F    43928    6.0700%     0.64
+                       SRR39916533_F    23212    3.2740%     0.63
+                       SRR39916534_F    26198    4.4080%     0.63
+                       SRR39916535_F    25864    5.9880%     0.64
+                       SRR39916536_F    54690   11.5800%     0.62
+                       SRR39916537_F    19501   28.2360%     0.62
+                       SRR39916538_F    23819    3.4280%     0.62
+                       SRR39916539_F    25170    2.3660%     0.62
+                       SRR39916541_F    63551   18.8280%     0.63
+                       SRR39916542_F    23119   52.7460%     0.63
+                       SRR39916543_F    21739   17.4780%     0.62
+                       SRR39916544_F    26137    8.3200%     0.62
+                       SRR39916545_F    23772    8.8760%     0.64
+                       SRR39916546_F    24506    5.5660%     0.63
+                       SRR39916547_F    29874   11.3860%     0.63
+                       SRR39916548_F    45617    3.9700%     0.62
+                       SRR39916549_F    24692    3.9800%     0.62
+                       SRR39916550_F    33229    4.7100%     0.61
+        per-sample cutoff: median 0.63, range 0.61-0.64
+      
+      sketch shape  110 entries/raw, 54550 distinct of 4^8=65536 possible (83.2% saturated)
+      index         mean posting 1832, decide_index score 0.097 at 48 threads -> INDEX (screen ~32 ns/comp)
+      
+      uniques      904444 in 30 population(s)
+      pairs        1500000
+      k-mer screen k=5 @ cutoff 0.42: passes 12.6908% of pairs
+      minimizer    k=8 w=3: matching cutoff 0.6250 -> **0.63** (passes 12.7431%)
+      
+      pair-level agreement with the k-mer screen at cutoff 0.63:
+        both pass             188346 (12.556%)
+        both shroud          1306837 (87.122%)
+        k-mer only              2016 ( 0.134%)  <- SHROUDED by the minimizer; the churn risk
+        minimizer only          2801 ( 0.187%)  <- extra alignments, cost not correctness
+        DISAGREEMENT            4817 ( 0.321% of pairs)   recall vs k-mer: 98.941%
+      
+      minimizer pass rate near the derived cutoff:
+        0.59     12.3673%
+        0.60     12.4665%
+        0.61     12.5473%
+        0.62     12.6386%
+        0.63 <-  12.7431%
+        0.64     12.8486%
+        0.65     12.9607%
+        0.66     13.0763%
+        0.67     13.2414%
+      
+      NOTE: this reproduces the k-mer screen's SELECTIVITY, which is the safe
+      target, not the cheapest cutoff that still agrees with it. On PacBio HiFi
+      the ASV table is identical from 0.45 to 0.60 and this rule picks 0.50 --
+      inside the plateau but at its expensive end, worth ~19% of wall clock.
+      Finding the cheap edge of a plateau needs the ASV table, so sweep if you
+      can afford to.
+    k=8 w=2:
+      # derive-cutoff: matched pass rate, no alignment performed
+      # pairs: abundance-weighted -- the raw-vs-centre shape b_compare actually screens
+      
+      per-sample derivation (30 populations):
+                              sample  uniques  kmer pass   cutoff
+                       SRR39916519_F    22784   24.3540%     0.62
+                       SRR39916520_F    22260   18.9340%     0.62
+                       SRR39916521_F    27367    7.8080%     0.63
+                       SRR39916522_F    27998   12.6020%     0.62
+                       SRR39916523_F    22014   19.9240%     0.62
+                       SRR39916524_F    25586    6.2860%     0.62
+                       SRR39916525_F    29330    8.4640%     0.62
+                       SRR39916526_F    58460    4.8060%     0.61
+                       SRR39916527_F    24710    8.1520%     0.60
+                       SRR39916528_F    25225   11.2560%     0.61
+                       SRR39916530_F    38286   37.6520%     0.62
+                       SRR39916531_F    21806   19.2760%     0.61
+                       SRR39916532_F    43928    6.0700%     0.63
+                       SRR39916533_F    23212    3.2740%     0.63
+                       SRR39916534_F    26198    4.4080%     0.62
+                       SRR39916535_F    25864    5.9880%     0.63
+                       SRR39916536_F    54690   11.5800%     0.61
+                       SRR39916537_F    19501   28.2360%     0.61
+                       SRR39916538_F    23819    3.4280%     0.61
+                       SRR39916539_F    25170    2.3660%     0.61
+                       SRR39916541_F    63551   18.8280%     0.63
+                       SRR39916542_F    23119   52.7460%     0.63
+                       SRR39916543_F    21739   17.4780%     0.62
+                       SRR39916544_F    26137    8.3200%     0.62
+                       SRR39916545_F    23772    8.8760%     0.64
+                       SRR39916546_F    24506    5.5660%     0.62
+                       SRR39916547_F    29874   11.3860%     0.63
+                       SRR39916548_F    45617    3.9700%     0.61
+                       SRR39916549_F    24692    3.9800%     0.61
+                       SRR39916550_F    33229    4.7100%     0.61
+        per-sample cutoff: median 0.62, range 0.60-0.64  <- SPREAD > 0.04: one run-wide cutoff is a compromise here
+      
+      sketch shape  148 entries/raw, 58300 distinct of 4^8=65536 possible (89.0% saturated)
+      index         mean posting 2302, decide_index score 0.122 at 48 threads -> INDEX (screen ~32 ns/comp)
+      
+      uniques      904444 in 30 population(s)
+      pairs        1500000
+      k-mer screen k=5 @ cutoff 0.42: passes 12.6908% of pairs
+      minimizer    k=8 w=2: matching cutoff 0.6174 -> **0.62** (passes 12.7205%)
+      
+      pair-level agreement with the k-mer screen at cutoff 0.62:
+        both pass             188307 (12.554%)
+        both shroud          1307137 (87.142%)
+        k-mer only              2055 ( 0.137%)  <- SHROUDED by the minimizer; the churn risk
+        minimizer only          2501 ( 0.167%)  <- extra alignments, cost not correctness
+        DISAGREEMENT            4556 ( 0.304% of pairs)   recall vs k-mer: 98.920%
+      
+      minimizer pass rate near the derived cutoff:
+        0.58     12.3387%
+        0.59     12.4262%
+        0.60     12.5225%
+        0.61     12.6147%
+        0.62 <-  12.7205%
+        0.63     12.8185%
+        0.64     12.9531%
+        0.65     13.0683%
+        0.66     13.2116%
+      
+      NOTE: this reproduces the k-mer screen's SELECTIVITY, which is the safe
+      target, not the cheapest cutoff that still agrees with it. On PacBio HiFi
+      the ASV table is identical from 0.45 to 0.60 and this rule picks 0.50 --
+      inside the plateau but at its expensive end, worth ~19% of wall clock.
+      Finding the cheap edge of a plateau needs the ASV table, so sweep if you
+      can afford to.
+    k=8 w=1:
+      # derive-cutoff: matched pass rate, no alignment performed
+      # pairs: abundance-weighted -- the raw-vs-centre shape b_compare actually screens
+      
+      per-sample derivation (30 populations):
+                              sample  uniques  kmer pass   cutoff
+                       SRR39916519_F    22784   24.3540%     0.61
+                       SRR39916520_F    22260   18.9340%     0.61
+                       SRR39916521_F    27367    7.8080%     0.62
+                       SRR39916522_F    27998   12.6020%     0.62
+                       SRR39916523_F    22014   19.9240%     0.62
+                       SRR39916524_F    25586    6.2860%     0.62
+                       SRR39916525_F    29330    8.4640%     0.62
+                       SRR39916526_F    58460    4.8060%     0.61
+                       SRR39916527_F    24710    8.1520%     0.60
+                       SRR39916528_F    25225   11.2560%     0.61
+                       SRR39916530_F    38286   37.6520%     0.61
+                       SRR39916531_F    21806   19.2760%     0.61
+                       SRR39916532_F    43928    6.0700%     0.63
+                       SRR39916533_F    23212    3.2740%     0.62
+                       SRR39916534_F    26198    4.4080%     0.62
+                       SRR39916535_F    25864    5.9880%     0.62
+                       SRR39916536_F    54690   11.5800%     0.61
+                       SRR39916537_F    19501   28.2360%     0.61
+                       SRR39916538_F    23819    3.4280%     0.61
+                       SRR39916539_F    25170    2.3660%     0.61
+                       SRR39916541_F    63551   18.8280%     0.62
+                       SRR39916542_F    23119   52.7460%     0.61
+                       SRR39916543_F    21739   17.4780%     0.61
+                       SRR39916544_F    26137    8.3200%     0.61
+                       SRR39916545_F    23772    8.8760%     0.63
+                       SRR39916546_F    24506    5.5660%     0.62
+                       SRR39916547_F    29874   11.3860%     0.63
+                       SRR39916548_F    45617    3.9700%     0.61
+                       SRR39916549_F    24692    3.9800%     0.61
+                       SRR39916550_F    33229    4.7100%     0.60
+        per-sample cutoff: median 0.61, range 0.60-0.63
+      
+      sketch shape  223 entries/raw, 65536 distinct of 4^8=65536 possible (100.0% saturated)
+      index         mean posting 3080, decide_index score 0.163 at 48 threads -> INDEX (screen ~32 ns/comp)
+      
+      uniques      904444 in 30 population(s)
+      pairs        1500000
+      k-mer screen k=5 @ cutoff 0.42: passes 12.6908% of pairs
+      minimizer    k=8 w=1: matching cutoff 0.6116 -> **0.61** (passes 12.6591%)
+      
+      pair-level agreement with the k-mer screen at cutoff 0.61:
+        both pass             188173 (12.545%)
+        both shroud          1307925 (87.195%)
+        k-mer only              2189 ( 0.146%)  <- SHROUDED by the minimizer; the churn risk
+        minimizer only          1713 ( 0.114%)  <- extra alignments, cost not correctness
+        DISAGREEMENT            3902 ( 0.260% of pairs)   recall vs k-mer: 98.850%
+      
+      minimizer pass rate near the derived cutoff:
+        0.57     12.2968%
+        0.58     12.3779%
+        0.59     12.4866%
+        0.60     12.5691%
+        0.61 <-  12.6591%
+        0.62     12.7500%
+        0.63     12.8865%
+        0.64     12.9941%
+        0.65     13.1095%
+      
+      NOTE: this reproduces the k-mer screen's SELECTIVITY, which is the safe
+      target, not the cheapest cutoff that still agrees with it. On PacBio HiFi
+      the ASV table is identical from 0.45 to 0.60 and this rule picks 0.50 --
+      inside the plateau but at its expensive end, worth ~19% of wall clock.
+      Finding the cheap edge of a plateau needs the ASV table, so sweep if you
+      can afford to.
