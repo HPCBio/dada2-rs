@@ -729,9 +729,12 @@ first misclassification, and it was predictable from the score alone: `distinct`
 is bounded by `4^k`, so at k=6 the denominator collapses to 3,211 and the score
 rises to **1.089**, far outside the 0.30 threshold.
 
-The cause is not a stale threshold. **`sharing` is not in the index's cost
-function at all.** Holding everything but `k` fixed multiplies posting-list
-traversal by 14.9x and changes the screen's cost by 1.4%:
+The cause is not a stale threshold. **`sharing` is not in the *screen's* cost
+at all** — though it is very much in `setup`'s, which an extreme arm later showed
+and which an earlier revision of this section wrongly denied
+([below](#k5-w1-the-identity-arm-and-what-it-costs)). Holding everything but `k`
+fixed multiplies posting-list traversal by 14.9x and changes the screen's cost by
+1.4%:
 
 | arm | sharing | mean posting | screen (busy) | ns/comp |
 |---|---|---|---|---|
@@ -745,8 +748,9 @@ each**. A long posting list is a sequential scan, and the cost model priced ever
 entry at random-access rates. **32-33 ns/comp is flat across every platform, pool
 and `k` measured** — a more useful constant than anything the score currently uses.
 
-The index's whole cost is `setup`, and `setup` tracks **entries**, the total
-sketch mass:
+The index's whole cost is `setup`. Over the three configurations available at
+the time, `setup` tracked **entries**, the total sketch mass — a reading that a
+fourth configuration later broke:
 
 | pool | entries | `setup` | ns/entry |
 |---|---|---|---|
@@ -754,8 +758,9 @@ sketch mass:
 | ITS2 k=6 | 60,135,053 | 25.04s | 0.42 |
 | pooled PacBio | 258,350,362 | 160.09s | 0.62 |
 
-So `score = entries_per_raw x threads / distinct` had **the right numerator and a
-spurious denominator**. `entries_per_raw` is causal — it drives `setup`, and it
+So `score = entries_per_raw x threads / distinct` looked like it had **the right
+numerator and a spurious denominator**. That is half right and the wrong half is
+load-bearing; see [k=5, w=1](#k5-w1-the-identity-arm-and-what-it-costs). `entries_per_raw` is causal — it drives `setup`, and it
 drives the merge-join's per-comparison cost. `distinct` is not, and the rule
 survived four datasets only because at k=8 `distinct` barely moves across them
 (48,497 ITS2 against 40,177 PacBio, 1.2x) while `entries_per_raw` moves 6.5x (74
@@ -1765,6 +1770,82 @@ entries/raw stays ~223 and `setup` stays ~37s, while the ~64x longer posting lis
 are free at 33 ns/comp. Worth running once for completeness, not for a decision.
 
 
+### k=5, w=1: the identity arm, and what it costs
+
+The arm the previous section called "worth running once for completeness, not for
+a decision" turned out to decide two things. Pooled ITS2, 3 reps, control 0.27%,
+k-mer baseline 175.99s:
+
+| arm | wall | vs k-mer |
+|---|---|---|
+| `mini_k5_w1_c0.42` forced-on | 264.41s | **+50.2%** |
+| `mini_k5_w1_c0.45` forced-on | 264.15s | +50.1% |
+| `mini_k5_w1_c0.42` **auto** | 217.68s | +23.7% |
+| `mini_k5_w1_c0.45` **auto** | 222.70s | +26.5% |
+
+**The identity is confirmed on the cutoff as well as in the test suite.**
+`--derive-cutoff` puts the matched cutoff at **0.4178 -> 0.42** — DADA2's own
+production value, arrived at independently — with 0.020% disagreement and 99.935%
+recall. The sketch is 100% saturated: 1,024 distinct of 4^5.
+
+**The flat screen cost survives, and is now measured over a 128x range.** At mean
+posting length **160,010** the indexed screen costs **35 ns/comp**, against 33 at
+posting 20,524 and 32-33 at 1,374-6,430. Scanning a posting list 116x longer costs
+6% more per comparison. Whatever else is expensive here, it is not the scan.
+
+**`setup` is what explodes, and it is not linear in `entries`** — which falsifies
+the correction the previous section proposed:
+
+| configuration | distinct | mean posting | entries | `setup` | ns/entry |
+|---|---|---|---|---|---|
+| ITS2 k=8, w=1 | 65,536 | 2,810 | 184.2 M | 37.31s | **0.203** |
+| ITS2 k=8, w=5 | 48,497 | 1,374 | 60.8 M | 15.39s | 0.253 |
+| ITS2 k=6, w=5 | 3,211 | 20,524 | 60.1 M | 25.04s | 0.417 |
+| ITS2 k=5, w=1 | 1,024 | 160,010 | 163.9 M | 126.63s | **0.773** |
+| pooled PacBio k=8, w=5 | 40,177 | 6,430 | 258.4 M | 160.09s | 0.620 |
+
+k=5/w=1 carries **fewer** entries than k=8/w=1 (163.9 M against 184.2 M) and pays
+**3.4x** the `setup`. Within one dataset the per-entry build cost rises with
+posting length. So **`sharing` is in the cost function after all — in `setup`, not
+in the screen** — and this page's earlier flat statement that it "is not in the
+index's cost function at all" is withdrawn. The original score's numerator was
+directionally right about the build; what it got wrong was how much.
+
+**But no single threshold on that score can work.** The two cases that must go
+opposite ways are ordered backwards by it:
+
+| workload | score | correct call | measured |
+|---|---|---|---|
+| pooled PacBio | **0.564** | decline | index-on +26% |
+| ITS2 k=6 | **1.089** | index | index-on -13.8% |
+| ITS2 k=5, w=1 | 9.307 | decline | index-on +21% |
+
+Raising the threshold to rescue k=6 breaks PacBio; keeping it low breaks k=6. The
+score under-weights `entries` — PacBio's 258 M is the largest sketch mass measured
+and the biggest `setup` — and over-weights `sharing`. This is the same "classifies
+but does not rank" defect recorded earlier, now with a case where the ranking is
+not merely imprecise but inverted. **A correct rule needs both terms in `setup`,
+and it needs `entries` to dominate.**
+
+The rule as shipped gets this arm right (score 9.307, declines, saves 17.7%), so
+it is now 5/6 — and the cost-vs-gain replacement sketched above would have gotten
+it **wrong**, predicting ~37s of `setup` against ~50s of gain and building the
+index. That is a useful failure to have found before building it.
+
+**And the fidelity result is the sharpest statement of the proxy's limits on this
+page.** At its matched 0.42, k=5/w=1 disagrees with the k-mer screen on **0.020%**
+of pairs and still churns **15 ASVs of 3,028** — against k=8/w=5's 18 at **11.5x**
+the disagreement. Near-perfect pair agreement does not buy a near-identical table,
+because at 2.39 billion comparisons 0.020% is still ~478,000 disagreeing pairs.
+**The churn floor is set by the scale of the comparison, not by the agreement
+rate** — which is why no `(k, w)` setting ever moved churn, and why chasing
+disagreement was always going to be chasing the wrong number.
+
+So the completeness arm closes the cost argument at both ends: the sparse sketch
+is where the speed is, the exact emulation costs **50% more than the screen it
+emulates**, and it does not even buy a matching table.
+
+
 ## Three claims this falsified
 
 ### 1. "The cutoff transfers between backends." It does not.
@@ -2017,10 +2098,13 @@ What promotion would require, in order:
    9.1%), so the rule is right on 4/4 workloads **at k=8** — but a k=6 arm
    [breaks it](#the-score-is-right-for-the-wrong-reason-and-k6-exposes-it),
    because `sharing` turns out not to be in the index's cost function at all.
-   The screen costs a flat 32-33 ns/comp regardless of posting length, the whole
-   index cost is `setup` and `setup` tracks `entries`. **The score must be
-   replaced by cost-against-gain before `k` can be tuned**, preferably by
-   deciding lazily so there is no constant left to go stale.
+   The screen costs a flat 32-35 ns/comp regardless of posting length — confirmed
+   to a mean posting of 160,010 — but a k=5/w=1 arm then showed `setup` is **not**
+   linear in `entries` (fewer entries than k=8/w=1, 3.4x the build), so `sharing`
+   does belong in the cost, in the build term. **No single threshold on the
+   current score can work**: it orders pooled PacBio (0.564, must decline) below
+   ITS2 k=6 (1.089, must index). A correct rule needs both terms in `setup` with
+   `entries` dominating; deciding lazily would retire the constant entirely.
    Separately, **map efficiency** (90% -> 75%) is closed as a non-issue: a 16x
    `DADA2RS_PAR_GRAIN` sweep leaves it flat at 71-75%, the default is already
    optimal on both backends, and in absolute thread-seconds the indexed arm loses
