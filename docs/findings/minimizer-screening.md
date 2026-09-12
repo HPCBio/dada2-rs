@@ -1859,17 +1859,20 @@ Pooled ITS2, k=8 at its matched 0.63, with `ERR_DIR` pinning the error model so
 exactly one factor moves per arm (every arm's `errF.json` hashes to the k-mer
 model, verified, not assumed):
 
-| comparison | churn | role |
-|---|---|---|
-| harness `base` vs the original k-mer baseline | **0** | control — the rig reproduces it |
-| `base` vs `control` within the run | **0** | control — in-run noise floor |
-| **k-mer model + minimizer denoising** | **9** | the denoising term |
-| **minimizer model + minimizer denoising**, vs the above | **11** | the model term |
-| both changed (the shipped configuration) | **18** | reference |
+Each cell measured against the same k-mer baseline:
 
-**Roughly half and half, against 85/16 on MiSeq SOP.** The two terms are close to
-additive (9 + 11 = 20 against 18, so a small negative interaction), and both
-controls are exactly 0, which is what licenses reading the difference at all.
+| configuration | churn | reads vs baseline | role |
+|---|---|---|---|
+| k-mer model + k-mer denoise | **0** | — | control (x2: cross-run and in-run) |
+| **k-mer model + minimizer denoise** | **9** | -0.194% | the denoising term |
+| **minimizer model + k-mer denoise** | **9** | -0.057% | the model term |
+| minimizer model + minimizer denoise | **18** | -0.248% | the shipped configuration |
+
+**Exactly half and half, and exactly additive: 9 + 9 = 18**, against 85/16 on
+MiSeq SOP. Three controls are exactly 0 — the rig reproduces the original
+baseline, the in-run control is clean, and the far corner reproduces the original
+minimizer arm cell for cell — which is what licenses reading the interior at
+all.
 
 So on a diverse pool **the error model is not a minor term** — it carries about as
 much churn as the screening does, at an RMS `err_out` divergence of only 0.0046
@@ -1880,15 +1883,15 @@ the screen actually shapes what reaches `build_trans_mat`.
 It also corrects a reading recorded earlier on this page. Churn is *flat* at 14-18
 across a 5x range of small model divergences (RMS 0.0015 to 0.0074), which looked
 like evidence that the model did not matter at the operating point. It is not: the
-model contributes a roughly **constant ~9-11 ASVs** throughout that regime. Flat is
-not zero, and the correlation's low end was measuring a floor rather than an
-absence.
+model contributes a **constant ~9 ASVs** throughout that regime. Flat is not zero,
+and the correlation's low end was measuring a floor rather than an absence.
 
-The count side is quieter than the ASV side: read retention is -0.194% for the
-denoising term against -0.248% for both changed, so the model moves counts barely
-at all (-0.054%) while moving 11 ASVs. Consistent with churn being a
-rare-tail phenomenon that reshuffles which borderline sequences are born rather
-than where the mass sits.
+**The count side is not symmetric, and that is the one asymmetry here.** The two
+terms churn the same number of ASVs but move very different read mass: denoising
+-0.194%, model -0.057%, a factor of 3.4. So the refitted model rebirths as many
+borderline sequences as the screen does, but they are *smaller* ones — consistent
+with churn being a rare-tail phenomenon throughout, and with the model's
+perturbation biting hardest where abundance evidence is thinnest.
 
 **What this changes.** Every claim on this page of the form "the screen causes X"
 is, on pooled data, about half a claim about the error model the screen trained.
