@@ -1134,10 +1134,13 @@ rather than screening (20-sample MiSeq SOP, k=8, cutoff 0.65):
 | **minimizer model** + k-mer denoising | **0** | 0.0105% | 16% | 1.05x |
 | both changed | 2 | 0.0652% | — | 1.05x |
 
-**The denoising-stage screen dominates ~5:1.** A 5% error-model difference yields
-*zero* ASV churn and 0.0105% L1; swapping the denoising screen yields churn 2 and
-0.0555%. So **whichever screen you denoise with determines the answer, almost
-regardless of which screen trained the model.**
+**The denoising-stage screen dominates ~5:1** *on this dataset*. A 5% error-model
+difference yields *zero* ASV churn and 0.0105% L1; swapping the denoising screen
+yields churn 2 and 0.0555%. So on low-diversity data, whichever screen you denoise
+with determines the answer, almost regardless of which screen trained the model.
+**This does not generalise** — repeated on pooled ITS2 the split is ~1:1
+([below](#the-51-stage-split-does-not-survive-a-diverse-pool-it-is-11)) — and the
+paragraph that follows predicted exactly that.
 
 The gapless correction did move the balance: pre-fix the split read 94%/8%,
 post-fix it is 85%/16%, so the model's relative contribution doubled even as the
@@ -1844,6 +1847,57 @@ disagreement was always going to be chasing the wrong number.
 So the completeness arm closes the cost argument at both ends: the sparse sketch
 is where the speed is, the exact emulation costs **50% more than the screen it
 emulates**, and it does not even buy a matching table.
+
+
+### The 5:1 stage split does not survive a diverse pool: it is ~1:1
+
+The decomposition above was measured on 20-sample MiSeq SOP, where the screen is
+0.9% of runtime, and this page flagged that it should be repeated on a pool where
+the screen is 76.5% before being treated as general. It was. It does not hold.
+
+Pooled ITS2, k=8 at its matched 0.63, with `ERR_DIR` pinning the error model so
+exactly one factor moves per arm (every arm's `errF.json` hashes to the k-mer
+model, verified, not assumed):
+
+| comparison | churn | role |
+|---|---|---|
+| harness `base` vs the original k-mer baseline | **0** | control — the rig reproduces it |
+| `base` vs `control` within the run | **0** | control — in-run noise floor |
+| **k-mer model + minimizer denoising** | **9** | the denoising term |
+| **minimizer model + minimizer denoising**, vs the above | **11** | the model term |
+| both changed (the shipped configuration) | **18** | reference |
+
+**Roughly half and half, against 85/16 on MiSeq SOP.** The two terms are close to
+additive (9 + 11 = 20 against 18, so a small negative interaction), and both
+controls are exactly 0, which is what licenses reading the difference at all.
+
+So on a diverse pool **the error model is not a minor term** — it carries about as
+much churn as the screening does, at an RMS `err_out` divergence of only 0.0046
+in log10. That is the direction the gapless fix had already started moving things
+(94/8 -> 85/16 on low-diversity data), continued to its conclusion on data where
+the screen actually shapes what reaches `build_trans_mat`.
+
+It also corrects a reading recorded earlier on this page. Churn is *flat* at 14-18
+across a 5x range of small model divergences (RMS 0.0015 to 0.0074), which looked
+like evidence that the model did not matter at the operating point. It is not: the
+model contributes a roughly **constant ~9-11 ASVs** throughout that regime. Flat is
+not zero, and the correlation's low end was measuring a floor rather than an
+absence.
+
+The count side is quieter than the ASV side: read retention is -0.194% for the
+denoising term against -0.248% for both changed, so the model moves counts barely
+at all (-0.054%) while moving 11 ASVs. Consistent with churn being a
+rare-tail phenomenon that reshuffles which borderline sequences are born rather
+than where the mass sits.
+
+**What this changes.** Every claim on this page of the form "the screen causes X"
+is, on pooled data, about half a claim about the error model the screen trained.
+The two cannot be separated by choosing a better cutoff, because the model is
+refitted through whatever screen is active. The one lever that *does* separate
+them already exists and is used here: `ERR_DIR` — or in production, training the
+model under one screen and denoising under another, the same decoupling the
+[kdist cutoff work](kdist-cutoff-decoupling.md) arrived at from a different
+direction.
 
 
 ## Three claims this falsified
