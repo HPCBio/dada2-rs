@@ -831,7 +831,6 @@ fn run_derive_cutoff(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
         let nraw = sketch_nraw;
         let distinct = sketch_keys.len().max(1);
         let sharing = entries as f64 / distinct as f64;
-        let score = sharing * p.threads.max(1) as f64 / nraw.max(1) as f64;
         println!(
             "\nsketch shape  {:.0} entries/raw, {} distinct of 4^{}={} possible ({:.1}% saturated)",
             entries as f64 / nraw.max(1) as f64,
@@ -844,16 +843,14 @@ fn run_derive_cutoff(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
             },
             100.0 * distinct as f64 / (4usize.saturating_pow(p.minimizer_k as u32) as f64).max(1.0)
         );
+        // No verdict is offered here. The index choice is measured on the first
+        // cluster at run time (`minimizers::decide_from_probe`) because no
+        // closed-form score survived contact with a fifth workload; printing a
+        // predicted one would be re-introducing the thing that was removed.
         println!(
-            "index         mean posting {:.0}, decide_index score {:.3} at {} threads -> {}",
-            sharing,
-            score,
-            p.threads,
-            if score <= minimizers::MINIMIZER_INDEX_MAX_SCORE {
-                "INDEX (screen ~32 ns/comp)"
-            } else {
-                "merge-join (screen ~1100-3400 ns/comp; the speed benefit is gone)"
-            }
+            "index         mean posting {:.0} over {} raws at {} threads; the run-time \
+             probe decides (indexed screen ~32 ns/comp, merge-join ~1100-3400)",
+            sharing, nraw, p.threads
         );
     }
 

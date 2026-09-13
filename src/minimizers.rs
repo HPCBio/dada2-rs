@@ -385,28 +385,9 @@ pub fn sketch_is_usable(seq_len: usize, k: usize, w: usize) -> bool {
 /// minimizer-vs-k-mer is a behavioural change; keeping those two axes separable
 /// is the point.
 pub struct MinimizerIndex {
-    postings: HashMap<u64, Vec<(u32, u8)>>,
+    postings: HashMap<u64, Vec<(u32, u8)>, IdentityBuildHasher>,
     nraw: usize,
 }
-
-/// Default ceiling on [`IndexDecision::score`], above which the inverted index
-/// costs more than it saves and the per-pair merge-join is used instead.
-///
-/// Three measured configurations bracket the crossover; this is not a calibrated
-/// constant, and `DADA2RS_MINIMIZER_INDEX_MAX` overrides it.
-///
-/// | configuration | score | index verdict |
-/// |---|---|---|
-/// | pooled ITS2 | 0.073 | wins by 13.9% |
-/// | pooled soil 16S | 0.077 | wins by 9.1% |
-/// | per-sample PacBio | 0.185 | wins by 4.4% |
-/// | pooled PacBio | 0.564 | **loses by 31.6%** |
-///
-/// The default sits between the last win and the first loss, biased toward the
-/// low side because **the two errors are not symmetric**: choosing the index
-/// wrongly cost +26% against the k-mer screen on pooled PacBio, while declining
-/// it wrongly costs 2-4% on the configurations where it wins.
-pub const MINIMIZER_INDEX_MAX_SCORE: f64 = 0.30;
 
 /// Whether to build the inverted index for a given pool, and the evidence for it.
 #[derive(Debug, Clone, Copy)]
@@ -418,9 +399,16 @@ pub struct IndexDecision {
     pub distinct: usize,
     /// Mean posting-list length, `entries / distinct`.
     pub sharing: f64,
-    /// `sharing × threads / nraw`. See [`decide_index`].
-    pub score: f64,
-    pub threshold: f64,
+    /// Serial scatter cost measured on the probed cluster, nanoseconds.
+    pub scatter_ns: f64,
+    /// Per-pair merge-join cost measured on the probed cluster, nanoseconds.
+    pub merge_ns: f64,
+    /// Per-pair indexed-read cost measured on the same sample, nanoseconds.
+    pub array_ns: f64,
+    /// Parallel saving the index buys on this cluster, nanoseconds:
+    /// `(merge_ns - array_ns) × nraw / threads`.
+    pub saving_ns: f64,
+    pub threads: usize,
     /// `Some(true|false)` when `DADA2RS_MINIMIZER_INDEX` forced the outcome.
     pub forced: Option<bool>,
 }
@@ -455,131 +443,106 @@ impl std::hash::BuildHasher for IdentityBuildHasher {
     }
 }
 
-/// Should this pool use the inverted index, or the per-pair merge-join?
+/// What the probe measured on one cluster, in nanoseconds.
 ///
-/// # Why there is a choice at all
+/// `scatter_ns` is for the whole cluster (one pass over the centre's posting
+/// lists); the other two are per pair.
+#[derive(Debug, Clone, Copy)]
+pub struct ProbeTimings {
+    pub scatter_ns: f64,
+    pub merge_ns: f64,
+    pub array_ns: f64,
+}
+
+/// Index scatter or per-pair merge-join? **Measured, not modelled.**
 ///
-/// The index makes the screen `O(1)` per pair, but pays for it with a **serial**
-/// per-cluster scatter over the postings. Whether that trade is good is not a
-/// property of the backend — it is a property of the workload, and it reverses:
+/// # Why this is a probe and not a formula
 ///
-/// | configuration | `setup` | map saved | setup/saved | verdict |
-/// |---|---|---|---|---|
-/// | pooled ITS2 | 16.14s | 56.14s | 0.29 | index wins 13.9% |
-/// | per-sample PacBio | 33.44s | 76.26s | 0.44 | index wins 4.4% |
-/// | pooled PacBio | **162.69s** | 43.72s | **3.72** | index **loses** 31.6% |
+/// The index makes the screen `O(1)` per pair but pays a **serial** per-cluster
+/// scatter over the centre's posting lists. Which side wins is a property of the
+/// workload, and it reverses: pooled ITS2 gains 13.9% from the index, pooled
+/// PacBio loses 31.6%.
 ///
-/// On pooled PacBio the indexed arm is slower than the k-mer screen it replaces.
-/// Leaving that to an env var means the right answer depends on a flag no user
-/// would know to set, so it is decided here.
+/// Three closed-form scores were tried and all of them broke. The last one,
+/// `entries_per_raw × threads / distinct` against a 0.30 threshold, classified
+/// four measured workloads and then misfired on a fifth (k=6 on pooled ITS2:
+/// declined the index and lost 13.8%). The reason it could not be repaired by
+/// recalibration is that **the per-operation scatter cost is not constant** — it
+/// falls ~40x as posting lists lengthen, from 89.8 ns at mean posting 1,957 to
+/// 1.2 ns at 160,369, because a short list is a random jump and a long one is a
+/// stream. No fixed coefficient survives that, and a threshold fitted to the
+/// workloads on hand is a threshold that goes stale the next time someone moves
+/// `k`, `w`, the platform, or the thread count.
 ///
-/// # The score
+/// # What makes measuring possible
 ///
-/// Serial scatter work is `nclusters × entries × sharing`; the parallel saving it
-/// buys is `ncomps × entries × c / threads`, and `ncomps ≈ nclusters × nraw`.
-/// The ratio drops `nclusters` and `entries`, leaving
+/// Both sides of the trade accrue **per cluster**:
 ///
 /// ```text
-/// score = sharing × threads / nraw          where sharing = entries / distinct
+/// serial cost  = one scatter over the centre's postings
+/// parallel gain = nraw × (merge_join_per_pair - array_read_per_pair) / threads
 /// ```
 ///
-/// **`nraw` then cancels too**, which is not obvious and matters for intuition.
-/// `sharing` is itself `nraw × entries_per_raw / distinct`, so
+/// so the cluster count — the one quantity that cannot be known at `B::new`,
+/// and the reason every earlier attempt needed a fitted constant — **cancels**.
+/// One cluster is therefore a representative sample of the whole run, and the
+/// first one is probed directly: the scatter is timed as it happens, and the two
+/// per-pair paths are timed over a sample of raws. The verdict then holds for the
+/// rest of the pool.
 ///
-/// ```text
-/// score = entries_per_raw × threads / distinct_minimizers
-/// ```
-///
-/// exactly. **Pool size does not appear.** What drives the decision is sketch
-/// density (`entries_per_raw`, set by read length and `w`), the richness of the
-/// minimizer alphabet (`distinct`, bounded by `4^k` and by sequence diversity),
-/// and how many threads the scatter is failing to use.
-///
-/// The measurements say the same thing, so this is not just algebra: pooled soil
-/// 16S has **1,225,523** raws and scores 0.077, while pooled PacBio has **547,273**
-/// — less than half — and scores 0.564. The larger pool is the one that indexes.
-/// Read length is the driver (74 entries/raw against 478), not pool size, and
-/// "big pools need the merge-join" is precisely the wrong intuition.
-///
-/// **This CLASSIFIES correctly and does not RANK.** All four measured
-/// configurations fall on the right side of the threshold (score <= 0.30 exactly
-/// when the measured `setup / map-saved` is < 1), which is the only thing the
-/// rule is asked to do. But it does not order them by distance from the
-/// crossover: pooled soil 16S scores 0.077 with a measured ratio of 0.55, while
-/// per-sample PacBio scores 0.185 with 0.44 — an inversion that three points had
-/// hidden. The miss is in the `setup` term; from ITS2 to soil 16S the modelled
-/// scatter work grows 4.49x while measured `setup` grows 7.94x, so the
-/// per-increment cost is not constant across workloads.
-///
-/// **Four points determine a bracket, not a threshold** — the crossover lies
-/// somewhere in 0.19..0.57 and [`MINIMIZER_INDEX_MAX_SCORE`] picks a biased-low
-/// value inside it. Do not read the score as a distance from the crossover.
+/// The probe costs one scatter (which is not wasted — its result is exact and is
+/// used for that cluster) plus a few hundred microseconds of sampling.
 ///
 /// `threads` must be the threads that will actually run *this pool's* compare
 /// map — `rayon::current_num_threads()` inside the sub-pool, which is 4 under
-/// per-sample concurrency and 48 for a single pooled run. Passing the global
-/// count for a per-sample run inflates the score ~12x and would decline the
-/// index exactly where it wins.
-pub fn decide_index(
-    sketches: &[Option<MinimizerSketch>],
+/// per-sample concurrency and 48 for a single pooled run.
+pub fn decide_from_probe(
+    t: ProbeTimings,
+    nraw: usize,
     threads: usize,
+    entries: usize,
+    distinct: usize,
     forced: Option<bool>,
 ) -> IndexDecision {
-    let nraw = sketches.len();
-    let entries: usize = sketches
-        .iter()
-        .map(|s| s.as_ref().map_or(0, |s| s.len()))
-        .sum();
-
-    // Distinct minimizers, counted without building the postings: a set of u64
-    // is ~40k entries where the index would allocate 262M postings, so a
-    // declined index costs a hash pass rather than a gigabyte.
-    let mut keys: std::collections::HashSet<u64, IdentityBuildHasher> =
-        std::collections::HashSet::with_capacity_and_hasher(1024, IdentityBuildHasher);
-    for s in sketches.iter().flatten() {
-        for h in s.hashes() {
-            keys.insert(h);
-        }
-    }
-    let distinct = keys.len();
-
-    let threshold = std::env::var("DADA2RS_MINIMIZER_INDEX_MAX")
-        .ok()
-        .and_then(|v| v.parse::<f64>().ok())
-        .filter(|v| v.is_finite() && *v > 0.0)
-        .unwrap_or(MINIMIZER_INDEX_MAX_SCORE);
-
+    let ProbeTimings {
+        scatter_ns,
+        merge_ns,
+        array_ns,
+    } = t;
+    // `max(0)`: the array read is never dearer than the merge-join it replaces,
+    // so a negative difference is timer noise on a sub-nanosecond quantity and
+    // must not be read as the index costing the map time.
+    let per_pair = (merge_ns - array_ns).max(0.0);
+    let saving_ns = per_pair * nraw as f64 / threads.max(1) as f64;
     let sharing = if distinct == 0 {
         0.0
     } else {
         entries as f64 / distinct as f64
     };
-    let score = if nraw == 0 {
-        0.0
-    } else {
-        sharing * threads.max(1) as f64 / nraw as f64
-    };
-
     IndexDecision {
-        use_index: forced.unwrap_or(score <= threshold),
+        use_index: forced.unwrap_or(saving_ns > scatter_ns),
         entries,
         distinct,
         sharing,
-        score,
-        threshold,
+        scatter_ns,
+        merge_ns,
+        array_ns,
+        saving_ns,
+        threads,
         forced,
     }
 }
 
 /// `DADA2RS_MINIMIZER_INDEX` as an **explicit override**, not a fallback: when it
-/// names a mode, [`decide_index`] still computes its score for the log but the
+/// names a mode, the probe still runs and records its measurement for the log,
+/// but the
 /// override decides. Unset (or `auto`) leaves the choice to the rule.
 ///
 /// | value | effect |
 /// |---|---|
 /// | `0`, `false`, `off`, `no` | force the per-pair merge-join |
 /// | `1`, `true`, `on`, `yes` | force the inverted index |
-/// | `auto`, unset | let [`decide_index`] choose |
+/// | `auto`, unset | let [`decide_from_probe`] choose |
 ///
 /// Anything else **warns and falls back to auto**. It used to be that any value
 /// other than `0` meant "on", so `DADA2RS_MINIMIZER_INDEX=true` silently changed
@@ -597,7 +560,7 @@ pub fn index_env_override() -> Option<bool> {
             eprintln!(
                 "[dada] warning: DADA2RS_MINIMIZER_INDEX={other:?} is not recognised \
                  (expected 0/1, false/true, off/on, no/yes, or auto); \
-                 leaving the index choice to the selection rule"
+                 leaving the index choice to the run-time probe"
             );
             None
         }
@@ -687,8 +650,12 @@ impl MinimizerIndex {
             .iter()
             .map(|s| s.as_ref().map_or(0, |s| s.len()))
             .sum();
-        let mut postings: HashMap<u64, Vec<(u32, u8)>> =
-            HashMap::with_capacity(incidences / 8 + 16);
+        // Identity hasher: the keys are SplitMix64 output already, so SipHash
+        // buys nothing and costs ~10-20 ns on every one of the 60-258 M inserts
+        // this loop performs. The map was left on the default hasher when the
+        // identity one was introduced for a counting pass elsewhere.
+        let mut postings: HashMap<u64, Vec<(u32, u8)>, IdentityBuildHasher> =
+            HashMap::with_capacity_and_hasher(incidences / 8 + 16, IdentityBuildHasher);
         for (idx, s) in sketches.iter().enumerate() {
             let Some(s) = s else { continue };
             for (h, c) in s.entries() {
@@ -1094,137 +1061,160 @@ mod tests {
         assert_eq!(empty.cutoff, MINIMIZER_KDIST_CUTOFF);
     }
 
-    /// The score must reproduce the ORDER of the three measured configurations,
-    /// and the default threshold must land the index where it actually won.
-    ///
-    /// | configuration | sharing | threads | nraw | measured setup/saved |
-    /// |---|---|---|---|---|
-    /// | pooled ITS2 | 1258 | 48 | 825,214 | 0.29 — index wins |
-    /// | per-sample PacBio | 440 | 4 | 9,500 | 0.44 — index wins |
-    /// | pooled PacBio | 6509 | 48 | 547,273 | 3.72 — index LOSES |
+    /// The probe's arithmetic, at the shapes five real workloads measured.
+    /// `scatter_ns` and `merge_ns` are the numbers those runs produced; the
+    /// point is that the same rule reads all five correctly with no threshold.
     #[test]
-    fn score_ranks_the_measured_configurations() {
-        let score =
-            |sharing: f64, threads: usize, nraw: usize| sharing * threads as f64 / nraw as f64;
-        let its2 = score(1258.0, 48, 825_214);
-        let pacbio_per_sample = score(440.0, 4, 9_500);
-        let pacbio_pooled = score(6509.0, 48, 547_273);
+    fn probe_reproduces_the_measured_verdicts() {
+        // name, scatter_ns/cluster, merge_ns/pair, nraw, threads, want_index
+        let cases = [
+            ("ITS2 k8w5", 15.39e9 / 3414.0, 1144.0, 825_214, 48, true),
+            (
+                "soil16S k8w5",
+                128.09e9 / 9803.0,
+                974.0,
+                1_225_523,
+                48,
+                true,
+            ),
+            (
+                "PacBio pooled",
+                160.09e9 / 2817.0,
+                3332.0,
+                547_273,
+                48,
+                false,
+            ),
+            ("ITS2 k6w5", 25.04e9 / 3414.0, 1110.0, 825_214, 48, true),
+            ("ITS2 k5w1", 126.63e9 / 3414.0, 1917.0, 825_214, 48, false),
+        ];
+        for (name, scatter_ns, merge_ns, nraw, threads, want) in cases {
+            let d = decide_from_probe(
+                ProbeTimings {
+                    scatter_ns,
+                    merge_ns,
+                    array_ns: 33.0,
+                },
+                nraw,
+                threads,
+                0,
+                0,
+                None,
+            );
+            assert_eq!(
+                d.use_index, want,
+                "{name}: saving {} vs scatter {}",
+                d.saving_ns, d.scatter_ns
+            );
+        }
+    }
 
-        assert!(its2 < pacbio_per_sample, "{its2} !< {pacbio_per_sample}");
-        assert!(
-            pacbio_per_sample < pacbio_pooled,
-            "{pacbio_per_sample} !< {pacbio_pooled}"
+    #[test]
+    fn probe_scales_the_saving_with_threads() {
+        let a = decide_from_probe(
+            ProbeTimings {
+                scatter_ns: 1e6,
+                merge_ns: 1000.0,
+                array_ns: 30.0,
+            },
+            100_000,
+            4,
+            0,
+            0,
+            None,
         );
-        // The two the index won stay under the default; the one it lost does not.
-        assert!(its2 <= MINIMIZER_INDEX_MAX_SCORE);
-        assert!(pacbio_per_sample <= MINIMIZER_INDEX_MAX_SCORE);
-        assert!(pacbio_pooled > MINIMIZER_INDEX_MAX_SCORE);
+        let b = decide_from_probe(
+            ProbeTimings {
+                scatter_ns: 1e6,
+                merge_ns: 1000.0,
+                array_ns: 30.0,
+            },
+            100_000,
+            48,
+            0,
+            0,
+            None,
+        );
+        // More threads means the parallel map absorbs the merge-join more
+        // cheaply, so the serial scatter is worth less.
+        assert!(b.saving_ns < a.saving_ns);
     }
 
-    /// A pool of identical sequences shares every minimizer, so sharing == nraw
-    /// and the score is ~threads — the worst case, and it must decline.
     #[test]
-    fn identical_pool_declines_the_index() {
-        let seq = make_seq(600, 42);
-        let sketches: Vec<Option<MinimizerSketch>> = (0..400)
-            .map(|_| Some(sketch(&seq, MINIMIZER_K, MINIMIZER_W)))
-            .collect();
-        let d = decide_index(&sketches, 48, None);
-        assert!(!d.use_index, "score {} should decline", d.score);
-        assert!(d.score > d.threshold);
+    fn probe_ignores_negative_path_differences() {
+        // Timer noise on a sub-nanosecond array read must not become a negative
+        // saving that argues the index makes the map slower.
+        let d = decide_from_probe(
+            ProbeTimings {
+                scatter_ns: 1.0,
+                merge_ns: 10.0,
+                array_ns: 12.0,
+            },
+            1_000_000,
+            1,
+            0,
+            0,
+            None,
+        );
+        assert_eq!(d.saving_ns, 0.0);
+        assert!(!d.use_index);
     }
 
-    /// A pool of unrelated sequences shares almost nothing, so posting lists are
-    /// short and the index is the right call.
-    ///
-    /// Judged at 4 threads, not 48: `nraw` is the denominator, and 400 uniques is
-    /// a pool that would never be given 48 threads. At 48 this scores 0.306 and
-    /// declines — correctly, since a serial scatter cannot pay for itself across
-    /// 400 raws no matter how diverse they are.
     #[test]
-    fn diverse_pool_uses_the_index() {
-        let sketches: Vec<Option<MinimizerSketch>> = (0..400)
-            .map(|i| Some(sketch(&make_seq(600, 1000 + i), MINIMIZER_K, MINIMIZER_W)))
-            .collect();
-        let d = decide_index(&sketches, 4, None);
-        assert!(d.use_index, "score {} should accept", d.score);
-        assert!(d.distinct > 0 && d.entries > 0);
+    fn forced_override_beats_the_probe() {
+        // Shape that the probe would decline, and one it would accept.
+        let decline = || {
+            decide_from_probe(
+                ProbeTimings {
+                    scatter_ns: 1e9,
+                    merge_ns: 100.0,
+                    array_ns: 30.0,
+                },
+                1000,
+                48,
+                0,
+                0,
+                Some(true),
+            )
+        };
+        let accept = || {
+            decide_from_probe(
+                ProbeTimings {
+                    scatter_ns: 1.0,
+                    merge_ns: 1000.0,
+                    array_ns: 30.0,
+                },
+                1_000_000,
+                1,
+                0,
+                0,
+                Some(false),
+            )
+        };
+        assert!(
+            decline().use_index,
+            "forced on must win over a bad measurement"
+        );
+        assert!(!accept().use_index, "forced off must win over a good one");
     }
 
-    /// Scale-free version of the same claim: at identical `threads` and `nraw`,
-    /// sharing is the only thing that moves, and a diverse pool must score far
-    /// below a degenerate one. This is the property the rule actually relies on.
     #[test]
-    fn diversity_dominates_the_score() {
-        let n = 400;
-        let seq = make_seq(600, 77);
-        let identical: Vec<Option<MinimizerSketch>> = (0..n)
-            .map(|_| Some(sketch(&seq, MINIMIZER_K, MINIMIZER_W)))
-            .collect();
-        let diverse: Vec<Option<MinimizerSketch>> = (0..n)
-            .map(|i| Some(sketch(&make_seq(600, 5000 + i), MINIMIZER_K, MINIMIZER_W)))
-            .collect();
-        let a = decide_index(&identical, 48, None).score;
-        let b = decide_index(&diverse, 48, None).score;
-        assert!(b * 20.0 < a, "diverse {b} vs identical {a}");
-    }
-
-    /// `entries` and `distinct` must equal what the index would report, or the
-    /// score is computed from different quantities than the ones it models.
-    #[test]
-    fn decision_counts_match_the_built_index() {
-        let sketches: Vec<Option<MinimizerSketch>> = (0..64)
-            .map(|i| Some(sketch(&make_seq(400, 7000 + i), MINIMIZER_K, MINIMIZER_W)))
-            .collect();
-        let d = decide_index(&sketches, 8, None);
-        let idx = MinimizerIndex::build(&sketches);
-        assert_eq!(d.entries, idx.n_postings());
-        assert_eq!(d.distinct, idx.n_keys());
-    }
-
-    /// The env override must win in both directions, whatever the score says.
-    #[test]
-    fn forced_override_beats_the_score() {
-        let seq = make_seq(600, 11);
-        let sketches: Vec<Option<MinimizerSketch>> = (0..400)
-            .map(|_| Some(sketch(&seq, MINIMIZER_K, MINIMIZER_W)))
-            .collect();
-        assert!(decide_index(&sketches, 48, Some(true)).use_index);
-        assert!(!decide_index(&sketches, 48, Some(false)).use_index);
-
-        let diverse: Vec<Option<MinimizerSketch>> = (0..400)
-            .map(|i| Some(sketch(&make_seq(600, 2000 + i), MINIMIZER_K, MINIMIZER_W)))
-            .collect();
-        assert!(!decide_index(&diverse, 48, Some(false)).use_index);
-        assert!(decide_index(&diverse, 48, Some(true)).use_index);
-    }
-
-    /// Threads is the pool that runs THIS compare. Reading the global count for a
-    /// per-sample run inflates the score ~12x and would decline the index exactly
-    /// where it measured a win, so the score must be sensitive to it.
-    #[test]
-    fn score_scales_with_threads() {
-        let sketches: Vec<Option<MinimizerSketch>> = (0..200)
-            .map(|i| Some(sketch(&make_seq(500, 3000 + i), MINIMIZER_K, MINIMIZER_W)))
-            .collect();
-        let a = decide_index(&sketches, 4, None).score;
-        let b = decide_index(&sketches, 48, None).score;
-        assert!((b / a - 12.0).abs() < 1e-9, "{a} -> {b}");
-    }
-
-    /// Empty and sketchless pools must not divide by zero.
-    #[test]
-    fn degenerate_pools_are_safe() {
-        let d = decide_index(&[], 8, None);
-        assert_eq!(d.score, 0.0);
-        assert!(d.use_index, "an empty pool is trivially under threshold");
-
-        let none: Vec<Option<MinimizerSketch>> = vec![None, None];
-        let d = decide_index(&none, 8, None);
-        assert_eq!(d.entries, 0);
-        assert_eq!(d.distinct, 0);
+    fn degenerate_probes_are_safe() {
+        let d = decide_from_probe(
+            ProbeTimings {
+                scatter_ns: 0.0,
+                merge_ns: 0.0,
+                array_ns: 0.0,
+            },
+            0,
+            0,
+            0,
+            0,
+            None,
+        );
+        assert!(!d.use_index);
         assert_eq!(d.sharing, 0.0);
-        assert_eq!(d.score, 0.0);
+        assert!(d.saving_ns.is_finite());
     }
 }
 
