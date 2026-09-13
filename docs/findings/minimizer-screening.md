@@ -1903,6 +1903,83 @@ model under one screen and denoising under another, the same decoupling the
 direction.
 
 
+### The no-gate control: the backend does nothing but gate
+
+Every churn number on this page is a difference between two screens, which leaves
+open whether the minimizer *backend* contributes anything beyond its gating
+decisions — a real possibility given that `kdist` was already caught driving
+alignment method selection behind this page's back. The control: run both backends
+at `--kdist-cutoff 1.0`, where the gate is off for both (distances are bounded by
+1.0 and the test is a strict `>`), with `ERR_DIR` pinning the error model so only
+the backend differs.
+
+Validity first — `nshroud` is **0** in both arms, and `nalign` is identical to the
+digit (158,543,332,230), against 99.32% shrouded in the gated baseline. Nothing was
+screened out, in either arm.
+
+The result:
+
+| | k-mer backend | minimizer backend |
+|---|---|---|
+| ASVs (pre-chimera) | 3,077 | 3,077 |
+| ASVs (post-chimera) | 3,030 | 3,030 |
+| ASV set | — | **identical** |
+| count matrix | — | **identical, cell for cell** (0 of 2,228,066 reads differ) |
+
+**So the backend is a gate and nothing else.** With the gate open the two produce
+the same table, which means all churn reported anywhere on this page is
+attributable to gating decisions and to the error model those decisions train —
+there is no third path, and the 9 + 9 decomposition above has no unattributed
+remainder hiding in it.
+
+One cosmetic difference: the **serialized ASV order** diverges from position 400
+onward, so the files are not byte-identical even though their content is. The
+multiset of sequences matches and every count agrees once aligned by sequence.
+That is the
+[ASV-ordering nondeterminism](#incidental-finding-asv-ordering-is-not-deterministic)
+recorded below, now shown to be backend-sensitive and content-neutral. **Compare
+these tables by sequence, never by checksum.**
+
+### What the ungated arm says about the k-mer screen itself
+
+The control also produced something this page has never had at pooled scale: a
+genuinely unscreened reference, with the error model held fixed. Comparing the
+production k-mer screen against it:
+
+| | reads | ASVs | churn vs ungated |
+|---|---|---|---|
+| ungated (cutoff 1.0) | 2,228,066 | 3,030 | — |
+| k-mer screen @0.42 | 2,252,365 | 3,028 | **16** |
+| minimizer @0.63, vs the k-mer screen | — | 3,026 | 18 |
+
+**DADA2's own screen churns 16 ASVs relative to not screening at all** — the same
+order as the 18 that separates the minimizer arm from it, and larger than the
+**9** that the minimizer's denoising-stage gate contributes. Put the other way:
+*the minimizer screen differs from the k-mer screen by less than the k-mer screen
+differs from no screening.*
+
+That matters for how the accuracy cost on this page should be read. The screen is
+an ESPRIT-lineage performance optimisation — it exists to avoid alignments, and is
+implicitly assumed result-neutral. It is not, and never was. A reviewer weighing
+"the minimizer backend churns 18 ASVs" against "the k-mer screen is the trusted
+baseline" is comparing against a baseline that is itself 16 ASVs from the
+unscreened answer, in the same rare tail, with the same abundance profile (median
+13, max 77 on one side; median 13, max 29 on the other).
+
+It does **not** make the minimizer arm correct — unscreened is not truth, just
+unscreened, and nothing here says which of the three inventories is closest to the
+biology. Settling that needs a mock community, which is the
+[same dependency](https://github.com/HPCBio/dada2-rs/issues/44) as the raise-k
+question. What it does is remove the asymmetry from the argument: both screens
+perturb, comparably, and the choice between them is not fidelity-versus-speed in
+the way the framing has assumed.
+
+The ungated arm also retains **fewer** reads than the screened one (-1.08%) while
+carrying two more ASVs, which is the wrong direction for "screening loses data"
+and points again at chimera calls rather than denoising. Attributing it needs the
+screened arm's pre-chimera table, which predates the collector keeping one.
+
+
 ## Three claims this falsified
 
 ### 1. "The cutoff transfers between backends." It does not.
