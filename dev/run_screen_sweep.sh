@@ -116,7 +116,7 @@ TIME_CUTS="${TIME_CUTS:-0.62 0.64}"
 NOIDX_CUTS="${NOIDX_CUTS:-}"
 
 # Cutoffs to ALSO time with the index left to `decide_index` (the shipped
-# behaviour), as `_auto` arms. Once the selection rule exists this is the arm
+# behaviour), as `_auto` arms. Now that the run-time probe exists this is the arm
 # that matters: `_c<C>` forces it on, `_noidx` forces it off, only `_auto`
 # measures what a user gets. Defaults to TIME_CUTS.
 AUTO_CUTS="${AUTO_CUTS:-$TIME_CUTS}"
@@ -420,8 +420,8 @@ for G in $GRAINS; do ARMS+=("kmer_g${G}:::::$G"); done
 # replicates already paid for -- but that also lets rows from DIFFERENT BINARIES
 # accumulate under one arm name, and nothing caught it. On the pooled ITS2 run
 # that showed up as `mini_k8_c0.62` (forced index on) sitting 3-7% apart from
-# `mini_k8_c0.62_auto`, two arms that execute IDENTICAL work whenever the score is
-# under threshold. A 6.9% gap between identical code paths is provenance drift,
+# `mini_k8_c0.62_auto`, two arms that execute IDENTICAL work whenever the probe
+# chooses the index. A 6.9% gap between identical code paths is provenance drift,
 # not noise, and it was only noticed because those two arms happen to be a control
 # channel for each other.
 #
@@ -456,7 +456,7 @@ if [ -s "$OUT/timings.tsv" ]; then
     echo "    Those rows are cached by (arm, rep) and will be REUSED, not re-timed."
     echo "    Cross-build rows are not comparable -- on the pooled ITS2 directory this"
     echo "    showed up as a 6.9% gap between an arm and its _auto twin, two arms that"
-    echo "    execute identical work whenever the score is under threshold."
+    echo "    execute identical work whenever the probe chooses the index."
     if [ -n "$STRICT_BIN" ]; then
       echo "    STRICT_BIN=1 set: re-timing them."
     else
@@ -563,8 +563,8 @@ if len(fps) > 1:
               + (" ..." if len(arms) > 6 else ""))
     print("    Rows from different builds are NOT comparable, and an arm whose")
     print("    replicates span builds has a meaningless median. A `_c<C>` arm and")
-    print("    its `_auto` twin execute identical work whenever the score is under")
-    print("    threshold, so a gap between THOSE two is the cheapest tell.")
+    print("    its `_auto` twin execute identical work whenever the probe chooses")
+    print("    the index, so a gap between THOSE two is the cheapest tell.")
     print("    Fix: mv timings.tsv timings.old.tsv and re-run the timing matrix in")
     print("    one session. The accuracy arms are unaffected -- the index is exact,")
     print("    so arm OUTPUT does not depend on which build produced it.")
