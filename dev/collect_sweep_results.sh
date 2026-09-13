@@ -12,7 +12,7 @@
 #                                     removeBimeraDenovo can call bimeric)
 #   * two integers per dada JSON   -- nalign / nshroud, for alignment work
 #   * timings.tsv                  -- wall clock, if the sweep timed anything
-#   * phase_split.txt              -- screen vs align share, which says whether a
+#   * phase_split*.txt             -- screen vs align share, which says whether a
 #                                     timing result was screen- or align-driven
 #   * errF.json / err.json per arm -- error models, IF they differ between arms
 #
@@ -132,7 +132,7 @@ for f in "$SRC"/models/*.csv; do
 done
 
 # Timings and logs (logs are small and carry the parameters each arm ran with).
-for f in "$SRC"/timings.tsv "$SRC"/phase_split.txt "$SRC"/*.log; do
+for f in "$SRC"/timings.tsv "$SRC"/phase_split*.txt "$SRC"/*.log; do
   [ -f "$f" ] && cp "$f" "$STAGE/$NAME/"
 done
 

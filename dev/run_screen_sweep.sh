@@ -231,6 +231,19 @@ else
   printf '%s' "$WANT" > "$STAMP"
 fi
 
+# Rotate a tee'd output so a second invocation in the SAME out-dir does not clobber
+# the first. timings.tsv appends and its arm names carry k/w/cutoff, so rows from
+# separate invocations coexist -- but phase_split.txt and derived_cutoff.txt are
+# written with `tee`, which truncates. Sweeping k=6 and then k=8 into one directory
+# therefore kept both sets of timings and silently lost the first phase split.
+rotate_out() {  # path
+  [ -s "$1" ] || return 0
+  local n=1
+  while [ -e "${1%.*}.$n.${1##*.}" ]; do n=$((n+1)); done
+  mv "$1" "${1%.*}.$n.${1##*.}"
+  echo "    (previous $(basename "$1") kept as $(basename "${1%.*}.$n.${1##*.}"))"
+}
+
 echo "==> baseline: k-mer screen (production default)"
 [ -d "$OUT/base" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" POOL="$POOL" LEARN_CUTOFF="$LEARN_CUTOFF" \
   bash "$RUN" "$BIN" "$DATA" "$OUT/base" "$THREADS" > "$OUT/base.log" 2>&1
@@ -379,6 +392,7 @@ if [ ${#filtF[@]} -gt 0 ] && [ -n "$KS" ]; then
   # a per-sample derivation would describe a different population than the one the
   # arms above actually denoised.
   per_sample=(); [ "$DADA_CMD" = "dada" ] && per_sample=(--per-sample)
+  rotate_out "$OUT/models/derived_cutoff.txt"
   for K in $KS; do for W in $WS; do
     echo "    k=$K w=$W:"
     "$BIN" kdist-calibrate "$OUT"/derep/*.json --k "$KMER" \
@@ -524,6 +538,7 @@ if command -v /usr/bin/time > /dev/null 2>&1; then
   fi
 fi
 [ ${#TIMER[@]} -eq 0 ] && echo "    (note: /usr/bin/time unavailable; peak RSS omitted, verbose block still captured)"
+rotate_out "$OUT/phase_split.txt"
 {
   for spec in "${ARMS[@]}"; do
     IFS=: read -r name K C W IDX G <<< "$spec"
