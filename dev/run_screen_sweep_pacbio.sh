@@ -1,0 +1,458 @@
+#!/usr/bin/env bash
+# run_screen_sweep_pacbio.sh — sweep the minimizer screen against the k-mer screen
+# on PacBio HiFi, on accuracy AND alignment work AND wall time.
+#
+# Takes ALREADY FILTERED/TRIMMED FASTQs (no primer removal, no filtering) so a
+# prepped dataset can be used directly. Single-end throughout; there is no
+# merge-pairs step on this platform.
+#
+# THE ONE DESIGN DECISION THAT MATTERS: every arm shares ONE error model,
+# learned once with the k-mer screen.
+#
+# The screen is active inside learn-errors too -- build_trans_mat aligns each raw
+# against its centre THROUGH the screen, so a shrouded pair contributes nothing to
+# the transition counts. Letting each arm learn its own model therefore varies the
+# error model AND the denoising at once, and the alignment counts that come out
+# are not comparable. That confound produced a "13.3% fewer alignments" figure on
+# this branch that was wrong by ~23 points once the model was held fixed.
+# Holding the model fixed is what makes the sweep measure the screen.
+#
+# WHY THE CUTOFF IS SWEPT AND NOT JUST CALIBRATED. Calibrating for 100% recall of
+# near-neighbour pairs sounds like the safe choice and is the expensive one: on
+# PacBio it picked 0.50, which aligns ~10% MORE pairs than the k-mer screen and
+# runs 13.5% SLOWER, while 0.42-0.45 aligns 7-11% FEWER, runs ~10% faster, and
+# produces a bit-identical ASV set. The last 1.5% of recall bought nothing and
+# cost ~20% of the alignment work. Calibrate to bracket the region; let cost
+# choose within it.
+#
+# Usage:
+#   run_screen_sweep_pacbio.sh <binary> <filtered-fastq-dir> <out-dir> [threads] [reps]
+set -euo pipefail
+
+BIN="${1:?usage: run_screen_sweep_pacbio.sh <binary> <filtered-fastq-dir> <out-dir> [threads] [reps]}"
+DATA="${2:?missing filtered-fastq-dir}"
+OUT="${3:?missing out-dir}"
+THREADS="${4:-16}"
+REPS="${5:-3}"
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# PacBio full-length 16S defaults (match dev/concordance/run_pacbio.sh).
+BAND="${BAND:-32}"
+KMER="${KMER:-7}"          # k-mer screen size; 7 is the dada2-rs PacBio recommendation
+ERRFUN="${ERRFUN:-pacbio}"
+
+# Denoising mode: unset/false = per-sample `dada`, true = `dada-pooled`
+# (R pool=TRUE). Pooling is where a screen comparison is most informative, because
+# the k-mer screen is memory-bound and its cost tracks the working set: on ITS2 it
+# went from 43.9% of the compare phase per-sample to 76.5% pooled, purely because
+# the frequency vectors stopped fitting cache. The minimizer's stayed flat.
+POOL="${POOL:-false}"
+case "$POOL" in
+  true) DADA_CMD="dada-pooled" ;;
+  *)    DADA_CMD="dada" ;;
+esac
+NBASES="${NBASES:-1000000000}"
+
+# Sweep grid. Cutoffs bracket the k-mer screen's own pass rate rather than
+# chasing 100% recall -- see the header.
+# k=8 only: it beat k=9 on ASV set agreement at every cutoff on the 362-sample
+# MiSeq run, and k=9 doubles the arm count for no benefit measured anywhere.
+KS="${KS:-8}"
+# Extended past the matched-pass point (~0.50 on HiFi) so the read-retention
+# ZERO CROSSING is inside the grid rather than interpolated off its edge. On
+# Illumina the crossing sat ~0.02 ABOVE matched-pass (0.62-0.65 matched, crossing
+# 0.636), and it is the smoothest calibration signal available -- monotone, with a
+# true zero -- where ASV churn is discrete and count L1 is a flat-bottomed U.
+CUTS="${CUTS:-0.40 0.42 0.45 0.48 0.50 0.52 0.55 0.60}"
+
+# Cutoffs to TIME. The accuracy sweep wants the whole grid; timing does not, and
+# timing all of it is where this script spends most of its wall clock:
+# REPS x (2 + |KS|x|CUTS|) full denoising passes, and the loose-cutoff arms are
+# the expensive ones -- measured at 312% of baseline on soil 16S and 818% of
+# baseline ALIGNMENTS on pooled ITS2. Timing a cutoff nobody would deploy costs
+# more than timing the one they would.
+#
+# Default: the arms actually worth a wall-clock number -- near the k-mer screen's
+# own pass rate, where alignment work is matched and the screen is the only
+# variable. Set TIME_CUTS="$CUTS" to time everything, or "" to skip timing.
+TIME_CUTS="${TIME_CUTS:-0.48 0.52}"
+
+# Cutoffs to ALSO time with the inverted index DISABLED, as separate `_noidx`
+# arms. The index turns the screen into an O(1) array read per pair, but pays for
+# it with a SERIAL per-cluster scatter: on the per-sample PacBio run that scatter
+# was 33.7s against a 96.3s parallel map saving, so it consumed most of the gain.
+# Without the index each pair does its own merge-join over two ~475-entry
+# sketches -- more total work, but fully inside the parallel map. Which wins is
+# not predictable from the sketch size alone, so it is an arm, not an assumption.
+#
+# This MUST be a distinct arm name rather than an env var exported over the whole
+# script: timings.tsv keys on (arm, rep) so that raising REPS reuses replicates
+# already paid for, and flipping the index underneath a name that already has
+# rows would silently mix two configurations into one median.
+NOIDX_CUTS="${NOIDX_CUTS:-$TIME_CUTS}"
+
+# Cutoffs to ALSO time with the index left to `decide_index` (the shipped
+# behaviour), as `_auto` arms. This is the arm that matters once the selection
+# rule exists: `_c<C>` forces the index on and `_noidx` forces it off, so only
+# `_auto` measures what a user actually gets.
+#
+# `_c<C>` now passes DADA2RS_MINIMIZER_INDEX=1 explicitly rather than relying on
+# the old always-index default. Without that, adding the rule would silently
+# change what an arm name means, and timings.tsv keys on (arm, rep) -- replicates
+# recorded before the rule would be averaged with replicates after it.
+AUTO_CUTS="${AUTO_CUTS:-$TIME_CUTS}"
+
+# COST WARNING. The timing and phase-split sections each run one full denoising
+# pass per (arm x rep). On a large pooled run a single pass is enormous, so use
+# REPS=1 and one or two TIME_CUTS there; the accuracy grid is cheap by comparison
+# (one pass per arm, and arms are cached across re-runs).
+
+# Bound kdist-calibrate: it aligns every sampled pair UNBANDED (deliberately --
+# a band would truncate the divergence of distant pairs, which is the quantity
+# being calibrated), and emits one CSV row per pair. On 1.5 kb reads that is the
+# expensive part of this script.
+# Cost note: this is per SAMPLE per BACKEND, and every sampled pair is aligned
+# UNBANDED (deliberately -- a band would truncate the divergence of distant pairs,
+# which is the quantity being calibrated). On 1.5 kb reads that is ~2.2M DP cells
+# a pair, so this step dominates the script on PacBio. The recommendation reads off
+# a p99/p99.9 tail statistic that stabilises well before 300k, so cutting this to
+# 50000 costs little. The calibration is ADVISORY in any case -- the sweep decides.
+CAL_PAIRS="${CAL_PAIRS:-300000}"
+CAL_UNIQUES="${CAL_UNIQUES:-3000}"
+
+mkdir -p "$OUT"/{derep,models,arms,.timing,.verbose}
+
+shopt -s nullglob
+fq=("$DATA"/*.fastq.gz "$DATA"/*.fq.gz "$DATA"/*.fastq "$DATA"/*.fq)
+[ ${#fq[@]} -gt 0 ] || { echo "no FASTQ in $DATA" >&2; exit 1; }
+echo "==> ${#fq[@]} pre-filtered samples"
+
+# Arm directories and timing rows are cached by NAME, and the name encodes the
+# cutoff but not the denoising mode or the error function. Pointing a POOL=true
+# run at a per-sample output directory would therefore reuse every per-sample arm
+# as though it were pooled -- silently, and with the accuracy table and timings
+# both looking plausible. Stamp the configuration and refuse to mix.
+STAMP="$OUT/.sweep_mode"
+# POOL, not DADA_CMD: the two scripts define DADA_CMD at different points and
+# this guard must not depend on that ordering (it broke the ITS run once).
+WANT="pool=$POOL errfun=$ERRFUN"
+mkdir -p "$OUT"
+if [ -f "$STAMP" ]; then
+  HAVE="$(cat "$STAMP")"
+  if [ "$HAVE" != "$WANT" ]; then
+    echo "ERROR: $OUT was built with a different configuration." >&2
+    echo "  existing: $HAVE" >&2
+    echo "  requested: $WANT" >&2
+    echo "  Cached arms and timings are keyed by name only, so reusing this" >&2
+    echo "  directory would mix the two. Use a new out-dir. To keep the" >&2
+    echo "  expensive cached inputs, copy them over first:" >&2
+    echo "    mkdir -p <new-out> && cp -a $OUT/models $OUT/derep <new-out>/" >&2
+    exit 1
+  fi
+else
+  printf '%s' "$WANT" > "$STAMP"
+fi
+
+echo "==> [1/5] derep"
+for f in "${fq[@]}"; do
+  b=$(basename "$f"); b=${b%%.*}
+  [ -f "$OUT/derep/$b.json" ] || "$BIN" derep "$f" -o "$OUT/derep/$b.json" > /dev/null
+done
+
+echo "==> [2/5] calibrate both screens (same pairs, same seed)"
+# Write to a temp file and rename on success. The cache keys on file existence,
+# so a run killed mid-calibration would otherwise leave a TRUNCATED csv that the
+# next invocation silently accepts as complete -- and this step is slow enough on
+# 1.5 kb reads (every sampled pair aligned UNBANDED, ~2.2M DP cells each) that
+# killing it is a realistic thing to do.
+calibrate() {  # out-file, extra args...
+  local out="$1"; shift
+  [ -f "$out" ] && { echo "    $(basename "$out") (cached)"; return; }
+  "$BIN" kdist-calibrate "$OUT"/derep/*.json --k "$KMER" --per-sample \
+      --max-uniques "$CAL_UNIQUES" --max-pairs "$CAL_PAIRS" \
+      --threads "$THREADS" "$@" -o "$out.partial" > /dev/null
+  mv "$out.partial" "$out"
+}
+calibrate "$OUT/models/cal_kmer.csv"
+for K in $KS; do
+  calibrate "$OUT/models/cal_mini_k$K.csv" --screen-backend minimizer --minimizer-k "$K"
+done
+cal_args=("kmer=$OUT/models/cal_kmer.csv")
+for K in $KS; do cal_args+=("mini_k$K=$OUT/models/cal_mini_k$K.csv"); done
+python3 "$HERE/analyze_kdist_curves.py" "${cal_args[@]}" | tee "$OUT/models/calibration.txt"
+
+echo
+echo "==> [3/5] learn-errors ONCE (k-mer screen) -- shared by every arm"
+# learn-errors is unaffected by POOL: it always reads every sample. Only the
+# denoising step pools.
+[ -f "$OUT/models/err.json" ] || \
+  "$BIN" learn-errors "${fq[@]}" --nbases "$NBASES" --errfun "$ERRFUN" \
+      --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
+      -o "$OUT/models/err.json" > /dev/null
+
+echo "==> [4/5] denoise with $DADA_CMD (POOL=$POOL): baseline, control, grid (shared model)"
+run_arm() {  # name, extra args...   ARM_ENV=(...) prefixes the command
+  local name="$1"; shift
+  local d="$OUT/arms/$name"
+  [ -d "$d" ] && { echo "    $name (cached)"; return; }
+  mkdir -p "$d"
+  echo "    $name"
+  ${ARM_ENV[@]+"${ARM_ENV[@]}"} "$BIN" $DADA_CMD "${fq[@]}" \
+      --error-model "$OUT/models/err.json" \
+      --band "$BAND" --kmer-size "$KMER" --output-dir "$d" \
+      --threads "$THREADS" "$@" > /dev/null
+}
+run_arm kmer
+run_arm kmerctl                       # control channel: identical config, run twice
+for K in $KS; do
+  for C in $CUTS; do
+    run_arm "mini_k${K}_c${C}" --screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C"
+  done
+done
+# The inverted index is documented as an EXACT acceleration of the same screen,
+# so an index-off arm must reproduce its index-on twin cell for cell. That has
+# never been checked at scale, and it is the precondition for reading the _noidx
+# timing arms as a pure speed result rather than a different screen. Cheap: one
+# extra pass per NOIDX_CUTS entry, and step [5/5] checks the twins explicitly.
+for K in $KS; do
+  for C in $NOIDX_CUTS; do
+    # Set and unset explicitly rather than as a `VAR=x run_arm` prefix: an
+    # assignment prefixing a FUNCTION call persists in the shell afterwards in
+    # bash, which would silently disable the index for every later arm.
+    ARM_ENV=(env DADA2RS_MINIMIZER_INDEX=0)
+    run_arm "mini_k${K}_c${C}_noidx" --screen-backend minimizer \
+            --minimizer-k "$K" --kdist-cutoff "$C"
+    ARM_ENV=()
+  done
+done
+
+echo
+echo "==> [5/5] accuracy + work"
+python3 - "$OUT/arms" <<'PY'
+import glob, json, os, sys
+root = sys.argv[1]
+def load(d):
+    asv, al = {}, 0
+    stats = []
+    for p in sorted(glob.glob(os.path.join(d, "*.json"))):
+        j = json.load(open(p)); s = j["stats"]
+        stats.append((s["nalign"], s["nshroud"]))
+        for a in j["asvs"]:
+            asv[(os.path.basename(p), a["sequence"])] = a["abundance"]
+    # `dada-pooled` runs ONCE and writes the SAME global stats into every
+    # per-sample output, so summing them multiplies the true count by the sample
+    # number. Identical stats across every file is the tell (a per-sample run
+    # essentially never produces that), and then one value is the whole run.
+    if stats and len(set(stats)) == 1 and len(stats) > 1:
+        al = stats[0][0] - stats[0][1]
+    else:
+        al = sum(a - b for a, b in stats)
+    return asv, al
+base, bal = load(os.path.join(root, "kmer"))
+print(f"{'arm':>18s} {'ASVs':>7s} {'only_k':>7s} {'only_m':>7s} {'abund L1':>10s} {'aligned':>13s} {'vs kmer':>9s} {'reads vs base':>13s}")
+print(f"{'kmer (baseline)':>18s} {len(base):7d} {'-':>7s} {'-':>7s} {'-':>10s} {bal:13,d} {'100.0%':>9s}")
+for d in sorted(glob.glob(os.path.join(root, "*"))):
+    n = os.path.basename(d)
+    if n == "kmer": continue
+    a, al = load(d)
+    sh = set(base) & set(a)
+    l1 = sum(abs(base[k] - a[k]) for k in sh)
+    tot = sum(base.values())
+    # Read retention vs baseline: monotone in cutoff, crosses zero where the
+    # minimizer recovers as many reads as the k-mer screen. The smoothest
+    # calibration signal available -- churn is discrete and L1 is a flat U.
+    reads = sum(a.values()) - sum(base.values())
+    print(f"{n:>18s} {len(a):7d} {len(set(base)-set(a)):7d} {len(set(a)-set(base)):7d} "
+          f"{100*l1/max(tot,1):9.4f}% {al:13,d} {100*al/bal:8.1f}% {reads:+12,d}")
+# The index is an exact acceleration, so `_noidx` must equal its twin exactly.
+# Compared to the TWIN, not to the k-mer baseline: the twins share a screen and a
+# cutoff, so any difference between them is an index bug and nothing else.
+twins = [os.path.basename(d) for d in sorted(glob.glob(os.path.join(root, "*_noidx")))]
+if twins:
+    print("\nINDEX EXACTNESS (index-off vs its index-on twin; must be 0 / 0 / 0):")
+    for n in twins:
+        base_n = n[: -len("_noidx")]
+        if not os.path.isdir(os.path.join(root, base_n)):
+            print(f"  {n:>24s}  no index-on twin `{base_n}` -- add {base_n.split('_c')[-1]} to CUTS")
+            continue
+        x, _ = load(os.path.join(root, base_n))
+        y, _ = load(os.path.join(root, n))
+        diff = sum(abs(x.get(k, 0) - y.get(k, 0)) for k in set(x) | set(y))
+        print(f"  {n:>24s}  only_on={len(set(x)-set(y))}  only_off={len(set(y)-set(x))}  "
+              f"count L1={diff}  {'OK' if diff == 0 else '*** INDEX BUG ***'}")
+
+print("\nkmerctl MUST be identical to the baseline (0 / 0 / 0.0000%).")
+print("If it is not, the run is nondeterministic and nothing below is a result.")
+PY
+
+echo
+echo "==> wall time (arms interleaved across $REPS reps)"
+# Append, do not truncate: timing passes are the expensive part (a pooled pass is
+# billions of comparisons), so raising REPS on a re-run should ADD replicates
+# rather than discard the ones already paid for. Each (arm, rep) is skipped if
+# already recorded.
+# Fingerprint of the binary being timed, recorded as a 4th column in timings.tsv.
+#
+# timings.tsv is append-only across invocations so that raising REPS reuses
+# replicates already paid for -- but that also lets rows from DIFFERENT BINARIES
+# accumulate under one arm name, and nothing caught it. On the pooled ITS2 run
+# that showed up as `mini_k8_c0.62` (forced index on) sitting 3-7% apart from
+# `mini_k8_c0.62_auto`, two arms that execute IDENTICAL work whenever the score is
+# under threshold. A 6.9% gap between identical code paths is provenance drift,
+# not noise, and it was only noticed because those two arms happen to be a control
+# channel for each other.
+#
+# cksum is POSIX and present on both Linux and macOS.
+BIN_ID="$(cksum "$BIN" 2>/dev/null | awk '{print $1}')"
+[ -n "$BIN_ID" ] || BIN_ID="unknown"
+touch "$OUT/timings.tsv"
+# spec = name:minimizer-k:cutoff:index
+#   empty k     = k-mer arm
+#   index 0/1/  = force off / force on / let decide_index choose
+declare -a T=("kmer:::" "kmerctl:::")
+for K in $KS; do for C in $TIME_CUTS;  do T+=("mini_k${K}_c${C}:$K:$C:1"); done; done
+for K in $KS; do for C in $NOIDX_CUTS; do T+=("mini_k${K}_c${C}_noidx:$K:$C:0"); done; done
+for K in $KS; do for C in $AUTO_CUTS;  do T+=("mini_k${K}_c${C}_auto:$K:$C:"); done; done
+echo "    ${#T[@]} arms x $REPS reps = $(( ${#T[@]} * REPS )) denoising passes"
+echo "    (narrow with TIME_CUTS=; the accuracy grid above is unaffected)"
+# Explicit guard rather than relying on `seq 1 0`: that prints nothing under GNU
+# coreutils but "1 0" under BSD/macOS seq, so REPS=0 would silently run two reps
+# numbered 1 and 0 on a developer machine. REPS=0 means "phase split only", which
+# is the cheap way to recover a lost phase_split.txt without re-paying the timing
+# passes -- on a pooled run those are the expensive part.
+# Foreign-build check BEFORE the timing loop, not after it.
+#
+# The cache test below matches on (arm, rep) and ignores the fingerprint, so a row
+# from another build is reused as though it were current -- and the MIXED BINARIES
+# block in the summary only prints once the whole matrix has finished. That is
+# hours too late to act on. Report it up front instead, and let the operator
+# decide, because auto-invalidating every row on any rebuild would destroy the
+# incremental cache this file exists for.
+#
+# STRICT_BIN=1 treats a foreign-build row as stale and re-times it.
+STRICT_BIN="${STRICT_BIN:-}"
+if [ -s "$OUT/timings.tsv" ]; then
+  foreign=$(awk -F'\t' -v me="$BIN_ID" 'NF>=3 {fp = (NF>3 ? $4 : "pre-fingerprint"); if (fp != me) print fp}' \
+              "$OUT/timings.tsv" | sort -u | tr '\n' ' ')
+  if [ -n "$foreign" ]; then
+    echo
+    echo "*** timings.tsv holds rows from OTHER BUILDS: $foreign(current: $BIN_ID)"
+    echo "    Those rows are cached by (arm, rep) and will be REUSED, not re-timed."
+    echo "    Cross-build rows are not comparable -- on the pooled ITS2 directory this"
+    echo "    showed up as a 6.9% gap between an arm and its _auto twin, two arms that"
+    echo "    execute identical work whenever the score is under threshold."
+    if [ -n "$STRICT_BIN" ]; then
+      echo "    STRICT_BIN=1 set: re-timing them."
+    else
+      echo "    Re-run with STRICT_BIN=1 to re-time them, or move timings.tsv aside."
+    fi
+    echo
+  fi
+fi
+
+if [ "$REPS" -gt 0 ]; then
+for rep in $(seq 1 "$REPS"); do
+  for spec in "${T[@]}"; do
+    IFS=: read -r name K C IDX <<< "$spec"
+    extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
+    env=(); [ -n "$IDX" ] && env=(env "DADA2RS_MINIMIZER_INDEX=$IDX")
+    # Already timed on an earlier invocation? Skip it, so raising REPS adds
+    # replicates instead of redoing the ones already paid for. Under STRICT_BIN a
+    # row only counts as cached when it came from THIS build.
+    if awk -F'\t' -v n="$name" -v r="$rep" -v me="$BIN_ID" -v strict="$STRICT_BIN" \
+         '$1==n && $2==r { fp = (NF>3 ? $4 : "pre-fingerprint");
+                           if (strict == "" || fp == me) f=1 } END{exit !f}' \
+         "$OUT/timings.tsv" 2>/dev/null; then
+      echo "    $name rep $rep (cached)"
+      continue
+    fi
+    t0=$(python3 -c 'import time;print(time.time())')
+    ${env[@]+"${env[@]}"} "$BIN" $DADA_CMD "${fq[@]}" \
+        --error-model "$OUT/models/err.json" --band "$BAND" \
+        --kmer-size "$KMER" --threads "$THREADS" ${extra[@]+"${extra[@]}"} \
+        --output-dir "$OUT/.timing" > /dev/null 2>&1
+    t1=$(python3 -c 'import time;print(time.time())')
+    printf "%s\t%s\t%s\t%s\n" "$name" "$rep" \
+        "$(python3 -c "print(f'{$t1-$t0:.2f}')")" "$BIN_ID" >> "$OUT/timings.tsv"
+  done
+done
+fi
+
+echo
+echo "==> phase split + resource use (one --verbose pass per arm; NOT timed reps)"
+echo "Captures the FULL verbose block, not just the screen/align lines: parallel"
+echo "efficiency, resident footprint, and the later phases (shuffle, p_update)."
+echo "That matters because the screen's share is not fixed -- it ranges 0.9% to"
+echo "76.5% across datasets -- and thread-scaling-and-placement.md found the"
+echo "optimal thread count is PREDICTED by the screen/align split. A backend that"
+echo "changes the split changes the right thread count with it, and shrinking"
+echo "b_compare raises the serial phases' share (Amdahl), which caps the speedup"
+echo "and idles cores. Peak RSS is recorded per arm for the same reason: the"
+echo "screen structures are the largest resident allocation."
+# Peak RSS via /usr/bin/time is OPTIONAL. It is absent or flag-incompatible on
+# many cluster nodes, and making it a hard dependency of this block meant a
+# missing binary silently killed the entire phase-split capture -- which is what
+# happened on the first pooled ITS2 run. dada's own `resident Raw footprint` line
+# reports the screen structures' size regardless, which is the number that matters
+# here.
+TIMER=()
+if command -v /usr/bin/time > /dev/null 2>&1; then
+  if /usr/bin/time -l true > /dev/null 2>&1; then TIMER=(/usr/bin/time -l)
+  elif /usr/bin/time -v true > /dev/null 2>&1; then TIMER=(/usr/bin/time -v)
+  fi
+fi
+[ ${#TIMER[@]} -eq 0 ] && echo "    (note: /usr/bin/time unavailable; peak RSS omitted, verbose block still captured)"
+{
+  for spec in "${T[@]}"; do
+    IFS=: read -r name K C IDX <<< "$spec"
+    [ "$name" = "kmerctl" ] && continue
+    extra=(); [ -n "$K" ] && extra=(--screen-backend minimizer --minimizer-k "$K" --kdist-cutoff "$C")
+    env=(); [ -n "$IDX" ] && env=(env "DADA2RS_MINIMIZER_INDEX=$IDX")
+    echo "===== $name"
+    ${env[@]+"${env[@]}"} ${TIMER[@]+"${TIMER[@]}"} "$BIN" $DADA_CMD "${fq[@]}" \
+        --error-model "$OUT/models/err.json" --band "$BAND" --kmer-size "$KMER" \
+        --threads "$THREADS" --verbose \
+        ${extra[@]+"${extra[@]}"} --output-dir "$OUT/.verbose" 2>&1 \
+      | grep -E "^\[dada\]|maximum resident|Maximum resident|elapsed|real" \
+      || echo "    (no output)"
+  done
+} | tee "$OUT/phase_split.txt"
+
+python3 - "$OUT/timings.tsv" <<'PY'
+import statistics, sys
+from collections import defaultdict
+d = defaultdict(list)
+fps = {}
+for line in open(sys.argv[1]):
+    parts = line.split()
+    if len(parts) < 3:
+        continue
+    name, rep, t = parts[0], parts[1], parts[2]
+    fps.setdefault(parts[3] if len(parts) > 3 else "pre-fingerprint", set()).add(name)
+    d[name].append(float(t))
+base = statistics.median(d["kmer"])
+print(f"\n{'arm':>18s} {'median s':>10s} {'min':>8s} {'max':>8s} {'spread':>8s} {'vs kmer':>9s}")
+for n in sorted(d):
+    ts = d[n]; med = statistics.median(ts)
+    print(f"{n:>18s} {med:10.2f} {min(ts):8.2f} {max(ts):8.2f} "
+          f"{(max(ts)-min(ts))/med*100:7.1f}% {100*med/base:8.1f}%")
+if len(fps) > 1:
+    print("\n*** MIXED BINARIES: timings.tsv holds rows from %d different builds. ***" % len(fps))
+    for fp, arms in sorted(fps.items(), key=lambda kv: -len(kv[1])):
+        print(f"    build {fp}: {len(arms)} arm(s) -- {', '.join(sorted(arms)[:6])}"
+              + (" ..." if len(arms) > 6 else ""))
+    print("    Rows from different builds are NOT comparable, and an arm whose")
+    print("    replicates span builds has a meaningless median. A `_c<C>` arm and")
+    print("    its `_auto` twin execute identical work whenever the score is under")
+    print("    threshold, so a gap between THOSE two is the cheapest tell.")
+    print("    Fix: mv timings.tsv timings.old.tsv and re-run the timing matrix in")
+    print("    one session. The accuracy arms are unaffected -- the index is exact,")
+    print("    so arm OUTPUT does not depend on which build produced it.")
+
+if "kmerctl" in d:
+    noise = abs(statistics.median(d["kmerctl"]) - base) / base * 100
+    print(f"\nCONTROL CHANNEL (k-mer vs k-mer): {noise:.1f}%.")
+    print("Any arm within that of the baseline is inside the noise floor and is")
+    print("NOT a speed result. Report the control alongside every number.")
+PY

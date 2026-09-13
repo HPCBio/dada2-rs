@@ -52,6 +52,7 @@ const KNOWN: &[&str] = &[
     "DADA2RS_ALIGN_BACKEND",
     "DADA2RS_WFA_MAX_STEPS",
     "DADA2RS_BENCH_THREADS",
+    "DADA2RS_MINIMIZER_INDEX",
 ];
 
 /// What happened to a variable that is no longer the current spelling.

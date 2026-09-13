@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{ArgAction, Parser, Subcommand};
 
 use crate::misc::DADA2_RS_VERSION;
-use crate::nwalign::AlignBackend;
+use crate::nwalign::{AlignBackend, ScreenBackend};
 
 #[derive(Parser)]
 #[command(
@@ -304,6 +304,58 @@ pub enum Commands {
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
+        /// EXPERIMENTAL alternative to the k-mer screen. `kmer` (default) is
+        /// the ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses;
+        /// `minimizer` is a winnowed-minimizer sketch. Neither defines the
+        /// clusters — both only decide which pairs are worth aligning.
+        ///
+        /// EXPECT MOSTLY-CONCORDANT BUT NOT IDENTICAL RESULTS. On every dataset
+        /// tested the ASV sets and counts agree closely, but there are real
+        /// differences: typically a fraction of a percent of reads and a small
+        /// number of low-abundance ASVs (all under ~15 reads in the datasets
+        /// measured). This is not a drop-in replacement for the k-mer screen.
+        ///
+        /// It pays off where a lot of screening happens — diverse pools, where
+        /// most pairs are dissimilar so the screen runs on everything and the
+        /// aligner on almost nothing. There the k-mer screen can reach 44-77% of
+        /// denoising time and this replaces it with under 10%. On low-diversity
+        /// data the screen is ~1% of runtime and there is nothing to win.
+        ///
+        /// REQUIRES TUNING. The default `--kdist-cutoff 0.42` is wrong for this
+        /// backend (it over-screens ~3x). Use `--minimizer-k 8` with a cutoff
+        /// derived for your data — ~0.64 on diverse Illumina pools, ~0.50 on
+        /// PacBio HiFi — via `kdist-calibrate --screen-backend minimizer`.
+        /// See docs/findings/minimizer-screening.md.
+        #[arg(long, value_enum)]
+        screen_backend: Option<ScreenBackend>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
+        /// minimizer sketch [default: 8]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 5-31. k=8 was chosen on
+        /// Illumina (a pair audit; k=11 misses real neighbours) and has NOT been
+        /// re-derived per platform the way `--kmer-size` had to be.
+        #[arg(long)]
+        minimizer_k: Option<usize>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
+        /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
+        /// larger w is smaller and faster but less sensitive. Range 1-64.
+        /// Never varied in any published measurement — every result on the
+        /// findings page is a single w=5 point.
+        #[arg(long)]
+        minimizer_w: Option<usize>,
+
+        /// EXPERIMENTAL diagnostic (with `--screen-backend minimizer`): evaluate
+        /// BOTH screens on every comparison and align the union, reporting how
+        /// often they disagree and — for each disagreement — how many
+        /// substitutions the alignment actually found. Answers whether the
+        /// minimizer screen passes a superset, a subset, or a different set of
+        /// the pairs `--kdist-cutoff` passes. ASVs are unaffected (audit-only
+        /// alignments are discarded), but the run is substantially slower and
+        /// its timings are not comparable to a normal run.
+        #[arg(long, default_value_t = false)]
+        screen_audit: bool,
+
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many
         /// edits and falls back to the NW path for that pair (NW-identical there).
@@ -522,6 +574,58 @@ pub enum Commands {
         /// published crate) errors when it is selected. See issue #63.
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
+
+        /// EXPERIMENTAL alternative to the k-mer screen. `kmer` (default) is
+        /// the ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses;
+        /// `minimizer` is a winnowed-minimizer sketch. Neither defines the
+        /// clusters — both only decide which pairs are worth aligning.
+        ///
+        /// EXPECT MOSTLY-CONCORDANT BUT NOT IDENTICAL RESULTS. On every dataset
+        /// tested the ASV sets and counts agree closely, but there are real
+        /// differences: typically a fraction of a percent of reads and a small
+        /// number of low-abundance ASVs (all under ~15 reads in the datasets
+        /// measured). This is not a drop-in replacement for the k-mer screen.
+        ///
+        /// It pays off where a lot of screening happens — diverse pools, where
+        /// most pairs are dissimilar so the screen runs on everything and the
+        /// aligner on almost nothing. There the k-mer screen can reach 44-77% of
+        /// denoising time and this replaces it with under 10%. On low-diversity
+        /// data the screen is ~1% of runtime and there is nothing to win.
+        ///
+        /// REQUIRES TUNING. The default `--kdist-cutoff 0.42` is wrong for this
+        /// backend (it over-screens ~3x). Use `--minimizer-k 8` with a cutoff
+        /// derived for your data — ~0.64 on diverse Illumina pools, ~0.50 on
+        /// PacBio HiFi — via `kdist-calibrate --screen-backend minimizer`.
+        /// See docs/findings/minimizer-screening.md.
+        #[arg(long, value_enum)]
+        screen_backend: Option<ScreenBackend>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
+        /// minimizer sketch [default: 8]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 5-31. k=8 was chosen on
+        /// Illumina (a pair audit; k=11 misses real neighbours) and has NOT been
+        /// re-derived per platform the way `--kmer-size` had to be.
+        #[arg(long)]
+        minimizer_k: Option<usize>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
+        /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
+        /// larger w is smaller and faster but less sensitive. Range 1-64.
+        /// Never varied in any published measurement — every result on the
+        /// findings page is a single w=5 point.
+        #[arg(long)]
+        minimizer_w: Option<usize>,
+
+        /// EXPERIMENTAL diagnostic (with `--screen-backend minimizer`): evaluate
+        /// BOTH screens on every comparison and align the union, reporting how
+        /// often they disagree and — for each disagreement — how many
+        /// substitutions the alignment actually found. Answers whether the
+        /// minimizer screen passes a superset, a subset, or a different set of
+        /// the pairs `--kdist-cutoff` passes. ASVs are unaffected (audit-only
+        /// alignments are discarded), but the run is substantially slower and
+        /// its timings are not comparable to a normal run.
+        #[arg(long, default_value_t = false)]
+        screen_audit: bool,
 
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many
@@ -775,6 +879,58 @@ pub enum Commands {
         /// published crate) errors when it is selected. See issue #63.
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
+
+        /// EXPERIMENTAL alternative to the k-mer screen. `kmer` (default) is
+        /// the ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses;
+        /// `minimizer` is a winnowed-minimizer sketch. Neither defines the
+        /// clusters — both only decide which pairs are worth aligning.
+        ///
+        /// EXPECT MOSTLY-CONCORDANT BUT NOT IDENTICAL RESULTS. On every dataset
+        /// tested the ASV sets and counts agree closely, but there are real
+        /// differences: typically a fraction of a percent of reads and a small
+        /// number of low-abundance ASVs (all under ~15 reads in the datasets
+        /// measured). This is not a drop-in replacement for the k-mer screen.
+        ///
+        /// It pays off where a lot of screening happens — diverse pools, where
+        /// most pairs are dissimilar so the screen runs on everything and the
+        /// aligner on almost nothing. There the k-mer screen can reach 44-77% of
+        /// denoising time and this replaces it with under 10%. On low-diversity
+        /// data the screen is ~1% of runtime and there is nothing to win.
+        ///
+        /// REQUIRES TUNING. The default `--kdist-cutoff 0.42` is wrong for this
+        /// backend (it over-screens ~3x). Use `--minimizer-k 8` with a cutoff
+        /// derived for your data — ~0.64 on diverse Illumina pools, ~0.50 on
+        /// PacBio HiFi — via `kdist-calibrate --screen-backend minimizer`.
+        /// See docs/findings/minimizer-screening.md.
+        #[arg(long, value_enum)]
+        screen_backend: Option<ScreenBackend>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
+        /// minimizer sketch [default: 8]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 5-31. k=8 was chosen on
+        /// Illumina (a pair audit; k=11 misses real neighbours) and has NOT been
+        /// re-derived per platform the way `--kmer-size` had to be.
+        #[arg(long)]
+        minimizer_k: Option<usize>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
+        /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
+        /// larger w is smaller and faster but less sensitive. Range 1-64.
+        /// Never varied in any published measurement — every result on the
+        /// findings page is a single w=5 point.
+        #[arg(long)]
+        minimizer_w: Option<usize>,
+
+        /// EXPERIMENTAL diagnostic (with `--screen-backend minimizer`): evaluate
+        /// BOTH screens on every comparison and align the union, reporting how
+        /// often they disagree and — for each disagreement — how many
+        /// substitutions the alignment actually found. Answers whether the
+        /// minimizer screen passes a superset, a subset, or a different set of
+        /// the pairs `--kdist-cutoff` passes. ASVs are unaffected (audit-only
+        /// alignments are discarded), but the run is substantially slower and
+        /// its timings are not comparable to a normal run.
+        #[arg(long, default_value_t = false)]
+        screen_audit: bool,
 
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many
@@ -1834,6 +1990,58 @@ pub enum Commands {
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
+        /// EXPERIMENTAL alternative to the k-mer screen. `kmer` (default) is
+        /// the ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses;
+        /// `minimizer` is a winnowed-minimizer sketch. Neither defines the
+        /// clusters — both only decide which pairs are worth aligning.
+        ///
+        /// EXPECT MOSTLY-CONCORDANT BUT NOT IDENTICAL RESULTS. On every dataset
+        /// tested the ASV sets and counts agree closely, but there are real
+        /// differences: typically a fraction of a percent of reads and a small
+        /// number of low-abundance ASVs (all under ~15 reads in the datasets
+        /// measured). This is not a drop-in replacement for the k-mer screen.
+        ///
+        /// It pays off where a lot of screening happens — diverse pools, where
+        /// most pairs are dissimilar so the screen runs on everything and the
+        /// aligner on almost nothing. There the k-mer screen can reach 44-77% of
+        /// denoising time and this replaces it with under 10%. On low-diversity
+        /// data the screen is ~1% of runtime and there is nothing to win.
+        ///
+        /// REQUIRES TUNING. The default `--kdist-cutoff 0.42` is wrong for this
+        /// backend (it over-screens ~3x). Use `--minimizer-k 8` with a cutoff
+        /// derived for your data — ~0.64 on diverse Illumina pools, ~0.50 on
+        /// PacBio HiFi — via `kdist-calibrate --screen-backend minimizer`.
+        /// See docs/findings/minimizer-screening.md.
+        #[arg(long, value_enum)]
+        screen_backend: Option<ScreenBackend>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
+        /// minimizer sketch [default: 8]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 5-31. k=8 was chosen on
+        /// Illumina (a pair audit; k=11 misses real neighbours) and has NOT been
+        /// re-derived per platform the way `--kmer-size` had to be.
+        #[arg(long)]
+        minimizer_k: Option<usize>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
+        /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
+        /// larger w is smaller and faster but less sensitive. Range 1-64.
+        /// Never varied in any published measurement — every result on the
+        /// findings page is a single w=5 point.
+        #[arg(long)]
+        minimizer_w: Option<usize>,
+
+        /// EXPERIMENTAL diagnostic (with `--screen-backend minimizer`): evaluate
+        /// BOTH screens on every comparison and align the union, reporting how
+        /// often they disagree and — for each disagreement — how many
+        /// substitutions the alignment actually found. Answers whether the
+        /// minimizer screen passes a superset, a subset, or a different set of
+        /// the pairs `--kdist-cutoff` passes. ASVs are unaffected (audit-only
+        /// alignments are discarded), but the run is substantially slower and
+        /// its timings are not comparable to a normal run.
+        #[arg(long, default_value_t = false)]
+        screen_audit: bool,
+
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many
         /// edits and falls back to the NW path for that pair (NW-identical there).
@@ -2144,6 +2352,58 @@ pub enum Commands {
         #[arg(long, value_enum)]
         align_backend: Option<AlignBackend>,
 
+        /// EXPERIMENTAL alternative to the k-mer screen. `kmer` (default) is
+        /// the ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses;
+        /// `minimizer` is a winnowed-minimizer sketch. Neither defines the
+        /// clusters — both only decide which pairs are worth aligning.
+        ///
+        /// EXPECT MOSTLY-CONCORDANT BUT NOT IDENTICAL RESULTS. On every dataset
+        /// tested the ASV sets and counts agree closely, but there are real
+        /// differences: typically a fraction of a percent of reads and a small
+        /// number of low-abundance ASVs (all under ~15 reads in the datasets
+        /// measured). This is not a drop-in replacement for the k-mer screen.
+        ///
+        /// It pays off where a lot of screening happens — diverse pools, where
+        /// most pairs are dissimilar so the screen runs on everything and the
+        /// aligner on almost nothing. There the k-mer screen can reach 44-77% of
+        /// denoising time and this replaces it with under 10%. On low-diversity
+        /// data the screen is ~1% of runtime and there is nothing to win.
+        ///
+        /// REQUIRES TUNING. The default `--kdist-cutoff 0.42` is wrong for this
+        /// backend (it over-screens ~3x). Use `--minimizer-k 8` with a cutoff
+        /// derived for your data — ~0.64 on diverse Illumina pools, ~0.50 on
+        /// PacBio HiFi — via `kdist-calibrate --screen-backend minimizer`.
+        /// See docs/findings/minimizer-screening.md.
+        #[arg(long, value_enum)]
+        screen_backend: Option<ScreenBackend>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
+        /// minimizer sketch [default: 8]. Independent of `--kmer-size`, which
+        /// still governs the frequency screen. Range 5-31. k=8 was chosen on
+        /// Illumina (a pair audit; k=11 misses real neighbours) and has NOT been
+        /// re-derived per platform the way `--kmer-size` had to be.
+        #[arg(long)]
+        minimizer_k: Option<usize>,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
+        /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
+        /// larger w is smaller and faster but less sensitive. Range 1-64.
+        /// Never varied in any published measurement — every result on the
+        /// findings page is a single w=5 point.
+        #[arg(long)]
+        minimizer_w: Option<usize>,
+
+        /// EXPERIMENTAL diagnostic (with `--screen-backend minimizer`): evaluate
+        /// BOTH screens on every comparison and align the union, reporting how
+        /// often they disagree and — for each disagreement — how many
+        /// substitutions the alignment actually found. Answers whether the
+        /// minimizer screen passes a superset, a subset, or a different set of
+        /// the pairs `--kdist-cutoff` passes. ASVs are unaffected (audit-only
+        /// alignments are discarded), but the run is substantially slower and
+        /// its timings are not comparable to a normal run.
+        #[arg(long, default_value_t = false)]
+        screen_audit: bool,
+
         /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
         /// edit operations. WFA aborts a pair once it needs more than this many
         /// edits and falls back to the NW path for that pair (NW-identical there).
@@ -2280,6 +2540,23 @@ pub enum Commands {
         #[arg(long, default_value_t = 5)]
         k: usize,
 
+        /// EXPERIMENTAL: which screen to calibrate. `kmer` (default) is the
+        /// ESPRIT frequency vector; `minimizer` is the winnowed sketch. A cutoff
+        /// does NOT transfer between them — on the MiSeq SOP, 0.42 passes 27.6%
+        /// of pairs on the frequency vector and 9.0% on the sketch — so the
+        /// minimizer backend needs its own curve. See
+        /// docs/findings/minimizer-screening.md.
+        #[arg(long, value_enum, default_value_t = ScreenBackend::Kmer)]
+        screen_backend: ScreenBackend,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): sketch k-mer size.
+        #[arg(long, default_value_t = crate::minimizers::MINIMIZER_K)]
+        minimizer_k: usize,
+
+        /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window.
+        #[arg(long, default_value_t = crate::minimizers::MINIMIZER_W)]
+        minimizer_w: usize,
+
         /// Screen cutoff used for the `screened_in` flag / leakage summary
         #[arg(long, default_value_t = 0.42)]
         cutoff: f64,
@@ -2337,6 +2614,31 @@ pub enum Commands {
         /// pct_div,band_req,screened_in.
         #[arg(long)]
         from_dada: bool,
+
+        /// Derive-only: report the minimizer cutoff that reproduces the k-mer
+        /// screen's PASS RATE on this data, then stop. Skips alignment entirely,
+        /// so it runs in seconds where the full curve takes hours -- the curve's
+        /// cost is aligning every sampled pair unbanded to get true divergence,
+        /// which the matched-pass rule never consults.
+        ///
+        /// Reproduces the k-mer screen's selectivity, which is the safe target,
+        /// not the cheapest cutoff that still agrees with it: on PacBio HiFi the
+        /// ASV table is identical from 0.45 to 0.60 and this picks 0.50. Sweep if
+        /// you can afford to.
+        #[arg(long)]
+        derive_cutoff: bool,
+
+        /// With `--derive-cutoff`: sample pairs uniformly at random instead of
+        /// abundance-weighted. Uniform is what a calibration CURVE wants -- it
+        /// describes the metric -- but it is the wrong population for a PASS
+        /// RATE, because `b_compare` compares every raw against each cluster
+        /// CENTRE, and centres are the abundant uniques. On pooled PacBio the
+        /// minimizer/k-mer pass ratio is 0.744 on the pairs actually screened and
+        /// 0.911 on uniform pairs, so uniform sampling makes the minimizer look
+        /// 23% less selective than it is and the derived cutoff overshoots.
+        /// Kept because the published curves are uniform.
+        #[arg(long)]
+        derive_uniform_pairs: bool,
 
         /// Pooled post-inference mode: treat the positional inputs as the
         /// `_pooled.json[.gz]` record(s) written by `dada-pooled` and screen the

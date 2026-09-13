@@ -24,6 +24,7 @@ pub mod kmers;
 pub mod learn_errors;
 pub mod loess;
 pub mod merge_pairs;
+pub mod minimizers;
 pub mod misc;
 pub mod nwalign;
 pub mod pval;

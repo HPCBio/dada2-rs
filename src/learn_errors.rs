@@ -211,6 +211,30 @@ pub struct LearnedErrParams {
     #[serde(default)]
     pub wfa_max_edits: i32,
 
+    /// Pre-alignment screen the model was learned with (experimental).
+    ///
+    /// This is a genuine error-model parameter, not bookkeeping: `build_trans_mat`
+    /// aligns each raw against its center through the **screen**, and a shrouded
+    /// pair contributes nothing to the transition counts. Swapping the screen
+    /// therefore changes the fitted model — measured at up to **90.9%** relative
+    /// difference in `err_out` on the MiSeq SOP (see
+    /// `docs/findings/minimizer-screening.md`). A model learned under one screen
+    /// and applied under another must be flagged, exactly as a `kdist_cutoff`
+    /// mismatch is.
+    ///
+    /// Defaults to `kmer` for JSONs produced before this field existed, which is
+    /// correct: no released version could have learned under any other screen.
+    #[serde(default)]
+    pub screen_backend: crate::nwalign::ScreenBackend,
+
+    /// Minimizer sketch parameters the model was learned with. Meaningful only
+    /// when `screen_backend` is `minimizer`; `0` marks "not recorded", which is
+    /// what a pre-field JSON deserialises to.
+    #[serde(default)]
+    pub minimizer_k: usize,
+    #[serde(default)]
+    pub minimizer_w: usize,
+
     /// Loess configuration captured from the errfun. Present for errfuns that
     /// use loess fitting (`loess`, `noqual`, `binned-qual`, `pacbio`); absent
     /// for `external`. Records the resolved surface/cell/clamp values *after*

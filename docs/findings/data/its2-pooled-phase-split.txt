@@ -1,0 +1,44 @@
+--- kmer
+[dada]   kmer screen   3116.34s (76.5%)     2387855809 comps    1305 ns/comp  (every comparison)
+[dada]   align total    272.19s ( 6.7%)       16256668 comps   16743 ns/comp  (0.7% passed the screen)
+[dada]     dp kernel    253.66s ( 6.2%)       16256668 comps   15603 ns/comp
+--- mini_k8_c0.40
+[dada]   kmer screen     79.75s (10.1%)     2403139350 comps      33 ns/comp  (every comparison)
+[dada]   align total     86.53s (10.9%)        4606321 comps   18785 ns/comp  (0.2% passed the screen)
+[dada]     dp kernel     79.85s (10.1%)        4606321 comps   17335 ns/comp
+--- mini_k8_c0.45
+[dada]   kmer screen     79.90s ( 9.9%)     2398270886 comps      33 ns/comp  (every comparison)
+[dada]   align total    113.10s (14.0%)        5830020 comps   19400 ns/comp  (0.2% passed the screen)
+[dada]     dp kernel    105.62s (13.1%)        5830020 comps   18117 ns/comp
+--- mini_k8_c0.50
+[dada]   kmer screen     78.92s ( 9.6%)     2393417736 comps      33 ns/comp  (every comparison)
+[dada]   align total    137.15s (16.6%)        7836227 comps   17502 ns/comp  (0.3% passed the screen)
+[dada]     dp kernel    127.85s (15.5%)        7836227 comps   16315 ns/comp
+--- mini_k8_c0.55
+[dada]   kmer screen     80.15s ( 7.8%)     2389250317 comps      34 ns/comp  (every comparison)
+[dada]   align total    181.77s (17.8%)       10363158 comps   17540 ns/comp  (0.4% passed the screen)
+[dada]     dp kernel    169.25s (16.5%)       10363158 comps   16332 ns/comp
+--- mini_k8_c0.60
+[dada]   kmer screen     77.58s (10.5%)     2388545403 comps      32 ns/comp  (every comparison)
+[dada]   align total    245.45s (33.1%)       14321902 comps   17138 ns/comp  (0.6% passed the screen)
+[dada]     dp kernel    228.86s (30.9%)       14321902 comps   15979 ns/comp
+--- mini_k8_c0.62
+[dada]   kmer screen     77.91s ( 9.3%)     2387850490 comps      33 ns/comp  (every comparison)
+[dada]   align total    285.59s (34.0%)       16455346 comps   17355 ns/comp  (0.7% passed the screen)
+[dada]     dp kernel    266.31s (31.7%)       16455346 comps   16184 ns/comp
+--- mini_k8_c0.65
+[dada]   kmer screen     77.65s ( 8.4%)     2387820044 comps      33 ns/comp  (every comparison)
+[dada]   align total    360.38s (38.9%)       20854262 comps   17281 ns/comp  (0.9% passed the screen)
+[dada]     dp kernel    335.86s (36.2%)       20854262 comps   16105 ns/comp
+--- mini_k8_c0.70
+[dada]   kmer screen     80.48s ( 6.3%)     2387809371 comps      34 ns/comp  (every comparison)
+[dada]   align total    596.58s (46.5%)       34219390 comps   17434 ns/comp  (1.4% passed the screen)
+[dada]     dp kernel    555.50s (43.3%)       34219390 comps   16233 ns/comp
+--- mini_k8_c0.75
+[dada]   kmer screen     79.93s ( 4.4%)     2387803586 comps      33 ns/comp  (every comparison)
+[dada]   align total   1126.70s (62.0%)       64711946 comps   17411 ns/comp  (2.7% passed the screen)
+[dada]     dp kernel   1048.19s (57.7%)       64711946 comps   16198 ns/comp
+--- mini_k8_c0.80
+[dada]   kmer screen     76.64s ( 2.6%)     2387795470 comps      32 ns/comp  (every comparison)
+[dada]   align total   2326.46s (79.9%)      134318113 comps   17321 ns/comp  (5.6% passed the screen)
+[dada]     dp kernel   2160.22s (74.2%)      134318113 comps   16083 ns/comp

@@ -21,7 +21,9 @@
 //! which pairs are screened), so model it with `--per-sample`.
 
 use crate::kmers::{assign_kmer8, kmer_dist8};
+use crate::minimizers::{self, MinimizerSketch};
 use crate::misc::WithPath as _;
+use crate::nwalign::ScreenBackend;
 use crate::nwalign::{AlignBuffers, align_endsfree_with_buf};
 use flate2::read::MultiGzDecoder;
 use rayon::prelude::*;
@@ -31,9 +33,79 @@ use std::path::{Path, PathBuf};
 
 const GAP: u8 = b'-';
 
+/// The pre-alignment screen under calibration, in either backend's
+/// representation (issue: minimizer screen evaluation).
+///
+/// The whole point of this subcommand is to re-derive `KDIST_CUTOFF` empirically
+/// rather than inherit it, and a cutoff turns out **not** to transfer between
+/// screens that merely share a distance formula: on the MiSeq SOP, 0.42 passes
+/// 27.6% of pairs on the frequency vector and 9.0% on the minimizer sketch, with
+/// the matching operating point near 0.64. So the minimizer backend needs its
+/// own calibration curve, produced by the same instrument, against the same
+/// unbanded true divergence. See `docs/findings/minimizer-screening.md`.
+enum Screens {
+    Kmer(Vec<Vec<u8>>),
+    Minimizer(Vec<MinimizerSketch>),
+}
+
+impl Screens {
+    fn build(enc: &[Vec<u8>], p: &Params) -> Screens {
+        match p.screen_backend {
+            ScreenBackend::Kmer => {
+                Screens::Kmer(enc.iter().map(|e| assign_kmer8(e, p.k)).collect())
+            }
+            ScreenBackend::Minimizer => Screens::Minimizer(
+                enc.iter()
+                    .map(|e| minimizers::sketch(e, p.minimizer_k, p.minimizer_w))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn extend(&mut self, other: Screens) {
+        match (self, other) {
+            (Screens::Kmer(a), Screens::Kmer(b)) => a.extend(b),
+            (Screens::Minimizer(a), Screens::Minimizer(b)) => a.extend(b),
+            _ => unreachable!("mixed screen backends (uniform per run)"),
+        }
+    }
+
+    /// Screen distance between element `i` of this set and element `j` of
+    /// `other`. Mirrors what `raw_align_with_buf` computes for the same pair,
+    /// including the minimizer path's fail-open rule, so the curve describes the
+    /// screen that actually runs.
+    #[inline]
+    fn dist(
+        &self,
+        i: usize,
+        other: &Screens,
+        j: usize,
+        len_i: usize,
+        len_j: usize,
+        k: usize,
+    ) -> f64 {
+        match (self, other) {
+            (Screens::Kmer(a), Screens::Kmer(b)) => kmer_dist8(&a[i], len_i, &b[j], len_j, k),
+            (Screens::Minimizer(a), Screens::Minimizer(b)) => minimizers::screen_dist(
+                minimizers::shared_count(&a[i], &b[j]),
+                Some(&a[i]),
+                Some(&b[j]),
+            ),
+            _ => unreachable!("mixed screen backends (uniform per run)"),
+        }
+    }
+}
+
 /// Parameters for [`run`] (mirrors the CLI flags).
+#[derive(Clone)]
 pub struct Params {
     pub k: usize,
+    /// Which screen to calibrate. `Kmer` reproduces the historical behaviour.
+    pub screen_backend: ScreenBackend,
+    /// Minimizer sketch parameters; ignored unless `screen_backend` is
+    /// `Minimizer`.
+    pub minimizer_k: usize,
+    pub minimizer_w: usize,
     pub cutoff: f64,
     pub leak_pct: f64,
     pub band: i32,
@@ -60,6 +132,15 @@ pub struct Params {
     pub seed: u64,
     pub output: Option<PathBuf>,
     pub verbose: bool,
+    /// Derive-only mode: report the minimizer cutoff that matches the k-mer
+    /// screen's pass rate, and nothing else. Skips alignment entirely, so it runs
+    /// in seconds where the full curve takes hours.
+    pub derive_cutoff: bool,
+    /// Sample pairs uniformly instead of abundance-weighted. Uniform is what a
+    /// calibration CURVE wants (it describes the metric); weighted is what a PASS
+    /// RATE wants (it describes the comparisons `b_compare` performs). Kept for
+    /// comparison, since the published curves are uniform.
+    pub derive_uniform_pairs: bool,
 }
 
 fn encode(seq: &str) -> Vec<u8> {
@@ -117,12 +198,12 @@ struct Sample {
     name: String,
     enc: Vec<Vec<u8>>,
     counts: Vec<u64>,
-    kmers: Vec<Vec<u8>>,
+    kmers: Screens,
 }
 
 /// Load a derep JSON (`uniques[].sequence` + `count`), gzip-transparent. Only
 /// derep JSONs are accepted (the screen operates on per-sample uniques).
-fn load_derep(path: &Path, k: usize, max_uniques: usize, seed: u64) -> io::Result<Sample> {
+fn load_derep(path: &Path, p: &Params, max_uniques: usize, seed: u64) -> io::Result<Sample> {
     let f = File::open(path).with_path(path)?;
     let mut txt = String::new();
     if path.extension().and_then(|e| e.to_str()) == Some("gz") {
@@ -169,7 +250,7 @@ fn load_derep(path: &Path, k: usize, max_uniques: usize, seed: u64) -> io::Resul
         seqs.truncate(max_uniques);
     }
     let (enc, counts): (Vec<_>, Vec<_>) = seqs.into_iter().unzip();
-    let kmers = enc.iter().map(|e| assign_kmer8(e, k)).collect();
+    let kmers = Screens::build(&enc, p);
     Ok(Sample {
         name,
         enc,
@@ -190,11 +271,11 @@ struct DadaSample {
     // input uniques (denoising input order, aligned with `map`)
     enc: Vec<Vec<u8>>,
     counts: Vec<u64>,
-    kmers: Vec<Vec<u8>>,
+    kmers: Screens,
     map: Vec<Option<usize>>,
     // cluster centers, indexed by cluster id
     c_enc: Vec<Vec<u8>>,
-    c_kmers: Vec<Vec<u8>>,
+    c_kmers: Screens,
     c_ab: Vec<u64>,
     c_birth: Vec<String>,
     c_birth_pval: Vec<f64>,
@@ -332,7 +413,7 @@ fn find_derep_for_sample(derep_dir: &Path, name: &str) -> io::Result<PathBuf> {
 }
 
 /// Load a `dada` output JSON and pair it with its derep input from `derep_dir`.
-fn load_dada(dada_path: &Path, derep_dir: &Path, k: usize) -> io::Result<DadaSample> {
+fn load_dada(dada_path: &Path, derep_dir: &Path, p: &Params) -> io::Result<DadaSample> {
     let f = File::open(dada_path).with_path(dada_path)?;
     let reader: Box<dyn Read> = if dada_path.extension().and_then(|e| e.to_str()) == Some("gz") {
         Box::new(MultiGzDecoder::new(f))
@@ -404,8 +485,8 @@ fn load_dada(dada_path: &Path, derep_dir: &Path, k: usize) -> io::Result<DadaSam
             ),
         ));
     }
-    let kmers = enc.iter().map(|e| assign_kmer8(e, k)).collect();
-    let c_kmers = c_enc.iter().map(|e| assign_kmer8(e, k)).collect();
+    let kmers = Screens::build(&enc, p);
+    let c_kmers = Screens::build(&c_enc, p);
     Ok(DadaSample {
         name,
         enc,
@@ -427,7 +508,7 @@ fn load_dada(dada_path: &Path, derep_dir: &Path, k: usize) -> io::Result<DadaSam
 /// ASV list, so there is no derep JSON to locate and no per-sample projection to
 /// reconcile. Emitted in denoising input order, so `uniques`/`map` line up with
 /// no re-sort — the pool is one population named `__pooled__`.
-fn load_dada_pooled(path: &Path, k: usize) -> io::Result<DadaSample> {
+fn load_dada_pooled(path: &Path, p: &Params) -> io::Result<DadaSample> {
     let f = File::open(path).with_path(path)?;
     let reader: Box<dyn Read> = if path.extension().and_then(|e| e.to_str()) == Some("gz") {
         Box::new(MultiGzDecoder::new(f))
@@ -501,8 +582,8 @@ fn load_dada_pooled(path: &Path, k: usize) -> io::Result<DadaSample> {
             ),
         ));
     }
-    let kmers = enc.iter().map(|e| assign_kmer8(e, k)).collect();
-    let c_kmers = c_enc.iter().map(|e| assign_kmer8(e, k)).collect();
+    let kmers = Screens::build(&enc, p);
+    let c_kmers = Screens::build(&c_enc, p);
     Ok(DadaSample {
         name: "__pooled__".into(),
         enc,
@@ -522,7 +603,7 @@ fn load_dada_pooled(path: &Path, k: usize) -> io::Result<DadaSample> {
 fn run_from_dada_pooled(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
     let samples: Vec<DadaSample> = inputs
         .iter()
-        .map(|path| load_dada_pooled(path, p.k))
+        .map(|path| load_dada_pooled(path, p))
         .collect::<io::Result<_>>()?;
 
     let mut w: Box<dyn Write> = match &p.output {
@@ -541,6 +622,48 @@ fn run_from_dada_pooled(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
 /// Build the (i, j) pair list for a population of `n` uniques: enumerate all if
 /// `n*(n-1)/2 <= max_pairs`, else draw `max_pairs` random pairs (with possible
 /// repeats — fine for a calibration scatter).
+/// Sample pairs the way `b_compare` forms them: one side abundance-weighted.
+///
+/// `pairs_for` samples uniformly over all pairs, which is right for a calibration
+/// curve — it describes the metric. It is **wrong for predicting a pass rate**,
+/// because `b_compare` never compares random pairs: it compares every raw against
+/// each cluster CENTRE, and centres are the abundant uniques. Measured on pooled
+/// PacBio, the minimizer/k-mer pass ratio is 0.744 on the pairs actually screened
+/// and 0.911 on uniform random pairs — so uniform sampling makes the minimizer
+/// look **23% less selective than it is**, and a cutoff matched on it overshoots.
+///
+/// One side is drawn from the abundance distribution (the centre proxy) and the
+/// other uniformly (the raw), which is the shape of a raw-vs-centre comparison.
+fn weighted_pairs_for(counts: &[u64], max_pairs: usize, seed: u64) -> Vec<(usize, usize)> {
+    let n = counts.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let mut cum: Vec<u64> = Vec::with_capacity(n);
+    let mut tot = 0u64;
+    for &c in counts {
+        tot += c.max(1);
+        cum.push(tot);
+    }
+    let mut st = seed ^ 0x9E3779B97F4A7C15;
+    let mut next = || {
+        st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+        st >> 11
+    };
+    let mut out = Vec::with_capacity(max_pairs);
+    let mut guard = 0usize;
+    while out.len() < max_pairs && guard < max_pairs * 8 {
+        guard += 1;
+        let target = next() % tot.max(1);
+        let j = cum.partition_point(|&c| c <= target).min(n - 1);
+        let i = (next() as usize) % n;
+        if i != j {
+            out.push((i, j));
+        }
+    }
+    out
+}
+
 fn pairs_for(n: usize, max_pairs: usize, seed: u64) -> Vec<(usize, usize)> {
     let total = n.saturating_mul(n.saturating_sub(1)) / 2;
     if n < 2 {
@@ -572,6 +695,267 @@ fn pairs_for(n: usize, max_pairs: usize, seed: u64) -> Vec<(usize, usize)> {
         .collect()
 }
 
+/// Derive the minimizer cutoff that reproduces the k-mer screen's pass rate.
+///
+/// The full calibration curve exists to relate a screen distance to TRUE
+/// divergence, and that is what costs the money: every sampled pair is aligned
+/// unbanded (~2.2 M DP cells on 1.5 kb reads, ~34 M alignments on the 95-sample
+/// PacBio run). The matched-pass rule never consults true divergence, so this
+/// mode computes both screens over the same sampled pairs and stops.
+///
+/// Both screens are built over the SAME encoded uniques and evaluated on the
+/// SAME pairs, which is the whole point: a cutoff is a property of the distance
+/// distribution a metric induces, so the two distributions have to be compared
+/// on identical input or the quantile is meaningless.
+fn run_derive_cutoff(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
+    let mut kp = p.clone();
+    kp.screen_backend = ScreenBackend::Kmer;
+    let mut mp = p.clone();
+    mp.screen_backend = ScreenBackend::Minimizer;
+
+    // Populations must match the denoising mode. The k-mer screen's pass rate is
+    // a property of the population, not the dataset: pooled ITS2 passes 0.70% and
+    // the same data per-sample passes 1.93%. Deriving from the wrong one targets
+    // the selectivity of a screen nobody ran.
+    let mut pops: Vec<(String, Vec<Vec<u8>>, Vec<u64>)> = Vec::new();
+    for path in inputs {
+        let s = load_derep(path, &kp, p.max_uniques, p.seed)?;
+        if p.per_sample {
+            pops.push((s.name, s.enc, s.counts));
+        } else {
+            if pops.is_empty() {
+                pops.push(("pool".to_string(), Vec::new(), Vec::new()));
+            }
+            pops[0].1.extend(s.enc);
+            pops[0].2.extend(s.counts);
+        }
+    }
+    pops.retain(|(_, e, _)| e.len() >= 2);
+    if pops.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no population has 2 or more uniques to sample pairs from",
+        ));
+    }
+
+    println!(
+        "# derive-cutoff: matched pass rate, no alignment performed\n# pairs: {}",
+        if p.derive_uniform_pairs {
+            "uniform random (describes the metric; NOT the population b_compare screens)"
+        } else {
+            "abundance-weighted -- the raw-vs-centre shape b_compare actually screens"
+        }
+    );
+    let mut per_pop: Vec<(String, minimizers::MatchedPass)> = Vec::new();
+    let mut kd = Vec::new();
+    let mut md = Vec::new();
+    // Sketch shape, accumulated over populations for the index-viability report.
+    let mut sketch_entries = 0usize;
+    let mut sketch_nraw = 0usize;
+    let mut sketch_keys: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    for (name, enc, counts) in &pops {
+        let kmer = Screens::build(enc, &kp);
+        let mini = Screens::build(enc, &mp);
+        let pairs = if p.derive_uniform_pairs {
+            pairs_for(enc.len(), p.max_pairs, p.seed)
+        } else {
+            weighted_pairs_for(counts, p.max_pairs, p.seed)
+        };
+        let mut pkd = Vec::with_capacity(pairs.len());
+        let mut pmd = Vec::with_capacity(pairs.len());
+        for &(i, j) in &pairs {
+            let (li, lj) = (enc[i].len(), enc[j].len());
+            pkd.push(kmer.dist(i, &kmer, j, li, lj, p.k));
+            pmd.push(mini.dist(i, &mini, j, li, lj, p.k));
+        }
+        per_pop.push((
+            name.clone(),
+            minimizers::matched_pass_cutoff(&pkd, &pmd, p.cutoff),
+        ));
+        kd.extend(pkd);
+        md.extend(pmd);
+        if let Screens::Minimizer(sk) = &mini {
+            sketch_nraw += sk.len();
+            sketch_entries += sk.iter().map(|s| s.len()).sum::<usize>();
+            for s in sk {
+                sketch_keys.extend(s.hashes());
+            }
+        }
+    }
+
+    if p.per_sample && per_pop.len() > 1 {
+        // Per-sample spread is the thing to look at: a rule that has to be
+        // applied once per run is only usable if the samples agree on it.
+        println!("\nper-sample derivation ({} populations):", per_pop.len());
+        println!(
+            "  {:>28} {:>8} {:>10} {:>8}",
+            "sample", "uniques", "kmer pass", "cutoff"
+        );
+        for ((name, r), (_, enc, _)) in per_pop.iter().zip(pops.iter()) {
+            println!(
+                "  {:>28} {:>8} {:>9.4}% {:>8.2}",
+                &name[name.len().saturating_sub(28)..],
+                enc.len(),
+                100.0 * r.kmer_pass,
+                r.cutoff_rounded
+            );
+        }
+        let mut cs: Vec<f64> = per_pop.iter().map(|(_, r)| r.cutoff_rounded).collect();
+        cs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!(
+            "  per-sample cutoff: median {:.2}, range {:.2}-{:.2}{}",
+            cs[cs.len() / 2],
+            cs[0],
+            cs[cs.len() - 1],
+            if cs[cs.len() - 1] - cs[0] > 0.04 {
+                "  <- SPREAD > 0.04: one run-wide cutoff is a compromise here"
+            } else {
+                ""
+            }
+        );
+    }
+
+    // Sketch shape and index viability. Without these the (k, w) grid reads as a
+    // pure accuracy table and points at k=5 w=1 -- which is the frequency screen
+    // itself, so it "wins" by abandoning the entire reason to use a sketch.
+    //
+    // What actually keeps the screen cheap is the INDEX (32 ns/comp against
+    // 1144-3440 for a merge-join), and the index survives only while posting
+    // lists stay short. Posting length is `entries x nraw / distinct`, and
+    // `distinct` is bounded by 4^k -- at k=5 there are at most 1024 possible
+    // minimizers, so a large pool saturates them and the scatter explodes. Larger
+    // k buys index viability at the cost of emulation fidelity, and that trade is
+    // invisible unless both sides are printed.
+    {
+        let entries = sketch_entries;
+        let nraw = sketch_nraw;
+        let distinct = sketch_keys.len().max(1);
+        let sharing = entries as f64 / distinct as f64;
+        let score = sharing * p.threads.max(1) as f64 / nraw.max(1) as f64;
+        println!(
+            "\nsketch shape  {:.0} entries/raw, {} distinct of 4^{}={} possible ({:.1}% saturated)",
+            entries as f64 / nraw.max(1) as f64,
+            distinct,
+            p.minimizer_k,
+            if p.minimizer_k < 32 {
+                4usize.saturating_pow(p.minimizer_k as u32)
+            } else {
+                usize::MAX
+            },
+            100.0 * distinct as f64 / (4usize.saturating_pow(p.minimizer_k as u32) as f64).max(1.0)
+        );
+        println!(
+            "index         mean posting {:.0}, decide_index score {:.3} at {} threads -> {}",
+            sharing,
+            score,
+            p.threads,
+            if score <= minimizers::MINIMIZER_INDEX_MAX_SCORE {
+                "INDEX (screen ~32 ns/comp)"
+            } else {
+                "merge-join (screen ~1100-3400 ns/comp; the speed benefit is gone)"
+            }
+        );
+    }
+
+    let r = minimizers::matched_pass_cutoff(&kd, &md, p.cutoff);
+    println!(
+        "\nuniques      {} in {} population(s)\npairs        {}",
+        pops.iter().map(|(_, e, _)| e.len()).sum::<usize>(),
+        pops.len(),
+        r.n_pairs
+    );
+    println!(
+        "k-mer screen k={} @ cutoff {:.2}: passes {:.4}% of pairs",
+        p.k,
+        p.cutoff,
+        100.0 * r.kmer_pass
+    );
+    println!(
+        "minimizer    k={} w={}: matching cutoff {:.4} -> **{:.2}** (passes {:.4}%)",
+        p.minimizer_k,
+        p.minimizer_w,
+        r.cutoff,
+        r.cutoff_rounded,
+        100.0 * r.mini_pass
+    );
+    // Pair-level AGREEMENT with the k-mer screen at the derived cutoff.
+    //
+    // Matching the pass RATE says the two screens admit the same NUMBER of pairs.
+    // It says nothing about whether they admit the SAME pairs, and that is what
+    // decides churn: a pair the k-mer screen aligns and the minimizer shrouds is a
+    // raw that may never reach its parent cluster. This is the pair-level recall
+    // gate this investigation opened with, and it costs nothing here -- both
+    // distances are already computed for every sampled pair.
+    //
+    // It is also the alignment-free way to compare (k, w) settings. The standing
+    // hypothesis for why Illumina churns and HiFi does not is estimator variance
+    // from a small sketch -- 74 entries/raw on 231 bp ITS2 against 475 on 1.5 kb
+    // HiFi. If that is right, lowering w raises the entry count and DISAGREEMENT
+    // here should fall. That is testable in seconds per setting, where the ASV
+    // table costs a full pipeline run per arm.
+    let c = r.cutoff_rounded;
+    let (mut both, mut neither, mut konly, mut monly) = (0usize, 0usize, 0usize, 0usize);
+    for (&a, &b) in kd.iter().zip(md.iter()) {
+        match (a <= p.cutoff, b <= c) {
+            (true, true) => both += 1,
+            (false, false) => neither += 1,
+            (true, false) => konly += 1,
+            (false, true) => monly += 1,
+        }
+    }
+    let n = r.n_pairs.max(1);
+    println!("\npair-level agreement with the k-mer screen at cutoff {c:.2}:");
+    println!(
+        "  both pass          {both:>9} ({:6.3}%)",
+        100.0 * both as f64 / n as f64
+    );
+    println!(
+        "  both shroud        {neither:>9} ({:6.3}%)",
+        100.0 * neither as f64 / n as f64
+    );
+    println!(
+        "  k-mer only         {konly:>9} ({:6.3}%)  <- SHROUDED by the minimizer; the churn risk",
+        100.0 * konly as f64 / n as f64
+    );
+    println!(
+        "  minimizer only     {monly:>9} ({:6.3}%)  <- extra alignments, cost not correctness",
+        100.0 * monly as f64 / n as f64
+    );
+    println!(
+        "  DISAGREEMENT       {:>9} ({:6.3}% of pairs)   recall vs k-mer: {:6.3}%",
+        konly + monly,
+        100.0 * (konly + monly) as f64 / n as f64,
+        100.0 * both as f64 / (both + konly).max(1) as f64
+    );
+
+    // The pass-rate curve either side, so how sharply the choice matters is
+    // visible rather than implied. A flat neighbourhood means the exact value
+    // hardly matters; a steep one means it does.
+    println!("\nminimizer pass rate near the derived cutoff:");
+    for step in -4i32..=4 {
+        let c = r.cutoff_rounded + f64::from(step) * 0.01;
+        if c <= 0.0 || c >= 1.0 {
+            continue;
+        }
+        let pass = md.iter().filter(|&&d| d <= c).count() as f64 / r.n_pairs as f64;
+        println!(
+            "  {:.2}{} {:8.4}%",
+            c,
+            if step == 0 { " <-" } else { "   " },
+            100.0 * pass
+        );
+    }
+    println!(
+        "\nNOTE: this reproduces the k-mer screen's SELECTIVITY, which is the safe\n\
+         target, not the cheapest cutoff that still agrees with it. On PacBio HiFi\n\
+         the ASV table is identical from 0.45 to 0.60 and this rule picks 0.50 --\n\
+         inside the plateau but at its expensive end, worth ~19% of wall clock.\n\
+         Finding the cheap edge of a plateau needs the ASV table, so sweep if you\n\
+         can afford to."
+    );
+    Ok(())
+}
+
 pub fn run(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
     if inputs.is_empty() {
         return Err(io::Error::new(
@@ -585,9 +969,12 @@ pub fn run(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
     if p.from_dada {
         return run_from_dada(inputs, p);
     }
+    if p.derive_cutoff {
+        return run_derive_cutoff(inputs, p);
+    }
     let loaded: Vec<Sample> = inputs
         .iter()
-        .map(|path| load_derep(path, p.k, p.max_uniques, p.seed))
+        .map(|path| load_derep(path, p, p.max_uniques, p.seed))
         .collect::<io::Result<_>>()?;
 
     // Form populations: one per sample (per-sample) or a single merged pool.
@@ -598,7 +985,7 @@ pub fn run(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
             name: "pool".into(),
             enc: Vec::new(),
             counts: Vec::new(),
-            kmers: Vec::new(),
+            kmers: Screens::build(&[], p),
         };
         for s in loaded {
             pool.enc.extend(s.enc);
@@ -659,13 +1046,9 @@ fn pairs_mode(
             pairs
                 .par_iter()
                 .map_init(AlignBuffers::new, |buf, &(i, j)| {
-                    let kd = kmer_dist8(
-                        &s.kmers[i],
-                        s.enc[i].len(),
-                        &s.kmers[j],
-                        s.enc[j].len(),
-                        p.k,
-                    );
+                    let kd = s
+                        .kmers
+                        .dist(i, &s.kmers, j, s.enc[i].len(), s.enc[j].len(), p.k);
                     align_endsfree_with_buf(&s.enc[i], &s.enc[j], 5, -4, -8, p.band, buf);
                     let (edits, core, band_req) = aln_divergence(&buf.al0, &buf.al1);
                     let pct = if core > 0 {
@@ -719,7 +1102,7 @@ fn run_from_dada(inputs: &[PathBuf], p: &Params) -> io::Result<()> {
     })?;
     let samples: Vec<DadaSample> = inputs
         .iter()
-        .map(|path| load_dada(path, derep_dir, p.k))
+        .map(|path| load_dada(path, derep_dir, p))
         .collect::<io::Result<_>>()?;
 
     let mut w: Box<dyn Write> = match &p.output {
@@ -778,17 +1161,19 @@ fn from_dada_mode(
                     if ncenters > 0 {
                         let c = (0..ncenters)
                             .min_by(|&a, &b| {
-                                let ka = kmer_dist8(
-                                    &s.kmers[i],
+                                let ka = s.kmers.dist(
+                                    i,
+                                    &s.c_kmers,
+                                    a,
                                     s.enc[i].len(),
-                                    &s.c_kmers[a],
                                     s.c_enc[a].len(),
                                     p.k,
                                 );
-                                let kb = kmer_dist8(
-                                    &s.kmers[i],
+                                let kb = s.kmers.dist(
+                                    i,
+                                    &s.c_kmers,
+                                    b,
                                     s.enc[i].len(),
-                                    &s.c_kmers[b],
                                     s.c_enc[b].len(),
                                     p.k,
                                 );
@@ -831,22 +1216,26 @@ fn from_dada_mode(
         let rows: Vec<(usize, f64, usize, usize, f64, usize)> = pool.install(|| {
             jobs.par_iter()
                 .map_init(AlignBuffers::new, |buf, job| {
-                    let (ei, ej, ki, kj, c) = match job {
+                    // (screen set, index) pairs rather than borrowed slices:
+                    // the sketch backend has no slice to borrow.
+                    let (ei, ej, si, i_idx, sj, j_idx, c) = match job {
                         Job::Member { i, c } => {
-                            (&s.enc[*i], &s.c_enc[*c], &s.kmers[*i], &s.c_kmers[*c], *c)
+                            (&s.enc[*i], &s.c_enc[*c], &s.kmers, *i, &s.c_kmers, *c, *c)
                         }
                         Job::Failed { i, c } => {
-                            (&s.enc[*i], &s.c_enc[*c], &s.kmers[*i], &s.c_kmers[*c], *c)
+                            (&s.enc[*i], &s.c_enc[*c], &s.kmers, *i, &s.c_kmers, *c, *c)
                         }
                         Job::CenterPair { a, b } => (
                             &s.c_enc[*a],
                             &s.c_enc[*b],
-                            &s.c_kmers[*a],
-                            &s.c_kmers[*b],
+                            &s.c_kmers,
+                            *a,
+                            &s.c_kmers,
+                            *b,
                             *b,
                         ),
                     };
-                    let kd = kmer_dist8(ki, ei.len(), kj, ej.len(), p.k);
+                    let kd = si.dist(i_idx, sj, j_idx, ei.len(), ej.len(), p.k);
                     align_endsfree_with_buf(ei, ej, 5, -4, -8, p.band, buf);
                     let (edits, core, band_req) = aln_divergence(&buf.al0, &buf.al1);
                     let pct = if core > 0 {
@@ -974,13 +1363,9 @@ fn nearest_parent_mode(
                     let i = order[r];
                     let (mut best_kd, mut parent) = (f64::INFINITY, order[0]);
                     for &c in &order[0..r] {
-                        let kd = kmer_dist8(
-                            &s.kmers[i],
-                            s.enc[i].len(),
-                            &s.kmers[c],
-                            s.enc[c].len(),
-                            p.k,
-                        );
+                        let kd = s
+                            .kmers
+                            .dist(i, &s.kmers, c, s.enc[i].len(), s.enc[c].len(), p.k);
                         if kd < best_kd {
                             best_kd = kd;
                             parent = c;
@@ -1049,7 +1434,7 @@ fn nearest_parent_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::{find_derep_for_sample, load_dada, load_dada_pooled};
+    use super::{Params, ScreenBackend, find_derep_for_sample, load_dada, load_dada_pooled};
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use std::io::Write;
@@ -1088,6 +1473,33 @@ mod tests {
     /// `load_dada` has to gunzip a `.json.gz` input rather than parse the raw
     /// gzip bytes as JSON (regression for the "expected value, line 1 column 1"
     /// failure on gzipped dada outputs, e.g. those from `dada-pooled --gzip`).
+    /// Minimal `Params` for the loader tests: only `k` and the screen fields are
+    /// consulted on these paths.
+    fn test_params(k: usize) -> Params {
+        Params {
+            k,
+            screen_backend: ScreenBackend::Kmer,
+            minimizer_k: crate::minimizers::MINIMIZER_K,
+            minimizer_w: crate::minimizers::MINIMIZER_W,
+            derive_cutoff: false,
+            derive_uniform_pairs: false,
+            cutoff: 0.42,
+            leak_pct: 10.0,
+            band: -1,
+            max_pairs: 0,
+            max_uniques: 0,
+            per_sample: false,
+            nearest_parent: false,
+            from_dada: false,
+            from_dada_pooled: false,
+            derep_dir: None,
+            threads: 1,
+            seed: 1,
+            output: None,
+            verbose: false,
+        }
+    }
+
     #[test]
     fn load_dada_reads_gzipped_output() {
         let d = TmpDir::new("gzdada");
@@ -1115,7 +1527,8 @@ mod tests {
         .unwrap();
         gz.finish().unwrap();
 
-        let sample = load_dada(&dada_path, &d.0, 7).expect("gzipped dada output should load");
+        let sample =
+            load_dada(&dada_path, &d.0, &test_params(7)).expect("gzipped dada output should load");
         assert_eq!(sample.name, "F3D0");
         assert_eq!(sample.enc.len(), 1);
     }
@@ -1140,7 +1553,7 @@ mod tests {
         )
         .unwrap();
 
-        let s = load_dada_pooled(&path, 5).expect("pooled record should load");
+        let s = load_dada_pooled(&path, &test_params(5)).expect("pooled record should load");
         assert_eq!(s.name, "__pooled__");
         assert_eq!(s.enc.len(), 3);
         assert_eq!(s.counts, vec![10, 3, 1]);

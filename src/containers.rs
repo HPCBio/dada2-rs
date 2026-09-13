@@ -93,6 +93,13 @@ pub struct Raw {
     pub kmer8: Option<KmerScreen>,
     /// K-mers in the order they appear along the sequence; populated by kmers module.
     pub kord: Option<Vec<u16>>,
+    /// Winnowed minimizer sketch, populated only under
+    /// `ScreenBackend::Minimizer` (experimental). Mutually exclusive with
+    /// `kmer8` in practice — the two backends are alternatives, and building
+    /// both would pay twice for one screen. `kord` is still built alongside it,
+    /// because the gapless fast path keys off the k-order vector rather than off
+    /// the screen.
+    pub minimizers: Option<crate::minimizers::MinimizerSketch>,
     /// Number of reads of this unique sequence.
     pub reads: u32,
     /// Index of this Raw in `B.raws`.
@@ -143,6 +150,7 @@ impl Raw {
             prior,
             kmer8: None,
             kord: None,
+            minimizers: None,
             reads,
             index: 0,
             p: 0.0,
@@ -163,7 +171,8 @@ impl Raw {
 
     /// Reset per-iteration mutable state so this Raw can be fed back into a
     /// fresh DADA run without re-encoding the sequence or recomputing k-mer
-    /// vectors. Leaves `seq`, `qual`, `kmer8`, `kord`, `reads`, `prior`
+    /// vectors. Leaves `seq`, `qual`, `kmer8`, `kord`, `minimizers`, `reads`,
+    /// `prior`
     /// intact — those are fixed for the life of the input. `index` is
     /// reassigned by `B::new`, which also re-seeds [`B::e_minmax`].
     pub fn reset_for_iteration(&mut self) {
@@ -314,6 +323,26 @@ pub struct B {
     /// `bi_add_raw` without updating `comp` (they carry `birth_comp` instead), so
     /// that field goes stale after a bud and would silently mis-target the scan.
     pub raw_cluster: Vec<u32>,
+    /// Minimizer posting lists over `raws`, built once when every raw carries a
+    /// sketch (i.e. under `ScreenBackend::Minimizer`).
+    ///
+    /// `b_compare` scans all raws against one cluster center, so the raws are
+    /// the stable side and the center is the query: one scatter over the
+    /// center's postings yields every raw's shared count, replacing `nraw`
+    /// independent merge-joins. An **exact** acceleration — see
+    /// [`crate::minimizers::MinimizerIndex`] — so it changes cost, never output.
+    pub minimizer_index: Option<crate::minimizers::MinimizerIndex>,
+    /// Why [`B::minimizer_index`] is or is not present, for `--verbose`. `None`
+    /// when the minimizer screen is not in use at all.
+    pub minimizer_index_decision: Option<crate::minimizers::IndexDecision>,
+    /// Reusable scratch for the minimizer index's per-cluster scatter: shared
+    /// minimizer count per raw.
+    ///
+    /// Held on `B` so it survives across `b_compare` calls. At 825k raws the
+    /// buffer is 3.3 MB, above glibc's mmap threshold, so allocating it per
+    /// cluster meant an mmap plus ~825 first-touch page faults plus munmap every
+    /// time -- roughly 3-6 s across a pooled ITS2 run's 3,414 clusters.
+    pub screen_shared: Vec<u32>,
     /// Running maximum expected abundance for each Raw, indexed by Raw index.
     ///
     /// Held here rather than on [`Raw`] (issue #147). `b_compare`'s serial
@@ -340,6 +369,36 @@ impl B {
             raw.index = i as u32;
         }
         let e_minmax = vec![-999.0; raws.len()];
+        // Built here rather than plumbed from params: "every raw has a sketch"
+        // is exactly the condition under which the minimizer screen is active,
+        // so the presence of the sketches is the signal. Disable for A/B with
+        // DADA2RS_MINIMIZER_INDEX=0 — the index is exact, so the two arms must
+        // agree byte-for-byte, and that is worth being able to check.
+        // The index is not unconditionally worth building: it trades parallel
+        // screen work for a SERIAL per-cluster scatter, and on pooled PacBio that
+        // made the indexed arm 26% slower than the k-mer screen it replaces while
+        // winning by 4-14% on the other workloads measured. So the choice is made
+        // per pool from the sketches themselves; see `minimizers::decide_index`.
+        //
+        // `current_num_threads` is read here rather than plumbed because it must
+        // be the threads of the pool that will run THIS b_compare — under
+        // per-sample concurrency `dada_uniques` runs inside a sub-pool, so this
+        // reads 4 rather than the global 48, which is the number the score needs.
+        let (index, decision) = if !raws.is_empty() && raws.iter().all(|r| r.minimizers.is_some()) {
+            let sketches: Vec<Option<crate::minimizers::MinimizerSketch>> =
+                raws.iter().map(|r| r.minimizers.clone()).collect();
+            let d = crate::minimizers::decide_index(
+                &sketches,
+                rayon::current_num_threads().max(1),
+                crate::minimizers::index_env_override(),
+            );
+            let idx = d
+                .use_index
+                .then(|| crate::minimizers::MinimizerIndex::build(&sketches));
+            (idx, Some(d))
+        } else {
+            (None, None)
+        };
         let mut b = B {
             raws,
             clusters: Vec::with_capacity(INIT_CLUSTERS_CAPACITY),
@@ -352,6 +411,9 @@ impl B {
             lams: Vec::new(),
             cdf: Vec::new(),
             raw_cluster: Vec::new(),
+            minimizer_index: index,
+            minimizer_index_decision: decision,
+            screen_shared: Vec::new(),
             e_minmax,
         };
         b.init();

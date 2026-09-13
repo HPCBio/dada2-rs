@@ -29,6 +29,33 @@ here is the evidence, and here is the path it opens or closes."
   dada k-mer-distance cutoffs can be set independently; the dada-stage speedup is
   safe to take, while pushing the same cutoff into learn-errors perturbs the error
   model and churns real-abundance ASVs.
+- [`--nbases` and error-model convergence](learn-errors-nbases-convergence.md) —
+  **the `1e8` default is inside the noise floor of which samples you drew.** On a
+  full MiSeq run, five models fitted at the *same* budget with different sample
+  draws differ by 1.25–1.43×, while raising the budget from 20 Mb to 500 Mb moves
+  it 1.41–1.43× — indistinguishable. Only above 500 Mb does added depth move the
+  model *less* than sample choice does. Confirms and quantifies the "not
+  converged at 1e8" aside from the KDIST work, and is the measurement behind
+  issue #68. The methodological point: a `--nbases` result without a
+  fixed-budget reshuffle arm cannot separate "more data helped" from "different
+  samples were read".
+- [Minimizers as the pre-alignment screen](minimizer-screening.md) — **a
+  long-read screen.** On PacBio HiFi (1540 ASVs, 542k reads) a winnowed sketch is
+  **ASV-identical to the k-mer screen — churn 0, L1 0.0053%** — while doing
+  **13.3% fewer alignments** and using ~74% less resident memory; on Illumina it
+  is merely equivalent (1-2 ASVs of 232) at cost parity. The split follows from
+  sketch precision scaling with read length: 250 bp yields ~48 minimizers,
+  1490 bp ~500, so the equivalent cutoff is 0.72 on Illumina and **0.50** on
+  PacBio — exactly where the `4^k` frequency vector goes the other way (at k=5 on
+  HiFi it passes **100.00%** of pairs, a literal no-op). Also the page on being
+  wrong three times: the cutoff does not transfer between metrics sharing a
+  formula, k=11 was never measured, and the largest problem was not about
+  minimizers at all — **`kdist` was secretly driving alignment method
+  selection**, so any screen replacement silently disabled the gapless path.
+  Fixed by deriving the no-indel predicate from `kord`. Along the way: a
+  concordance fixture is only evidence about the part of the distribution it
+  contains, and the k-mer screen at 0.42 is itself **not lossless** against
+  unscreened denoising.
 - [K-mer screen size](kmer-size-screening.md) — `--kmer-size` has ~no effect on
   the final chimera-filtered table on either platform; it is a speed/memory knob,
   not an accuracy knob (k=5 Illumina, k=7 PacBio for speed).

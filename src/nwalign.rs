@@ -12,7 +12,8 @@
 //! Traceback pointer values: `1` = diagonal, `2` = left (gap in s1), `3` = up (gap in s2).
 
 use crate::containers::{Raw, Sub};
-use crate::kmers::{assign_kmer, kmer_dist, kord_dist};
+use crate::kmers::{assign_kmer, kmer_dist};
+use crate::minimizers;
 // The experimental WFA backend lives in [`crate::wfa`]; the ends-free dispatch
 // below routes to it when selected. `align_wfa_endsfree_with_buf` and
 // `wfa_cost_cap` exist in every build (a stub / pure arithmetic respectively);
@@ -59,6 +60,36 @@ pub enum AlignBackend {
     Wfa2,
 }
 
+/// Which pre-alignment screen decides whether a pair is worth aligning.
+///
+/// Both backends feed the same `kdist_cutoff` gate and neither defines the
+/// clusters — the screen only avoids alignments (see
+/// `docs/findings/kmer-size-screening.md`). They differ in *which* k-mers are
+/// consulted: `Kmer` compares full `4^k` frequency vectors, `Minimizer` compares
+/// a winnowed sketch. Experimental, opt-in, and default `Kmer`, on the same
+/// footing as [`AlignBackend::Wfa2`]: this deviates from the R/C++ reference,
+/// whose screen is the ESPRIT frequency vector.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum ScreenBackend {
+    /// ESPRIT-style `4^k` k-mer frequency vectors, the default and the R
+    /// reference's behaviour.
+    #[default]
+    Kmer,
+    /// Experimental winnowed-minimizer sketch (see [`crate::minimizers`]).
+    Minimizer,
+}
+
 /// Parameters controlling alignment method selection in `raw_align`.
 #[derive(Clone, Copy)]
 pub struct AlignParams {
@@ -78,6 +109,22 @@ pub struct AlignParams {
     pub homo_gap_p: i32,
     pub use_kmers: bool,
     pub kdist_cutoff: f64,
+    /// Which pre-alignment screen to use (experimental; default
+    /// [`ScreenBackend::Kmer`]).
+    pub screen_backend: ScreenBackend,
+    /// K-mer size for the minimizer sketch. Ignored unless `screen_backend` is
+    /// [`ScreenBackend::Minimizer`]. Independent of `kmer_size`: the sketch's
+    /// memory does not scale with it, so it is chosen purely for discrimination.
+    pub minimizer_k: usize,
+    /// Winnowing window, in k-mers, for the minimizer sketch. Ignored unless
+    /// `screen_backend` is [`ScreenBackend::Minimizer`].
+    pub minimizer_w: usize,
+    /// Diagnostic: evaluate BOTH screens on every comparison and align the
+    /// union, recording the pair-level agreement in [`minimizers::audit`].
+    /// Requires `screen_backend == Minimizer` and both screens built on each
+    /// `Raw`. Changes the work done (and therefore the timings) but not the
+    /// backend's own screen verdicts, so the ASVs are the minimizer backend's.
+    pub screen_audit: bool,
     /// K-mer size used for the pre-alignment screen and for building the
     /// k-mer / k-order vectors on each `Raw`. Must match the `k` used when
     /// `raw_assign_kmers` populated those vectors (otherwise the distance
@@ -117,6 +164,16 @@ pub struct VectorizedAlignScores {
 /// avoid per-alignment `Vec<u8>` allocations (~2× per `raw_align`).
 #[derive(Default)]
 pub struct AlignBuffers {
+    /// Per-thread scratch for the no-indel predicate: one counter per k-mer
+    /// index (`4^k`). Sized per *thread*, not per raw, so it costs
+    /// `threads x 4^k` rather than `nraw x 4^k` -- which is why recovering the
+    /// exact k-mer predicate does not give back the memory the sketch saves.
+    kord_counts: Vec<i32>,
+    /// Screen-audit state: whether the last comparison passed each screen.
+    /// Written by `raw_align_with_buf`, consumed by `sub_new_with_buf`, which is
+    /// the first point at which the substitution count exists.
+    pub audit_kmer_pass: bool,
+    pub audit_mini_pass: bool,
     // Scalar DP (align_endsfree, align_endsfree_homo, align_standard).
     d32: Vec<i32>,
     p32: Vec<u8>,
@@ -1247,6 +1304,26 @@ pub fn raw_align_with_buf(
     p: &AlignParams,
     buf: &mut AlignBuffers,
 ) -> Option<()> {
+    raw_align_with_screen(raw1, raw2, p, buf, None)
+}
+
+/// [`raw_align_with_buf`] with the screen distance optionally supplied by the
+/// caller.
+///
+/// `screen` short-circuits the pairwise screen computation only — the value is
+/// used exactly as the computed one would have been, for the cutoff gate and for
+/// the DP's banding decisions alike. Its purpose is
+/// [`crate::minimizers::MinimizerIndex`], which derives the same distance for
+/// every raw against one cluster center in a single scatter pass, making the
+/// per-pair merge-join redundant. Passing a value that differs from what the
+/// pairwise path would compute changes the run's output.
+pub fn raw_align_with_screen(
+    raw1: &Raw,
+    raw2: &Raw,
+    p: &AlignParams,
+    buf: &mut AlignBuffers,
+    screen: Option<f64>,
+) -> Option<()> {
     // --- K-mer screening ---
     // Timed under `buf.measure` (#127). The screen and the alignment are the
     // two halves of a comparison's cost, and only the second is avoidable —
@@ -1259,37 +1336,68 @@ pub fn raw_align_with_buf(
         buf.last_align_nanos = 0;
     }
     let mut kdist = 0.0f64;
-    let mut kodist = -1.0f64; // sentinel: different from kdist when use_kmers=false
 
     if p.use_kmers {
         let k = p.kmer_size;
-        // Prefer 8-bit kmer distance; fall back to 16-bit on overflow.
-        kdist = match (&raw1.kmer8, &raw2.kmer8) {
-            (Some(k1), Some(k2)) => {
-                let d8 = k1.dist8(k2, raw1.len(), raw2.len(), k);
-                if d8 < 0.0 {
-                    // Overflow (a k-mer occurs ≥255× in both seqs): fall back to
-                    // the exact 16-bit distance. The u16 vectors are not kept
-                    // resident (issue #32), so recompute them from sequence here
-                    // — this path is essentially never hit for amplicon data.
-                    let v1 = assign_kmer(&raw1.seq, k);
-                    let v2 = assign_kmer(&raw2.seq, k);
-                    kmer_dist(&v1, raw1.len(), &v2, raw2.len(), k)
-                } else {
-                    d8
+        kdist = match (screen, p.screen_backend) {
+            (Some(d), _) => d,
+            (None, backend) => match backend {
+                ScreenBackend::Kmer => {
+                    // Prefer 8-bit kmer distance; fall back to 16-bit on overflow.
+                    match (&raw1.kmer8, &raw2.kmer8) {
+                        (Some(k1), Some(k2)) => {
+                            let d8 = k1.dist8(k2, raw1.len(), raw2.len(), k);
+                            if d8 < 0.0 {
+                                // Overflow (a k-mer occurs ≥255× in both seqs): fall
+                                // back to the exact 16-bit distance. The u16 vectors
+                                // are not kept resident (issue #32), so recompute
+                                // them from sequence here — this path is essentially
+                                // never hit for amplicon data.
+                                let v1 = assign_kmer(&raw1.seq, k);
+                                let v2 = assign_kmer(&raw2.seq, k);
+                                kmer_dist(&v1, raw1.len(), &v2, raw2.len(), k)
+                            } else {
+                                d8
+                            }
+                        }
+                        // No 8-bit vectors built (e.g. cluster-center raws): no
+                        // k-mer screen, exactly as before — previously both kmer8
+                        // and the u16 kmer were absent together, yielding
+                        // kdist = 0.0.
+                        _ => 0.0,
+                    }
                 }
-            }
-            // No 8-bit vectors built (e.g. cluster-center raws): no k-mer screen,
-            // exactly as before — previously both kmer8 and the u16 kmer were
-            // absent together, yielding kdist = 0.0.
-            _ => 0.0,
+                ScreenBackend::Minimizer => screen_dist_minimizer(raw1, raw2),
+            },
         };
 
-        if p.gapless
-            && let (Some(o1), Some(o2)) = (&raw1.kord, &raw2.kord)
-        {
-            kodist = kord_dist(o1, raw1.len(), o2, raw2.len(), k);
+        if p.screen_audit {
+            // Evaluate the *other* screen too and stash both verdicts. `kdist`
+            // itself is left as the active backend's value so the alignment path
+            // (banding, the gapless shortcut) is exactly what that backend would
+            // have taken — the audit changes which pairs are aligned, never how.
+            let other = match p.screen_backend {
+                ScreenBackend::Minimizer => match (&raw1.kmer8, &raw2.kmer8) {
+                    (Some(k1), Some(k2)) => {
+                        let d8 = k1.dist8(k2, raw1.len(), raw2.len(), k);
+                        if d8 < 0.0 { 0.0 } else { d8 }
+                    }
+                    _ => 0.0,
+                },
+                ScreenBackend::Kmer => screen_dist_minimizer(raw1, raw2),
+            };
+            let (kmer_d, mini_d) = match p.screen_backend {
+                ScreenBackend::Minimizer => (other, kdist),
+                ScreenBackend::Kmer => (kdist, other),
+            };
+            buf.audit_kmer_pass = kmer_d <= p.kdist_cutoff;
+            buf.audit_mini_pass = mini_d <= p.kdist_cutoff;
         }
+
+        // `kord_dist` used to be computed here to feed the gapless predicate.
+        // That predicate now derives both of its counts from `kord` inside
+        // `pair_is_gapless`, so this per-pair pass is dead -- and it ran on every
+        // screened pair, including the majority that the screen then rejected.
     }
 
     if let Some(t) = t_screen {
@@ -1297,11 +1405,22 @@ pub fn raw_align_with_buf(
     }
 
     if p.use_kmers && kdist > p.kdist_cutoff {
-        return None; // Outside k-mer distance threshold → NULL alignment.
+        if p.screen_audit && (buf.audit_kmer_pass || buf.audit_mini_pass) {
+            // The active backend shrouded this pair but the other backend would
+            // have aligned it. Under audit we align anyway, so the disagreement
+            // can be bucketed by the substitution count the aligner finds —
+            // otherwise a disagreement is just a count, with no way to tell a
+            // lost error copy from a correctly-rejected stranger.
+        } else {
+            if p.screen_audit {
+                minimizers::audit::record(buf.audit_kmer_pass, buf.audit_mini_pass, None);
+            }
+            return None; // Outside k-mer distance threshold → NULL alignment.
+        }
     }
 
     let t_align = buf.measure.then(std::time::Instant::now);
-    let r = raw_align_dp(raw1, raw2, p, buf, kdist, kodist);
+    let r = raw_align_dp(raw1, raw2, p, buf);
     if let Some(t) = t_align {
         buf.last_dp_nanos = t.elapsed().as_nanos() as u64;
         buf.last_align_nanos = buf.last_dp_nanos;
@@ -1309,19 +1428,114 @@ pub fn raw_align_with_buf(
     r
 }
 
+/// Whether a pair is free of indels, decided from `kord` alone.
+///
+/// This is the screen-independent form of DADA2's gapless predicate. The
+/// original test is `kord_dist == kmer_dist`, and with equal lengths both share
+/// the denominator `len - k + 1`, so it reduces to two counts:
+///
+/// - **positional** matches: k-mers equal at the same offset,
+/// - **compositional** matches: the multiset intersection.
+///
+/// The intersection is always >= the positional count, because a positional
+/// match is also a multiset match. An indel shifts every downstream k-mer: it
+/// stays in the multiset but leaves its offset, so the intersection strictly
+/// exceeds the positional count. Equality therefore means no shift, hence no
+/// indel, hence a gapless alignment is safe.
+///
+/// Both counts come from `kord`, which is populated under **either** screen
+/// backend and whose value at `i` *is* the k-mer index at position `i` -- so its
+/// value multiset is exactly the k-mer composition. Nothing here consults the
+/// screen.
+///
+/// That matters because the predicate was never a property of the screen; it is
+/// a property of the pair. Reading it off `kdist` was an optimisation that
+/// happened to work while `kdist` was a k-mer frequency distance, and it broke
+/// silently when a different screen supplied a distance from another space
+/// (see `docs/findings/minimizer-screening.md`).
+fn pair_is_gapless(raw1: &Raw, raw2: &Raw, k: usize, scratch: &mut Vec<i32>) -> bool {
+    if raw1.len() != raw2.len() {
+        return false; // kord_dist is undefined for unequal lengths
+    }
+    let (Some(o1), Some(o2)) = (&raw1.kord, &raw2.kord) else {
+        return false;
+    };
+    let Some(klen) = raw1.len().checked_sub(k - 1).filter(|&l| l > 0) else {
+        return false;
+    };
+    if o1.len() < klen || o2.len() < klen {
+        return false;
+    }
+    let (a, b) = (&o1[..klen], &o2[..klen]);
+
+    let positional = a.iter().zip(b).filter(|(x, y)| x == y).count();
+
+    let n = crate::kmers::n_kmers(k);
+    if scratch.len() < n {
+        scratch.resize(n, 0);
+    }
+    for &v in a {
+        scratch[v as usize] += 1;
+    }
+    let mut intersection = 0usize;
+    for &v in b {
+        let c = &mut scratch[v as usize];
+        if *c > 0 {
+            *c -= 1;
+            intersection += 1;
+        }
+    }
+    // Clear only what was touched: O(klen), not O(4^k).
+    for &v in a {
+        scratch[v as usize] = 0;
+    }
+
+    intersection == positional
+}
+
+/// Gapless-shortcut hit counters, active only under `--screen-audit`.
+pub static GAPLESS_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static GAPLESS_TOTAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Minimizer-sketch screen distance for a pair (experimental,
+/// [`ScreenBackend::Minimizer`]).
+///
+/// Thin wrapper over [`minimizers::screen_dist`], which owns the fail-open rule
+/// so this path and the index path in `b_compare_parallel` cannot drift apart.
+#[inline]
+fn screen_dist_minimizer(raw1: &Raw, raw2: &Raw) -> f64 {
+    let shared = match (&raw1.minimizers, &raw2.minimizers) {
+        (Some(m1), Some(m2)) => minimizers::shared_count(m1, m2),
+        _ => 0,
+    };
+    minimizers::screen_dist(shared, raw1.minimizers.as_ref(), raw2.minimizers.as_ref())
+}
+
 /// The alignment half of [`raw_align_with_buf`], split out so the k-mer screen
 /// and the DP can be timed separately (#127). Behaviour is unchanged: this is
 /// the body that followed the screen's early return.
-fn raw_align_dp(
-    raw1: &Raw,
-    raw2: &Raw,
-    p: &AlignParams,
-    buf: &mut AlignBuffers,
-    kdist: f64,
-    kodist: f64,
-) -> Option<()> {
+fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers) -> Option<()> {
     // --- Method selection ---
-    if p.band == 0 || (p.gapless && (kodist - kdist).abs() < f64::EPSILON) {
+    // Method selection is decided from `kord`, independent of which screen ran.
+    // For the k-mer backend this reproduces the historical `kodist == kdist`
+    // test exactly (that equality IS `intersection == positional`); for the
+    // minimizer backend it restores a predicate that `kdist` could not express.
+    let take_gapless = p.band == 0
+        || (p.gapless && pair_is_gapless(raw1, raw2, p.kmer_size, &mut buf.kord_counts));
+    if p.screen_audit {
+        // The gapless shortcut fires on `kodist == kdist`: the positional and
+        // compositional k-mer distances agreeing means no shifts, hence no
+        // indels. That predicate is only meaningful when `kdist` comes from the
+        // SAME k-mer space as `kodist` -- under the minimizer backend `kdist` is
+        // a sketch distance, so the equality essentially never holds and this
+        // path silently stops firing. Counted so that claim is measured, not
+        // assumed.
+        GAPLESS_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if take_gapless {
+            GAPLESS_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    if take_gapless {
         align_gapless_with_buf(&raw1.seq, &raw2.seq, buf);
         return Some(());
     }
@@ -1432,7 +1646,20 @@ pub fn sub_new_with_buf(
     params: &AlignParams,
     buf: &mut AlignBuffers,
 ) -> Option<Sub> {
-    raw_align_with_buf(raw0, raw1, params, buf)?;
+    sub_new_with_screen(raw0, raw1, params, buf, None)
+}
+
+/// [`sub_new_with_buf`] with the screen distance optionally supplied by the
+/// caller; see [`raw_align_with_screen`].
+pub fn sub_new_with_screen(
+    raw0: &Raw,
+    raw1: &Raw,
+    params: &AlignParams,
+    buf: &mut AlignBuffers,
+    screen: Option<f64>,
+) -> Option<Sub> {
+    raw_align_with_screen(raw0, raw1, params, buf, screen)?;
+    let audit = params.screen_audit && params.use_kmers;
     // Post-alignment work is charged to the alignment half (#127): it is paid
     // only by pairs the screen let through, so it belongs to what the aligner
     // costs, not to the screen's unavoidable baseline.
@@ -1451,7 +1678,28 @@ pub fn sub_new_with_buf(
         buf.last_post_nanos = t.elapsed().as_nanos() as u64;
         buf.last_align_nanos += buf.last_post_nanos;
     }
+    if audit {
+        minimizers::audit::record(buf.audit_kmer_pass, buf.audit_mini_pass, Some(sub.nsubs()));
+    }
+    // Under audit the gate is the union of both screens, so a pair the ACTIVE
+    // backend shrouded may have been aligned purely to classify it. Returning
+    // its Sub would let the audit change the run's output, which would defeat
+    // the point of auditing that backend.
+    if audit && !screen_pass_for_backend(params, buf) {
+        return None;
+    }
     Some(sub)
+}
+
+/// Whether the active backend's own screen passed the last comparison, for
+/// discarding audit-only alignments. Reads the verdicts stashed by
+/// `raw_align_with_buf`.
+#[inline]
+fn screen_pass_for_backend(p: &AlignParams, buf: &AlignBuffers) -> bool {
+    match p.screen_backend {
+        ScreenBackend::Kmer => buf.audit_kmer_pass,
+        ScreenBackend::Minimizer => buf.audit_mini_pass,
+    }
 }
 
 #[cfg(test)]
@@ -3141,6 +3389,10 @@ mod tests {
             homo_gap_p: -1,
             use_kmers: true,
             kdist_cutoff: 0.42,
+            screen_backend: ScreenBackend::Kmer,
+            minimizer_k: crate::minimizers::MINIMIZER_K,
+            minimizer_w: crate::minimizers::MINIMIZER_W,
+            screen_audit: false,
             kmer_size: 5,
             band: 16,
             vectorized: true, // must be overridden by the homopolymer branch

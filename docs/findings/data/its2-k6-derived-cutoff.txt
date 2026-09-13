@@ -1,0 +1,72 @@
+    k=8 w=5:
+      # derive-cutoff: matched pass rate, no alignment performed
+      # pairs: abundance-weighted -- the raw-vs-centre shape b_compare actually screens
+      
+      sketch shape  74 entries/raw, 48497 distinct of 4^8=65536 possible (74.0% saturated)
+      index         mean posting 1374, decide_index score 0.073 at 48 threads -> INDEX (screen ~32 ns/comp)
+      
+      uniques      904444 in 1 population(s)
+      pairs        50000
+      k-mer screen k=5 @ cutoff 0.42: passes 3.0860% of pairs
+      minimizer    k=8 w=5: matching cutoff 0.6286 -> **0.63** (passes 3.0920%)
+      
+      pair-level agreement with the k-mer screen at cutoff 0.63:
+        both pass               1487 ( 2.974%)
+        both shroud            48398 (96.796%)
+        k-mer only                56 ( 0.112%)  <- SHROUDED by the minimizer; the churn risk
+        minimizer only            59 ( 0.118%)  <- extra alignments, cost not correctness
+        DISAGREEMENT             115 ( 0.230% of pairs)   recall vs k-mer: 96.371%
+      
+      minimizer pass rate near the derived cutoff:
+        0.59      2.8440%
+        0.60      2.9260%
+        0.61      2.9820%
+        0.62      3.0460%
+        0.63 <-   3.0920%
+        0.64      3.1640%
+        0.65      3.2420%
+        0.66      3.3220%
+        0.67      3.3920%
+      
+      NOTE: this reproduces the k-mer screen's SELECTIVITY, which is the safe
+      target, not the cheapest cutoff that still agrees with it. On PacBio HiFi
+      the ASV table is identical from 0.45 to 0.60 and this rule picks 0.50 --
+      inside the plateau but at its expensive end, worth ~19% of wall clock.
+      Finding the cheap edge of a plateau needs the ASV table, so sweep if you
+      can afford to.
+    k=8 w=1:
+      # derive-cutoff: matched pass rate, no alignment performed
+      # pairs: abundance-weighted -- the raw-vs-centre shape b_compare actually screens
+      
+      sketch shape  223 entries/raw, 65536 distinct of 4^8=65536 possible (100.0% saturated)
+      index         mean posting 3080, decide_index score 0.163 at 48 threads -> INDEX (screen ~32 ns/comp)
+      
+      uniques      904444 in 1 population(s)
+      pairs        50000
+      k-mer screen k=5 @ cutoff 0.42: passes 3.0860% of pairs
+      minimizer    k=8 w=1: matching cutoff 0.6126 -> **0.61** (passes 3.0620%)
+      
+      pair-level agreement with the k-mer screen at cutoff 0.61:
+        both pass               1498 ( 2.996%)
+        both shroud            48424 (96.848%)
+        k-mer only                45 ( 0.090%)  <- SHROUDED by the minimizer; the churn risk
+        minimizer only            33 ( 0.066%)  <- extra alignments, cost not correctness
+        DISAGREEMENT              78 ( 0.156% of pairs)   recall vs k-mer: 97.084%
+      
+      minimizer pass rate near the derived cutoff:
+        0.57      2.8720%
+        0.58      2.9160%
+        0.59      2.9680%
+        0.60      3.0100%
+        0.61 <-   3.0620%
+        0.62      3.1200%
+        0.63      3.2160%
+        0.64      3.2940%
+        0.65      3.3480%
+      
+      NOTE: this reproduces the k-mer screen's SELECTIVITY, which is the safe
+      target, not the cheapest cutoff that still agrees with it. On PacBio HiFi
+      the ASV table is identical from 0.45 to 0.60 and this rule picks 0.50 --
+      inside the plateau but at its expensive end, worth ~19% of wall clock.
+      Finding the cheap edge of a plateau needs the ASV table, so sweep if you
+      can afford to.

@@ -10,8 +10,8 @@ use rayon::prelude::*;
 // modules this binary uses into scope so the existing `foo::Bar` paths resolve.
 use dada2_rs::{
     chimera_diagnostics, cli, cluster_trace, containers, dada, derep, error_models, failed_uniques,
-    filter_trim, kdist_calibrate, learn_errors, merge_pairs, misc, nwalign, reference_eval,
-    remove_bimera, remove_primers, sequence_table, summary, taxonomy,
+    filter_trim, kdist_calibrate, learn_errors, merge_pairs, minimizers, misc, nwalign,
+    reference_eval, remove_bimera, remove_primers, sequence_table, summary, taxonomy,
 };
 
 use clap::CommandFactory;
@@ -26,7 +26,7 @@ use learn_errors::{
     load_fastq_samples,
 };
 use misc::{DADA2_RS_VERSION, Tagged, read_fasta_records, read_tagged_json};
-use nwalign::{AlignBackend, AlignParams};
+use nwalign::{AlignBackend, AlignParams, ScreenBackend};
 use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
 use remove_primers::{RemovePrimersParams, iupac_reverse_complement, remove_primers};
 use sequence_table::{HashAlgo, OrderBy, SequenceTable, make_sequence_table};
@@ -135,7 +135,16 @@ fn build_learned_err_params(
         gapless: ap.gapless,
         backend: ap.backend,
         wfa_max_edits: ap.wfa_max_edits,
+        screen_backend: ap.screen_backend,
+        minimizer_k: ap.minimizer_k,
+        minimizer_w: ap.minimizer_w,
     }
+}
+
+/// `screen_backend` is omitted from output when it is the default, so a k-mer run's
+/// JSON is unchanged from before the backend existed.
+fn is_default_screen(b: &ScreenBackend) -> bool {
+    *b == ScreenBackend::Kmer
 }
 
 #[derive(Serialize, Copy, Clone)]
@@ -158,6 +167,22 @@ struct DadaRunParams {
     kdist_cutoff: f64,
     kmer_size: usize,
     use_kmers: bool,
+    /// Which pre-alignment screen ran. Recorded so a run's output says what
+    /// produced it: the two backends give closely-agreeing but not identical
+    /// tables, so "which screen" is part of a result's provenance, not a detail.
+    ///
+    /// Omitted for the default `kmer` backend, which keeps every existing output
+    /// byte-identical (AGENTS.md: do not alter the flat JSON output shape). Its
+    /// absence therefore means `kmer`.
+    #[serde(skip_serializing_if = "is_default_screen")]
+    screen_backend: ScreenBackend,
+    /// Sketch parameters, emitted only under the minimizer backend so every
+    /// existing k-mer output keeps its exact shape (AGENTS.md: do not alter the
+    /// flat JSON output shape).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    minimizer_k: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    minimizer_w: Option<usize>,
     /// Denoising mode: false = independent per-sample (`dada`), true = full
     /// pooling across samples (`dada-pooled`, R DADA2 pool=TRUE).
     pool: bool,
@@ -759,6 +784,10 @@ fn run() -> io::Result<()> {
             match_score,
             mismatch,
             align_backend,
+            screen_backend,
+            minimizer_k,
+            minimizer_w,
+            screen_audit,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -866,6 +895,10 @@ fn run() -> io::Result<()> {
                     no_kmer_screen,
                     align_backend,
                     wfa_max_edits,
+                    screen_backend,
+                    minimizer_k,
+                    minimizer_w,
+                    screen_audit,
                 )?;
 
                 // Samples are independent and single-pass (load -> denoise ->
@@ -1054,6 +1087,10 @@ fn run() -> io::Result<()> {
                 no_kmer_screen,
                 align_backend,
                 wfa_max_edits,
+                screen_backend,
+                minimizer_k,
+                minimizer_w,
+                screen_audit,
             )?;
             let dada_params = resolved.params;
             let run_params = resolved.run;
@@ -1290,6 +1327,10 @@ fn run() -> io::Result<()> {
             match_score,
             mismatch,
             align_backend,
+            screen_backend,
+            minimizer_k,
+            minimizer_w,
+            screen_audit,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -1522,6 +1563,10 @@ fn run() -> io::Result<()> {
                 no_kmer_screen,
                 align_backend,
                 wfa_max_edits,
+                screen_backend,
+                minimizer_k,
+                minimizer_w,
+                screen_audit,
             )?;
             let dada_params = resolved.params;
             let mut run_params = resolved.run;
@@ -1793,6 +1838,10 @@ fn run() -> io::Result<()> {
             match_score,
             mismatch,
             align_backend,
+            screen_backend,
+            minimizer_k,
+            minimizer_w,
+            screen_audit,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -1876,6 +1925,10 @@ fn run() -> io::Result<()> {
                 no_kmer_screen,
                 align_backend,
                 wfa_max_edits,
+                screen_backend,
+                minimizer_k,
+                minimizer_w,
+                screen_audit,
             )?;
 
             // ---- Validate the re-estimation request up front ----
@@ -3166,6 +3219,10 @@ fn run() -> io::Result<()> {
             match_score,
             mismatch,
             align_backend,
+            screen_backend,
+            minimizer_k,
+            minimizer_w,
+            screen_audit,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -3262,6 +3319,10 @@ fn run() -> io::Result<()> {
                 use_kmers: !no_kmer_screen,
                 kdist_cutoff,
                 kmer_size,
+                screen_backend: screen_backend.unwrap_or_default(),
+                minimizer_k: minimizer_k.unwrap_or(minimizers::MINIMIZER_K),
+                minimizer_w: minimizer_w.unwrap_or(minimizers::MINIMIZER_W),
+                screen_audit,
                 band,
                 vectorized: true,
                 gapless: true,
@@ -3845,6 +3906,10 @@ fn run() -> io::Result<()> {
             match_score,
             mismatch,
             align_backend,
+            screen_backend,
+            minimizer_k,
+            minimizer_w,
+            screen_audit,
             wfa_max_edits,
             max_clust,
             greedy,
@@ -3941,6 +4006,10 @@ fn run() -> io::Result<()> {
                 use_kmers: !no_kmer_screen,
                 kdist_cutoff,
                 kmer_size,
+                screen_backend: screen_backend.unwrap_or_default(),
+                minimizer_k: minimizer_k.unwrap_or(minimizers::MINIMIZER_K),
+                minimizer_w: minimizer_w.unwrap_or(minimizers::MINIMIZER_W),
+                screen_audit,
                 band,
                 vectorized: true,
                 gapless: true,
@@ -4069,6 +4138,9 @@ fn run() -> io::Result<()> {
         Commands::KdistCalibrate {
             inputs,
             k,
+            screen_backend,
+            minimizer_k,
+            minimizer_w,
             cutoff,
             leak_pct,
             band,
@@ -4078,6 +4150,8 @@ fn run() -> io::Result<()> {
             nearest_parent,
             from_dada,
             from_dada_pooled,
+            derive_cutoff,
+            derive_uniform_pairs,
             derep_dir,
             threads,
             seed,
@@ -4089,6 +4163,9 @@ fn run() -> io::Result<()> {
                 &inputs,
                 &kdist_calibrate::Params {
                     k,
+                    screen_backend,
+                    minimizer_k,
+                    minimizer_w,
                     cutoff,
                     leak_pct,
                     band,
@@ -4098,6 +4175,8 @@ fn run() -> io::Result<()> {
                     nearest_parent,
                     from_dada,
                     from_dada_pooled,
+                    derive_cutoff,
+                    derive_uniform_pairs,
                     derep_dir,
                     threads,
                     seed,
@@ -4366,6 +4445,10 @@ fn resolve_dada_params(
     no_kmer_screen: Option<bool>,
     align_backend: Option<AlignBackend>,
     wfa_max_edits: Option<i32>,
+    screen_backend: Option<ScreenBackend>,
+    minimizer_k: Option<usize>,
+    minimizer_w: Option<usize>,
+    screen_audit: bool,
 ) -> io::Result<ResolvedDada> {
     let em: ErrorModelJson = read_tagged_json(error_model, &["learn-errors", "errors-from-sample"])
         .with_path(error_model)?;
@@ -4428,7 +4511,14 @@ fn resolve_dada_params(
     let max_clust = resolve!(max_clust, max_clust, 0);
     let greedy = resolve!(greedy, greedy, true);
     let use_quals = resolve!(use_quals, use_quals, true);
-    let kdist_cutoff = resolve!(kdist_cutoff, kdist_cutoff, 0.42);
+    // The cutoff default is per-BACKEND: 0.42 is calibrated for the frequency
+    // vector and over-screens the sketch ~3x (see minimizers::MINIMIZER_KDIST_CUTOFF).
+    // An explicit --kdist-cutoff, or an inherited one, still wins.
+    let backend_default_cutoff = match screen_backend.unwrap_or_default() {
+        ScreenBackend::Minimizer => minimizers::MINIMIZER_KDIST_CUTOFF,
+        ScreenBackend::Kmer => 0.42,
+    };
+    let kdist_cutoff = resolve!(kdist_cutoff, kdist_cutoff, backend_default_cutoff);
     let kmer_size = resolve!(kmer_size, kmer_size, 5);
     let use_kmers = match (no_kmer_screen, inherit_err_params, p) {
         (Some(no), _, _) => !no,
@@ -4472,6 +4562,29 @@ fn resolve_dada_params(
         check!("use_kmers", use_kmers, em_params.use_kmers);
         check!("align_backend", backend, em_params.backend);
         check!("wfa_max_edits", wfa_max_edits, em_params.wfa_max_edits);
+        // The screen gates which pairs reach build_trans_mat, so it shapes the
+        // fitted model as surely as kdist_cutoff does -- up to 90.9% relative
+        // difference in err_out on the MiSeq SOP. Applying a model across a
+        // screen change is a provenance error worth naming.
+        check!(
+            "screen_backend",
+            screen_backend.unwrap_or_default(),
+            em_params.screen_backend
+        );
+        if em_params.screen_backend == ScreenBackend::Minimizer
+            || screen_backend.unwrap_or_default() == ScreenBackend::Minimizer
+        {
+            check!(
+                "minimizer_k",
+                minimizer_k.unwrap_or(minimizers::MINIMIZER_K),
+                em_params.minimizer_k
+            );
+            check!(
+                "minimizer_w",
+                minimizer_w.unwrap_or(minimizers::MINIMIZER_W),
+                em_params.minimizer_w
+            );
+        }
         if !mismatches.is_empty() {
             eprintln!(
                 "[dada] warning: {} dada parameter(s) differ from error model {}; pass --inherit-err-params to adopt the err model's values:",
@@ -4494,6 +4607,17 @@ fn resolve_dada_params(
         use_kmers,
         kdist_cutoff,
         kmer_size,
+        // Deliberately NOT resolved through the error model's `params` block,
+        // unlike every neighbour here. The screen backend is experimental and
+        // absent from models written by any released version, so inheriting it
+        // would silently resolve to `Kmer` and override an explicit
+        // `--screen-backend minimizer`. Consequence: a model learned under one
+        // screen and applied under the other is not flagged the way a
+        // `kdist_cutoff` mismatch is. Revisit if the backend is promoted.
+        screen_backend: screen_backend.unwrap_or_default(),
+        minimizer_k: minimizer_k.unwrap_or(minimizers::MINIMIZER_K),
+        minimizer_w: minimizer_w.unwrap_or(minimizers::MINIMIZER_W),
+        screen_audit,
         band,
         vectorized: true,
         gapless: true,
@@ -4533,6 +4657,15 @@ fn resolve_dada_params(
     };
 
     let run = DadaRunParams {
+        screen_backend: align_params.screen_backend,
+        minimizer_k: match align_params.screen_backend {
+            ScreenBackend::Minimizer => Some(align_params.minimizer_k),
+            ScreenBackend::Kmer => None,
+        },
+        minimizer_w: match align_params.screen_backend {
+            ScreenBackend::Minimizer => Some(align_params.minimizer_w),
+            ScreenBackend::Kmer => None,
+        },
         omega_a,
         omega_c,
         omega_p,
