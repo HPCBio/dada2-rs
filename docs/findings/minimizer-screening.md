@@ -748,15 +748,27 @@ each**. A long posting list is a sequential scan, and the cost model priced ever
 entry at random-access rates. **32-33 ns/comp is flat across every platform, pool
 and `k` measured** — a more useful constant than anything the score currently uses.
 
-The index's whole cost is `setup`. Over the three configurations available at
-the time, `setup` tracked **entries**, the total sketch mass — a reading that a
-fourth configuration later broke:
+The index's whole cost is `setup`. **`setup` is the per-cluster scatter, not the
+one-time build** — it is timed inside `b_compare_parallel` around
+`index.shared_counts()` and accumulates once per cluster, while
+`MinimizerIndex::build` runs in `B::new` and is not counted here at all. An
+earlier revision of this section divided `setup` by the index's total posting
+count and reported "ns per entry", which is the wrong denominator by construction:
+the scatter walks the *centre's* posting lists once per cluster, not the whole
+index once. The right denominator is `nclusters x entries_per_raw x mean_posting`:
 
-| pool | entries | `setup` | ns/entry |
-|---|---|---|---|
-| ITS2 k=8 | 60,831,385 | 15.39s | 0.25 |
-| ITS2 k=6 | 60,135,053 | 25.04s | 0.42 |
-| pooled PacBio | 258,350,362 | 160.09s | 0.62 |
+| pool | clusters | mean posting | scatter ops | `setup` | ns/op |
+|---|---|---|---|---|---|
+| ITS2 k=8, w=5 | 3,414 | 1,259 | 318 M | 15.39s | 48.4 |
+| soil 16S k=8, w=5 | 9,803 | 1,957 | 1.43 G | 128.09s | 89.8 |
+| pooled PacBio k=8, w=5 | 2,817 | 6,429 | 8.55 G | 160.09s | 18.7 |
+| ITS2 k=6, w=5 | 3,414 | 18,735 | 4.66 G | 25.04s | 5.4 |
+| ITS2 k=5, w=1 | 3,414 | 160,369 | 109 G | 126.63s | **1.2** |
+
+**Per-operation scatter cost falls ~40x as posting lists lengthen** (89.8 ns at
+posting 1,957 down to 1.2 ns at 160,369) — the same sequential-scan effect the
+screen measurement showed, now located in the phase that actually pays it. A short
+posting list is a random jump; a long one is a stream.
 
 So `score = entries_per_raw x threads / distinct` looked like it had **the right
 numerator and a spurious denominator**. That is half right and the wrong half is
@@ -1799,20 +1811,21 @@ posting 20,524 and 32-33 at 1,374-6,430. Scanning a posting list 116x longer cos
 **`setup` is what explodes, and it is not linear in `entries`** — which falsifies
 the correction the previous section proposed:
 
-| configuration | distinct | mean posting | entries | `setup` | ns/entry |
-|---|---|---|---|---|---|
-| ITS2 k=8, w=1 | 65,536 | 2,810 | 184.2 M | 37.31s | **0.203** |
-| ITS2 k=8, w=5 | 48,497 | 1,374 | 60.8 M | 15.39s | 0.253 |
-| ITS2 k=6, w=5 | 3,211 | 20,524 | 60.1 M | 25.04s | 0.417 |
-| ITS2 k=5, w=1 | 1,024 | 160,010 | 163.9 M | 126.63s | **0.773** |
-| pooled PacBio k=8, w=5 | 40,177 | 6,430 | 258.4 M | 160.09s | 0.620 |
+| configuration | distinct | mean posting | entries | `setup` |
+|---|---|---|---|---|
+| ITS2 k=8, w=1 | 65,536 | 2,810 | 184.2 M | 37.31s |
+| ITS2 k=8, w=5 | 48,497 | 1,374 | 60.8 M | 15.39s |
+| ITS2 k=6, w=5 | 3,211 | 20,524 | 60.1 M | 25.04s |
+| ITS2 k=5, w=1 | 1,024 | 160,010 | 163.9 M | **126.63s** |
+| pooled PacBio k=8, w=5 | 40,177 | 6,430 | 258.4 M | 160.09s |
 
 k=5/w=1 carries **fewer** entries than k=8/w=1 (163.9 M against 184.2 M) and pays
-**3.4x** the `setup`. Within one dataset the per-entry build cost rises with
-posting length. So **`sharing` is in the cost function after all — in `setup`, not
-in the screen** — and this page's earlier flat statement that it "is not in the
-index's cost function at all" is withdrawn. The original score's numerator was
-directionally right about the build; what it got wrong was how much.
+**3.4x** the `setup`. So **`sharing` is in the cost function after all — in
+`setup`, not in the screen** — and this page's earlier flat statement that it "is
+not in the index's cost function at all" is withdrawn. The mechanism is above:
+`setup` is `nclusters x entries_per_raw x mean_posting` operations, so halving
+`distinct` doubles the posting length *and* the work, against a per-operation cost
+that only falls sub-linearly.
 
 **But no single threshold on that score can work.** The two cases that must go
 opposite ways are ordered backwards by it:
