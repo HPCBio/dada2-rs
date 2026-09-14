@@ -841,40 +841,56 @@ merge-join costs reproduces all five verdicts, in both directions, with no free
 parameter — including k=6 on pooled ITS2, the case the score got wrong. That
 replay is pinned as a unit test.
 
-**Validated on pooled ITS2, both `k`.** Single binary fingerprint across all 24
-timing rows; the error model is content-identical to the run these numbers are
-compared against (`err_out` and `trans` match; only the embedded git hash
-differs).
+**Validated on pooled ITS2 (both `k`) and pooled PacBio — 3/3, both directions.**
+One binary fingerprint per run; ITS2 control channel 0.7%, PacBio 0.3%.
 
-| arm | mean | range | path | probe said |
+| workload | `_auto` | `_noidx` | forced on | probe said |
 |---|---|---|---|---|
-| `mini_k8_c0.63` forced on | 121.78s | 118.68-124.59 | index | USED |
-| `mini_k8_c0.63_auto` | 123.69s | 121.47-127.41 | index | **USED** |
-| `mini_k8_c0.63_noidx` | 144.68s | 143.86-145.74 | merge-join | forced off |
-| `mini_k6_c0.53_auto` | 134.17s | 132.10-135.34 | index | **USED** |
-| `mini_k6_c0.53_noidx` | 146.01s | 145.09-147.46 | merge-join | forced off |
-| `kmer` | 175.17s | 170.40-180.79 | — | — |
+| ITS2 k=8 @0.63 | **120.87s** | 144.43s | 123.15s | USED (ratio 3.86) |
+| ITS2 k=6 @0.53 | **129.59s** | 146.36s | 136.17s | USED (ratio 1.88) |
+| pooled PacBio @0.45 | **305.18s** | 293.08s | 434.14s | **declined** (ratio 0.62) |
 
-The probe takes the index on both, with disjoint ranges against the merge-join
-arm either way: **15.2% at k=8** and **8.1% at k=6**. The k=8 indexed arm is
-**-29.5%** against the k-mer baseline, replicating an earlier clean run's -29.5%
-exactly. k=6 is the case the score got wrong, and the probe recovers it.
+Against the k-mer baseline, ITS2 k=8 indexed is **-28.8%**; PacBio declined is
+**-9.6%**, against **+28.5%** had it indexed. Every closed-form score this page
+tried failed on this set of three; the probe passes it with no fitted constant.
 
-**The ASV tables are unchanged.** Ten cutoffs across both `k`, every churn value
-identical to the pre-probe numbers on this page (k=6: 36/21/19 at 0.45/0.50/0.55;
-k=8: 72/56/34/23/18/14 at 0.45/0.50/0.55/0.60/0.63/0.65), control 0. The index is
-exact, so only the *path* was ever allowed to change, and it is the only thing
-that did.
+**It took two goes, and the second corrected my account of the first.** The probe
+as first shipped chose the index on PacBio and lost 31% — and chose
+*inconsistently*, declining in one replicate (298.75s, matching the forced-off
+arm to 0.11s) and indexing in the other two. Two causes were identified and both
+fixed; the counterfactuals say only one of them mattered:
 
-One arm misbehaved: `mini_k6_c0.53` forced-on ran 130.65-183.86s, a 41% spread,
-while its `_auto` twin — provably identical work, both USED — held 2.4%. Every
-other arm on the run is within 2%, including the k=8 forced-on/`_auto` pair at
-1.6%, so this is one contaminated arm rather than a noisy rig, and its median
-sits above both. It is reported rather than dropped; the conclusions above rest
-on the `_auto`-versus-`_noidx` comparison, which is tight on both `k`.
+| | ratio | verdict |
+|---|---|---|
+| as shipped | 41.80 / 36.76 = **1.14** | index (wrong) |
+| charge the saving to screened comps, not `nraw` | 39.18 / 36.76 = **1.07** | index (still wrong) |
+| stop probing the initial compare | 41.80 / 62.63 = **0.67** | decline (right) |
+| both, as measured | 38.69 / 62.63 = **0.62** | decline |
 
-Pooled PacBio is still running. It is the one workload that must *decline*, and
-the case every closed-form rule failed.
+So the decisive error was **sampling the wrong cluster**, not the wrong
+denominator. `run_dada` runs cluster 0 at `kdist_cutoff = 1.0`, and its scatter
+measured **36.76 ms** against a run average of 56.8 ms — the probe was reading the
+cheapest cluster in the run. Probing real clusters instead measures 62.63 ms. The
+`nraw`-to-`screened` correction is right on its own terms and moves the ratio 6%,
+but alone it would not have flipped the verdict.
+
+**A known residual bias, in the direction of indexing.** The probe window screens
+**93.7%** of raws; the run average is **45.7%**. Greedy skipping is not stationary
+— it grows as clusters accumulate and raws lock — so sampling the first clusters
+overestimates the saving by **2.05x** here. With the run's true screened count the
+PacBio ratio would be **0.30** rather than the 0.62 reported, so the probe
+understates its own margin by about half, always toward building the index. It did
+not bite on any of the three workloads, but it is the thing to suspect first if a
+future workload is misclassified toward indexing. The fix, if needed, is not
+another coefficient: `screened` is computed exactly for every cluster at no cost,
+and the index is exact, so the decision can simply be revisited later in the run.
+
+**The cost of deciding by measurement** is visible on the declining workload:
+`_auto` is 4.1% behind `_noidx` (305.18s vs 293.08s). A declining pool must build
+the index before it can time a scatter, then drops it — about 12 s of 293 s, of
+which `setup` accounts for 0.25 s (the three probed scatters) and the rest is the
+258 M-posting build. That is the premium for having no threshold, against the
+29.7% a wrong call costs on this same workload.
 
 ### Calibrating on read retention: the cutoff is ~0.64
 
