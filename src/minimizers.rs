@@ -1223,6 +1223,32 @@ mod tests {
         assert!((mean.scatter_ns - 30.67e6).abs() < 0.1e6);
     }
 
+    /// The hindsight advisory is the same function fed the run's observed rate,
+    /// so it needs no threshold of its own: the test is whether the verdict
+    /// changes. Pinned with pooled PacBio's numbers, where it does.
+    #[test]
+    fn hindsight_catches_an_unrepresentative_probe_window() {
+        let t = ProbeTimings {
+            scatter_ns: 62.63e6,
+            merge_ns: 3621.0,
+            array_ns: 0.8,
+        };
+        // What the probe sampled, and what the run actually averaged.
+        let probed = 513_005;
+        let actual = 704_434_917 / 2817;
+        // Here the probe happened to land on the right answer anyway...
+        assert!(!decide_from_probe(t, probed, 48, 0, 0, None).use_index);
+        assert!(!decide_from_probe(t, actual, 48, 0, 0, None).use_index);
+        // ...but with the pre-fix scatter sample it did not, and hindsight
+        // against the real rate would have flagged it.
+        let bad = ProbeTimings {
+            scatter_ns: 36.76e6,
+            ..t
+        };
+        assert!(decide_from_probe(bad, probed, 48, 0, 0, None).use_index);
+        assert!(!decide_from_probe(bad, actual, 48, 0, 0, None).use_index);
+    }
+
     /// Greedy mode skips raws before the screen, so the saving is per
     /// COMPARISON, not per raw. Pooled PacBio screens only 45.7% of its
     /// raw-visits; charging the saving to all of them overestimates it 2.2x and
