@@ -2390,14 +2390,18 @@ What has been settled:
 
 What promotion would require, in order:
 
-1. **A judgement about the accuracy cost, which is real and not zero *on
-   Illumina*.** At the recommended cutoffs: 473-580 churned ASVs of 22,359 on
-   pooled 16S, 1.2% count L1; 18 of 3,028 and 0.77% on pooled ITS2. **On PacBio
-   HiFi the cost is exactly zero** at ≥0.45, so this requirement is
-   platform-specific and is already met on one platform. Churn is confined to the rare tail
-   (≤15 reads in every dataset checked) and Bray-Curtis stays under 0.02 per
-   sample, but whether that is acceptable depends on what the tables are used
-   for. **This is not a question the data answers.**
+1. ~~**A judgement about the accuracy cost.**~~ **DECIDED: accepted**, as
+   documented behaviour for an opt-in experimental backend. The cost is real on
+   Illumina (18 of 3,028 ASVs on pooled ITS2 at its derived cutoff, 473-580 of
+   22,359 on soil 16S, 1.2% count L1) and **exactly zero on PacBio HiFi**. What
+   the churned ASVs consist of, why half of it is the error model rather than the
+   screen, and why the k-mer baseline is itself 16 ASVs from unscreened, are set
+   out in [what the churned ASVs are](#what-the-churned-asvs-are-and-why-this-is-acceptable).
+   Users choosing this backend should expect mostly-concordant results with
+   differences confined to the rare tail. **What remains open is not this
+   judgement but the biology**: which inventory is closest to truth needs a mock
+   community, the same dependency as
+   [#44](https://github.com/HPCBio/dada2-rs/issues/44).
 2. **Replication.** One dataset per configuration. A second diverse pool per
    platform would say whether ~0.64 is a default or a coincidence.
 3. **The serial `setup` phase — addressed in code, pending one more workload.**
