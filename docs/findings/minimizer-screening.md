@@ -841,12 +841,40 @@ merge-join costs reproduces all five verdicts, in both directions, with no free
 parameter — including k=6 on pooled ITS2, the case the score got wrong. That
 replay is pinned as a unit test.
 
-**Validation in progress.** Pooled ITS2 at k=6 is confirmed: the probe chooses
-the index (probed cluster, scatter 11.16 ms against a 15.08 ms saving) where the
-score declined it, and the indexed path measures ~134s against ~146s for the
-merge-join — about 10%, consistent with an earlier independent run that put the
-same two paths at 128.08s and 145.70s. k=8 and pooled PacBio are running; PacBio
-is the one that must *decline*, and is the case every closed-form rule failed.
+**Validated on pooled ITS2, both `k`.** Single binary fingerprint across all 24
+timing rows; the error model is content-identical to the run these numbers are
+compared against (`err_out` and `trans` match; only the embedded git hash
+differs).
+
+| arm | mean | range | path | probe said |
+|---|---|---|---|---|
+| `mini_k8_c0.63` forced on | 121.78s | 118.68-124.59 | index | USED |
+| `mini_k8_c0.63_auto` | 123.69s | 121.47-127.41 | index | **USED** |
+| `mini_k8_c0.63_noidx` | 144.68s | 143.86-145.74 | merge-join | forced off |
+| `mini_k6_c0.53_auto` | 134.17s | 132.10-135.34 | index | **USED** |
+| `mini_k6_c0.53_noidx` | 146.01s | 145.09-147.46 | merge-join | forced off |
+| `kmer` | 175.17s | 170.40-180.79 | — | — |
+
+The probe takes the index on both, with disjoint ranges against the merge-join
+arm either way: **15.2% at k=8** and **8.1% at k=6**. The k=8 indexed arm is
+**-29.5%** against the k-mer baseline, replicating an earlier clean run's -29.5%
+exactly. k=6 is the case the score got wrong, and the probe recovers it.
+
+**The ASV tables are unchanged.** Ten cutoffs across both `k`, every churn value
+identical to the pre-probe numbers on this page (k=6: 36/21/19 at 0.45/0.50/0.55;
+k=8: 72/56/34/23/18/14 at 0.45/0.50/0.55/0.60/0.63/0.65), control 0. The index is
+exact, so only the *path* was ever allowed to change, and it is the only thing
+that did.
+
+One arm misbehaved: `mini_k6_c0.53` forced-on ran 130.65-183.86s, a 41% spread,
+while its `_auto` twin — provably identical work, both USED — held 2.4%. Every
+other arm on the run is within 2%, including the k=8 forced-on/`_auto` pair at
+1.6%, so this is one contaminated arm rather than a noisy rig, and its median
+sits above both. It is reported rather than dropped; the conclusions above rest
+on the `_auto`-versus-`_noidx` comparison, which is tight on both `k`.
+
+Pooled PacBio is still running. It is the one workload that must *decline*, and
+the case every closed-form rule failed.
 
 ### Calibrating on read retention: the cutoff is ~0.64
 
