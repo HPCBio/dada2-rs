@@ -405,8 +405,13 @@ pub struct IndexDecision {
     pub merge_ns: f64,
     /// Per-pair indexed-read cost measured on the same sample, nanoseconds.
     pub array_ns: f64,
-    /// Parallel saving the index buys on this cluster, nanoseconds:
-    /// `(merge_ns - array_ns) × nraw / threads`.
+    /// Screened comparisons per probed cluster (mean) — the count the saving is
+    /// charged to. NOT `nraw`: greedy mode skips raws before the screen.
+    pub ncomp: usize,
+    /// How many clusters were averaged. See [`PROBE_CLUSTERS`].
+    pub clusters: usize,
+    /// Parallel saving the index buys per cluster, nanoseconds:
+    /// `(merge_ns - array_ns) × ncomp / threads`.
     pub saving_ns: f64,
     pub threads: usize,
     /// `Some(true|false)` when `DADA2RS_MINIMIZER_INDEX` forced the outcome.
@@ -440,6 +445,69 @@ impl std::hash::BuildHasher for IdentityBuildHasher {
     type Hasher = IdentityHasher;
     fn build_hasher(&self) -> IdentityHasher {
         IdentityHasher(0)
+    }
+}
+
+/// How many clusters the probe averages over before committing.
+///
+/// One cluster is a *representative* sample but a noisy one, and the decision is
+/// a threshold test on a ratio: when that ratio lands near 1.0 the verdict flips
+/// between runs. It did, visibly — on pooled PacBio the probe declined in one
+/// replicate (298.75s, matching the forced-off arm to 0.11s) and indexed in the
+/// other two (425.18s, 420.77s), at a computed ratio of 1.14.
+///
+/// Averaging a few clusters shrinks that. This is a **sample size, not a
+/// calibration**: it encodes nothing about any workload, and the scatters it
+/// spends are the ones an indexing run performs anyway.
+pub const PROBE_CLUSTERS: usize = 3;
+
+/// Running total of the probe's per-cluster samples, held on `B` until
+/// [`PROBE_CLUSTERS`] have been seen.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProbeAccum {
+    pub n: usize,
+    pub scatter_ns: f64,
+    pub merge_ns: f64,
+    pub array_ns: f64,
+    /// Σ screened comparisons — see [`decide_from_probe`] on why this is not `nraw`.
+    pub ncomp: f64,
+    pub entries: usize,
+    pub distinct: usize,
+}
+
+impl ProbeAccum {
+    /// Fold in one cluster's measurement; `Some` once enough have accumulated.
+    pub fn push(
+        &mut self,
+        t: ProbeTimings,
+        ncomp: usize,
+        entries: usize,
+        distinct: usize,
+    ) -> Option<ProbeTimings> {
+        self.n += 1;
+        self.scatter_ns += t.scatter_ns;
+        self.merge_ns += t.merge_ns;
+        self.array_ns += t.array_ns;
+        self.ncomp += ncomp as f64;
+        self.entries = entries;
+        self.distinct = distinct;
+        (self.n >= PROBE_CLUSTERS).then(|| {
+            let n = self.n as f64;
+            ProbeTimings {
+                scatter_ns: self.scatter_ns / n,
+                merge_ns: self.merge_ns / n,
+                array_ns: self.array_ns / n,
+            }
+        })
+    }
+
+    /// Mean screened comparisons per probed cluster.
+    pub fn mean_ncomp(&self) -> usize {
+        if self.n == 0 {
+            0
+        } else {
+            (self.ncomp / self.n as f64) as usize
+        }
     }
 }
 
@@ -485,10 +553,19 @@ pub struct ProbeTimings {
 ///
 /// so the cluster count — the one quantity that cannot be known at `B::new`,
 /// and the reason every earlier attempt needed a fitted constant — **cancels**.
-/// One cluster is therefore a representative sample of the whole run, and the
-/// first one is probed directly: the scatter is timed as it happens, and the two
-/// per-pair paths are timed over a sample of raws. The verdict then holds for the
-/// rest of the pool.
+/// One cluster is therefore a representative sample of the whole run.
+///
+/// Two things about *which* cluster and *which* count, both learned by getting
+/// them wrong on pooled PacBio:
+///
+/// - **`ncomp` is comparisons, not raws.** Greedy mode skips a raw entirely
+///   before the screen is reached, so only 45.7% of pooled PacBio's raw-visits
+///   are ever screened (84.8% on pooled ITS2). Passing `nraw` overestimates the
+///   saving by `1/fraction` — 2.2x there, enough to invert the verdict. The
+///   caller therefore resolves the probe *after* the map, with `screened`.
+/// - **Not the initial compare.** `run_dada` runs cluster 0 with
+///   `kdist_cutoff = 1.0` so every raw accumulates a comparison, making it the
+///   one cluster whose skip fraction is 100% — precisely the wrong sample.
 ///
 /// The probe costs one scatter (which is not wasted — its result is exact and is
 /// used for that cluster) plus a few hundred microseconds of sampling.
@@ -498,7 +575,9 @@ pub struct ProbeTimings {
 /// per-sample concurrency and 48 for a single pooled run.
 pub fn decide_from_probe(
     t: ProbeTimings,
-    nraw: usize,
+    // Comparisons that actually reach the screen in the probed cluster — NOT
+    // `nraw`. See the note above.
+    ncomp: usize,
     threads: usize,
     entries: usize,
     distinct: usize,
@@ -513,7 +592,7 @@ pub fn decide_from_probe(
     // so a negative difference is timer noise on a sub-nanosecond quantity and
     // must not be read as the index costing the map time.
     let per_pair = (merge_ns - array_ns).max(0.0);
-    let saving_ns = per_pair * nraw as f64 / threads.max(1) as f64;
+    let saving_ns = per_pair * ncomp as f64 / threads.max(1) as f64;
     let sharing = if distinct == 0 {
         0.0
     } else {
@@ -524,6 +603,8 @@ pub fn decide_from_probe(
         entries,
         distinct,
         sharing,
+        ncomp,
+        clusters: PROBE_CLUSTERS,
         scatter_ns,
         merge_ns,
         array_ns,
@@ -1061,52 +1142,109 @@ mod tests {
         assert_eq!(empty.cutoff, MINIMIZER_KDIST_CUTOFF);
     }
 
-    /// The probe's arithmetic, at the shapes five real workloads measured.
-    /// `scatter_ns` and `merge_ns` are the numbers those runs produced; the
-    /// point is that the same rule reads all five correctly with no threshold.
+    /// The probe's arithmetic at the shapes five real workloads measured.
+    /// `scatter_ns` is the run's `setup` divided by its cluster count, `ncomp`
+    /// its screened comparisons divided by the same — i.e. the per-cluster
+    /// quantities the probe sees. The point is that one rule reads all five
+    /// correctly, in both directions, with no threshold.
     #[test]
     fn probe_reproduces_the_measured_verdicts() {
-        // name, scatter_ns/cluster, merge_ns/pair, nraw, threads, want_index
+        // name, setup_s, nclusters, merge_ns/pair, screened comps, want_index
         let cases = [
-            ("ITS2 k8w5", 15.39e9 / 3414.0, 1144.0, 825_214, 48, true),
+            ("ITS2 k8w5", 15.39, 3414.0, 1144.0, 2_387_850_490.0, true),
             (
                 "soil16S k8w5",
-                128.09e9 / 9803.0,
+                128.09,
+                9803.0,
                 974.0,
-                1_225_523,
-                48,
+                11_789_053_831.0,
                 true,
             ),
             (
                 "PacBio pooled",
-                160.09e9 / 2817.0,
+                160.09,
+                2817.0,
                 3332.0,
-                547_273,
-                48,
+                704_434_917.0,
                 false,
             ),
-            ("ITS2 k6w5", 25.04e9 / 3414.0, 1110.0, 825_214, 48, true),
-            ("ITS2 k5w1", 126.63e9 / 3414.0, 1917.0, 825_214, 48, false),
+            ("ITS2 k6w5", 25.04, 3414.0, 1110.0, 2_387_813_256.0, true),
+            ("ITS2 k5w1", 126.63, 3414.0, 1917.0, 2_387_853_158.0, false),
         ];
-        for (name, scatter_ns, merge_ns, nraw, threads, want) in cases {
+        for (name, setup_s, nclust, merge_ns, comps, want) in cases {
             let d = decide_from_probe(
                 ProbeTimings {
-                    scatter_ns,
+                    scatter_ns: setup_s * 1e9 / nclust,
                     merge_ns,
                     array_ns: 33.0,
                 },
-                nraw,
-                threads,
+                (comps / nclust) as usize,
+                48,
                 0,
                 0,
                 None,
             );
             assert_eq!(
-                d.use_index, want,
-                "{name}: saving {} vs scatter {}",
-                d.saving_ns, d.scatter_ns
+                d.use_index,
+                want,
+                "{name}: saving {:.3} ms vs scatter {:.3} ms",
+                d.saving_ns / 1e6,
+                d.scatter_ns / 1e6
             );
         }
+    }
+
+    /// Averaging must not change a clear verdict, and must damp a marginal one.
+    #[test]
+    fn probe_accumulates_over_several_clusters() {
+        let clear = |scatter: f64| ProbeTimings {
+            scatter_ns: scatter,
+            merge_ns: 3000.0,
+            array_ns: 30.0,
+        };
+        // Three clusters, one of them an outlier in each direction.
+        let mut a = ProbeAccum::default();
+        assert!(a.push(clear(1.0e6), 500_000, 0, 0).is_none());
+        assert!(a.push(clear(1.0e6), 500_000, 0, 0).is_none());
+        let mean = a
+            .push(clear(1.0e6), 500_000, 0, 0)
+            .expect("commits on the third");
+        assert_eq!(a.n, PROBE_CLUSTERS);
+        assert_eq!(a.mean_ncomp(), 500_000);
+        assert!((mean.scatter_ns - 1.0e6).abs() < 1.0);
+        assert!(decide_from_probe(mean, a.mean_ncomp(), 48, 0, 0, None).use_index);
+
+        // A single wild sample no longer decides on its own: two cheap scatters
+        // outvote one expensive outlier.
+        let mut b = ProbeAccum::default();
+        b.push(clear(1.0e6), 500_000, 0, 0);
+        b.push(clear(1.0e6), 500_000, 0, 0);
+        let mean = b.push(clear(90.0e6), 500_000, 0, 0).expect("third");
+        assert!((mean.scatter_ns - 30.67e6).abs() < 0.1e6);
+    }
+
+    /// Greedy mode skips raws before the screen, so the saving is per
+    /// COMPARISON, not per raw. Pooled PacBio screens only 45.7% of its
+    /// raw-visits; charging the saving to all of them overestimates it 2.2x and
+    /// inverts the verdict, which is exactly what shipped first and lost 31%.
+    #[test]
+    fn saving_is_per_comparison_not_per_raw() {
+        // The numbers the shipped probe actually reported on that run.
+        let t = ProbeTimings {
+            scatter_ns: 36.76e6,
+            merge_ns: 3667.0,
+            array_ns: 0.8,
+        };
+        let screened = (704_434_917f64 / 2817.0) as usize; // what actually reaches the screen
+        let raws = 547_273; // what the first version charged it to
+        assert!(
+            !decide_from_probe(t, screened, 48, 0, 0, None).use_index,
+            "with screened comparisons the index must be declined"
+        );
+        assert!(
+            decide_from_probe(t, raws, 48, 0, 0, None).use_index,
+            "pinning the bug: charging every raw flips it the wrong way"
+        );
     }
 
     #[test]

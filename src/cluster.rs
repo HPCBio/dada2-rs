@@ -337,10 +337,16 @@ pub fn b_compare_parallel(
     // is used), then time both per-pair paths over a sample and decide for the
     // rest of the pool. Both costs accrue per cluster, so one cluster settles it
     // — see `minimizers::decide_from_probe`.
-    let probing = index_eligible && b.minimizer_index_decision.is_none();
+    // NOT on the initial compare. `run_dada` runs cluster 0 with
+    // `kdist_cutoff = 1.0` so every raw accumulates a comparison, which makes it
+    // the one cluster where the greedy-skip fraction is 100% — the least
+    // representative possible sample of the very quantity the saving depends on.
+    // Probing there chose the index on pooled PacBio and lost 31%.
+    let probing =
+        index_eligible && b.minimizer_index_decision.is_none() && params.kdist_cutoff < 1.0;
     let scatter = index_eligible && b.minimizer_index_decision.is_none_or(|d| d.use_index);
     let mut have_shared = false;
-    let mut probe_result = None;
+    let mut probe_pending: Option<(crate::minimizers::ProbeTimings, usize, usize)> = None;
     if scatter {
         let index = b.minimizer_index.as_ref().expect("index_eligible");
         if let Some(q) = b.raws[center_idx].minimizers.as_ref() {
@@ -350,27 +356,19 @@ pub fn b_compare_parallel(
             have_shared = true;
             if probing {
                 let (merge_ns, array_ns) = time_screen_paths(q, &b.raws, &counts, center_idx, nraw);
-                probe_result = Some(crate::minimizers::decide_from_probe(
+                // Held until after the map: the saving is per COMPARISON, and how
+                // many of this cluster's raws actually reach the screen is only
+                // known once the map has run (`screened`).
+                probe_pending = Some((
                     crate::minimizers::ProbeTimings {
                         scatter_ns,
                         merge_ns,
                         array_ns,
                     },
-                    nraw,
-                    rayon::current_num_threads().max(1),
                     index.n_postings(),
                     index.n_keys(),
-                    b.minimizer_index_forced,
                 ));
             }
-        }
-    }
-    if let Some(d) = probe_result {
-        b.minimizer_index_decision = Some(d);
-        if !d.use_index {
-            // Return the postings: 2.1 GB on a pooled PacBio pool, and nothing
-            // downstream reads the index once the merge-join path is chosen.
-            b.minimizer_index = None;
         }
     }
     let shared: Option<&[u32]> = if have_shared { Some(&counts) } else { None };
@@ -539,6 +537,36 @@ pub fn b_compare_parallel(
     // Hand the buffer back so the next cluster reuses it rather than mmap-ing a
     // fresh multi-megabyte allocation.
     b.screen_shared = counts;
+    // Resolve the probe now that `screened` is known. Using `nraw` here instead
+    // overestimates the saving by 1/greedy-skip-fraction — 2.2x on pooled
+    // PacBio, which was enough to invert the verdict.
+    if let Some((t, entries, distinct)) = probe_pending {
+        let forced = b.minimizer_index_forced;
+        // Averaged over PROBE_CLUSTERS clusters, because a single sample put
+        // pooled PacBio at a ratio of 1.14 and the verdict then flipped between
+        // replicates.
+        if let Some(mean) = b
+            .minimizer_probe
+            .push(t, screened as usize, entries, distinct)
+        {
+            let ncomp = b.minimizer_probe.mean_ncomp();
+            let d = crate::minimizers::decide_from_probe(
+                mean,
+                ncomp,
+                rayon::current_num_threads().max(1),
+                entries,
+                distinct,
+                forced,
+            );
+            b.minimizer_index_decision = Some(d);
+            if !d.use_index {
+                // Return the postings: 2.1 GB on a pooled PacBio pool, and
+                // nothing downstream reads the index once the merge-join path
+                // is chosen.
+                b.minimizer_index = None;
+            }
+        }
+    }
     CompareTiming {
         map: map_dur,
         serial: serial_dur,

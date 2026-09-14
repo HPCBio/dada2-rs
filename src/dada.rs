@@ -1261,19 +1261,20 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 );
             } else {
                 eprintln!(
-                    "[dada] minimizer index: {} — probed cluster: scatter {:.2} ms vs saving \
-                 {:.2} ms (= ({:.0} - {:.1} ns/pair) x {} raws / {} threads); \
-                 {} distinct minimizers, {} postings, mean posting {:.0}{}",
+                    "[dada] minimizer index: {} — {} probed cluster(s), mean: scatter {:.2} ms \
+                 vs saving {:.2} ms (= ({:.0} - {:.1} ns/pair) x {} screened comps / \
+                 {} threads); {} distinct minimizers, {} postings, mean posting {:.0}{}",
                     if d.use_index {
                         "USED (scatter per cluster)"
                     } else {
                         "declined (per-pair merge-join)"
                     },
+                    d.clusters,
                     d.scatter_ns / 1e6,
                     d.saving_ns / 1e6,
                     d.merge_ns,
                     d.array_ns,
-                    bb.raws.len(),
+                    d.ncomp,
                     d.threads,
                     d.distinct,
                     d.entries,

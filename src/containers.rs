@@ -338,6 +338,8 @@ pub struct B {
     /// `DADA2RS_MINIMIZER_INDEX`, read once at construction. `Some(_)` makes the
     /// probe report its measurement but obey the override.
     pub minimizer_index_forced: Option<bool>,
+    /// Probe samples accumulated so far; see `minimizers::PROBE_CLUSTERS`.
+    pub minimizer_probe: crate::minimizers::ProbeAccum,
     /// Reusable scratch for the minimizer index's per-cluster scatter: shared
     /// minimizer count per raw.
     ///
@@ -408,6 +410,8 @@ impl B {
             entries: 0,
             distinct: 0,
             sharing: 0.0,
+            ncomp: 0,
+            clusters: 0,
             scatter_ns: 0.0,
             merge_ns: 0.0,
             array_ns: 0.0,
@@ -430,6 +434,7 @@ impl B {
             minimizer_index: index,
             minimizer_index_decision: decision,
             minimizer_index_forced: forced,
+            minimizer_probe: Default::default(),
             screen_shared: Vec::new(),
             e_minmax,
         };
