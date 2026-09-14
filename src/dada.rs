@@ -867,38 +867,6 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     use std::time::{Duration, Instant};
     let mut bb = B::new(raws, params.omega_a, params.omega_p, params.use_quals);
 
-    // The index decision is workload-dependent and reverses between workloads
-    // (see `minimizers::decide_index`), so it is reported rather than silent —
-    // a run that unexpectedly declines the index would otherwise look like an
-    // unexplained `setup` of 0.00s in the phase split.
-    if params.verbose
-        && let Some(d) = bb.minimizer_index_decision
-    {
-        let why = match d.forced {
-            Some(true) => " [FORCED on by DADA2RS_MINIMIZER_INDEX=1]",
-            Some(false) => " [FORCED off by DADA2RS_MINIMIZER_INDEX=0]",
-            None => "",
-        };
-        eprintln!(
-            "[dada] minimizer index: {} — score {:.3} (= sharing {:.1}× × {} threads / \
-                 {} raws) vs threshold {:.3}; {} distinct minimizers, \
-                 {} postings{}",
-            if bb.minimizer_index.is_some() {
-                "BUILT (scatter per cluster)"
-            } else {
-                "declined (per-pair merge-join)"
-            },
-            d.score,
-            d.sharing,
-            rayon::current_num_threads().max(1),
-            bb.raws.len(),
-            d.threshold,
-            d.distinct,
-            d.entries,
-            why,
-        );
-    }
-
     // Cumulative phase timers. Only `b_compare_parallel` is multithreaded;
     // shuffle/bud/p_update are serial, so their share quantifies the Amdahl
     // serial fraction that caps thread utilization (printed under verbose).
@@ -1276,6 +1244,45 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         } else {
             0.0
         };
+        // The index choice is MEASURED on the first cluster, not predicted, and it
+        // reverses between workloads (see `minimizers::decide_from_probe`). Report
+        // the measurement: a run that declines the index would otherwise look like
+        // an unexplained `setup` of 0.00s in the attribution below.
+        if let Some(d) = bb.minimizer_index_decision {
+            let why = match d.forced {
+                Some(true) => " [FORCED on by DADA2RS_MINIMIZER_INDEX=1]",
+                Some(false) => " [FORCED off by DADA2RS_MINIMIZER_INDEX=0]",
+                None => "",
+            };
+            if d.forced == Some(false) {
+                eprintln!(
+                    "[dada] minimizer index: not built (per-pair merge-join) \
+                     [FORCED off by DADA2RS_MINIMIZER_INDEX=0]"
+                );
+            } else {
+                eprintln!(
+                    "[dada] minimizer index: {} — {} probed cluster(s), mean: scatter {:.2} ms \
+                 vs saving {:.2} ms (= ({:.0} - {:.1} ns/pair) x {} screened comps / \
+                 {} threads); {} distinct minimizers, {} postings, mean posting {:.0}{}",
+                    if d.use_index {
+                        "USED (scatter per cluster)"
+                    } else {
+                        "declined (per-pair merge-join)"
+                    },
+                    d.clusters,
+                    d.scatter_ns / 1e6,
+                    d.saving_ns / 1e6,
+                    d.merge_ns,
+                    d.array_ns,
+                    d.ncomp,
+                    d.threads,
+                    d.distinct,
+                    d.entries,
+                    d.sharing,
+                    why,
+                );
+            }
+        }
         eprintln!(
             "[dada] phase times (serial except compare-map): compare={:.2}s (map={:.2}s parallel, store={:.2}s serial)  shuffle={:.2}s  bud={:.2}s  p_update={:.2}s",
             t_compare.as_secs_f64(),

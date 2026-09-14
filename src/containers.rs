@@ -335,6 +335,11 @@ pub struct B {
     /// Why [`B::minimizer_index`] is or is not present, for `--verbose`. `None`
     /// when the minimizer screen is not in use at all.
     pub minimizer_index_decision: Option<crate::minimizers::IndexDecision>,
+    /// `DADA2RS_MINIMIZER_INDEX`, read once at construction. `Some(_)` makes the
+    /// probe report its measurement but obey the override.
+    pub minimizer_index_forced: Option<bool>,
+    /// Probe samples accumulated so far; see `minimizers::PROBE_CLUSTERS`.
+    pub minimizer_probe: crate::minimizers::ProbeAccum,
     /// Reusable scratch for the minimizer index's per-cluster scatter: shared
     /// minimizer count per raw.
     ///
@@ -374,31 +379,46 @@ impl B {
         // so the presence of the sketches is the signal. Disable for A/B with
         // DADA2RS_MINIMIZER_INDEX=0 — the index is exact, so the two arms must
         // agree byte-for-byte, and that is worth being able to check.
-        // The index is not unconditionally worth building: it trades parallel
-        // screen work for a SERIAL per-cluster scatter, and on pooled PacBio that
-        // made the indexed arm 26% slower than the k-mer screen it replaces while
-        // winning by 4-14% on the other workloads measured. So the choice is made
-        // per pool from the sketches themselves; see `minimizers::decide_index`.
+        // The index is not unconditionally worth USING: it trades parallel screen
+        // work for a SERIAL per-cluster scatter, and on pooled PacBio that made
+        // the indexed arm 26% slower than the k-mer screen it replaces while
+        // winning by 4-14% on the other workloads measured.
         //
-        // `current_num_threads` is read here rather than plumbed because it must
-        // be the threads of the pool that will run THIS b_compare — under
-        // per-sample concurrency `dada_uniques` runs inside a sub-pool, so this
-        // reads 4 rather than the global 48, which is the number the score needs.
-        let (index, decision) = if !raws.is_empty() && raws.iter().all(|r| r.minimizers.is_some()) {
+        // It is built here regardless (unless forced off), because the choice is
+        // now MEASURED on the first cluster rather than predicted from the
+        // sketches — see `minimizers::decide_from_probe` for why no closed-form
+        // score survived. `b_compare_parallel` probes, records the verdict in
+        // `minimizer_index_decision`, and DROPS the index if it lost, so a
+        // declined index costs one build plus one scatter and then returns its
+        // memory (2.1 GB on pooled PacBio, which is why it is dropped rather
+        // than kept for the log).
+        let forced = crate::minimizers::index_env_override();
+        let index = if forced != Some(false)
+            && !raws.is_empty()
+            && raws.iter().all(|r| r.minimizers.is_some())
+        {
             let sketches: Vec<Option<crate::minimizers::MinimizerSketch>> =
                 raws.iter().map(|r| r.minimizers.clone()).collect();
-            let d = crate::minimizers::decide_index(
-                &sketches,
-                rayon::current_num_threads().max(1),
-                crate::minimizers::index_env_override(),
-            );
-            let idx = d
-                .use_index
-                .then(|| crate::minimizers::MinimizerIndex::build(&sketches));
-            (idx, Some(d))
+            Some(crate::minimizers::MinimizerIndex::build(&sketches))
         } else {
-            (None, None)
+            None
         };
+        // A forced-off pool never reaches the probe, so record the override here
+        // or the run reports nothing at all about the screen path it took.
+        let decision = (forced == Some(false)).then_some(crate::minimizers::IndexDecision {
+            use_index: false,
+            entries: 0,
+            distinct: 0,
+            sharing: 0.0,
+            ncomp: 0,
+            clusters: 0,
+            scatter_ns: 0.0,
+            merge_ns: 0.0,
+            array_ns: 0.0,
+            saving_ns: 0.0,
+            threads: rayon::current_num_threads().max(1),
+            forced,
+        });
         let mut b = B {
             raws,
             clusters: Vec::with_capacity(INIT_CLUSTERS_CAPACITY),
@@ -413,6 +433,8 @@ impl B {
             raw_cluster: Vec::new(),
             minimizer_index: index,
             minimizer_index_decision: decision,
+            minimizer_index_forced: forced,
+            minimizer_probe: Default::default(),
             screen_shared: Vec::new(),
             e_minmax,
         };

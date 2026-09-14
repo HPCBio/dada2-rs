@@ -247,6 +247,54 @@ pub struct CompareTiming {
     pub aligned: u64,
 }
 
+/// Time the two per-pair screen paths on a sample of raws, for the index probe.
+///
+/// Returns `(merge_join_ns_per_pair, array_read_ns_per_pair)`. The difference is
+/// exactly what the index buys inside the parallel map: both paths then feed the
+/// same distance and the same alignment decision, so everything downstream of the
+/// shared count cancels.
+///
+/// The sample strides the raw array rather than taking a prefix, because raws are
+/// abundance-sorted and a prefix would be the dense, high-abundance head whose
+/// sketches are not representative. The array path is timed over repeated passes:
+/// a single indexed read is well under a nanosecond and would otherwise be lost
+/// in timer granularity.
+fn time_screen_paths(
+    center: &crate::minimizers::MinimizerSketch,
+    raws: &[crate::containers::Raw],
+    counts: &[u32],
+    center_idx: usize,
+    nraw: usize,
+) -> (f64, f64) {
+    const SAMPLE: usize = 512;
+    const ARRAY_PASSES: usize = 64;
+    let stride = (nraw / SAMPLE).max(1);
+    let idxs: Vec<usize> = (0..nraw)
+        .step_by(stride)
+        .filter(|&i| i != center_idx && raws[i].minimizers.is_some())
+        .take(SAMPLE)
+        .collect();
+    if idxs.is_empty() {
+        return (0.0, 0.0);
+    }
+    let t = std::time::Instant::now();
+    let mut acc: u64 = 0;
+    for &i in &idxs {
+        let s = raws[i].minimizers.as_ref().expect("filtered above");
+        acc += crate::minimizers::shared_count(center, s) as u64;
+    }
+    let merge_ns = t.elapsed().as_nanos() as f64 / idxs.len() as f64;
+    let t = std::time::Instant::now();
+    for _ in 0..ARRAY_PASSES {
+        for &i in &idxs {
+            acc += counts[i] as u64;
+        }
+    }
+    let array_ns = t.elapsed().as_nanos() as f64 / (idxs.len() * ARRAY_PASSES) as f64;
+    std::hint::black_box(acc);
+    (merge_ns, array_ns)
+}
+
 /// Parallel version of `b_compare` using Rayon.
 /// Equivalent to C++ `b_compare_parallel`.
 ///
@@ -279,20 +327,50 @@ pub fn b_compare_parallel(
     // and zeroing it per cluster was ~11 GB of serial memset on a pooled ITS2
     // run and 23.7% of this phase.
     let mut counts = std::mem::take(&mut b.screen_shared);
-    let have_shared = match (&b.minimizer_index, params.screen_backend) {
-        (Some(index), ScreenBackend::Minimizer) if params.use_kmers && !params.screen_audit => {
-            // Under audit the map must run BOTH screens per pair, so the
-            // precomputed value would suppress the very comparison being audited.
-            match b.raws[center_idx].minimizers.as_ref() {
-                Some(q) => {
-                    index.shared_counts(q, &mut counts);
-                    true
-                }
-                None => false,
+    // Under audit the map must run BOTH screens per pair, so the precomputed
+    // value would suppress the very comparison being audited.
+    let index_eligible = matches!(params.screen_backend, ScreenBackend::Minimizer)
+        && params.use_kmers
+        && !params.screen_audit
+        && b.minimizer_index.is_some();
+    // The first eligible cluster is PROBED: scatter it (the result is exact and
+    // is used), then time both per-pair paths over a sample and decide for the
+    // rest of the pool. Both costs accrue per cluster, so one cluster settles it
+    // — see `minimizers::decide_from_probe`.
+    // NOT on the initial compare. `run_dada` runs cluster 0 with
+    // `kdist_cutoff = 1.0` so every raw accumulates a comparison, which makes it
+    // the one cluster where the greedy-skip fraction is 100% — the least
+    // representative possible sample of the very quantity the saving depends on.
+    // Probing there chose the index on pooled PacBio and lost 31%.
+    let probing =
+        index_eligible && b.minimizer_index_decision.is_none() && params.kdist_cutoff < 1.0;
+    let scatter = index_eligible && b.minimizer_index_decision.is_none_or(|d| d.use_index);
+    let mut have_shared = false;
+    let mut probe_pending: Option<(crate::minimizers::ProbeTimings, usize, usize)> = None;
+    if scatter {
+        let index = b.minimizer_index.as_ref().expect("index_eligible");
+        if let Some(q) = b.raws[center_idx].minimizers.as_ref() {
+            let t = std::time::Instant::now();
+            index.shared_counts(q, &mut counts);
+            let scatter_ns = t.elapsed().as_nanos() as f64;
+            have_shared = true;
+            if probing {
+                let (merge_ns, array_ns) = time_screen_paths(q, &b.raws, &counts, center_idx, nraw);
+                // Held until after the map: the saving is per COMPARISON, and how
+                // many of this cluster's raws actually reach the screen is only
+                // known once the map has run (`screened`).
+                probe_pending = Some((
+                    crate::minimizers::ProbeTimings {
+                        scatter_ns,
+                        merge_ns,
+                        array_ns,
+                    },
+                    index.n_postings(),
+                    index.n_keys(),
+                ));
             }
         }
-        _ => false,
-    };
+    }
     let shared: Option<&[u32]> = if have_shared { Some(&counts) } else { None };
     let center_sketch = b.raws[center_idx].minimizers.as_ref();
     let setup_dur = t_setup.elapsed();
@@ -459,6 +537,36 @@ pub fn b_compare_parallel(
     // Hand the buffer back so the next cluster reuses it rather than mmap-ing a
     // fresh multi-megabyte allocation.
     b.screen_shared = counts;
+    // Resolve the probe now that `screened` is known. Using `nraw` here instead
+    // overestimates the saving by 1/greedy-skip-fraction — 2.2x on pooled
+    // PacBio, which was enough to invert the verdict.
+    if let Some((t, entries, distinct)) = probe_pending {
+        let forced = b.minimizer_index_forced;
+        // Averaged over PROBE_CLUSTERS clusters, because a single sample put
+        // pooled PacBio at a ratio of 1.14 and the verdict then flipped between
+        // replicates.
+        if let Some(mean) = b
+            .minimizer_probe
+            .push(t, screened as usize, entries, distinct)
+        {
+            let ncomp = b.minimizer_probe.mean_ncomp();
+            let d = crate::minimizers::decide_from_probe(
+                mean,
+                ncomp,
+                rayon::current_num_threads().max(1),
+                entries,
+                distinct,
+                forced,
+            );
+            b.minimizer_index_decision = Some(d);
+            if !d.use_index {
+                // Return the postings: 2.1 GB on a pooled PacBio pool, and
+                // nothing downstream reads the index once the merge-join path
+                // is chosen.
+                b.minimizer_index = None;
+            }
+        }
+    }
     CompareTiming {
         map: map_dur,
         serial: serial_dur,

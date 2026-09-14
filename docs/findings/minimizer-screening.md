@@ -611,11 +611,19 @@ reads, index-on and index-off alike; 0.42 differs in 9 samples. So the exactly-
 concordant plateau at >=0.45 holds in pooled mode as well as per-sample, and the
 index question is purely about speed.
 
-### The index is now chosen per workload, not always built
+### The index is chosen per workload, not always built
 
 Four configurations, and the index wins three and loses one badly — so "always
-index" is wrong and so is "never". `minimizers::decide_index` scores each pool
-and picks:
+index" is wrong and so is "never".
+
+> **Superseded.** What follows is the *score* that shipped first, kept because
+> its failure is the argument for what replaced it. Three closed-form scores were
+> tried and all three broke; the choice is now **measured at run time** by a
+> per-cluster probe — see
+> [the probe](#the-index-choice-is-measured-not-predicted). The score below no
+> longer exists in the code.
+
+The score weighed each pool and picked:
 
 ```text
 score = sharing × threads / nraw          sharing = entries / distinct
@@ -748,15 +756,27 @@ each**. A long posting list is a sequential scan, and the cost model priced ever
 entry at random-access rates. **32-33 ns/comp is flat across every platform, pool
 and `k` measured** — a more useful constant than anything the score currently uses.
 
-The index's whole cost is `setup`. Over the three configurations available at
-the time, `setup` tracked **entries**, the total sketch mass — a reading that a
-fourth configuration later broke:
+The index's whole cost is `setup`. **`setup` is the per-cluster scatter, not the
+one-time build** — it is timed inside `b_compare_parallel` around
+`index.shared_counts()` and accumulates once per cluster, while
+`MinimizerIndex::build` runs in `B::new` and is not counted here at all. An
+earlier revision of this section divided `setup` by the index's total posting
+count and reported "ns per entry", which is the wrong denominator by construction:
+the scatter walks the *centre's* posting lists once per cluster, not the whole
+index once. The right denominator is `nclusters x entries_per_raw x mean_posting`:
 
-| pool | entries | `setup` | ns/entry |
-|---|---|---|---|
-| ITS2 k=8 | 60,831,385 | 15.39s | 0.25 |
-| ITS2 k=6 | 60,135,053 | 25.04s | 0.42 |
-| pooled PacBio | 258,350,362 | 160.09s | 0.62 |
+| pool | clusters | mean posting | scatter ops | `setup` | ns/op |
+|---|---|---|---|---|---|
+| ITS2 k=8, w=5 | 3,414 | 1,259 | 318 M | 15.39s | 48.4 |
+| soil 16S k=8, w=5 | 9,803 | 1,957 | 1.43 G | 128.09s | 89.8 |
+| pooled PacBio k=8, w=5 | 2,817 | 6,429 | 8.55 G | 160.09s | 18.7 |
+| ITS2 k=6, w=5 | 3,414 | 18,735 | 4.66 G | 25.04s | 5.4 |
+| ITS2 k=5, w=1 | 3,414 | 160,369 | 109 G | 126.63s | **1.2** |
+
+**Per-operation scatter cost falls ~40x as posting lists lengthen** (89.8 ns at
+posting 1,957 down to 1.2 ns at 160,369) — the same sequential-scan effect the
+screen measurement showed, now located in the phase that actually pays it. A short
+posting list is a random jump; a long one is a stream.
 
 So `score = entries_per_raw x threads / distinct` looked like it had **the right
 numerator and a spurious denominator**. That is half right and the wrong half is
@@ -780,17 +800,97 @@ The k=8 gain is estimated from k=6's merge-join rate, the two sketches being 74
 and 73 entries/raw — this run carried no k=8 index-off arm, and that is the only
 cell here without a direct measurement.
 
-**What blocks shipping the corrected form**: the gain term needs `ncomps`, which
-depends on the cluster count and is unknown at `B::new`. Since the indexed screen
-is *always* cheaper per comparison (32-33 against 1110-3748), the decision is
-purely whether the run is long enough to amortise a serial `setup` whose cost is
-predictable from `entries`. That argues for deciding **lazily** — merge-join the
-first clusters, measure, then build — which retires the calibration constant
-rather than replacing it with a second one that can go stale in the same way.
+**What blocked shipping the corrected form**: the gain term needs `ncomps`, which
+depends on the cluster count and is unknown at `B::new`. That is what every
+version of this rule kept tripping over, and what forced a fitted constant each
+time. It is resolved in the next section, by noticing that the constant was never
+needed.
 
-Until that lands, the shipped threshold's scope is: **calibrated at k=8, w=5, and
-not valid elsewhere.** `--minimizer-k 6` currently needs `DADA2RS_MINIMIZER_INDEX=1`
-to perform.
+### The index choice is measured, not predicted
+
+Three closed-form scores were tried for "index or merge-join" and all three broke.
+The last one classified four workloads and then misfired on a fifth. It could not
+be repaired by recalibration, because **the per-operation scatter cost is not
+constant** — it falls ~40x as posting lists lengthen (89.8 ns at mean posting
+1,957 down to 1.2 ns at 160,369), so no fixed coefficient survives a change of
+`k`, `w`, platform or thread count.
+
+The way out is that both sides of the trade accrue **per cluster**:
+
+```text
+serial cost   = one scatter over the centre's posting lists
+parallel gain = nraw x (merge_join_per_pair - array_read_per_pair) / threads
+```
+
+so the cluster count — the one quantity unknowable at `B::new`, and the reason
+every earlier attempt needed a fitted constant — **cancels**. One cluster is
+therefore a representative sample of the whole run. `b_compare_parallel` probes
+the first eligible one: it scatters (the result is exact and is used for that
+cluster), times both per-pair paths over a strided sample of 512 raws, and the
+verdict holds for the rest of the pool. There is no threshold, no coefficient,
+and nothing to go stale.
+
+The index is now built unconditionally and **dropped** if the probe declines it,
+so a declined pool pays one build plus one scatter and gets its memory back —
+2.1 GB on a pooled PacBio pool. `DADA2RS_MINIMIZER_INDEX` still overrides, and
+the probe still runs and reports its measurement so a forced run says what the
+unforced one would have done.
+
+Replaying the probe's arithmetic against the five workloads' measured `setup` and
+merge-join costs reproduces all five verdicts, in both directions, with no free
+parameter — including k=6 on pooled ITS2, the case the score got wrong. That
+replay is pinned as a unit test.
+
+**Validated on pooled ITS2 (both `k`) and pooled PacBio — 3/3, both directions.**
+One binary fingerprint per run; ITS2 control channel 0.7%, PacBio 0.3%.
+
+| workload | `_auto` | `_noidx` | forced on | probe said |
+|---|---|---|---|---|
+| ITS2 k=8 @0.63 | **120.87s** | 144.43s | 123.15s | USED (ratio 3.86) |
+| ITS2 k=6 @0.53 | **129.59s** | 146.36s | 136.17s | USED (ratio 1.88) |
+| pooled PacBio @0.45 | **305.18s** | 293.08s | 434.14s | **declined** (ratio 0.62) |
+
+Against the k-mer baseline, ITS2 k=8 indexed is **-28.8%**; PacBio declined is
+**-9.6%**, against **+28.5%** had it indexed. Every closed-form score this page
+tried failed on this set of three; the probe passes it with no fitted constant.
+
+**It took two goes, and the second corrected my account of the first.** The probe
+as first shipped chose the index on PacBio and lost 31% — and chose
+*inconsistently*, declining in one replicate (298.75s, matching the forced-off
+arm to 0.11s) and indexing in the other two. Two causes were identified and both
+fixed; the counterfactuals say only one of them mattered:
+
+| | ratio | verdict |
+|---|---|---|
+| as shipped | 41.80 / 36.76 = **1.14** | index (wrong) |
+| charge the saving to screened comps, not `nraw` | 39.18 / 36.76 = **1.07** | index (still wrong) |
+| stop probing the initial compare | 41.80 / 62.63 = **0.67** | decline (right) |
+| both, as measured | 38.69 / 62.63 = **0.62** | decline |
+
+So the decisive error was **sampling the wrong cluster**, not the wrong
+denominator. `run_dada` runs cluster 0 at `kdist_cutoff = 1.0`, and its scatter
+measured **36.76 ms** against a run average of 56.8 ms — the probe was reading the
+cheapest cluster in the run. Probing real clusters instead measures 62.63 ms. The
+`nraw`-to-`screened` correction is right on its own terms and moves the ratio 6%,
+but alone it would not have flipped the verdict.
+
+**A known residual bias, in the direction of indexing.** The probe window screens
+**93.7%** of raws; the run average is **45.7%**. Greedy skipping is not stationary
+— it grows as clusters accumulate and raws lock — so sampling the first clusters
+overestimates the saving by **2.05x** here. With the run's true screened count the
+PacBio ratio would be **0.30** rather than the 0.62 reported, so the probe
+understates its own margin by about half, always toward building the index. It did
+not bite on any of the three workloads, but it is the thing to suspect first if a
+future workload is misclassified toward indexing. The fix, if needed, is not
+another coefficient: `screened` is computed exactly for every cluster at no cost,
+and the index is exact, so the decision can simply be revisited later in the run.
+
+**The cost of deciding by measurement** is visible on the declining workload:
+`_auto` is 4.1% behind `_noidx` (305.18s vs 293.08s). A declining pool must build
+the index before it can time a scatter, then drops it — about 12 s of 293 s, of
+which `setup` accounts for 0.25 s (the three probed scatters) and the rest is the
+258 M-posting build. That is the premium for having no threshold, against the
+29.7% a wrong call costs on this same workload.
 
 ### Calibrating on read retention: the cutoff is ~0.64
 
@@ -1799,20 +1899,21 @@ posting 20,524 and 32-33 at 1,374-6,430. Scanning a posting list 116x longer cos
 **`setup` is what explodes, and it is not linear in `entries`** — which falsifies
 the correction the previous section proposed:
 
-| configuration | distinct | mean posting | entries | `setup` | ns/entry |
-|---|---|---|---|---|---|
-| ITS2 k=8, w=1 | 65,536 | 2,810 | 184.2 M | 37.31s | **0.203** |
-| ITS2 k=8, w=5 | 48,497 | 1,374 | 60.8 M | 15.39s | 0.253 |
-| ITS2 k=6, w=5 | 3,211 | 20,524 | 60.1 M | 25.04s | 0.417 |
-| ITS2 k=5, w=1 | 1,024 | 160,010 | 163.9 M | 126.63s | **0.773** |
-| pooled PacBio k=8, w=5 | 40,177 | 6,430 | 258.4 M | 160.09s | 0.620 |
+| configuration | distinct | mean posting | entries | `setup` |
+|---|---|---|---|---|
+| ITS2 k=8, w=1 | 65,536 | 2,810 | 184.2 M | 37.31s |
+| ITS2 k=8, w=5 | 48,497 | 1,374 | 60.8 M | 15.39s |
+| ITS2 k=6, w=5 | 3,211 | 20,524 | 60.1 M | 25.04s |
+| ITS2 k=5, w=1 | 1,024 | 160,010 | 163.9 M | **126.63s** |
+| pooled PacBio k=8, w=5 | 40,177 | 6,430 | 258.4 M | 160.09s |
 
 k=5/w=1 carries **fewer** entries than k=8/w=1 (163.9 M against 184.2 M) and pays
-**3.4x** the `setup`. Within one dataset the per-entry build cost rises with
-posting length. So **`sharing` is in the cost function after all — in `setup`, not
-in the screen** — and this page's earlier flat statement that it "is not in the
-index's cost function at all" is withdrawn. The original score's numerator was
-directionally right about the build; what it got wrong was how much.
+**3.4x** the `setup`. So **`sharing` is in the cost function after all — in
+`setup`, not in the screen** — and this page's earlier flat statement that it "is
+not in the index's cost function at all" is withdrawn. The mechanism is above:
+`setup` is `nclusters x entries_per_raw x mean_posting` operations, so halving
+`distinct` doubles the posting length *and* the work, against a per-operation cost
+that only falls sub-linearly.
 
 **But no single threshold on that score can work.** The two cases that must go
 opposite ways are ordered backwards by it:
@@ -2235,10 +2336,11 @@ What promotion would require, in order:
    The screen costs a flat 32-35 ns/comp regardless of posting length — confirmed
    to a mean posting of 160,010 — but a k=5/w=1 arm then showed `setup` is **not**
    linear in `entries` (fewer entries than k=8/w=1, 3.4x the build), so `sharing`
-   does belong in the cost, in the build term. **No single threshold on the
-   current score can work**: it orders pooled PacBio (0.564, must decline) below
-   ITS2 k=6 (1.089, must index). A correct rule needs both terms in `setup` with
-   `entries` dominating; deciding lazily would retire the constant entirely.
+   does belong in the cost, in the build term. **No single threshold on that
+   score could work**: it ordered pooled PacBio (0.564, must decline) below ITS2
+   k=6 (1.089, must index). **Resolved** — the score is gone, replaced by a
+   [run-time probe](#the-index-choice-is-measured-not-predicted) that measures
+   both paths on the first cluster, so no threshold remains to go stale.
    Separately, **map efficiency** (90% -> 75%) is closed as a non-issue: a 16x
    `DADA2RS_PAR_GRAIN` sweep leaves it flat at 71-75%, the default is already
    optimal on both backends, and in absolute thread-seconds the indexed arm loses

@@ -85,7 +85,11 @@ WS="${WS:-5}"
 # tight shrouds genuine neighbours and fragments clusters, too loose aligns far
 # more pairs for nothing. A grid that only covers the good region cannot show
 # where the edges are.
-CUTS="${CUTS:-0.40 0.45 0.50 0.55 0.60 0.62 0.63 0.64 0.65 0.70 0.75 0.80}"
+# NOTE `${CUTS-...}`, not `${CUTS:-...}`. The colon form treats an explicitly
+# EMPTY value as unset and substitutes the default, so `CUTS="" bash ...` -- the
+# obvious way to say "skip the accuracy grid, I only want timings" -- silently ran
+# all twelve cutoffs. That cost 24 pooled arms on the probe validation run.
+CUTS="${CUTS-0.40 0.45 0.50 0.55 0.60 0.62 0.63 0.64 0.65 0.70 0.75 0.80}"
 
 # Cutoffs to TIME. The accuracy sweep wants the whole grid; timing does not, and
 # timing all of it is where this script spends most of its wall clock:
@@ -97,7 +101,7 @@ CUTS="${CUTS:-0.40 0.45 0.50 0.55 0.60 0.62 0.63 0.64 0.65 0.70 0.75 0.80}"
 # Default: the arms actually worth a wall-clock number -- near the k-mer screen's
 # own pass rate, where alignment work is matched and the screen is the only
 # variable. Set TIME_CUTS="$CUTS" to time everything, or "" to skip timing.
-TIME_CUTS="${TIME_CUTS:-0.62 0.64}"
+TIME_CUTS="${TIME_CUTS-0.62 0.64}"
 
 # Cutoffs to ALSO time with the inverted index DISABLED, as separate `_noidx`
 # arms. Timing and phase-split only -- the accuracy grid here is the expensive
@@ -116,7 +120,7 @@ TIME_CUTS="${TIME_CUTS:-0.62 0.64}"
 NOIDX_CUTS="${NOIDX_CUTS:-}"
 
 # Cutoffs to ALSO time with the index left to `decide_index` (the shipped
-# behaviour), as `_auto` arms. Once the selection rule exists this is the arm
+# behaviour), as `_auto` arms. Now that the run-time probe exists this is the arm
 # that matters: `_c<C>` forces it on, `_noidx` forces it off, only `_auto`
 # measures what a user gets. Defaults to TIME_CUTS.
 AUTO_CUTS="${AUTO_CUTS:-$TIME_CUTS}"
@@ -230,6 +234,19 @@ if [ -f "$STAMP" ]; then
 else
   printf '%s' "$WANT" > "$STAMP"
 fi
+
+# Rotate a tee'd output so a second invocation in the SAME out-dir does not clobber
+# the first. timings.tsv appends and its arm names carry k/w/cutoff, so rows from
+# separate invocations coexist -- but phase_split.txt and derived_cutoff.txt are
+# written with `tee`, which truncates. Sweeping k=6 and then k=8 into one directory
+# therefore kept both sets of timings and silently lost the first phase split.
+rotate_out() {  # path
+  [ -s "$1" ] || return 0
+  local n=1
+  while [ -e "${1%.*}.$n.${1##*.}" ]; do n=$((n+1)); done
+  mv "$1" "${1%.*}.$n.${1##*.}"
+  echo "    (previous $(basename "$1") kept as $(basename "${1%.*}.$n.${1##*.}"))"
+}
 
 echo "==> baseline: k-mer screen (production default)"
 [ -d "$OUT/base" ] || PREFILTERED="${PREFILTERED:-}" ERR_DIR="${ERR_DIR:-}" ERRFUN="$ERRFUN" ERRFUN_ARGS="$ERRFUN_ARGS" POOL="$POOL" LEARN_CUTOFF="$LEARN_CUTOFF" \
@@ -379,6 +396,7 @@ if [ ${#filtF[@]} -gt 0 ] && [ -n "$KS" ]; then
   # a per-sample derivation would describe a different population than the one the
   # arms above actually denoised.
   per_sample=(); [ "$DADA_CMD" = "dada" ] && per_sample=(--per-sample)
+  rotate_out "$OUT/models/derived_cutoff.txt"
   for K in $KS; do for W in $WS; do
     echo "    k=$K w=$W:"
     "$BIN" kdist-calibrate "$OUT"/derep/*.json --k "$KMER" \
@@ -420,8 +438,8 @@ for G in $GRAINS; do ARMS+=("kmer_g${G}:::::$G"); done
 # replicates already paid for -- but that also lets rows from DIFFERENT BINARIES
 # accumulate under one arm name, and nothing caught it. On the pooled ITS2 run
 # that showed up as `mini_k8_c0.62` (forced index on) sitting 3-7% apart from
-# `mini_k8_c0.62_auto`, two arms that execute IDENTICAL work whenever the score is
-# under threshold. A 6.9% gap between identical code paths is provenance drift,
+# `mini_k8_c0.62_auto`, two arms that execute IDENTICAL work whenever the probe
+# chooses the index. A 6.9% gap between identical code paths is provenance drift,
 # not noise, and it was only noticed because those two arms happen to be a control
 # channel for each other.
 #
@@ -456,7 +474,7 @@ if [ -s "$OUT/timings.tsv" ]; then
     echo "    Those rows are cached by (arm, rep) and will be REUSED, not re-timed."
     echo "    Cross-build rows are not comparable -- on the pooled ITS2 directory this"
     echo "    showed up as a 6.9% gap between an arm and its _auto twin, two arms that"
-    echo "    execute identical work whenever the score is under threshold."
+    echo "    execute identical work whenever the probe chooses the index."
     if [ -n "$STRICT_BIN" ]; then
       echo "    STRICT_BIN=1 set: re-timing them."
     else
@@ -524,6 +542,7 @@ if command -v /usr/bin/time > /dev/null 2>&1; then
   fi
 fi
 [ ${#TIMER[@]} -eq 0 ] && echo "    (note: /usr/bin/time unavailable; peak RSS omitted, verbose block still captured)"
+rotate_out "$OUT/phase_split.txt"
 {
   for spec in "${ARMS[@]}"; do
     IFS=: read -r name K C W IDX G <<< "$spec"
@@ -563,8 +582,8 @@ if len(fps) > 1:
               + (" ..." if len(arms) > 6 else ""))
     print("    Rows from different builds are NOT comparable, and an arm whose")
     print("    replicates span builds has a meaningless median. A `_c<C>` arm and")
-    print("    its `_auto` twin execute identical work whenever the score is under")
-    print("    threshold, so a gap between THOSE two is the cheapest tell.")
+    print("    its `_auto` twin execute identical work whenever the probe chooses")
+    print("    the index, so a gap between THOSE two is the cheapest tell.")
     print("    Fix: mv timings.tsv timings.old.tsv and re-run the timing matrix in")
     print("    one session. The accuracy arms are unaffected -- the index is exact,")
     print("    so arm OUTPUT does not depend on which build produced it.")

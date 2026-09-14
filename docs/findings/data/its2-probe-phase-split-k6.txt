@@ -1,0 +1,181 @@
+===== kmer
+[dada] alignment backend: nw (Needleman-Wunsch)
+[dada] cpu allocation: 48 threads on 256 logical CPUs / 128 physical cores; SLURM allocated 256 CPUs [host compute-5-6, job 2397350]
+[dada] tuning gates: shuffle carry=on (default)  shuffle prune=on (default)  reconcile=incremental (default)
+[dada] tuning gates: reconcile verify=off (default)  p-update prefetch=16 (default)  par grain=32 (default)
+[dada] resident Raw footprint: 825214 raws, seq+qual 363.7 MB, screen vectors 1163.3 MB (1478 B/raw) [kord k=5; screen dense; u16 k-mer freq not stored, #32]
+[dada] kmer8 fill: mean 199 / 227 distinct k-mers/raw (87.4% of positional max), 19.4% of dense 4^k [k=5]
+[dada] kmer8 pooled diversity: 1024 distinct k-mers (100.0% of 4^k space), mean sharing 182995× across 825214 uniques
+[dada] progress t=30s cluster 474 (+473 in 30s): map=14.6s store=2.1s shuffle=7.7s bud+pupd=5.8s  eff cores 21.7/48  map eff 91%  align 1.56%
+[dada] progress t=60s cluster 1108 (+634 in 30s): map=17.3s store=2.8s shuffle=6.7s bud+pupd=3.0s  eff cores 25.4/48  map eff 90%  align 0.71%
+[dada] progress t=90s cluster 1779 (+671 in 30s): map=18.0s store=2.9s shuffle=6.5s bud+pupd=2.3s  eff cores 26.4/48  map eff 90%  align 0.42%
+[dada] progress t=120s cluster 2443 (+664 in 30s): map=17.8s store=2.9s shuffle=6.9s bud+pupd=2.1s  eff cores 26.1/48  map eff 90%  align 0.19%
+[dada] progress t=150s cluster 3295 (+852 in 30s): map=23.0s store=3.8s shuffle=2.0s bud+pupd=1.0s  eff cores 33.1/48  map eff 89%  align 0.75%
+[dada] phase times (serial except compare-map): compare=110.25s (map=93.95s parallel, store=15.02s serial)  shuffle=29.90s  bud=0.08s  p_update=14.24s
+[dada] compare attribution (of 110.25s over 2817280596 raw-visits, 2460100 stored):
+[dada]   map             93.95s (85.2%)  parallel
+[dada]   reduction        0.00s ( 0.0%)  serial     0.0 ns/raw  (summed costs + denominators)
+[dada]   store           15.02s (13.6%)  serial     5.3 ns/raw  6105.9 ns/stored
+[dada]   free             1.28s ( 1.2%)  serial     0.5 ns/raw  (result vector)
+[dada]   setup            0.00s ( 0.0%)  serial
+[dada]   unattributed     0.00s ( 0.0%)
+[dada]   (outside compare) index_add_cluster 0.18s     0.1 ns/raw
+[dada] map parallel efficiency: 90% (busy=4062s / map=94s × 48 threads)
+[dada] compare split (of 4061.88s busy over 2387855809 comparisons):
+[dada]   kmer screen   3099.21s (76.3%)     2387855809 comps    1298 ns/comp  (every comparison)
+[dada]   align total    270.61s ( 6.7%)       16256668 comps   16646 ns/comp  (0.7% passed the screen)
+[dada]     dp kernel    252.79s ( 6.2%)       16256668 comps   15550 ns/comp
+[dada]     al2subs       17.82s ( 0.4%)       16256668 comps    1096 ns/comp  (+ qual mapping)
+[dada]   other          692.05s (17.0%)  (compute_lambda + per-item overhead)
+[dada] shuffle redundancy: 11285 calls, 1311985 moves, 528005937 comps scanned (402 scanned/move), 3413 zero-move calls (30%)
+[dada] shuffle scan split: build=865174 (0% of scanned) over 1 builds (865174 comps/build), reconcile=527140763 (100%)
+[dada] shuffle phases (29.90s total over 3413 converge calls, nraw=825214, nclusters=3414):
+[dada]   build         0.01s ( 0.0%)         865174 comps    7.86 ns/comp
+[dada]   reconcile    28.22s (94.4%)      527140763 comps   53.52 ns/comp  over 493839554 raws, 1275438 (0.3%) actually changed cluster
+[dada]   move          1.62s ( 5.4%)      351183660 raws     4.61 ns/raw   for 1311985 moves (268 raws scanned/move)
+[dada]   reconcile incremental (#136): 493839554 raws fully rescanned over 527140763 comps; collect 13.32s + rescan 14.89s of 28.22s reconcile; 0 exact-tie tie-breaks
+[dada]   #87 carry (#139): ACTIVE -- 1 of 3413 converge calls built (865174 comps, 0.0s); 3412 entered on a carried map
+[dada]   move pruning (#132): 6145726162 of 6496909822 raws skipped (94.6%), 7872 of 7873 passes pruned (100%), mean 1.7 dirty clusters/pass of 3414
+[dada]   other         0.06s ( 0.2%)  (loop bookkeeping; large = an unmeasured phase)
+[dada] shuffle scan time: build=0.01s (7.86 ns/comp)  reconcile=28.22s (53.52 ns/comp)  build=0% of shuffle time
+[dada] bud redundancy: 3414 calls (3413 budded), 5829405 clusters combined (1708 combined/bud, incremental cache)
+[dada] p-update churn: 3413 rounds, 345658373 raws repriced (101277 repriced/round, nraw=825214)
+[dada]   full calc_pA     19594021 (  5.7%)  <- the only parallelisable work
+[dada]   exit singleton  325933855 ( 94.3%)  exit center       130497 (  0.0%)               exit zero-lambda          0 (  0.0%)
+[dada]   dirty clusters 12313 of 5829404 visited; greedy lock pass walked 1311263 raws
+===== mini_k6_c0.53
+[dada] warning: 3 dada parameter(s) differ from error model ./its_probe/base/errF.json; pass --inherit-err-params to adopt the err model's values:
+[dada] alignment backend: nw (Needleman-Wunsch)
+[dada] cpu allocation: 48 threads on 256 logical CPUs / 128 physical cores; SLURM allocated 256 CPUs [host compute-5-6, job 2397350]
+[dada] tuning gates: shuffle carry=on (default)  shuffle prune=on (default)  reconcile=incremental (default)
+[dada] tuning gates: reconcile verify=off (default)  p-update prefetch=16 (default)  par grain=32 (default)
+[dada] resident Raw footprint: 825214 raws, seq+qual 363.7 MB, screen vectors 873.6 MB (1110 B/raw) [kord k=5; screen minimizer sketch k=6/w=5; u16 k-mer freq not stored, #32]
+[dada] minimizer sketch: mean 75 entries/raw, density 0.331 (winnowing predicts 0.333 at w=5), 0 raws unsketchable (screen bypassed)
+[dada] minimizer pooled diversity: 3211 distinct minimizers, mean sharing 19236.8× across 825214 uniques
+[dada] progress t=30s cluster 666 (+665 in 30s): map=6.2s store=3.2s shuffle=7.5s bud+pupd=8.0s  eff cores 8.8/48  map eff 81%  align 1.35%
+[dada] progress t=60s cluster 1480 (+814 in 30s): map=7.2s store=5.0s shuffle=6.6s bud+pupd=4.5s  eff cores 9.4/48  map eff 75%  align 0.55%
+[dada] progress t=90s cluster 2306 (+826 in 30s): map=7.0s store=5.4s shuffle=7.4s bud+pupd=4.1s  eff cores 8.9/48  map eff 72%  align 0.16%
+[dada] minimizer index: USED (scatter per cluster) — probed cluster: scatter 8.83 ms vs saving 14.75 ms (= (858 - 0.7 ns/pair) x 825214 raws / 48 threads); 3211 distinct minimizers, 60135053 postings, mean posting 18728 [FORCED on by DADA2RS_MINIMIZER_INDEX=1]
+[dada] phase times (serial except compare-map): compare=77.94s (map=30.33s parallel, store=20.54s serial)  shuffle=23.93s  bud=0.08s  p_update=18.41s
+[dada] compare attribution (of 77.94s over 2817280596 raw-visits, 2442091 stored):
+[dada]   map             30.33s (38.9%)  parallel
+[dada]   reduction        0.00s ( 0.0%)  serial     0.0 ns/raw  (summed costs + denominators)
+[dada]   store           20.54s (26.4%)  serial     7.3 ns/raw  8412.7 ns/stored
+[dada]   free             0.00s ( 0.0%)  serial     0.0 ns/raw  (result vector)
+[dada]   setup           27.06s (34.7%)  serial
+[dada]   unattributed     0.00s ( 0.0%)
+[dada]   (outside compare) index_add_cluster 0.09s     0.0 ns/raw
+[dada] map parallel efficiency: 76% (busy=1107s / map=30s × 48 threads)
+[dada] compare split (of 1107.08s busy over 2387853723 comparisons):
+[dada]   kmer screen     80.48s ( 7.3%)     2387853723 comps      34 ns/comp  (every comparison)
+[dada]   align total    285.21s (25.8%)       15885102 comps   17955 ns/comp  (0.7% passed the screen)
+[dada]     dp kernel    266.67s (24.1%)       15885102 comps   16787 ns/comp
+[dada]     al2subs       18.55s ( 1.7%)       15885102 comps    1168 ns/comp  (+ qual mapping)
+[dada]   other          741.38s (67.0%)  (compute_lambda + per-item overhead)
+[dada] shuffle redundancy: 11269 calls, 1294857 moves, 542285752 comps scanned (419 scanned/move), 3413 zero-move calls (30%)
+[dada] shuffle scan split: build=865011 (0% of scanned) over 1 builds (865011 comps/build), reconcile=541420741 (100%)
+[dada] shuffle phases (23.93s total over 3413 converge calls, nraw=825214, nclusters=3414):
+[dada]   build         0.01s ( 0.0%)         865011 comps    6.56 ns/comp
+[dada]   reconcile    22.07s (92.2%)      541420741 comps   40.77 ns/comp  over 509057232 raws, 1258485 (0.2%) actually changed cluster
+[dada]   move          1.81s ( 7.6%)      363527722 raws     4.97 ns/raw   for 1294857 moves (281 raws scanned/move)
+[dada]   reconcile incremental (#136): 509057232 raws fully rescanned over 541420741 comps; collect 14.48s + rescan 7.59s of 22.07s reconcile; 0 exact-tie tie-breaks
+[dada]   #87 carry (#139): ACTIVE -- 1 of 3413 converge calls built (865011 comps, 0.0s); 3412 entered on a carried map
+[dada]   move pruning (#132): 6120178676 of 6483706398 raws skipped (94.4%), 7856 of 7857 passes pruned (100%), mean 1.7 dirty clusters/pass of 3414
+[dada]   other         0.05s ( 0.2%)  (loop bookkeeping; large = an unmeasured phase)
+[dada] shuffle scan time: build=0.01s (6.56 ns/comp)  reconcile=22.07s (40.77 ns/comp)  build=0% of shuffle time
+[dada] bud redundancy: 3414 calls (3413 budded), 5829405 clusters combined (1708 combined/bud, incremental cache)
+[dada] p-update churn: 3413 rounds, 355666121 raws repriced (104209 repriced/round, nraw=825214)
+[dada]   full calc_pA     19923377 (  5.6%)  <- the only parallelisable work
+[dada]   exit singleton  335610184 ( 94.4%)  exit center       132560 (  0.0%)               exit zero-lambda          0 (  0.0%)
+[dada]   dirty clusters 12402 of 5829404 visited; greedy lock pass walked 1294458 raws
+===== mini_k6_c0.53_noidx
+[dada] warning: 3 dada parameter(s) differ from error model ./its_probe/base/errF.json; pass --inherit-err-params to adopt the err model's values:
+[dada] alignment backend: nw (Needleman-Wunsch)
+[dada] cpu allocation: 48 threads on 256 logical CPUs / 128 physical cores; SLURM allocated 256 CPUs [host compute-5-6, job 2397350]
+[dada] tuning gates: shuffle carry=on (default)  shuffle prune=on (default)  reconcile=incremental (default)
+[dada] tuning gates: reconcile verify=off (default)  p-update prefetch=16 (default)  par grain=32 (default)
+[dada] resident Raw footprint: 825214 raws, seq+qual 363.7 MB, screen vectors 873.6 MB (1110 B/raw) [kord k=5; screen minimizer sketch k=6/w=5; u16 k-mer freq not stored, #32]
+[dada] minimizer sketch: mean 75 entries/raw, density 0.331 (winnowing predicts 0.333 at w=5), 0 raws unsketchable (screen bypassed)
+[dada] minimizer pooled diversity: 3211 distinct minimizers, mean sharing 19236.8× across 825214 uniques
+[dada] progress t=30s cluster 593 (+592 in 30s): map=14.3s store=2.6s shuffle=6.6s bud+pupd=6.7s  eff cores 21.3/48  map eff 91%  align 1.41%
+[dada] progress t=60s cluster 1357 (+764 in 30s): map=16.8s store=3.4s shuffle=5.9s bud+pupd=3.7s  eff cores 24.2/48  map eff 89%  align 0.58%
+[dada] progress t=90s cluster 2149 (+792 in 30s): map=16.9s store=3.5s shuffle=6.2s bud+pupd=3.1s  eff cores 24.4/48  map eff 88%  align 0.25%
+[dada] progress t=120s cluster 3081 (+932 in 30s): map=20.3s store=4.1s shuffle=3.4s bud+pupd=1.9s  eff cores 29.0/48  map eff 88%  align 0.56%
+[dada] minimizer index: not built (per-pair merge-join) [FORCED off by DADA2RS_MINIMIZER_INDEX=0]
+[dada] phase times (serial except compare-map): compare=91.88s (map=75.55s parallel, store=15.00s serial)  shuffle=22.43s  bud=0.10s  p_update=15.60s
+[dada] compare attribution (of 91.88s over 2817280596 raw-visits, 2442091 stored):
+[dada]   map             75.55s (82.2%)  parallel
+[dada]   reduction        0.00s ( 0.0%)  serial     0.0 ns/raw  (summed costs + denominators)
+[dada]   store           15.00s (16.3%)  serial     5.3 ns/raw  6142.3 ns/stored
+[dada]   free             1.33s ( 1.4%)  serial     0.5 ns/raw  (result vector)
+[dada]   setup            0.00s ( 0.0%)  serial
+[dada]   unattributed     0.00s ( 0.0%)
+[dada]   (outside compare) index_add_cluster 0.10s     0.0 ns/raw
+[dada] map parallel efficiency: 89% (busy=3222s / map=76s × 48 threads)
+[dada] compare split (of 3222.15s busy over 2387853723 comparisons):
+[dada]   kmer screen   2563.69s (79.6%)     2387853723 comps    1074 ns/comp  (every comparison)
+[dada]   align total    263.72s ( 8.2%)       15885102 comps   16602 ns/comp  (0.7% passed the screen)
+[dada]     dp kernel    246.58s ( 7.7%)       15885102 comps   15523 ns/comp
+[dada]     al2subs       17.13s ( 0.5%)       15885102 comps    1079 ns/comp  (+ qual mapping)
+[dada]   other          394.74s (12.3%)  (compute_lambda + per-item overhead)
+[dada] shuffle redundancy: 11269 calls, 1294857 moves, 542285752 comps scanned (419 scanned/move), 3413 zero-move calls (30%)
+[dada] shuffle scan split: build=865011 (0% of scanned) over 1 builds (865011 comps/build), reconcile=541420741 (100%)
+[dada] shuffle phases (22.43s total over 3413 converge calls, nraw=825214, nclusters=3414):
+[dada]   build         0.01s ( 0.0%)         865011 comps    9.03 ns/comp
+[dada]   reconcile    20.64s (92.0%)      541420741 comps   38.12 ns/comp  over 509057232 raws, 1258485 (0.2%) actually changed cluster
+[dada]   move          1.72s ( 7.7%)      363527722 raws     4.73 ns/raw   for 1294857 moves (281 raws scanned/move)
+[dada]   reconcile incremental (#136): 509057232 raws fully rescanned over 541420741 comps; collect 13.39s + rescan 7.24s of 20.64s reconcile; 0 exact-tie tie-breaks
+[dada]   #87 carry (#139): ACTIVE -- 1 of 3413 converge calls built (865011 comps, 0.0s); 3412 entered on a carried map
+[dada]   move pruning (#132): 6120178676 of 6483706398 raws skipped (94.4%), 7856 of 7857 passes pruned (100%), mean 1.7 dirty clusters/pass of 3414
+[dada]   other         0.06s ( 0.3%)  (loop bookkeeping; large = an unmeasured phase)
+[dada] shuffle scan time: build=0.01s (9.03 ns/comp)  reconcile=20.64s (38.12 ns/comp)  build=0% of shuffle time
+[dada] bud redundancy: 3414 calls (3413 budded), 5829405 clusters combined (1708 combined/bud, incremental cache)
+[dada] p-update churn: 3413 rounds, 355666121 raws repriced (104209 repriced/round, nraw=825214)
+[dada]   full calc_pA     19923377 (  5.6%)  <- the only parallelisable work
+[dada]   exit singleton  335610184 ( 94.4%)  exit center       132560 (  0.0%)               exit zero-lambda          0 (  0.0%)
+[dada]   dirty clusters 12402 of 5829404 visited; greedy lock pass walked 1294458 raws
+===== mini_k6_c0.53_auto
+[dada] warning: 3 dada parameter(s) differ from error model ./its_probe/base/errF.json; pass --inherit-err-params to adopt the err model's values:
+[dada] alignment backend: nw (Needleman-Wunsch)
+[dada] cpu allocation: 48 threads on 256 logical CPUs / 128 physical cores; SLURM allocated 256 CPUs [host compute-5-6, job 2397350]
+[dada] tuning gates: shuffle carry=on (default)  shuffle prune=on (default)  reconcile=incremental (default)
+[dada] tuning gates: reconcile verify=off (default)  p-update prefetch=16 (default)  par grain=32 (default)
+[dada] resident Raw footprint: 825214 raws, seq+qual 363.7 MB, screen vectors 873.6 MB (1110 B/raw) [kord k=5; screen minimizer sketch k=6/w=5; u16 k-mer freq not stored, #32]
+[dada] minimizer sketch: mean 75 entries/raw, density 0.331 (winnowing predicts 0.333 at w=5), 0 raws unsketchable (screen bypassed)
+[dada] minimizer pooled diversity: 3211 distinct minimizers, mean sharing 19236.8× across 825214 uniques
+[dada] progress t=30s cluster 667 (+666 in 30s): map=6.1s store=3.4s shuffle=7.4s bud+pupd=8.4s  eff cores 8.7/48  map eff 81%  align 1.35%
+[dada] progress t=60s cluster 1552 (+885 in 30s): map=6.4s store=4.8s shuffle=7.3s bud+pupd=4.7s  eff cores 8.4/48  map eff 74%  align 0.53%
+[dada] progress t=90s cluster 2535 (+983 in 30s): map=6.3s store=5.4s shuffle=7.7s bud+pupd=4.0s  eff cores 7.9/48  map eff 70%  align 0.26%
+[dada] minimizer index: USED (scatter per cluster) — probed cluster: scatter 11.16 ms vs saving 15.08 ms (= (878 - 0.7 ns/pair) x 825214 raws / 48 threads); 3211 distinct minimizers, 60135053 postings, mean posting 18728
+[dada] phase times (serial except compare-map): compare=67.90s (map=24.99s parallel, store=18.45s serial)  shuffle=23.96s  bud=0.09s  p_update=18.29s
+[dada] compare attribution (of 67.90s over 2817280596 raw-visits, 2442091 stored):
+[dada]   map             24.99s (36.8%)  parallel
+[dada]   reduction        0.00s ( 0.0%)  serial     0.0 ns/raw  (summed costs + denominators)
+[dada]   store           18.45s (27.2%)  serial     6.5 ns/raw  7554.3 ns/stored
+[dada]   free             0.00s ( 0.0%)  serial     0.0 ns/raw  (result vector)
+[dada]   setup           24.45s (36.0%)  serial
+[dada]   unattributed     0.00s ( 0.0%)
+[dada]   (outside compare) index_add_cluster 0.09s     0.0 ns/raw
+[dada] map parallel efficiency: 75% (busy=896s / map=25s × 48 threads)
+[dada] compare split (of 896.39s busy over 2387853723 comparisons):
+[dada]   kmer screen     80.51s ( 9.0%)     2387853723 comps      34 ns/comp  (every comparison)
+[dada]   align total    278.65s (31.1%)       15885102 comps   17541 ns/comp  (0.7% passed the screen)
+[dada]     dp kernel    260.17s (29.0%)       15885102 comps   16378 ns/comp
+[dada]     al2subs       18.48s ( 2.1%)       15885102 comps    1163 ns/comp  (+ qual mapping)
+[dada]   other          537.23s (59.9%)  (compute_lambda + per-item overhead)
+[dada] shuffle redundancy: 11269 calls, 1294857 moves, 542285752 comps scanned (419 scanned/move), 3413 zero-move calls (30%)
+[dada] shuffle scan split: build=865011 (0% of scanned) over 1 builds (865011 comps/build), reconcile=541420741 (100%)
+[dada] shuffle phases (23.96s total over 3413 converge calls, nraw=825214, nclusters=3414):
+[dada]   build         0.01s ( 0.0%)         865011 comps    7.53 ns/comp
+[dada]   reconcile    22.04s (92.0%)      541420741 comps   40.71 ns/comp  over 509057232 raws, 1258485 (0.2%) actually changed cluster
+[dada]   move          1.85s ( 7.7%)      363527722 raws     5.09 ns/raw   for 1294857 moves (281 raws scanned/move)
+[dada]   reconcile incremental (#136): 509057232 raws fully rescanned over 541420741 comps; collect 14.34s + rescan 7.70s of 22.04s reconcile; 0 exact-tie tie-breaks
+[dada]   #87 carry (#139): ACTIVE -- 1 of 3413 converge calls built (865011 comps, 0.0s); 3412 entered on a carried map
+[dada]   move pruning (#132): 6120178676 of 6483706398 raws skipped (94.4%), 7856 of 7857 passes pruned (100%), mean 1.7 dirty clusters/pass of 3414
+[dada]   other         0.06s ( 0.2%)  (loop bookkeeping; large = an unmeasured phase)
+[dada] shuffle scan time: build=0.01s (7.53 ns/comp)  reconcile=22.04s (40.71 ns/comp)  build=0% of shuffle time
+[dada] bud redundancy: 3414 calls (3413 budded), 5829405 clusters combined (1708 combined/bud, incremental cache)
+[dada] p-update churn: 3413 rounds, 355666121 raws repriced (104209 repriced/round, nraw=825214)
+[dada]   full calc_pA     19923377 (  5.6%)  <- the only parallelisable work
+[dada]   exit singleton  335610184 ( 94.4%)  exit center       132560 (  0.0%)               exit zero-lambda          0 (  0.0%)
+[dada]   dirty clusters 12402 of 5829404 visited; greedy lock pass walked 1294458 raws
