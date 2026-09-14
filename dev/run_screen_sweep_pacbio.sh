@@ -64,7 +64,7 @@ KS="${KS:-8}"
 # Illumina the crossing sat ~0.02 ABOVE matched-pass (0.62-0.65 matched, crossing
 # 0.636), and it is the smoothest calibration signal available -- monotone, with a
 # true zero -- where ASV churn is discrete and count L1 is a flat-bottomed U.
-CUTS="${CUTS:-0.40 0.42 0.45 0.48 0.50 0.52 0.55 0.60}"
+CUTS="${CUTS-0.40 0.42 0.45 0.48 0.50 0.52 0.55 0.60}"
 
 # Cutoffs to TIME. The accuracy sweep wants the whole grid; timing does not, and
 # timing all of it is where this script spends most of its wall clock:
@@ -76,7 +76,7 @@ CUTS="${CUTS:-0.40 0.42 0.45 0.48 0.50 0.52 0.55 0.60}"
 # Default: the arms actually worth a wall-clock number -- near the k-mer screen's
 # own pass rate, where alignment work is matched and the screen is the only
 # variable. Set TIME_CUTS="$CUTS" to time everything, or "" to skip timing.
-TIME_CUTS="${TIME_CUTS:-0.48 0.52}"
+TIME_CUTS="${TIME_CUTS-0.48 0.52}"
 
 # Cutoffs to ALSO time with the inverted index DISABLED, as separate `_noidx`
 # arms. The index turns the screen into an O(1) array read per pair, but pays for

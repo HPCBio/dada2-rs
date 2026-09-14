@@ -85,7 +85,11 @@ WS="${WS:-5}"
 # tight shrouds genuine neighbours and fragments clusters, too loose aligns far
 # more pairs for nothing. A grid that only covers the good region cannot show
 # where the edges are.
-CUTS="${CUTS:-0.40 0.45 0.50 0.55 0.60 0.62 0.63 0.64 0.65 0.70 0.75 0.80}"
+# NOTE `${CUTS-...}`, not `${CUTS:-...}`. The colon form treats an explicitly
+# EMPTY value as unset and substitutes the default, so `CUTS="" bash ...` -- the
+# obvious way to say "skip the accuracy grid, I only want timings" -- silently ran
+# all twelve cutoffs. That cost 24 pooled arms on the probe validation run.
+CUTS="${CUTS-0.40 0.45 0.50 0.55 0.60 0.62 0.63 0.64 0.65 0.70 0.75 0.80}"
 
 # Cutoffs to TIME. The accuracy sweep wants the whole grid; timing does not, and
 # timing all of it is where this script spends most of its wall clock:
@@ -97,7 +101,7 @@ CUTS="${CUTS:-0.40 0.45 0.50 0.55 0.60 0.62 0.63 0.64 0.65 0.70 0.75 0.80}"
 # Default: the arms actually worth a wall-clock number -- near the k-mer screen's
 # own pass rate, where alignment work is matched and the screen is the only
 # variable. Set TIME_CUTS="$CUTS" to time everything, or "" to skip timing.
-TIME_CUTS="${TIME_CUTS:-0.62 0.64}"
+TIME_CUTS="${TIME_CUTS-0.62 0.64}"
 
 # Cutoffs to ALSO time with the inverted index DISABLED, as separate `_noidx`
 # arms. Timing and phase-split only -- the accuracy grid here is the expensive
