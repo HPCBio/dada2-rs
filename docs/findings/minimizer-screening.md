@@ -125,6 +125,89 @@ a *higher* screen share than 1.5 kb HiFi. See
 [How the fixtures misled](#how-the-fixtures-misled) and
 [the gapless section](#the-residual-is-not-the-screen-at-all-the-gapless-shortcut-switches-off).
 
+## Outcomes
+
+Settled, with links to the evidence:
+
+| question | outcome |
+|---|---|
+| Is it faster? | **Yes, where the screen dominates.** −18.7% PacBio HiFi per-sample, −28.8% pooled ITS2. Not on low-diversity data, where the screen is 0.9% of runtime. |
+| Is it concordant? | **Exactly, on HiFi at cutoff ≥0.45.** Mostly, on Illumina — 18 ASVs of 3,028 on pooled ITS2 at its derived cutoff. [What that churn is](#what-the-churned-asvs-are-and-why-this-is-acceptable). |
+| What cutoff? | Platform- *and* `(k, w)`-dependent: 0.45 HiFi, 0.63 Illumina at k=8/w=5. [`kdist-calibrate --derive-cutoff`](#deriving-the-cutoff-the-rule-is-faithful-the-reference-is-not) derives it alignment-free in seconds. |
+| What `k` and `w`? | **k=8, w=5 confirmed** — and `k` and `w` turn out to be [cutoff knobs, not fidelity knobs](#k6-end-to-end-the-fidelity-gain-is-an-artifact-of-an-unmatched-cutoff). At matched selectivity k=6 and k=8 churn 17 and 18. |
+| Index or merge-join? | **Measured per pool at run time**, not predicted. Three closed-form scores were tried and all three broke. [The probe](#the-index-choice-is-measured-not-predicted) is validated 3/3 in both directions. |
+| Does the backend change anything but gating? | **No.** With the gate disabled both backends produce identical tables, cell for cell. [The no-gate control](#the-no-gate-control-the-backend-does-nothing-but-gate). |
+| What causes the churn? | **Half the screen, half the error model it trained** — 9 + 9 = 18, exactly additive, on pooled ITS2. [Stage decomposition](#the-51-stage-split-does-not-survive-a-diverse-pool-it-is-11). |
+| Ship it? | **No — experimental and opt-in**, on the same footing as the WFA backend. [What promotion would require](#status-experimental-and-what-promotion-would-require). |
+
+Three things this page found that are **not** about minimizers: `kdist` was
+silently driving alignment method selection ([fixed](#the-fix-and-what-it-says-about-the-k-mer-screen));
+DADA2's own k-mer screen churns 16 ASVs against not screening at all
+([measured](#what-the-ungated-arm-says-about-the-k-mer-screen-itself)); and the k-mer
+screen's cost is bound by working-set size, not read length.
+
+## What the churned ASVs are, and why this is acceptable
+
+**The decision: the Illumina accuracy cost is accepted as documented behaviour
+for an opt-in experimental backend.** It is not zero, it is not hidden, and a
+user choosing this backend should expect it. What follows is what "it" consists
+of, because "18 ASVs churned" on its own is not something anyone can act on.
+
+**Magnitude.** At each dataset's derived cutoff: **0** on PacBio HiFi (bit-identical),
+**18 of 3,028** on pooled ITS2 (0.59%), **473-580 of 22,359** on pooled soil 16S
+(2.4%). Count L1 is ~1.2% on soil 16S and 0.77% on ITS2; Bray-Curtis stays under
+0.02 per sample. Read retention crosses zero near the derived cutoff and is
+within ±0.25% of the k-mer baseline there.
+
+**Composition — two distinct populations, roughly half each.** Of the ASVs the
+minimizer arm gains, about half are **Hamming-1 from a much more abundant
+neighbour** (169 reads against a neighbour's 18,124; 96 against 1,686). Those are
+fragmentation: the screen shrouded a true parent-child pair, so the child was
+never tested for absorption and survived as its own ASV. The other half sit
+**80-200 substitutions from anything in the baseline table** (minH 88, 166, 194).
+Those are not splits of anything — they are uniques the k-mer screen shrouded
+from *every* centre, which collapses their abundance p-value and kills them.
+
+That distinction matters for interpretation: fragmentation moves reads between
+ASVs and is count-neutral, while a rescued distant unique adds reads that were
+previously dropped. So the two populations are different phenomena and should not
+be summarised as one number.
+
+**Abundance profile.** Churn is confined to the rare tail in every dataset
+checked — median abundance 13, maximum 77-116, against a table whose abundant
+members are in the tens of thousands. No abundant ASV has ever moved.
+
+**Cause.** [Decomposed](#the-51-stage-split-does-not-survive-a-diverse-pool-it-is-11)
+on pooled ITS2 with the error model pinned: **9 ASVs from the denoising-stage
+screen, 9 from the refitted error model, 18 with both changed** — exactly
+additive, with three controls at 0. So half the churn is not the screening at
+all; it is the error model that screening trained, because `build_trans_mat`
+aligns through the screen too. That half is removable by decoupling — train under
+the k-mer screen, denoise under the minimizer — at the cost of running the k-mer
+screen during `learn-errors`, which is the cheap stage.
+
+**There is a floor, and it is set by scale rather than by screen agreement.**
+`k=5, w=1` *is* the k-mer frequency screen, and at its matched cutoff it disagrees
+with it on 0.020% of pairs — and still churns **15 ASVs**, against k=8/w=5's 18 at
+11.5x the disagreement. At 2.39 billion comparisons, 0.020% is ~478,000
+disagreeing pairs. No achievable screen agreement drives churn to zero at this
+scale; only being the identical screen does.
+
+**The baseline is not a fixed point either.** With the error model held constant,
+DADA2's own k-mer screen churns **16 ASVs** relative to not screening at all —
+same order as the 18 separating the minimizer arm from it, with the same rare-tail
+abundance profile, and *larger* than the 9 the minimizer's denoising gate
+contributes. The screen is an ESPRIT-lineage optimisation that has always been
+assumed result-neutral. It is not. "Churn against the k-mer screen" is therefore a
+comparison between two perturbations of similar size, not a departure from a
+correct answer.
+
+**What this does not establish.** Nothing here says which inventory is closest to
+the biology. Unscreened is not truth, and the distant gained ASVs are exactly the
+population a mock community would adjudicate. That is the same dependency as
+[raising the k-mer cap](https://github.com/HPCBio/dada2-rs/issues/44), and it is
+the honest limit of this page.
+
 ## What the screen is
 
 The pre-alignment screen decides which candidate pairs are worth aligning. It is
@@ -2307,14 +2390,18 @@ What has been settled:
 
 What promotion would require, in order:
 
-1. **A judgement about the accuracy cost, which is real and not zero *on
-   Illumina*.** At the recommended cutoffs: 473-580 churned ASVs of 22,359 on
-   pooled 16S, 1.2% count L1; 18 of 3,028 and 0.77% on pooled ITS2. **On PacBio
-   HiFi the cost is exactly zero** at ≥0.45, so this requirement is
-   platform-specific and is already met on one platform. Churn is confined to the rare tail
-   (≤15 reads in every dataset checked) and Bray-Curtis stays under 0.02 per
-   sample, but whether that is acceptable depends on what the tables are used
-   for. **This is not a question the data answers.**
+1. ~~**A judgement about the accuracy cost.**~~ **DECIDED: accepted**, as
+   documented behaviour for an opt-in experimental backend. The cost is real on
+   Illumina (18 of 3,028 ASVs on pooled ITS2 at its derived cutoff, 473-580 of
+   22,359 on soil 16S, 1.2% count L1) and **exactly zero on PacBio HiFi**. What
+   the churned ASVs consist of, why half of it is the error model rather than the
+   screen, and why the k-mer baseline is itself 16 ASVs from unscreened, are set
+   out in [what the churned ASVs are](#what-the-churned-asvs-are-and-why-this-is-acceptable).
+   Users choosing this backend should expect mostly-concordant results with
+   differences confined to the rare tail. **What remains open is not this
+   judgement but the biology**: which inventory is closest to truth needs a mock
+   community, the same dependency as
+   [#44](https://github.com/HPCBio/dada2-rs/issues/44).
 2. **Replication.** One dataset per configuration. A second diverse pool per
    platform would say whether ~0.64 is a default or a coincidence.
 3. **The serial `setup` phase — addressed in code, pending one more workload.**
@@ -2326,7 +2413,7 @@ What promotion would require, in order:
    So the index is a bargain on three configurations and a liability on the
    fourth. `minimizers::decide_index` now picks between them from
    `sharing × threads / nraw`, and it is
-   [validated on pooled PacBio](#the-index-is-now-chosen-per-workload-not-always-built)
+   [validated on pooled PacBio](#the-index-is-chosen-per-workload-not-always-built)
    — the case it exists to catch — landing 0.36% from the right choice and 31.4%
    from the wrong one, for a decision cost of at most ~1s of 290s. Pooled soil
    16S then confirmed it in the opposite direction (score 0.077, index wins

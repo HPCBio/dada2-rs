@@ -1227,6 +1227,61 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         }
     }
 
+    // Advisory: did the probe's sample turn out to represent the run?
+    //
+    // The probe reads the first few clusters, but greedy skipping is NOT
+    // stationary -- it grows as clusters accumulate and raws lock, so the early
+    // window screens a larger fraction of raws than the run does. On pooled
+    // PacBio the window screened 93.7% against a 45.7% run average, overstating
+    // the saving 2.05x, always in the direction of building the index.
+    //
+    // This costs nothing to check: `screened` is already summed for the phase
+    // split, and the cluster count is to hand. Re-run the SAME decision function
+    // on the rate the run actually exhibited and say so if the verdict flips.
+    // There is no threshold here -- the test is whether the answer changes, not
+    // whether some ratio crossed a line.
+    if let Some(d) = bb.minimizer_index_decision
+        && d.forced.is_none()
+        && d.clusters > 0
+        && !bb.clusters.is_empty()
+    {
+        let actual = n_cmp_screened / bb.clusters.len() as u64;
+        let hindsight = crate::minimizers::decide_from_probe(
+            crate::minimizers::ProbeTimings {
+                scatter_ns: d.scatter_ns,
+                merge_ns: d.merge_ns,
+                array_ns: d.array_ns,
+            },
+            actual as usize,
+            d.threads,
+            d.entries,
+            d.distinct,
+            None,
+        );
+        if hindsight.use_index != d.use_index {
+            eprintln!(
+                "[dada] warning: the minimizer index choice may have been wrong. The probe \
+                 measured {} screened comparisons per cluster over its {} sampled cluster(s), \
+                 but the run averaged {} over {} clusters; at that rate the saving is \
+                 {:.2} ms against a {:.2} ms scatter, which favours {}. The screen is exact \
+                 either way -- this is a speed advisory, not a correctness one. Override with \
+                 DADA2RS_MINIMIZER_INDEX={}.",
+                d.ncomp,
+                d.clusters,
+                actual,
+                bb.clusters.len(),
+                hindsight.saving_ns / 1e6,
+                hindsight.scatter_ns / 1e6,
+                if hindsight.use_index {
+                    "the index"
+                } else {
+                    "the per-pair merge-join"
+                },
+                u8::from(hindsight.use_index),
+            );
+        }
+    }
+
     if params.verbose {
         eprintln!(
             "\nALIGN: {} aligns, {} shrouded ({} raw).",
