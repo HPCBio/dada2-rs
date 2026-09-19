@@ -64,9 +64,28 @@ nav:
     - PacBio - Binned Quality: walkthroughs/walkthrough-pacbio-binned.md
   - Commands:
     - Overview: commands/index.md
-    - summary: commands/summary.md
-    - dada: commands/dada.md
+    - 'Quality: summary': commands/summary.md
+    - 'Quality: summary-merge': commands/summary-merge.md
+    - filter-and-trim: commands/filter-and-trim.md
+    - remove-primers: commands/remove-primers.md
+    - derep: commands/derep.md
+    - sample: commands/sample.md
     - learn-errors: commands/learn-errors.md
+    - errors-from-sample: commands/errors-from-sample.md
+    - dada: commands/dada.md
+    - dada-pooled: commands/dada-pooled.md
+    - dada-pseudo: commands/dada-pseudo.md
+    - merge-pairs: commands/merge-pairs.md
+    - make-sequence-table: commands/make-sequence-table.md
+    - remove-bimera-denovo: commands/remove-bimera-denovo.md
+    - chimera-diagnostics: commands/chimera-diagnostics.md
+    - assign-taxonomy: commands/assign-taxonomy.md
+    - assign-species: commands/assign-species.md
+    - seq-table-to-tsv: commands/seq-table-to-tsv.md
+    - seq-table-to-fasta: commands/seq-table-to-fasta.md
+    - tax-to-tsv: commands/tax-to-tsv.md
+    - kdist-calibrate: commands/kdist-calibrate.md
+    - reference-eval: commands/reference-eval.md
   - Parameters: parameters.md
   - Performance:
     - Tuning for your data: tuning-for-your-data.md

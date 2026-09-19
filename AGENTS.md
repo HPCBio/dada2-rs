@@ -77,9 +77,11 @@ prose lives on ReadTheDocs, under `docs/commands/<subcommand>.md`.
   first checking whether an existing one fits. The set is deliberately closed;
   see `docs/commands/index.md` for what each heading means.
 - **Order the headings consistently:** Input, Error model, Denoising,
-  Alignment, Screening, subcommand-specific (Filtering / Chimera / Metrics),
-  Performance, Output, Diagnostics, Experimental. Clap orders groups by the
-  first field that declares them, so declare the fields in that order.
+  Pseudo-pooling, Alignment, Screening, then the subcommand-specific ones
+  (Trimming, Filtering, Primers, Merging, Chimera, Classification, Metrics,
+  Regime, Evaluation), then Performance, Output, Diagnostics, Experimental.
+  Clap orders groups by the first field that declares them, so declare the
+  fields in that order.
 - **Point at the docs.** Every subcommand carries
   `after_help = docs_link!("<page>")`. Add the page in the same change, and add
   it to the `nav:` block in `mkdocs.yml`.
