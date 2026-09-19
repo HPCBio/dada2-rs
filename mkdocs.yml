@@ -62,6 +62,11 @@ nav:
     - Illumina - Binned Quality: walkthroughs/walkthrough-illumina-binned.md
     - PacBio HiFi: walkthroughs/walkthrough-pacbio.md
     - PacBio - Binned Quality: walkthroughs/walkthrough-pacbio-binned.md
+  - Commands:
+    - Overview: commands/index.md
+    - summary: commands/summary.md
+    - dada: commands/dada.md
+    - learn-errors: commands/learn-errors.md
   - Parameters: parameters.md
   - Performance:
     - Tuning for your data: tuning-for-your-data.md

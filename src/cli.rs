@@ -5,6 +5,32 @@ use clap::{ArgAction, Parser, Subcommand};
 use crate::misc::DADA2_RS_VERSION;
 use crate::nwalign::{AlignBackend, ScreenBackend};
 
+/// Help headings shared across subcommands. Keep this list closed: a new
+/// heading means a new category for every subcommand that has such a flag,
+/// so prefer reusing one of these over inventing a variant.
+const H_INPUT: &str = "Input";
+const H_OUTPUT: &str = "Output";
+const H_ERRMODEL: &str = "Error model";
+const H_DENOISE: &str = "Denoising";
+const H_ALIGN: &str = "Alignment";
+const H_SCREEN: &str = "Screening";
+const H_METRICS: &str = "Metrics";
+const H_DIAG: &str = "Diagnostics";
+const H_PERF: &str = "Performance";
+const H_EXP: &str = "Experimental";
+
+/// Points at the subcommand's full parameter reference on ReadTheDocs. Detailed
+/// prose lives there, not in `--help` (issue #168).
+macro_rules! docs_link {
+    ($page:literal) => {
+        concat!(
+            "Full parameter reference: https://dada2-rs.readthedocs.io/en/latest/commands/",
+            $page,
+            "/"
+        )
+    };
+}
+
 #[derive(Parser)]
 #[command(
     about = "DADA2 toolkit",
@@ -28,70 +54,58 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Compute per-position quality metrics from a FASTQ file
-    #[command(display_order = 1)]
+    #[command(display_order = 1, after_help = docs_link!("summary"))]
     Summary {
         /// Input FASTQ file (uncompressed or gzipped)
+        #[arg(help_heading = H_INPUT)]
         input: PathBuf,
 
-        /// Sample identifier included in the output JSON's `sample` field.
-        /// Defaults to the filename stem of the input FASTQ.
-        #[arg(long)]
+        /// Sample identifier for the output JSON [default: input filename stem]
+        #[arg(long, help_heading = H_INPUT)]
         sample_name: Option<String>,
 
-        /// Phred quality score offset (33 for Sanger/Illumina 1.8+, 64 for Illumina 1.3–1.7)
-        #[arg(long, default_value_t = 33)]
+        /// Phred offset: 33 (Sanger/Illumina 1.8+) or 64 (Illumina 1.3-1.7)
+        #[arg(long, default_value_t = 33, help_heading = H_INPUT)]
         phred_offset: u8,
 
-        /// Number of threads for parallel processing
-        #[arg(long, default_value_t = 1)]
-        threads: usize,
-
-        /// Write JSON output to this file instead of stdout
-        #[arg(long, short = 'o')]
-        output: Option<PathBuf>,
-
-        /// Output compact (minified) JSON instead of pretty-printed
-        #[arg(long)]
-        compact: bool,
-
-        /// Also compute a per-read sequence-complexity histogram (DADA2's
-        /// `seqComplexity`/`plotComplexity`): the effective number of k-mers
-        /// per read, `exp(Shannon entropy)` over its k-mer counts.
-        #[arg(long)]
+        /// Also compute the per-read sequence-complexity histogram
+        #[arg(long, help_heading = H_METRICS)]
         complexity: bool,
 
-        /// K-mer size for the complexity calculation (DADA2 default 2). Only
-        /// used when `--complexity` is set.
-        #[arg(long, default_value_t = 2)]
+        /// K-mer size for --complexity
+        #[arg(long, default_value_t = 2, help_heading = H_METRICS)]
         complexity_kmer_size: u8,
 
-        /// Number of histogram bins for complexity, spanning `[0, 4^kmer_size]`
-        /// (DADA2 `plotComplexity` default 100). Only used with `--complexity`.
-        #[arg(long, default_value_t = 100)]
+        /// Histogram bins for --complexity, spanning `[0, 4^kmer_size]`
+        #[arg(long, default_value_t = 100, help_heading = H_METRICS)]
         complexity_bins: usize,
 
-        /// Also compute per-position cumulative expected-error (EE) metrics:
-        /// `Σ 10^(-Q/10)` along each read, aggregated across reads into
-        /// mean/median/min/max/quartiles per position. Useful for judging
-        /// `filter-and-trim` `maxEE`/truncation choices.
-        #[arg(long)]
+        /// Also compute per-position cumulative expected-error (EE) metrics
+        #[arg(long, help_heading = H_METRICS)]
         expected_error: bool,
 
-        /// Number of log-spaced histogram bins backing the EE quantiles. Only
-        /// used when `--expected-error` is set.
-        #[arg(long, default_value_t = 200)]
+        /// Log-spaced histogram bins backing the EE quantiles
+        #[arg(long, default_value_t = 200, help_heading = H_METRICS)]
         ee_bins: usize,
 
-        /// Maximum number of distinct quality values for the data to be judged
-        /// "binned" (NovaSeq/NextSeq collapse Phred to a handful of levels).
-        /// Continuous Illumina/HiFi data has dozens of distinct values.
-        #[arg(long, default_value_t = 8)]
+        /// Max distinct quality values before the data is judged "binned"
+        #[arg(long, default_value_t = 8, help_heading = H_METRICS)]
         binned_threshold: usize,
 
-        /// Also print a human-readable metrics report to stderr (total
-        /// sequences, quality/EE ranges, whether quality scores are binned and
-        /// their levels). Stdout stays clean JSON for piping.
-        #[arg(long)]
+        /// Number of threads for parallel processing
+        #[arg(long, default_value_t = 1, help_heading = H_PERF)]
+        threads: usize,
+
+        /// Write JSON to this file instead of stdout
+        #[arg(long, short = 'o', help_heading = H_OUTPUT)]
+        output: Option<PathBuf>,
+
+        /// Emit compact (minified) JSON instead of pretty-printed
+        #[arg(long, help_heading = H_OUTPUT)]
+        compact: bool,
+
+        /// Also print a human-readable metrics report to stderr
+        #[arg(long, help_heading = H_DIAG)]
         report: bool,
     },
 
@@ -175,296 +189,180 @@ pub enum Commands {
         verbose: bool,
     },
 
-    /// Denoise a sample using the DADA2 algorithm
-    ///
-    /// Accepts either a FASTQ file (dereplicated in memory) or a JSON file
-    /// produced by the `derep` or `sample` subcommand (`.json` / `.json.gz`).
-    /// Pre-dereplicated input avoids re-reading the FASTQ when iterating on
-    /// parameters.  Outputs a JSON object describing the inferred ASVs.
-    ///
-    /// By default `err_out` from the error model file is used as the error
-    /// matrix.  Pass `--use-err-in` to use `err_in` instead.
-    #[command(display_order = 8)]
+    /// Denoise one or more samples independently (R DADA2 `pool=FALSE`)
+    #[command(display_order = 8, after_help = docs_link!("dada"))]
     Dada {
-        /// One or more input files: FASTQ (uncompressed or gzipped) or a
-        /// derep/sample JSON. With a single input the result is written to
-        /// `--output`/`-o` (or stdout). With more than one input the samples are
-        /// processed independently/serially (NOT pooled) and one `{sample}.json`
-        /// per sample is written to `--output-dir` (which is then required).
-        #[arg(required = true)]
+        /// Input FASTQ or derep/sample JSON files; >1 input requires --output-dir
+        #[arg(required = true, help_heading = H_INPUT)]
         input: Vec<PathBuf>,
 
+        /// Sample identifier for the output JSON [default: input filename stem]
+        #[arg(long, help_heading = H_INPUT)]
+        sample_name: Option<String>,
+
+        /// Phred offset: 33 (Sanger/Illumina 1.8+) or 64 (Illumina 1.3-1.7)
+        #[arg(long, default_value_t = 33, help_heading = H_INPUT)]
+        phred_offset: u8,
+
+        /// FASTA of prior sequences; exact matches skip the abundance p-value filter
+        #[arg(long, help_heading = H_INPUT)]
+        prior: Option<PathBuf>,
+
         /// JSON error model file produced by the `learn-errors` subcommand
-        #[arg(long)]
+        #[arg(long, help_heading = H_ERRMODEL)]
         error_model: PathBuf,
 
         /// Use `err_in` from the error model instead of `err_out`
-        #[arg(long)]
+        #[arg(long, help_heading = H_ERRMODEL)]
         use_err_in: bool,
 
-        /// Sample identifier included in the output JSON.
-        /// Defaults to the filename stem of the input FASTQ.
-        #[arg(long)]
-        sample_name: Option<String>,
-
-        /// FASTA file of prior sequences (uncompressed or gzip-compressed).
-        ///
-        /// Each sequence in the file that matches a dereplicated unique exactly
-        /// is flagged as a prior, making it immune to the abundance p-value
-        /// filter. Prior-based splitting uses --omega-p instead of --omega-a.
-        #[arg(long)]
-        prior: Option<PathBuf>,
-
-        /// Inherit any unspecified algorithm parameters (omega_*, min_*,
-        /// detect_singletons, band, homo_gap_p, kdist_cutoff, kmer_size,
-        /// no_kmer_screen) from the error model JSON's `params` block. Any
-        /// flag passed explicitly on the CLI still wins. Without this flag,
-        /// the built-in CLI defaults apply and a warning is emitted for each
-        /// CLI value that disagrees with the err model's value.
-        #[arg(long)]
+        /// Inherit unspecified algorithm parameters from the model's `params` block
+        #[arg(long, help_heading = H_ERRMODEL)]
         inherit_err_params: bool,
 
-        /// Phred quality score offset (33 for Sanger/Illumina 1.8+, 64 for Illumina 1.3–1.7)
-        #[arg(long, default_value_t = 33)]
-        phred_offset: u8,
-
-        /// Number of threads (used for both dereplication and DADA2 comparisons)
-        #[arg(long, default_value_t = 1)]
-        threads: usize,
-
-        /// (Multi-input only) Number of samples to denoise concurrently, each on
-        /// its own `threads / sample-jobs` sub-pool. A single sample's comparison
-        /// map is often too small to feed many threads, so fanning samples across
-        /// smaller sub-pools keeps every core fed (~4 threads/sample is the sweet
-        /// spot) and bounds memory to this many samples in flight. Defaults to
-        /// round(threads / 4) (1 at <=4 threads = serial). Ignored for a single
-        /// input. Dial it down for very large/complex samples if memory is tight.
-        #[arg(long)]
-        sample_jobs: Option<usize>,
-
-        /// Significance threshold for abundance-based cluster splitting (omega_a)
-        #[arg(long)]
+        /// Significance threshold for abundance-based cluster splitting (R OMEGA_A)
+        #[arg(long, help_heading = H_DENOISE)]
         omega_a: Option<f64>,
 
-        /// Significance threshold for reads not corrected to any center (omega_c)
-        #[arg(long)]
+        /// Significance threshold for reads not corrected to any center (R OMEGA_C)
+        #[arg(long, help_heading = H_DENOISE)]
         omega_c: Option<f64>,
 
-        /// Significance threshold for prior-sequence splitting (omega_p)
-        #[arg(long)]
+        /// Significance threshold for prior-sequence splitting (R OMEGA_P)
+        #[arg(long, help_heading = H_DENOISE)]
         omega_p: Option<f64>,
 
-        /// Minimum fold-enrichment above expected for cluster splitting
-        #[arg(long)]
+        /// Minimum fold-enrichment above expected for splitting (R MIN_FOLD)
+        #[arg(long, help_heading = H_DENOISE)]
         min_fold: Option<f64>,
 
-        /// Minimum Hamming distance required for cluster splitting
-        #[arg(long)]
+        /// Minimum Hamming distance required for splitting (R MIN_HAMMING)
+        #[arg(long, help_heading = H_DENOISE)]
         min_hamming: Option<u32>,
 
-        /// Minimum read abundance required for cluster splitting
-        #[arg(long)]
+        /// Minimum read abundance required for splitting (R MIN_ABUNDANCE)
+        #[arg(long, help_heading = H_DENOISE)]
         min_abund: Option<u32>,
 
-        /// Use singleton detection (tri-state: omit to inherit / use default,
-        /// `true` or `false` to set explicitly).
-        #[arg(long)]
+        /// Detect singletons as genuine (R DETECT_SINGLETONS) [omit to inherit]
+        #[arg(long, help_heading = H_DENOISE)]
         detect_singletons: Option<bool>,
 
-        /// Alignment band radius, matching R's `BAND_SIZE` parameter.
-        /// 16 = Illumina default. 32 = recommended for PacBio HiFi 16S amplicons
-        /// (per the DADA2 LRAS manuscript). -1 = unbanded (O(n²), rarely needed).
-        #[arg(long, allow_hyphen_values = true)]
-        band: Option<i32>,
-
-        /// Homopolymer-run gap penalty. Matches R's `HOMOPOLYMER_GAP_PENALTY`;
-        /// PacBio pipelines typically set this closer to 0 (e.g. `-1`) because
-        /// homopolymer indels are the dominant error mode. Defaults to --gap-p
-        /// when unset (R's HOMOPOLYMER_GAP_PENALTY = NULL).
-        #[arg(long, allow_hyphen_values = true)]
-        homo_gap_p: Option<i32>,
-
-        /// Gap penalty for the Needleman-Wunsch alignment (R's GAP_PENALTY).
-        #[arg(long, allow_hyphen_values = true)]
-        gap_p: Option<i32>,
-
-        /// Match score for the Needleman-Wunsch alignment (R's MATCH).
-        #[arg(long = "match", allow_hyphen_values = true)]
-        match_score: Option<i32>,
-
-        /// Mismatch score for the Needleman-Wunsch alignment (R's MISMATCH).
-        #[arg(long, allow_hyphen_values = true)]
-        mismatch: Option<i32>,
-
-        /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
-        /// is the experimental WFA backend (wfa2lib-rs) — ASV-equivalent on tested
-        /// Illumina and PacBio HiFi data, but alignments are not byte-identical.
-        /// `wfa2` requires a build with `--features wfa`; a default build (and the
-        /// published crate) errors when it is selected. See issue #63.
-        #[arg(long, value_enum)]
-        align_backend: Option<AlignBackend>,
-
-        /// EXPERIMENTAL alternative to the k-mer screen. `kmer` (default) is
-        /// the ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses;
-        /// `minimizer` is a winnowed-minimizer sketch. Neither defines the
-        /// clusters — both only decide which pairs are worth aligning.
-        ///
-        /// EXPECT MOSTLY-CONCORDANT BUT NOT IDENTICAL RESULTS. On every dataset
-        /// tested the ASV sets and counts agree closely, but there are real
-        /// differences: typically a fraction of a percent of reads and a small
-        /// number of low-abundance ASVs (all under ~15 reads in the datasets
-        /// measured). This is not a drop-in replacement for the k-mer screen.
-        ///
-        /// It pays off where a lot of screening happens — diverse pools, where
-        /// most pairs are dissimilar so the screen runs on everything and the
-        /// aligner on almost nothing. There the k-mer screen can reach 44-77% of
-        /// denoising time and this replaces it with under 10%. On low-diversity
-        /// data the screen is ~1% of runtime and there is nothing to win.
-        ///
-        /// REQUIRES TUNING. The default `--kdist-cutoff 0.42` is wrong for this
-        /// backend (it over-screens ~3x). Use `--minimizer-k 8` with a cutoff
-        /// derived for your data — ~0.64 on diverse Illumina pools, ~0.50 on
-        /// PacBio HiFi — via `kdist-calibrate --screen-backend minimizer`.
-        /// See docs/findings/minimizer-screening.md.
-        #[arg(long, value_enum)]
-        screen_backend: Option<ScreenBackend>,
-
-        /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
-        /// minimizer sketch [default: 8]. Independent of `--kmer-size`, which
-        /// still governs the frequency screen. Range 5-31. k=8 was chosen on
-        /// Illumina (a pair audit; k=11 misses real neighbours) and has NOT been
-        /// re-derived per platform the way `--kmer-size` had to be.
-        #[arg(long)]
-        minimizer_k: Option<usize>,
-
-        /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
-        /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
-        /// larger w is smaller and faster but less sensitive. Range 1-64.
-        /// Never varied in any published measurement — every result on the
-        /// findings page is a single w=5 point.
-        #[arg(long)]
-        minimizer_w: Option<usize>,
-
-        /// EXPERIMENTAL diagnostic (with `--screen-backend minimizer`): evaluate
-        /// BOTH screens on every comparison and align the union, reporting how
-        /// often they disagree and — for each disagreement — how many
-        /// substitutions the alignment actually found. Answers whether the
-        /// minimizer screen passes a superset, a subset, or a different set of
-        /// the pairs `--kdist-cutoff` passes. ASVs are unaffected (audit-only
-        /// alignments are discarded), but the run is substantially slower and
-        /// its timings are not comparable to a normal run.
-        #[arg(long, default_value_t = false)]
-        screen_audit: bool,
-
-        /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
-        /// edit operations. WFA aborts a pair once it needs more than this many
-        /// edits and falls back to the NW path for that pair (NW-identical there).
-        /// The budget is an absolute edit count, NOT a fraction of read length:
-        /// denoising only aligns near-identical reads (~99.9% identity), so real
-        /// error-copies stay a few edits apart regardless of read length, while
-        /// divergent non-error-copy pairs that slip past the k-mer screen are
-        /// bounded. Ignored for the `nw` backend. 0 = unbounded. [default: 50]
-        /// (Internally an edit budget E maps to a WFA cost of E·|gap_p|, e.g.
-        /// 50·8 = 400 with default scoring; the DADA2RS_WFA_MAX_STEPS env
-        /// override is specified in those raw cost units, not edits.)
-        #[arg(long)]
-        wfa_max_edits: Option<i32>,
-
-        /// Maximum number of clusters to infer (R's MAX_CLUST). 0 = unlimited.
-        #[arg(long)]
+        /// Maximum number of clusters to infer, 0 = unlimited (R MAX_CLUST)
+        #[arg(long, help_heading = H_DENOISE)]
         max_clust: Option<usize>,
 
-        /// Use greedy clustering (R's GREEDY). Tri-state: omit to inherit / use
-        /// default.
-        #[arg(long)]
+        /// Use greedy clustering (R GREEDY) [omit to inherit]
+        #[arg(long, help_heading = H_DENOISE)]
         greedy: Option<bool>,
 
-        /// Use quality scores in the error model (R's USE_QUALS). Tri-state:
-        /// omit to inherit / use default.
-        #[arg(long)]
+        /// Use quality scores in the error model (R USE_QUALS) [omit to inherit]
+        #[arg(long, help_heading = H_DENOISE)]
         use_quals: Option<bool>,
 
-        /// K-mer distance cutoff for the pre-alignment screen. Pairs with
-        /// k-mer distance above this threshold are not aligned (matches R's
-        /// `KDIST_CUTOFF`). Lower values screen more aggressively (faster,
-        /// more false negatives); raise for divergent sequences.
-        #[arg(long)]
+        /// Band radius (R BAND_SIZE): 16 Illumina, 32 PacBio HiFi, -1 unbanded
+        #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
+        band: Option<i32>,
+
+        /// Gap penalty for the Needleman-Wunsch alignment (R GAP_PENALTY)
+        #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
+        gap_p: Option<i32>,
+
+        /// Homopolymer-run gap penalty (R HOMOPOLYMER_GAP_PENALTY) [default: --gap-p]
+        #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
+        homo_gap_p: Option<i32>,
+
+        /// Match score for the Needleman-Wunsch alignment (R MATCH)
+        #[arg(long = "match", allow_hyphen_values = true, help_heading = H_ALIGN)]
+        match_score: Option<i32>,
+
+        /// Mismatch score for the Needleman-Wunsch alignment (R MISMATCH)
+        #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
+        mismatch: Option<i32>,
+
+        /// Pairwise aligner; `wfa2` requires a build with `--features wfa`
+        #[arg(long, value_enum, help_heading = H_ALIGN)]
+        align_backend: Option<AlignBackend>,
+
+        /// K-mer distance cutoff for the pre-alignment screen (R KDIST_CUTOFF)
+        #[arg(long, help_heading = H_SCREEN)]
         kdist_cutoff: Option<f64>,
 
-        /// K-mer size used for the pre-alignment screen and for the Raw
-        /// k-mer vectors (matches R's `KMER_SIZE`). 5 is the DADA2 default,
-        /// tuned for 16S/ITS-length amplicons. Valid range: 3..=8 (8 is the
-        /// hard ceiling — k-mer indices must fit in u16). For PacBio HiFi do NOT
-        /// use k=5: on ~1.4 kb reads the screen is a no-op there (~every pair is
-        /// aligned, ~4–5× slower at scale). Use k=7 for speed or k=6 to cap
-        /// memory; both give effectively identical ASVs. Memory scales as 4^k
-        /// per Raw (k=5 → 1KB, k=6 → 4KB, k=7 → 16KB, k=8 → 64KB).
-        #[arg(long)]
+        /// K-mer size for the screen, 3-8 (R KMER_SIZE); use 6-7 on PacBio HiFi
+        #[arg(long, help_heading = H_SCREEN)]
         kmer_size: Option<usize>,
 
-        /// Disable the k-mer pre-alignment screen (every pair is aligned).
-        /// Much slower; use only when the screen is wrongly filtering valid
-        /// comparisons. Tri-state: omit to inherit / use default.
-        #[arg(long)]
+        /// Disable the k-mer screen and align every pair (much slower)
+        #[arg(long, help_heading = H_SCREEN)]
         no_kmer_screen: Option<bool>,
 
-        /// Emit R-DADA2-parity per-cluster diagnostics in the output JSON:
-        /// `cluster_stats` (n0/n1/nunq/birth_qave/post-hoc pval),
-        /// `cluster_quality` (mean quality at each reference position),
-        /// `birth_subs` (the substitutions that drove each cluster split),
-        /// and `transitions` (16 × nq transition-by-quality matrix).
-        ///
-        /// Adds one alignment per Raw against its cluster center; only enable
-        /// when you need the extra diagnostics.
-        #[arg(long)]
-        aux_outputs: bool,
+        /// Number of threads for dereplication and DADA2 comparisons
+        #[arg(long, default_value_t = 1, help_heading = H_PERF)]
+        threads: usize,
 
-        /// Write a single full cluster trace (clusters.json) to this file.
-        ///
-        /// Describes the final cluster structure: cluster centers, members
-        /// with hamming/λ/pval, birth metadata. Useful for ASV-calling QC
-        /// and one-off plots. See examples/cluster_trace/.
-        #[arg(long)]
-        cluster_trace: Option<PathBuf>,
+        /// Samples to denoise concurrently, multi-input only [default: threads/4]
+        #[arg(long, help_heading = H_PERF)]
+        sample_jobs: Option<usize>,
 
-        /// Skip the per-cluster `members` array in the trace; emit only
-        /// cluster centers and birth metadata.
-        #[arg(long)]
-        trace_no_members: bool,
-
-        /// In the trace, only include members with abundance >= this value.
-        #[arg(long, default_value_t = 1)]
-        trace_min_abund: u32,
-
-        /// Write JSON output to this file instead of stdout (single input only)
-        #[arg(long, short = 'o')]
+        /// Write JSON to this file instead of stdout (single input only)
+        #[arg(long, short = 'o', help_heading = H_OUTPUT)]
         output: Option<PathBuf>,
 
-        /// Output directory for per-sample JSON files (required when more than
-        /// one input is given; created if absent). One `{sample}.json` per
-        /// sample, same convention as `dada-pooled`.
-        #[arg(long)]
+        /// Directory for per-sample `{sample}.json` (required for >1 input)
+        #[arg(long, help_heading = H_OUTPUT)]
         output_dir: Option<PathBuf>,
 
-        /// Write a TSV of uniques that failed to denoise (final p-value < omega_c,
-        /// `map == null`) to this file. Tidy long format with a header:
-        /// `sequence<TAB>sample<TAB>reads`, one row per failed unique per sample
-        /// it appears in. Answers "what failed to denoise and how many reads did
-        /// it cost?" without hand-joining the `map` to the derep uniques.
-        #[arg(long)]
-        failed_uniques: Option<PathBuf>,
-
-        /// Output compact (minified) JSON instead of pretty-printed
-        #[arg(long)]
+        /// Emit compact (minified) JSON instead of pretty-printed
+        #[arg(long, help_heading = H_OUTPUT)]
         compact: bool,
 
-        /// Gzip-compress the per-sample JSON files (written as `{sample}.json.gz`)
-        #[arg(long)]
+        /// Gzip the per-sample JSON files (`{sample}.json.gz`)
+        #[arg(long, help_heading = H_OUTPUT)]
         gzip: bool,
 
         /// Print progress to stderr
-        #[arg(long)]
+        #[arg(long, help_heading = H_DIAG)]
         verbose: bool,
+
+        /// Emit R-parity per-cluster diagnostics in the output JSON
+        #[arg(long, help_heading = H_DIAG)]
+        aux_outputs: bool,
+
+        /// Write a full cluster trace (clusters.json) to this file
+        #[arg(long, help_heading = H_DIAG)]
+        cluster_trace: Option<PathBuf>,
+
+        /// Omit the per-cluster `members` array from the trace
+        #[arg(long, help_heading = H_DIAG)]
+        trace_no_members: bool,
+
+        /// Only trace members with abundance >= this value
+        #[arg(long, default_value_t = 1, help_heading = H_DIAG)]
+        trace_min_abund: u32,
+
+        /// Write a TSV of uniques that failed to denoise to this file
+        #[arg(long, help_heading = H_DIAG)]
+        failed_uniques: Option<PathBuf>,
+
+        /// EXPERIMENTAL: pre-alignment screen; `minimizer` needs a tuned cutoff
+        #[arg(long, value_enum, help_heading = H_EXP)]
+        screen_backend: Option<ScreenBackend>,
+
+        /// EXPERIMENTAL: k-mer size for the minimizer sketch, 5-31 [default: 8]
+        #[arg(long, help_heading = H_EXP)]
+        minimizer_k: Option<usize>,
+
+        /// EXPERIMENTAL: minimizer winnowing window in k-mers, 1-64 [default: 5]
+        #[arg(long, help_heading = H_EXP)]
+        minimizer_w: Option<usize>,
+
+        /// EXPERIMENTAL: run both screens and report disagreements (much slower)
+        #[arg(long, default_value_t = false, help_heading = H_EXP)]
+        screen_audit: bool,
+
+        /// EXPERIMENTAL: WFA edit-budget cap, 0 = unbounded [default: 50]
+        #[arg(long, help_heading = H_EXP)]
+        wfa_max_edits: Option<i32>,
     },
 
     /// Denoise multiple samples with full pooling (R DADA2 `pool=TRUE`)
@@ -2139,365 +2037,204 @@ pub enum Commands {
     },
 
     /// Learn an error model from FASTQ or derep/sample JSON files
-    ///
-    /// Reads one or more FASTQ files (dereplicated on the fly) or pre-computed
-    /// derep/sample JSON files (`.json` / `.json.gz`, as written by the `derep`
-    /// and `sample` subcommands), subsamples them up to `--nbases` total bases,
-    /// then iteratively runs the DADA2 algorithm and re-fits the chosen error
-    /// model until self-consistency.
-    ///
-    /// Output is a JSON object with three flat 16 × nq matrices:
-    ///   `trans`   — accumulated transition counts,
-    ///   `err_in`  — error rates used in the final DADA run,
-    ///   `err_out` — error rates estimated from `trans`.
-    ///
-    /// CAVEAT (cross-sample diversity): accumulation is *sample-level*. Files
-    /// are taken whole — in supplied order, or shuffled with `--randomize` — and
-    /// each contributes all of its bases until the running total reaches
-    /// `--nbases`. Reads are never subsampled *within* a file. With modern deep
-    /// runs a single sample can supply the entire `--nbases` budget (e.g. 400k
-    /// reads × 250 bp = 100M bases = the default budget), so the error model may
-    /// be learned from the diversity of just one or a few samples. `--randomize`
-    /// only shuffles which samples are drawn first; it does not guarantee
-    /// representation across the run. Raise `--nbases`, pass a hand-picked set
-    /// of inputs, or pre-`sample` each file to spread learning across samples.
-    /// (Tracking: issue #68 — cross-sample diversity in learn-errors.)
-    #[command(display_order = 6)]
+    #[command(
+        display_order = 6,
+        after_help = concat!(
+            "CAVEAT: --nbases accumulates whole samples, so one deep sample can fill\n\
+             the budget and the model may reflect only a few samples' diversity.\n\n",
+            docs_link!("learn-errors"),
+        ),
+    )]
     LearnErrors {
-        /// FASTQ (.fastq/.fastq.gz/.fq/.fq.gz) or derep/sample JSON
-        /// (.json/.json.gz) files to learn from
-        #[arg(required = true)]
+        /// FASTQ or derep/sample JSON files to learn from
+        #[arg(required = true, help_heading = H_INPUT)]
         input: Vec<PathBuf>,
 
-        /// Stop after accumulating at least this many total bases across input
-        /// files. NOTE: accumulation is sample-level (whole files); a single
-        /// deep sample can fill the entire budget — see the command help.
-        #[arg(long, default_value_t = 100_000_000)]
-        nbases: u64,
-
-        /// Process input files in random order instead of the supplied order.
-        /// NOTE: shuffles sample ORDER only — does not subsample reads within a
-        /// sample, so it does not guarantee cross-sample diversity.
-        #[arg(long)]
-        randomize: bool,
-
-        /// RNG seed for reproducible randomization (only used with --randomize)
-        #[arg(long)]
-        seed: Option<u64>,
-
-        /// Phred quality score offset (33 for Sanger/Illumina 1.8+)
-        #[arg(long, default_value_t = 33)]
+        /// Phred offset: 33 (Sanger/Illumina 1.8+) or 64 (Illumina 1.3-1.7)
+        #[arg(long, default_value_t = 33, help_heading = H_INPUT)]
         phred_offset: u8,
 
-        /// Error model fitting function to use.
-        ///
-        /// Allowed values: loess (default), noqual, binned-qual, pacbio, external.
-        ///
-        /// Note on `loess` vs R DADA2: the native Rust loess is
-        /// algorithmically equivalent to R's `loess(surface = "direct")` —
-        /// bit-exact to machine precision on real data (validated against
-        /// `examples/external_errfun/loess_reference_direct.R`). R DADA2's
-        /// `loessErrfun`, however, calls `loess(...)` with R's default
-        /// `surface = "interpolate"`, which fits the local polynomial at
-        /// kd-tree vertices and interpolates between them. The two surfaces
-        /// disagree by ~1e-3 absolute / ~4% relative at low-Q edges; the
-        /// downstream ASV impact on dada2 inference is minimal (~1 read per
-        /// sample on a 362-sample benchmark).
-        ///
-        /// For bit-for-bit parity with R DADA2's `loessErrfun`, use:
-        ///   --errfun external --errfun-cmd "Rscript examples/external_errfun/loess_reference.R"
-        /// See issue #14 for the full decomposition.
-        #[arg(long, default_value = "loess",
+        /// Stop after this many total bases; whole samples are taken in order
+        #[arg(long, default_value_t = 100_000_000, help_heading = H_ERRMODEL)]
+        nbases: u64,
+
+        /// Process input files in random order (shuffles sample order only)
+        #[arg(long, help_heading = H_ERRMODEL)]
+        randomize: bool,
+
+        /// RNG seed for reproducible --randomize
+        #[arg(long, help_heading = H_ERRMODEL)]
+        seed: Option<u64>,
+
+        /// Error-model fitting function
+        #[arg(long, default_value = "loess", help_heading = H_ERRMODEL,
               value_parser = ["loess", "noqual", "binned-qual", "pacbio", "external"])]
         errfun: String,
 
-        /// Pseudocount added to each transition total (only used with --errfun noqual)
-        #[arg(long, default_value_t = 1.0)]
+        /// Pseudocount added to each transition total (--errfun noqual only)
+        #[arg(long, default_value_t = 1.0, help_heading = H_ERRMODEL)]
         pseudocount: f64,
 
-        /// Anchor quality-score bins for piecewise-linear interpolation
-        ///
-        /// Comma-separated list of quality score values, e.g. "0,10,20,30,40".
-        /// Only used with --errfun binned-qual.
-        #[arg(long, value_delimiter = ',')]
+        /// Anchor quality bins, e.g. "0,10,20,30,40" (--errfun binned-qual only)
+        #[arg(long, value_delimiter = ',', help_heading = H_ERRMODEL)]
         binned_quals: Option<Vec<f64>>,
 
-        /// External command to invoke when --errfun external is used.
-        ///
-        /// Whitespace-split into argv; the trans-input and err-output file
-        /// paths are appended as the final two arguments. Both files use
-        /// R's `read.table(..., row.names=1, header=TRUE, check.names=FALSE)`
-        /// layout. See examples/external_errfun/ for reference scripts.
-        #[arg(long)]
+        /// Command to invoke for --errfun external; input/output paths are appended
+        #[arg(long, help_heading = H_ERRMODEL)]
         errfun_cmd: Option<String>,
 
-        /// LOESS configuration preset.  Resolves a bundle of related knobs
-        /// (`--loess-surface`, `--loess-cell`, `--loess-max-rate`,
-        /// `--loess-min-rate`); any of those flags passed explicitly overrides
-        /// the preset's value for that knob.
-        ///
-        /// - `default`: surface=direct, max-rate=0.25, min-rate=1e-7 — the
-        ///   historical dada2-rs behavior.
-        /// - `r-dada2`: surface=interpolate, cell=0.2, max-rate=0.25,
-        ///   min-rate=1e-7.  Mirrors R DADA2's `loessErrfun` — R's default
-        ///   `loess()` surface plus the same `[1e-7, 0.25]` clamp R DADA2
-        ///   applies after the fit (errorModels.R:53-56).
-        ///
-        /// Both presets clamp to the same range; they differ only in the
-        /// fitting surface.
-        #[arg(long, default_value = "default",
+        /// LOESS knob bundle; `r-dada2` mirrors R's `loessErrfun`
+        #[arg(long, default_value = "default", help_heading = H_ERRMODEL,
               value_parser = ["default", "r-dada2"])]
         loess_preset: String,
 
-        /// LOESS fitting surface (overrides preset).
-        /// Only applies to `--errfun loess` and `--errfun pacbio`; ignored by
-        /// `noqual`, `binned-qual`, and `external`.
-        ///
-        /// `direct` evaluates the local polynomial at every query point
-        /// (matches R `loess(surface = "direct")`).  `interpolate` builds a
-        /// 1-D kd-tree partition, fits at each vertex, and blends with cubic
-        /// Hermite at queries (matches R's default `loess()`).
-        #[arg(long, value_parser = ["direct", "interpolate"])]
+        /// LOESS fitting surface (overrides the preset)
+        #[arg(long, value_parser = ["direct", "interpolate"], help_heading = H_ERRMODEL)]
         loess_surface: Option<String>,
 
-        /// Maximum fraction of observations allowed per kd-tree cell before
-        /// it is subdivided.  Only used with `--loess-surface interpolate`
-        /// (i.e. `loess` and `pacbio` errfuns only).
-        /// Mirrors R `loess.control(cell = ...)`; R's default is 0.2.
-        #[arg(long)]
+        /// Max fraction of observations per kd-tree cell (interpolate surface only)
+        #[arg(long, help_heading = H_ERRMODEL)]
         loess_cell: Option<f64>,
 
-        /// Upper clamp applied to off-diagonal error rates after fitting.
-        /// Applies to `loess`, `pacbio`, `noqual`, and `binned-qual`; ignored
-        /// by `external`.  Both presets default to 0.25 (matching R DADA2).
-        /// Set to `1.0` to disable.
-        #[arg(long)]
+        /// Upper clamp on fitted off-diagonal error rates; 1.0 disables
+        #[arg(long, help_heading = H_ERRMODEL)]
         loess_max_rate: Option<f64>,
 
-        /// Lower clamp applied to off-diagonal error rates after fitting.
-        /// Applies to `loess`, `pacbio`, `noqual`, and `binned-qual`; ignored
-        /// by `external`.  Both presets default to 1e-7 (matching R DADA2).
-        /// Set to `0.0` to disable.
-        #[arg(long)]
+        /// Lower clamp on fitted off-diagonal error rates; 0.0 disables
+        #[arg(long, help_heading = H_ERRMODEL)]
         loess_min_rate: Option<f64>,
 
-        /// Maximum self-consistency iterations (mirrors R's MAX_CONSIST)
-        #[arg(long, default_value_t = 10)]
+        /// Maximum self-consistency iterations (R MAX_CONSIST)
+        #[arg(long, default_value_t = 10, help_heading = H_ERRMODEL)]
         max_consist: usize,
 
-        /// Significance threshold for abundance-based cluster splitting (omega_a)
-        #[arg(long, default_value = "1e-40")]
+        /// Significance threshold for abundance-based cluster splitting (R OMEGA_A)
+        #[arg(long, default_value = "1e-40", help_heading = H_DENOISE)]
         omega_a: f64,
 
-        /// Significance threshold for omega_c (reads not corrected to any center).
-        /// Defaults to 0, matching R DADA2's `learnErrors()` (which hard-codes
-        /// OMEGA_C=0 in its internal dada() calls, overriding the standard
-        /// `dada()` default of 1e-40). Pass `--omega-c 1e-40` to use the
-        /// standard `dada()` value instead.
-        #[arg(long, default_value = "0")]
+        /// Threshold for reads not corrected to any center; R learnErrors uses 0
+        #[arg(long, default_value = "0", help_heading = H_DENOISE)]
         omega_c: f64,
 
-        /// Significance threshold for prior-sequence splitting (omega_p)
-        #[arg(long, default_value = "1e-4")]
+        /// Significance threshold for prior-sequence splitting (R OMEGA_P)
+        #[arg(long, default_value = "1e-4", help_heading = H_DENOISE)]
         omega_p: f64,
 
-        /// Minimum fold-enrichment above expected for cluster splitting
-        #[arg(long, default_value_t = 1.0)]
+        /// Minimum fold-enrichment above expected for splitting (R MIN_FOLD)
+        #[arg(long, default_value_t = 1.0, help_heading = H_DENOISE)]
         min_fold: f64,
 
-        /// Minimum Hamming distance required for cluster splitting
-        #[arg(long, default_value_t = 1)]
+        /// Minimum Hamming distance required for splitting (R MIN_HAMMING)
+        #[arg(long, default_value_t = 1, help_heading = H_DENOISE)]
         min_hamming: u32,
 
-        /// Minimum read abundance required for cluster splitting
-        #[arg(long, default_value_t = 1)]
+        /// Minimum read abundance required for splitting (R MIN_ABUNDANCE)
+        #[arg(long, default_value_t = 1, help_heading = H_DENOISE)]
         min_abund: u32,
 
-        /// Use singleton detection (detect singletons as genuine)
-        #[arg(long)]
+        /// Detect singletons as genuine (R DETECT_SINGLETONS)
+        #[arg(long, help_heading = H_DENOISE)]
         detect_singletons: bool,
 
-        /// Alignment band radius, matching R's `BAND_SIZE` parameter.
-        /// 16 = Illumina default. 32 = recommended for PacBio HiFi 16S amplicons
-        /// (per the DADA2 LRAS manuscript). -1 = unbanded (O(n²), rarely needed).
-        #[arg(long, default_value_t = 16, allow_hyphen_values = true)]
-        band: i32,
-
-        /// Homopolymer-run gap penalty, matching R's `HOMOPOLYMER_GAP_PENALTY`.
-        /// Defaults to --gap-p when unset (R's HOMOPOLYMER_GAP_PENALTY = NULL),
-        /// i.e. -8 for both Illumina and PacBio HiFi. Lower values (closer to 0)
-        /// can help with older CLR or Nanopore data where homopolymer indels
-        /// dominate.
-        #[arg(long, allow_hyphen_values = true)]
-        homo_gap_p: Option<i32>,
-
-        /// Gap penalty for the Needleman-Wunsch alignment (R's GAP_PENALTY).
-        /// Defaults to -8 when unset.
-        #[arg(long, allow_hyphen_values = true)]
-        gap_p: Option<i32>,
-
-        /// Match score for the Needleman-Wunsch alignment (R's MATCH).
-        #[arg(long = "match", default_value_t = 5, allow_hyphen_values = true)]
-        match_score: i32,
-
-        /// Mismatch score for the Needleman-Wunsch alignment (R's MISMATCH).
-        #[arg(long, default_value_t = -4, allow_hyphen_values = true)]
-        mismatch: i32,
-
-        /// Pairwise alignment backend. `nw` (default) is Needleman-Wunsch; `wfa2`
-        /// is the experimental WFA backend (wfa2lib-rs) — ASV-equivalent on tested
-        /// Illumina and PacBio HiFi data, but alignments are not byte-identical.
-        /// `wfa2` requires a build with `--features wfa`; a default build (and the
-        /// published crate) errors when it is selected. See issue #63.
-        #[arg(long, value_enum)]
-        align_backend: Option<AlignBackend>,
-
-        /// EXPERIMENTAL alternative to the k-mer screen. `kmer` (default) is
-        /// the ESPRIT-style 4^k frequency vector that R/C++ DADA2 uses;
-        /// `minimizer` is a winnowed-minimizer sketch. Neither defines the
-        /// clusters — both only decide which pairs are worth aligning.
-        ///
-        /// EXPECT MOSTLY-CONCORDANT BUT NOT IDENTICAL RESULTS. On every dataset
-        /// tested the ASV sets and counts agree closely, but there are real
-        /// differences: typically a fraction of a percent of reads and a small
-        /// number of low-abundance ASVs (all under ~15 reads in the datasets
-        /// measured). This is not a drop-in replacement for the k-mer screen.
-        ///
-        /// It pays off where a lot of screening happens — diverse pools, where
-        /// most pairs are dissimilar so the screen runs on everything and the
-        /// aligner on almost nothing. There the k-mer screen can reach 44-77% of
-        /// denoising time and this replaces it with under 10%. On low-diversity
-        /// data the screen is ~1% of runtime and there is nothing to win.
-        ///
-        /// REQUIRES TUNING. The default `--kdist-cutoff 0.42` is wrong for this
-        /// backend (it over-screens ~3x). Use `--minimizer-k 8` with a cutoff
-        /// derived for your data — ~0.64 on diverse Illumina pools, ~0.50 on
-        /// PacBio HiFi — via `kdist-calibrate --screen-backend minimizer`.
-        /// See docs/findings/minimizer-screening.md.
-        #[arg(long, value_enum)]
-        screen_backend: Option<ScreenBackend>,
-
-        /// EXPERIMENTAL (with `--screen-backend minimizer`): k-mer size for the
-        /// minimizer sketch [default: 8]. Independent of `--kmer-size`, which
-        /// still governs the frequency screen. Range 5-31. k=8 was chosen on
-        /// Illumina (a pair audit; k=11 misses real neighbours) and has NOT been
-        /// re-derived per platform the way `--kmer-size` had to be.
-        #[arg(long)]
-        minimizer_k: Option<usize>,
-
-        /// EXPERIMENTAL (with `--screen-backend minimizer`): winnowing window in
-        /// k-mers [default: 5]. The sketch retains ~2/(w+1) of positions, so
-        /// larger w is smaller and faster but less sensitive. Range 1-64.
-        /// Never varied in any published measurement — every result on the
-        /// findings page is a single w=5 point.
-        #[arg(long)]
-        minimizer_w: Option<usize>,
-
-        /// EXPERIMENTAL diagnostic (with `--screen-backend minimizer`): evaluate
-        /// BOTH screens on every comparison and align the union, reporting how
-        /// often they disagree and — for each disagreement — how many
-        /// substitutions the alignment actually found. Answers whether the
-        /// minimizer screen passes a superset, a subset, or a different set of
-        /// the pairs `--kdist-cutoff` passes. ASVs are unaffected (audit-only
-        /// alignments are discarded), but the run is substantially slower and
-        /// its timings are not comparable to a normal run.
-        #[arg(long, default_value_t = false)]
-        screen_audit: bool,
-
-        /// EXPERIMENTAL (with `--align-backend wfa2`): WFA edit-budget cap, in
-        /// edit operations. WFA aborts a pair once it needs more than this many
-        /// edits and falls back to the NW path for that pair (NW-identical there).
-        /// The budget is an absolute edit count, NOT a fraction of read length:
-        /// denoising only aligns near-identical reads (~99.9% identity), so real
-        /// error-copies stay a few edits apart regardless of read length, while
-        /// divergent non-error-copy pairs that slip past the k-mer screen are
-        /// bounded. Ignored for the `nw` backend. 0 = unbounded. [default: 50]
-        /// (Internally an edit budget E maps to a WFA cost of E·|gap_p|, e.g.
-        /// 50·8 = 400 with default scoring; the DADA2RS_WFA_MAX_STEPS env
-        /// override is specified in those raw cost units, not edits.)
-        #[arg(long)]
-        wfa_max_edits: Option<i32>,
-
-        /// Maximum number of clusters to infer (R's MAX_CLUST). 0 = unlimited.
-        #[arg(long, default_value_t = 0)]
+        /// Maximum number of clusters to infer, 0 = unlimited (R MAX_CLUST)
+        #[arg(long, default_value_t = 0, help_heading = H_DENOISE)]
         max_clust: usize,
 
-        /// Use greedy clustering (R's GREEDY). Tri-state: omit for default
-        /// (true), or set explicitly.
-        #[arg(long)]
+        /// Use greedy clustering (R GREEDY) [omit for the default, true]
+        #[arg(long, help_heading = H_DENOISE)]
         greedy: Option<bool>,
 
-        /// Use quality scores in the error model (R's USE_QUALS). Tri-state:
-        /// omit for default (true), or set explicitly.
-        #[arg(long)]
+        /// Use quality scores in the error model (R USE_QUALS) [omit for true]
+        #[arg(long, help_heading = H_DENOISE)]
         use_quals: Option<bool>,
 
-        /// K-mer distance cutoff for the pre-alignment screen. Pairs with
-        /// k-mer distance above this threshold are not aligned (matches R's
-        /// `KDIST_CUTOFF`). Lower values screen more aggressively (faster,
-        /// more false negatives); raise for divergent sequences.
-        #[arg(long, default_value_t = 0.42)]
+        /// Band radius (R BAND_SIZE): 16 Illumina, 32 PacBio HiFi, -1 unbanded
+        #[arg(long, default_value_t = 16, allow_hyphen_values = true, help_heading = H_ALIGN)]
+        band: i32,
+
+        /// Gap penalty for the Needleman-Wunsch alignment (R GAP_PENALTY) [default: -8]
+        #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
+        gap_p: Option<i32>,
+
+        /// Homopolymer-run gap penalty (R HOMOPOLYMER_GAP_PENALTY) [default: --gap-p]
+        #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
+        homo_gap_p: Option<i32>,
+
+        /// Match score for the Needleman-Wunsch alignment (R MATCH)
+        #[arg(long = "match", default_value_t = 5, allow_hyphen_values = true, help_heading = H_ALIGN)]
+        match_score: i32,
+
+        /// Mismatch score for the Needleman-Wunsch alignment (R MISMATCH)
+        #[arg(long, default_value_t = -4, allow_hyphen_values = true, help_heading = H_ALIGN)]
+        mismatch: i32,
+
+        /// Pairwise aligner; `wfa2` requires a build with `--features wfa`
+        #[arg(long, value_enum, help_heading = H_ALIGN)]
+        align_backend: Option<AlignBackend>,
+
+        /// K-mer distance cutoff for the pre-alignment screen (R KDIST_CUTOFF)
+        #[arg(long, default_value_t = 0.42, help_heading = H_SCREEN)]
         kdist_cutoff: f64,
 
-        /// K-mer size used for the pre-alignment screen and for the Raw
-        /// k-mer vectors (matches R's `KMER_SIZE`). 5 is the DADA2 default,
-        /// tuned for 16S/ITS-length amplicons. Valid range: 3..=8 (8 is the
-        /// hard ceiling — k-mer indices must fit in u16). For PacBio HiFi do NOT
-        /// use k=5: on ~1.4 kb reads the screen is a no-op there (~every pair is
-        /// aligned, ~4–5× slower at scale). Use k=7 for speed or k=6 to cap
-        /// memory; both give effectively identical ASVs. Memory scales as 4^k
-        /// per Raw (k=5 → 1KB, k=6 → 4KB, k=7 → 16KB, k=8 → 64KB).
-        #[arg(long, default_value_t = 5)]
+        /// K-mer size for the screen, 3-8 (R KMER_SIZE); use 6-7 on PacBio HiFi
+        #[arg(long, default_value_t = 5, help_heading = H_SCREEN)]
         kmer_size: usize,
 
-        /// Disable the k-mer pre-alignment screen (every pair is aligned).
-        /// Much slower; use only when the screen is wrongly filtering valid
-        /// comparisons.
-        #[arg(long)]
+        /// Disable the k-mer screen and align every pair (much slower)
+        #[arg(long, help_heading = H_SCREEN)]
         no_kmer_screen: bool,
 
         /// Number of threads for parallel sample processing
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = 1, help_heading = H_PERF)]
         threads: usize,
 
-        /// Write JSON output to this file instead of stdout
-        #[arg(long, short = 'o')]
+        /// Write JSON to this file instead of stdout
+        #[arg(long, short = 'o', help_heading = H_OUTPUT)]
         output: Option<PathBuf>,
 
-        /// Output compact (minified) JSON instead of pretty-printed
-        #[arg(long)]
+        /// Emit compact (minified) JSON instead of pretty-printed
+        #[arg(long, help_heading = H_OUTPUT)]
         compact: bool,
 
-        /// Directory to write per-iteration cluster diagnostics (iter_001.json, …)
-        ///
-        /// Each file contains cluster counts and birth-type breakdown per sample
-        /// for that iteration. The directory is created if it does not exist.
-        #[arg(long)]
+        /// Print per-iteration progress to stderr
+        #[arg(long, help_heading = H_DIAG)]
+        verbose: bool,
+
+        /// Directory for per-iteration cluster diagnostics (iter_NNN.json)
+        #[arg(long, help_heading = H_DIAG)]
         diag_dir: Option<PathBuf>,
 
-        /// Directory to write full per-iteration cluster traces
-        /// (cluster_iter_NNN_sample_NNN.json).
-        ///
-        /// Each file describes the full cluster structure for one sample at one
-        /// iteration: cluster centers, members with their hamming distance, λ,
-        /// expected reads, and abundance p-value, plus the err matrix used for
-        /// that iteration. See examples/cluster_trace/ for plotting scripts.
-        #[arg(long)]
+        /// Directory for full per-iteration cluster traces
+        #[arg(long, help_heading = H_DIAG)]
         cluster_trace_dir: Option<PathBuf>,
 
-        /// Skip the per-cluster `members` array in trace files; emit only
-        /// cluster centers and birth metadata. Reduces trace size ~10×.
-        #[arg(long)]
+        /// Omit the per-cluster `members` array from trace files (~10x smaller)
+        #[arg(long, help_heading = H_DIAG)]
         trace_no_members: bool,
 
-        /// In trace files, only include members with abundance >= this value.
-        /// Default 1 (include all).
-        #[arg(long, default_value_t = 1)]
+        /// Only trace members with abundance >= this value
+        #[arg(long, default_value_t = 1, help_heading = H_DIAG)]
         trace_min_abund: u32,
 
-        /// Print per-iteration progress to stderr
-        #[arg(long)]
-        verbose: bool,
+        /// EXPERIMENTAL: pre-alignment screen; `minimizer` needs a tuned cutoff
+        #[arg(long, value_enum, help_heading = H_EXP)]
+        screen_backend: Option<ScreenBackend>,
+
+        /// EXPERIMENTAL: k-mer size for the minimizer sketch, 5-31 [default: 8]
+        #[arg(long, help_heading = H_EXP)]
+        minimizer_k: Option<usize>,
+
+        /// EXPERIMENTAL: minimizer winnowing window in k-mers, 1-64 [default: 5]
+        #[arg(long, help_heading = H_EXP)]
+        minimizer_w: Option<usize>,
+
+        /// EXPERIMENTAL: run both screens and report disagreements (much slower)
+        #[arg(long, default_value_t = false, help_heading = H_EXP)]
+        screen_audit: bool,
+
+        /// EXPERIMENTAL: WFA edit-budget cap, 0 = unbounded [default: 50]
+        #[arg(long, help_heading = H_EXP)]
+        wfa_max_edits: Option<i32>,
     },
 
     /// Calibrate the k-mer screen: emit kdist vs true alignment divergence
