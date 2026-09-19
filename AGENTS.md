@@ -79,7 +79,8 @@ prose lives on ReadTheDocs, under `docs/commands/<subcommand>.md`.
 - **Order the headings consistently:** Input, Error model, Denoising,
   Pseudo-pooling, Alignment, Screening, then the subcommand-specific ones
   (Trimming, Filtering, Primers, Merging, Chimera, Classification, Metrics,
-  Regime, Evaluation), then Performance, Output, Diagnostics, Experimental.
+  Pooling regime, Evaluation), then Performance, Output, Diagnostics and
+  Experimental.
   Clap orders groups by the first field that declares them, so declare the
   fields in that order.
 - **Point at the docs.** Every subcommand carries

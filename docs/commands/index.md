@@ -25,7 +25,7 @@ subcommand:
 | **Chimera** | Bimera and trimera detection parameters |
 | **Classification** | Taxonomic assignment thresholds |
 | **Metrics** | Optional per-read metrics (`summary`, `summary-merge`) |
-| **Regime** | Which population is scored (`kdist-calibrate`) |
+| **Pooling regime** | Which population is scored, and how it is sampled (`kdist-calibrate`) |
 | **Evaluation** | Truth-set classification thresholds (`reference-eval`) |
 | **Performance** | Threads and concurrency; never affects results |
 | **Diagnostics** | Extra output for QC and debugging; never affects ASVs |

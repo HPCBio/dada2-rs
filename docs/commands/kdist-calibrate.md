@@ -13,7 +13,7 @@ Default output is CSV:
 `sample,kdist,edits,core_len,pct_div,screened_in,ab_i,ab_j`. Several modes below
 change the columns.
 
-## Picking a regime
+## Picking a pooling regime
 
 The default pools all input uniques into one set — a full-pool geometry
 baseline. For the abundance-aware modes, use a biologically meaningful
@@ -47,7 +47,7 @@ that fed `dada`. Matched to each output by sample name: an exact
 pipeline-renamed `{sample}.derep.R1.json.gz`). Ambiguous prefixes are resolved
 by the derep JSON's own `sample` field.
 
-## Regime
+## Pooling regime
 
 **`--per-sample`** — compute pairs *within* each sample instead of pooling all
 uniques into one set.
