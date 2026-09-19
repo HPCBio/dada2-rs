@@ -1,3 +1,13 @@
 # Documentation build dependencies (MkDocs + Material theme).
 # Used by ReadTheDocs (.readthedocs.yaml) and for local `mkdocs serve`.
-mkdocs-material>=9.5
+#
+# The upper bound is for reproducibility: ReadTheDocs resolves this at build
+# time, so without a ceiling two identical commits can build differently months
+# apart. Material for MkDocs is in maintenance mode and its authors have moved
+# to Zensical, so a 10.0 from that team is unlikely -- this is cheap insurance,
+# not a live worry.
+#
+# Note that Material 9.x already declares `mkdocs<2,>=1.6`, so MkDocs 2.0 cannot
+# reach this build while we are on 9.x. Revisit when we pick a path out of the
+# MkDocs/Material/Zensical split -- see issue #170.
+mkdocs-material>=9.5,<10
