@@ -61,6 +61,53 @@ All subcommand outputs are flat JSON objects tagged with `dada2_rs_command` and 
 - Do not introduce abstractions speculatively. Three similar blocks are preferable to a premature helper that obscures intent.
 - Algorithmic code that mirrors R or C++ DADA2 should cite the corresponding R function in a short doc comment.
 
+## CLI help text and documentation
+
+The in-line help is a **reference card, not a manual** (issue #168). Detailed
+prose lives on ReadTheDocs, under `docs/commands/<subcommand>.md`.
+
+- **One line per flag.** A `///` doc comment on a clap field should fit on a
+  single rendered line. If a flag needs a caveat, a rationale, a table, or a
+  worked example, that belongs on the subcommand's docs page — move it there
+  rather than growing the doc comment.
+- **State the R equivalent, not the R history.** `(R OMEGA_A)` is worth a line;
+  a paragraph on why R chose that default is not.
+- **Group every flag under a heading.** Use the `H_*` constants at the top of
+  `src/cli.rs` — never a bare string literal, and never a new heading without
+  first checking whether an existing one fits. The set is deliberately closed;
+  see `docs/commands/index.md` for what each heading means.
+- **Order the headings consistently:** Input, Error model, Denoising,
+  Alignment, Screening, subcommand-specific (Filtering / Chimera / Metrics),
+  Performance, Output, Diagnostics, Experimental. Clap orders groups by the
+  first field that declares them, so declare the fields in that order.
+- **Point at the docs.** Every subcommand carries
+  `after_help = docs_link!("<page>")`. Add the page in the same change, and add
+  it to the `nav:` block in `mkdocs.yml`.
+- **`Experimental` beats the topical heading.** An unstable flag goes under
+  `H_EXP` even when it is an alignment or screening knob, so the stability
+  boundary is visible in one block.
+- Flags under `Performance` and `Diagnostics` must not change results. If a
+  flag does change results, it does not belong under either heading.
+
+When you condense a doc comment, the prose you remove is not deleted — it moves
+to the docs page. Check any claim you carry across: several long help strings
+referenced flags and defaults that had since changed.
+
+## Prose style
+
+Applies to help text, docs pages, code comments and commit messages alike
+(issue #164).
+
+- Lead with the outcome, then the detail. Key findings go at the top of a docs
+  page, not after the methodology.
+- Prefer one accurate sentence to three hedged ones. Cut restatement.
+- Do not narrate the process ("we then tried", "it turns out") in reference
+  material. Say what is true.
+- Cite evidence by link, not by summary-of-a-summary: link the findings page or
+  the issue rather than re-deriving its argument inline.
+- Do not let a hard-wrapped Markdown line begin with `#` — an issue reference
+  wrapped to the start of a line renders as a heading.
+
 ## Testing guidance
 
 - The external-process tests in `error_models::tests` create temp directories using a global `AtomicU64` counter (not timestamps) to guarantee uniqueness across parallel test threads. Follow the same pattern when writing tests that involve temp files.
