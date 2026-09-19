@@ -14,6 +14,8 @@
 #   * timings.tsv                  -- wall clock, if the sweep timed anything
 #   * phase_split*.txt             -- screen vs align share, which says whether a
 #                                     timing result was screen- or align-driven
+#   * metrics/<arm>.json           -- the same numbers, structured (#162); parse
+#                                     these, not the prose
 #   * errF.json / err.json per arm -- error models, IF they differ between arms
 #
 # The per-sample dada JSONs are the bulk and are reduced here to one TSV row
@@ -135,6 +137,14 @@ done
 for f in "$SRC"/timings.tsv "$SRC"/phase_split*.txt "$SRC"/*.log; do
   [ -f "$f" ] && cp "$f" "$STAGE/$NAME/"
 done
+
+# Per-arm metrics JSON (issue #162): the same quantities phase_split.txt holds
+# as prose, structured. Kilobytes per arm, and the thing to parse -- the prose
+# is kept alongside it only so archived comparisons stay format-comparable.
+if [ -d "$SRC/metrics" ]; then
+  mkdir -p "$STAGE/$NAME/metrics"
+  cp "$SRC"/metrics/*.json "$STAGE/$NAME/metrics/" 2> /dev/null || true
+fi
 
 tar czf "$BUNDLE" -C "$STAGE" "$NAME"
 echo "==> wrote $BUNDLE ($(du -h "$BUNDLE" | cut -f1))"

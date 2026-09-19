@@ -403,6 +403,10 @@ if command -v /usr/bin/time > /dev/null 2>&1; then
   fi
 fi
 [ ${#TIMER[@]} -eq 0 ] && echo "    (note: /usr/bin/time unavailable; peak RSS omitted, verbose block still captured)"
+# Dual-write (issue #162): phase_split.txt is kept EXACTLY as it was, because
+# docs/findings/data/*.txt archives that format as primary data. The JSON is the
+# parsing surface going forward.
+mkdir -p "$OUT/metrics"
 {
   for spec in "${T[@]}"; do
     IFS=: read -r name K C IDX <<< "$spec"
@@ -413,6 +417,7 @@ fi
     ${env[@]+"${env[@]}"} ${TIMER[@]+"${TIMER[@]}"} "$BIN" $DADA_CMD "${fq[@]}" \
         --error-model "$OUT/models/err.json" --band "$BAND" --kmer-size "$KMER" \
         --threads "$THREADS" --verbose \
+        --metrics-json "$OUT/metrics/$name.json" --metrics-attribution \
         ${extra[@]+"${extra[@]}"} --output-dir "$OUT/.verbose" 2>&1 \
       | grep -E "^\[dada\]|maximum resident|Maximum resident|elapsed|real" \
       || echo "    (no output)"

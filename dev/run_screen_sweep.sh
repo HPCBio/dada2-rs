@@ -542,6 +542,12 @@ if command -v /usr/bin/time > /dev/null 2>&1; then
   fi
 fi
 [ ${#TIMER[@]} -eq 0 ] && echo "    (note: /usr/bin/time unavailable; peak RSS omitted, verbose block still captured)"
+# Dual-write (issue #162): phase_split.txt is kept EXACTLY as it was, because
+# docs/findings/data/*.txt archives that format as primary data and the
+# minimizer findings were derived from it. The JSON is the parsing surface
+# going forward; --metrics-attribution is passed because this block is a
+# measurement run, not a timing run (timings.tsv above is the timing source).
+mkdir -p "$OUT/metrics"
 rotate_out "$OUT/phase_split.txt"
 {
   for spec in "${ARMS[@]}"; do
@@ -555,6 +561,7 @@ rotate_out "$OUT/phase_split.txt"
     echo "===== $name"
     ${env[@]+"${env[@]}"} ${TIMER[@]+"${TIMER[@]}"} "$BIN" $DADA_CMD "${filtF[@]}" \
         --error-model "$OUT/base/errF.json" --threads "$THREADS" --verbose \
+        --metrics-json "$OUT/metrics/$name.json" --metrics-attribution \
         ${extra[@]+"${extra[@]}"} --output-dir "$OUT/.verbose" 2>&1 \
       | grep -E "^\[dada\]|maximum resident|Maximum resident|elapsed|real" \
       || echo "    (no output)"

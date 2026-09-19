@@ -334,6 +334,11 @@ pub struct B {
     pub minimizer_index: Option<crate::minimizers::MinimizerIndex>,
     /// Why [`B::minimizer_index`] is or is not present, for `--verbose`. `None`
     /// when the minimizer screen is not in use at all.
+    /// Instrumentation collected by `run_dada`, when `DadaParams::measure` asked
+    /// for any. `None` on a production run, so this costs one word and nothing
+    /// else. Not serialized into any subcommand's output — it reaches the user
+    /// only through `--metrics-json` (issue #162).
+    pub metrics: Option<crate::metrics::RunMetrics>,
     pub minimizer_index_decision: Option<crate::minimizers::IndexDecision>,
     /// `DADA2RS_MINIMIZER_INDEX`, read once at construction. `Some(_)` makes the
     /// probe report its measurement but obey the override.
@@ -432,6 +437,7 @@ impl B {
             cdf: Vec::new(),
             raw_cluster: Vec::new(),
             minimizer_index: index,
+            metrics: None,
             minimizer_index_decision: decision,
             minimizer_index_forced: forced,
             minimizer_probe: Default::default(),

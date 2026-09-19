@@ -313,6 +313,14 @@ pub enum Commands {
         #[arg(long, help_heading = H_OUTPUT)]
         gzip: bool,
 
+        /// Write machine-readable run metrics (JSON) to this file
+        #[arg(long, help_heading = H_DIAG)]
+        metrics_json: Option<PathBuf>,
+
+        /// Add per-comparison timings to --metrics-json; slows the run measurably
+        #[arg(long, requires = "metrics_json", help_heading = H_DIAG)]
+        metrics_attribution: bool,
+
         /// Print progress to stderr
         #[arg(long, help_heading = H_DIAG)]
         verbose: bool,
@@ -480,6 +488,14 @@ pub enum Commands {
         /// Gzip the per-sample JSON files (`{sample}.json.gz`)
         #[arg(long, help_heading = H_OUTPUT)]
         gzip: bool,
+
+        /// Write machine-readable run metrics (JSON) to this file
+        #[arg(long, help_heading = H_DIAG)]
+        metrics_json: Option<PathBuf>,
+
+        /// Add per-comparison timings to --metrics-json; slows the run measurably
+        #[arg(long, requires = "metrics_json", help_heading = H_DIAG)]
+        metrics_attribution: bool,
 
         /// Print progress to stderr
         #[arg(long, help_heading = H_DIAG)]
@@ -668,6 +684,14 @@ pub enum Commands {
         /// Gzip the per-sample JSON files (`{sample}.json.gz`)
         #[arg(long, help_heading = H_OUTPUT)]
         gzip: bool,
+
+        /// Write machine-readable run metrics (JSON) to this file
+        #[arg(long, help_heading = H_DIAG)]
+        metrics_json: Option<PathBuf>,
+
+        /// Add per-comparison timings to --metrics-json; slows the run measurably
+        #[arg(long, requires = "metrics_json", help_heading = H_DIAG)]
+        metrics_attribution: bool,
 
         /// Print progress to stderr
         #[arg(long, help_heading = H_DIAG)]
