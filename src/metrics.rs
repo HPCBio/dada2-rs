@@ -608,11 +608,13 @@ mod tests {
 
     #[test]
     fn rates_are_computed_when_denominators_are_present() {
-        let mut c = RawCounters::default();
-        c.t_cmp_serial = Duration::from_nanos(1000);
-        c.n_cmp_scanned = 10;
-        c.t_cmp_map = Duration::from_secs(1);
-        c.t_cmp_busy = Duration::from_secs(2);
+        let c = RawCounters {
+            t_cmp_serial: Duration::from_nanos(1000),
+            n_cmp_scanned: 10,
+            t_cmp_map: Duration::from_secs(1),
+            t_cmp_busy: Duration::from_secs(2),
+            ..RawCounters::default()
+        };
         let m = c.finish(
             RunShape {
                 multithread: true,
@@ -628,10 +630,12 @@ mod tests {
 
     #[test]
     fn unattributed_is_the_residual_and_never_negative() {
-        let mut c = RawCounters::default();
-        c.t_compare = Duration::from_secs(10);
-        c.t_cmp_map = Duration::from_secs(6);
-        c.t_cmp_serial = Duration::from_secs(1);
+        let c = RawCounters {
+            t_compare: Duration::from_secs(10),
+            t_cmp_map: Duration::from_secs(6),
+            t_cmp_serial: Duration::from_secs(1),
+            ..RawCounters::default()
+        };
         let mt = || RunShape {
             multithread: true,
             ..RunShape::default()
@@ -640,9 +644,11 @@ mod tests {
         assert_eq!(m.compare.attribution.unwrap().unattributed, 3.0);
 
         // Named parts exceeding the total (nested timers) must clamp, not wrap.
-        let mut c = RawCounters::default();
-        c.t_compare = Duration::from_secs(1);
-        c.t_cmp_map = Duration::from_secs(5);
+        let c = RawCounters {
+            t_compare: Duration::from_secs(1),
+            t_cmp_map: Duration::from_secs(5),
+            ..RawCounters::default()
+        };
         let m = c.finish(mt(), 1, full());
         assert_eq!(m.compare.attribution.unwrap().unattributed, 0.0);
     }
@@ -651,11 +657,13 @@ mod tests {
     /// readable as a measured zero, or a consumer will average it in.
     #[test]
     fn cheap_level_omits_attribution_entirely() {
-        let mut c = RawCounters::default();
-        c.t_cmp_map = Duration::from_secs(4);
-        c.t_cmp_busy = Duration::from_secs(8);
-        c.t_cmp_screen = Duration::from_secs(3);
-        c.n_cmp_screened = 100;
+        let c = RawCounters {
+            t_cmp_map: Duration::from_secs(4),
+            t_cmp_busy: Duration::from_secs(8),
+            t_cmp_screen: Duration::from_secs(3),
+            n_cmp_screened: 100,
+            ..RawCounters::default()
+        };
 
         let mt = RunShape {
             multithread: true,
@@ -684,8 +692,10 @@ mod tests {
     /// absent rather than a pile of zeros a consumer would average in.
     #[test]
     fn single_threaded_run_omits_the_compare_breakdown() {
-        let mut c = RawCounters::default();
-        c.t_compare = Duration::from_secs(9);
+        let c = RawCounters {
+            t_compare: Duration::from_secs(9),
+            ..RawCounters::default()
+        };
         let serial = c.finish(RunShape::default(), 1, MeasureLevel::Attribution);
         assert!(serial.compare.attribution.is_none());
         // The phase total is still real and must survive.
