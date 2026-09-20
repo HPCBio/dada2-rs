@@ -169,7 +169,11 @@ sample, the same convention as `dada-pooled`. Created if absent.
 
 None of these change the ASVs.
 
-**`--verbose`** — progress to stderr.
+**`--verbose`** — the run's shape and results to stderr: CPU allocation,
+alignment backend, active tuning gates, resident footprint, the index decision,
+a phase-times one-liner, and per-cluster progress. The phase attribution and
+optimisation counters are not printed; pass
+[`--metrics-json`](metrics-json.md) for those.
 
 Under `--sample-jobs > 1` the per-round progress records are prefixed with the
 sample that produced them, since concurrent output is otherwise

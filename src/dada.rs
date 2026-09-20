@@ -739,12 +739,6 @@ pub fn dada_uniques_cached(
 /// cluster center against its parent (birth-subs pass), both with the k-mer
 /// screen disabled (`use_kmers=false, kdist_cutoff=1.0`) so every comparison
 /// produces a Sub. Mirrors the `FinalSubsParallel` block in C++ `Rmain.cpp`.
-/// Mirrors `cluster::reconcile_full` for the report, which needs to know which
-/// path produced the numbers.
-fn reconcile_full_env() -> bool {
-    std::env::var_os("DADA2RS_RECONCILE_FULL").is_some()
-}
-
 fn compute_aux(b: &B, params: &DadaParams, has_quals: bool) -> DadaAux {
     // Final-subs alignment params: no kmer screen.
     let final_align = AlignParams {
@@ -959,7 +953,6 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // #132 dirty-cluster move-pass diagnostics.
     let (mut shuf_move_unpruned, mut shuf_move_dirty) = (0u64, 0u64);
     let (mut shuf_move_prunable, mut shuf_move_passes) = (0u64, 0u64);
-    let mut shuf_nraw = 0usize;
     // b_bud scan-redundancy accounting (verbose-only diagnostics).
     let (mut bud_calls, mut bud_success, mut bud_raws_scanned) = (0u64, 0u64, 0u64);
     // p-update churn: raws whose p was recomputed per round (see issue #85).
@@ -1172,7 +1165,6 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         t_rec_collect += st.reconcile_collect_time;
         t_rec_rescan += st.reconcile_rescan_time;
         shuf_rec_changed += st.reconcile_changed as u64;
-        shuf_nraw = st.nraw;
         shuf_zero_move_calls += st.zero_move_calls as u64;
         rec_print!(rec, "{}", "S".repeat(st.calls));
         t_shuffle += t.elapsed();
@@ -1326,16 +1318,6 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             bb.nshroud,
             bb.raws.len()
         );
-        // Parallel efficiency of the map: worker-busy time / (map wall ×
-        // threads). Near 1.0 → threads compute the whole map wall (low OS-level
-        // utilization then implies memory-bandwidth stalls); well below 1.0 →
-        // threads idle inside the parallel region (tail load-imbalance).
-        let nthreads = rayon::current_num_threads().max(1);
-        let map_eff = if t_cmp_map.as_secs_f64() > 0.0 {
-            t_cmp_busy.as_secs_f64() / (t_cmp_map.as_secs_f64() * nthreads as f64)
-        } else {
-            0.0
-        };
         // The index choice is MEASURED on the first cluster, not predicted, and it
         // reverses between workloads (see `minimizers::decide_from_probe`). Report
         // the measurement: a run that declines the index would otherwise look like
@@ -1384,495 +1366,21 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             t_bud.as_secs_f64(),
             t_pupdate.as_secs_f64(),
         );
-        // #143: attribute the rest of `b_compare`. Before this, map+store
-        // covered only part of the compare timer and the remainder was
-        // reported as nothing at all. Each line below is serial, so it caps
-        // node occupancy exactly the way the shuffle does.
-        {
-            let cmp = t_compare.as_secs_f64();
-            let pct = |x: f64| if cmp > 0.0 { 100.0 * x / cmp } else { 0.0 };
-            let per = |x: f64, n: u64| {
-                if n > 0 { x * 1e9 / n as f64 } else { 0.0 }
-            };
-            let residual = cmp
-                - (t_cmp_map.as_secs_f64()
-                    + t_cmp_serial.as_secs_f64()
-                    + t_cmp_agg.as_secs_f64()
-                    + t_cmp_free.as_secs_f64()
-                    + t_cmp_setup.as_secs_f64());
-            eprintln!(
-                "[dada] compare attribution (of {:.2}s over {} raw-visits, {} stored):",
-                cmp, n_cmp_scanned, n_cmp_stored,
-            );
-            eprintln!(
-                "[dada]   map          {:8.2}s ({:4.1}%)  parallel",
-                t_cmp_map.as_secs_f64(),
-                pct(t_cmp_map.as_secs_f64()),
-            );
-            eprintln!(
-                "[dada]   reduction    {:8.2}s ({:4.1}%)  serial  {:6.1} ns/raw  (summed costs + denominators)",
-                t_cmp_agg.as_secs_f64(),
-                pct(t_cmp_agg.as_secs_f64()),
-                per(t_cmp_agg.as_secs_f64(), n_cmp_scanned),
-            );
-            eprintln!(
-                "[dada]   store        {:8.2}s ({:4.1}%)  serial  {:6.1} ns/raw  {:6.1} ns/stored",
-                t_cmp_serial.as_secs_f64(),
-                pct(t_cmp_serial.as_secs_f64()),
-                per(t_cmp_serial.as_secs_f64(), n_cmp_scanned),
-                per(t_cmp_serial.as_secs_f64(), n_cmp_stored),
-            );
-            eprintln!(
-                "[dada]   free         {:8.2}s ({:4.1}%)  serial  {:6.1} ns/raw  (result vector)",
-                t_cmp_free.as_secs_f64(),
-                pct(t_cmp_free.as_secs_f64()),
-                per(t_cmp_free.as_secs_f64(), n_cmp_scanned),
-            );
-            eprintln!(
-                "[dada]   setup        {:8.2}s ({:4.1}%)  serial",
-                t_cmp_setup.as_secs_f64(),
-                pct(t_cmp_setup.as_secs_f64()),
-            );
-            eprintln!(
-                "[dada]   unattributed {:8.2}s ({:4.1}%)",
-                residual,
-                pct(residual),
-            );
-            eprintln!(
-                "[dada]   (outside compare) index_add_cluster {:.2}s  {:6.1} ns/raw",
-                t_index_add.as_secs_f64(),
-                per(t_index_add.as_secs_f64(), n_cmp_scanned),
-            );
-        }
-        eprintln!(
-            "[dada] map parallel efficiency: {:.0}% (busy={:.0}s / map={:.0}s × {} threads)",
-            100.0 * map_eff,
-            t_cmp_busy.as_secs_f64(),
-            t_cmp_map.as_secs_f64(),
-            nthreads,
-        );
-        // Screen-vs-align split of the map's worker-busy time (#127).
+        // The optimisation attribution -- compare attribution and split, map
+        // parallel efficiency, the shuffle phases and scan split, bud
+        // redundancy, p-update churn, and the #132/#136/#139 projections --
+        // is no longer printed. It was ~130 lines of ns/comp tables written
+        // for specific issues, which buried the handful of lines that answer
+        // "how big is this run and is it configured sanely" (#162).
         //
-        // Read it against the shroud rate: the screen's share is what the
-        // aligner never gets to avoid. A screen-dominated profile points at
-        // replacing the prefilter (an index that skips comparisons outright);
-        // an align-dominated one points back at the aligner, which is already
-        // well-explored. `other` is compute_lambda plus per-item overhead,
-        // including this instrumentation's own timer cost.
-        {
-            let busy = t_cmp_busy.as_secs_f64();
-            let screen = t_cmp_screen.as_secs_f64();
-            let dp = t_cmp_dp.as_secs_f64();
-            let post = t_cmp_post.as_secs_f64();
-            let align = dp + post;
-            let pct = |x: f64| if busy > 0.0 { 100.0 * x / busy } else { 0.0 };
-            let per = |x: f64, n: u64| {
-                if n > 0 { x * 1e9 / n as f64 } else { 0.0 }
-            };
-            eprintln!(
-                "[dada] compare split (of {:.2}s busy over {} comparisons):",
-                busy, n_cmp_screened,
-            );
-            eprintln!(
-                "[dada]   kmer screen  {:8.2}s ({:4.1}%)  {:>13} comps  {:6.0} ns/comp  (every comparison)",
-                screen,
-                pct(screen),
-                n_cmp_screened,
-                per(screen, n_cmp_screened),
-            );
-            eprintln!(
-                "[dada]   align total  {:8.2}s ({:4.1}%)  {:>13} comps  {:6.0} ns/comp  ({:.1}% passed the screen)",
-                align,
-                pct(align),
-                n_cmp_aligned,
-                per(align, n_cmp_aligned),
-                if n_cmp_screened > 0 {
-                    100.0 * n_cmp_aligned as f64 / n_cmp_screened as f64
-                } else {
-                    0.0
-                },
-            );
-            // DP-vs-post split (#127): a high align total is ambiguous between a
-            // slow kernel and expensive post-processing, and the two point at
-            // completely different fixes.
-            eprintln!(
-                "[dada]     dp kernel  {:8.2}s ({:4.1}%)  {:>13} comps  {:6.0} ns/comp",
-                dp,
-                pct(dp),
-                n_cmp_aligned,
-                per(dp, n_cmp_aligned),
-            );
-            eprintln!(
-                "[dada]     al2subs    {:8.2}s ({:4.1}%)  {:>13} comps  {:6.0} ns/comp  (+ qual mapping)",
-                post,
-                pct(post),
-                n_cmp_aligned,
-                per(post, n_cmp_aligned),
-            );
-            eprintln!(
-                "[dada]   other        {:8.2}s ({:4.1}%)  (compute_lambda + per-item overhead)",
-                busy - screen - align,
-                pct(busy - screen - align),
-            );
-        }
-        // Shuffle rescan redundancy: how much of the full-rescan work each
-        // b_shuffle2 call actually translated into moves. High scanned/move and
-        // a high zero-move-call fraction bound the headroom for an incremental
-        // best-cluster tracker (the "reduce work" lever in docs/results.md).
-        let scanned_per_move = if shuf_moves > 0 {
-            shuf_comps_scanned as f64 / shuf_moves as f64
-        } else {
-            f64::INFINITY
-        };
-        let zero_pct = if shuf_calls > 0 {
-            100.0 * shuf_zero_move_calls as f64 / shuf_calls as f64
-        } else {
-            0.0
-        };
+        // Every one of those quantities is in `--metrics-json`, read from the
+        // same accumulators, so nothing was lost in the move -- verified by
+        // `dev/check_metrics_superset.py` against a 30-sample ITS2 sweep and
+        // a pooled run of the same data.
         eprintln!(
-            "[dada] shuffle redundancy: {} calls, {} moves, {} comps scanned ({:.0} scanned/move), {} zero-move calls ({:.0}%)",
-            shuf_calls,
-            shuf_moves,
-            shuf_comps_scanned,
-            scanned_per_move,
-            shuf_zero_move_calls,
-            zero_pct,
-        );
-        // Where that scan work actually goes. Zero-move iterations break before
-        // the reconcile, so they scan nothing — the zero-move percentage above
-        // is NOT a measure of wasted scanning. The removable work is the full
-        // build, re-paid once per bud round; the reconcile is only incurred by
-        // raws whose best cluster may actually have changed. `comps/build` also
-        // tracks cluster structure, which is what made #87's payoff flip sign
-        // between amplicons.
-        let build_pct = if shuf_comps_scanned > 0 {
-            100.0 * shuf_comps_build as f64 / shuf_comps_scanned as f64
-        } else {
-            0.0
-        };
-        // #139: with the carry on, most converge calls do no build at all, so
-        // dividing by the call count would report a per-build cost for builds
-        // that never happened. Divide by the calls that actually built.
-        let per_build = if shuf_builds > 0 {
-            shuf_comps_build as f64 / shuf_builds as f64
-        } else {
-            0.0
-        };
-        eprintln!(
-            "[dada] shuffle scan split: build={} ({:.0}% of scanned) over {} builds ({:.0} comps/build), reconcile={} ({:.0}%)",
-            shuf_comps_build,
-            build_pct,
-            shuf_builds,
-            per_build,
-            shuf_comps_reconcile,
-            100.0 - build_pct,
-        );
-        // Time split, and the ns/comp each access pattern actually costs. The
-        // build is a contiguous cluster-major walk; the reconcile walks the
-        // raw-major inverted index (scattered). Measured at ~2x apart, so any
-        // scheme that shifts work between the two must be priced in ns/comp
-        // rather than comparisons — that gap is what made #87 a much smaller
-        // win than its comp counts implied.
-        let ns_per = |d: std::time::Duration, n: u64| {
-            if n > 0 {
-                d.as_secs_f64() * 1e9 / n as f64
-            } else {
-                0.0
-            }
-        };
-        // Full phase accounting for the shuffle (#124). build + reconcile
-        // alone left 15-19% of shuffle time unexplained; the move pass is that
-        // remainder. `other` should now be near zero — if it is not, there is
-        // still an unmeasured phase and any optimization here is being sized
-        // against an incomplete denominator.
-        //
-        // The three columns to compare across platforms: each phase's share of
-        // shuffle, its ns per unit of work, and its redundancy (work done per
-        // outcome produced). A phase with a high share AND high redundancy is
-        // the only kind worth attacking.
-        let shuf_s = t_shuffle.as_secs_f64();
-        let other = shuf_s
-            - t_shuf_build.as_secs_f64()
-            - t_shuf_reconcile.as_secs_f64()
-            - t_shuf_move.as_secs_f64();
-        let pct = |d: f64| {
-            if shuf_s > 0.0 {
-                100.0 * d / shuf_s
-            } else {
-                0.0
-            }
-        };
-        eprintln!(
-            "[dada] shuffle phases ({:.2}s total over {} converge calls, nraw={}, nclusters={}):",
-            shuf_s,
-            shuf_converge_calls,
-            shuf_nraw,
-            bb.clusters.len(),
-        );
-        eprintln!(
-            "[dada]   build     {:>8.2}s ({:>4.1}%)  {:>13} comps  {:>6.2} ns/comp",
-            t_shuf_build.as_secs_f64(),
-            pct(t_shuf_build.as_secs_f64()),
-            shuf_comps_build,
-            ns_per(t_shuf_build, shuf_comps_build),
-        );
-        eprintln!(
-            "[dada]   reconcile {:>8.2}s ({:>4.1}%)  {:>13} comps  {:>6.2} ns/comp  over {} raws, {} ({:.1}%) actually changed cluster",
-            t_shuf_reconcile.as_secs_f64(),
-            pct(t_shuf_reconcile.as_secs_f64()),
-            shuf_comps_reconcile,
-            ns_per(t_shuf_reconcile, shuf_comps_reconcile),
-            shuf_rec_affected,
-            shuf_rec_changed,
-            if shuf_rec_affected > 0 {
-                100.0 * shuf_rec_changed as f64 / shuf_rec_affected as f64
-            } else {
-                0.0
-            },
-        );
-        eprintln!(
-            "[dada]   move      {:>8.2}s ({:>4.1}%)  {:>13} raws   {:>6.2} ns/raw   for {} moves ({:.0} raws scanned/move)",
-            t_shuf_move.as_secs_f64(),
-            pct(t_shuf_move.as_secs_f64()),
-            shuf_move_raws,
-            ns_per(t_shuf_move, shuf_move_raws),
-            shuf_moves,
-            if shuf_moves > 0 {
-                shuf_move_raws as f64 / shuf_moves as f64
-            } else {
-                f64::INFINITY
-            },
-        );
-        // Reconcile rescan-necessity (#136, measurement only).
-        //
-        // #124 called the reconcile's redundancy unreachable: 99.97% of
-        // recomputes return the value already in `compmax`, and finding which
-        // raws changed costs the scattered access being avoided. That rules out
-        // *skipping* the touch, not doing it more cheaply. A raw only needs its
-        // full candidate rescan when its current best cluster shrank; otherwise
-        // that cluster still beats every unchanged candidate and only the
-        // changed ones need testing, which a sequential walk of the changed
-        // clusters' comps already reaches.
-        //
-        // This reports the fraction that a cheaper scheme could NOT avoid. If
-        // it is most of them, the redundancy really is unreachable and #124's
-        // verdict stands as written.
-        if shuf_rec_affected > 0 {
-            // Mode-aware: the two paths make `affected` mean different things.
-            // Under the baseline full rescan it is every raw in a changed
-            // cluster, and this counter *projects* how many genuinely need
-            // rescanning. Under the incremental path only those raws are
-            // collected at all, so a percentage there would measure the counter
-            // against itself and always read 100%.
-            if reconcile_full_env() {
-                eprintln!(
-                    "[dada]   reconcile rescan-necessity (#136): {} of {} affected raws must rescan \
-                     ({:.1}%), {} of {} comps ({:.1}%); collect {:.2}s + rescan {:.2}s, \
-                     so ~{:.2}s of {:.2}s reconcile is avoidable",
-                    shuf_rec_rescan,
-                    shuf_rec_affected,
-                    100.0 * shuf_rec_rescan as f64 / shuf_rec_affected as f64,
-                    shuf_rec_rescan_comps,
-                    shuf_comps_reconcile,
-                    if shuf_comps_reconcile > 0 {
-                        100.0 * shuf_rec_rescan_comps as f64 / shuf_comps_reconcile as f64
-                    } else {
-                        0.0
-                    },
-                    t_rec_collect.as_secs_f64(),
-                    t_rec_rescan.as_secs_f64(),
-                    // The rescan half scaled by the share of comps a cheaper scheme
-                    // would not have to walk. Optimistic: it credits the survivors
-                    // with the same per-comp rate, and the collect half is unchanged.
-                    t_rec_rescan.as_secs_f64()
-                        * if shuf_comps_reconcile > 0 {
-                            1.0 - shuf_rec_rescan_comps as f64 / shuf_comps_reconcile as f64
-                        } else {
-                            0.0
-                        },
-                    t_shuf_reconcile.as_secs_f64(),
-                );
-            } else {
-                eprintln!(
-                    "[dada]   reconcile incremental (#136): {} raws fully rescanned over {} \
-                     comps; collect {:.2}s + rescan {:.2}s of {:.2}s reconcile; \
-                     {} exact-tie tie-breaks",
-                    shuf_rec_rescan,
-                    shuf_rec_rescan_comps,
-                    t_rec_collect.as_secs_f64(),
-                    t_rec_rescan.as_secs_f64(),
-                    t_shuf_reconcile.as_secs_f64(),
-                    shuf_rec_ties,
-                );
-            }
-        }
-        // #139: would carrying `compmax` across buds pay? Reviving #87's
-        // projection, with its cost model re-derived — #87 priced the relocated
-        // work at the full-rescan reconcile's scattered rate, and #136 replaced
-        // that with an incremental update.
-        //
-        // Skipping the per-bud build saves `comps_build x build_ns`. It costs
-        // the first reconcile instead, which post-#136 is a sequential
-        // cluster-major walk plus a much smaller scattered rescan. Both are
-        // measured here rather than assumed, and priced at this run's own rates.
-        //
-        // Caveat: the pair and comp counts are specific to the first reconcile,
-        // but the ns rates are averaged over all of them. A post-bud reconcile
-        // touches more clusters than a mid-loop one, so if its per-unit cost
-        // differs the estimate drifts. Directionally it is the volume, not the
-        // rate, that separates the regimes.
-        //
-        // With the carry on (the default) the projection is moot — the build is
-        // already skipped, and `shuf_comps_build` counts only the single initial
-        // build that seeds the map. Report what was realised instead of
-        // projecting what could be, so the two arms are never confused.
-        if crate::cluster::shuffle_carry() {
-            eprintln!(
-                "[dada]   #87 carry (#139): ACTIVE -- {} of {} converge calls built \
-                 ({} comps, {:.1}s); {} entered on a carried map",
-                shuf_builds,
-                shuf_converge_calls,
-                shuf_comps_build,
-                t_shuf_build.as_secs_f64(),
-                shuf_converge_calls.saturating_sub(shuf_builds),
-            );
-        } else if shuf_first_rec_calls > 0 && shuf_comps_build > 0 {
-            let build_ns = t_shuf_build.as_secs_f64() * 1e9 / shuf_comps_build as f64;
-            let collect_ns = if shuf_rec_pairs > 0 {
-                t_rec_collect.as_secs_f64() * 1e9 / shuf_rec_pairs as f64
-            } else {
-                0.0
-            };
-            let rescan_ns = if shuf_comps_reconcile > 0 {
-                t_rec_rescan.as_secs_f64() * 1e9 / shuf_comps_reconcile as f64
-            } else {
-                0.0
-            };
-            let saved = shuf_comps_build as f64 * build_ns;
-            let cost =
-                shuf_first_rec_pairs as f64 * collect_ns + shuf_first_rec_comps as f64 * rescan_ns;
-            eprintln!(
-                "[dada]   #87 projection (#139): skipping the per-bud build saves {:.1}s \
-                 ({} comps at {:.2} ns), costs {:.1}s relocated ({} pairs at {:.2} ns + \
-                 {} comps at {:.2} ns) over {} calls => {} by {:.2}x",
-                saved / 1e9,
-                shuf_comps_build,
-                build_ns,
-                cost / 1e9,
-                shuf_first_rec_pairs,
-                collect_ns,
-                shuf_first_rec_comps,
-                rescan_ns,
-                shuf_first_rec_calls,
-                if cost < saved { "WIN" } else { "LOSS" },
-                if cost > 0.0 {
-                    saved / cost
-                } else {
-                    f64::INFINITY
-                },
-            );
-        }
-        // #132: how much the dirty-cluster pruning actually bought. The prune
-        // is workload-dependent (64-67% MiSeq, 57% PacBio), so it is reported
-        // rather than assumed — an erosion should be visible here, not inferred
-        // from wall time.
-        if shuf_move_passes > 0 {
-            let pruned = shuf_move_unpruned.saturating_sub(shuf_move_raws);
-            eprintln!(
-                "[dada]   move pruning (#132): {} of {} raws skipped ({:.1}%), \
-                 {} of {} passes pruned ({:.0}%), mean {:.1} dirty clusters/pass of {}",
-                pruned,
-                shuf_move_unpruned,
-                if shuf_move_unpruned > 0 {
-                    100.0 * pruned as f64 / shuf_move_unpruned as f64
-                } else {
-                    0.0
-                },
-                shuf_move_prunable,
-                shuf_move_passes,
-                100.0 * shuf_move_prunable as f64 / shuf_move_passes as f64,
-                if shuf_move_prunable > 0 {
-                    shuf_move_dirty as f64 / shuf_move_prunable as f64
-                } else {
-                    0.0
-                },
-                bb.clusters.len(),
-            );
-        }
-        eprintln!(
-            "[dada]   other     {:>8.2}s ({:>4.1}%)  (loop bookkeeping; large = an unmeasured phase)",
-            other,
-            pct(other),
-        );
-        eprintln!(
-            "[dada] shuffle scan time: build={:.2}s ({:.2} ns/comp)  reconcile={:.2}s ({:.2} ns/comp)  build={:.0}% of shuffle time",
-            t_shuf_build.as_secs_f64(),
-            ns_per(t_shuf_build, shuf_comps_build),
-            t_shuf_reconcile.as_secs_f64(),
-            ns_per(t_shuf_reconcile, shuf_comps_reconcile),
-            if t_shuffle.as_secs_f64() > 0.0 {
-                100.0 * t_shuf_build.as_secs_f64() / t_shuffle.as_secs_f64()
-            } else {
-                0.0
-            },
-        );
-        // b_bud combine cost: with the incremental candidate cache (#85) each
-        // bud combines per-cluster minima in O(nclusters) instead of rescanning
-        // every raw. This reports the combine volume — compare to the historical
-        // ~nraw scanned/bud to see the reduction.
-        let combine_per_bud = if bud_calls > 0 {
-            bud_raws_scanned as f64 / bud_calls as f64
-        } else {
-            f64::INFINITY
-        };
-        eprintln!(
-            "[dada] bud redundancy: {} calls ({} budded), {} clusters combined ({:.0} combined/bud, incremental cache)",
-            bud_calls, bud_success, bud_raws_scanned, combine_per_bud,
-        );
-        // p-update churn between bud calls (issue #85 gate): raws whose p is
-        // recomputed per in-loop round. A p-ordered incremental budding
-        // structure must re-key each of these. Compare repriced/round to nraw:
-        // if it approaches the scanned/bud figure above, re-keying costs about
-        // as much as the scan it would replace — i.e. no obvious net win.
-        let repriced_per_round = if pupd_rounds > 0 {
-            pupd_stats.repriced as f64 / pupd_rounds as f64
-        } else {
-            0.0
-        };
-        eprintln!(
-            "[dada] p-update churn: {} rounds, {} raws repriced ({:.0} repriced/round, nraw={})",
-            pupd_rounds,
-            pupd_stats.repriced,
-            repriced_per_round,
-            bb.raws.len(),
-        );
-        // Path attribution (#154). The phase's headline ns/repricing is an
-        // average over four paths of very different cost: three early exits
-        // that are a couple of comparisons, and `calc_pA`, which evaluates a
-        // regularised incomplete gamma. Only the last is worth parallelising,
-        // so its share bounds the payoff. Counted rather than timed — see
-        // `PUpdateStats`.
-        let rp = pupd_stats.repriced.max(1) as f64;
-        let pct = |n: u64| n as f64 / rp * 100.0;
-        eprintln!(
-            "[dada]   full calc_pA {:>12} ({:>5.1}%)  <- the only parallelisable work",
-            pupd_stats.full_calc,
-            pct(pupd_stats.full_calc),
-        );
-        eprintln!(
-            "[dada]   exit singleton {:>10} ({:>5.1}%)  exit center {:>12} ({:>5.1}%)               exit zero-lambda {:>10} ({:>5.1}%)",
-            pupd_stats.exit_singleton,
-            pct(pupd_stats.exit_singleton),
-            pupd_stats.exit_center,
-            pct(pupd_stats.exit_center),
-            pupd_stats.exit_zero_lambda,
-            pct(pupd_stats.exit_zero_lambda),
-        );
-        eprintln!(
-            "[dada]   dirty clusters {} of {} visited; greedy lock pass walked {} raws",
-            pupd_stats.dirty_clusters,
-            pupd_stats.dirty_clusters + pupd_stats.clean_clusters,
-            pupd_stats.lock_scanned,
+            "[dada] phase attribution, compare/shuffle splits and optimisation \
+             counters: pass --metrics-json <path> (add --metrics-attribution \
+             for the per-comparison timings)."
         );
     }
 
@@ -1939,6 +1447,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             t_shuf_build,
             t_shuf_reconcile,
             t_shuf_move,
+            shuf_comps_scanned,
             shuf_comps_build,
             shuf_comps_reconcile,
             shuf_calls,

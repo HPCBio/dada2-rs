@@ -192,6 +192,11 @@ pub struct ShuffleMetrics {
     pub build: f64,
     pub reconcile: f64,
     pub move_pass: f64,
+    /// Total comparisons the shuffle scanned. `comps_build` and
+    /// `comps_reconcile` are documented as *portions* of this, so it is carried
+    /// explicitly rather than assumed to be their sum — if a third phase ever
+    /// scans, that assumption would silently under-report (#162).
+    pub comps_scanned: u64,
     pub comps_build: u64,
     pub comps_reconcile: u64,
     pub build_ns_per_comp: Option<f64>,
@@ -428,6 +433,7 @@ pub struct RawCounters {
     pub t_shuf_build: Duration,
     pub t_shuf_reconcile: Duration,
     pub t_shuf_move: Duration,
+    pub shuf_comps_scanned: u64,
     pub shuf_comps_build: u64,
     pub shuf_comps_reconcile: u64,
     pub shuf_calls: u64,
@@ -530,6 +536,7 @@ impl RawCounters {
                 build: secs(self.t_shuf_build),
                 reconcile: secs(self.t_shuf_reconcile),
                 move_pass: secs(self.t_shuf_move),
+                comps_scanned: self.shuf_comps_scanned,
                 comps_build: self.shuf_comps_build,
                 comps_reconcile: self.shuf_comps_reconcile,
                 build_ns_per_comp: per(self.t_shuf_build, self.shuf_comps_build),

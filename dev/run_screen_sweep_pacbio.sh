@@ -381,8 +381,10 @@ fi
 
 echo
 echo "==> phase split + resource use (one --verbose pass per arm; NOT timed reps)"
-echo "Captures the FULL verbose block, not just the screen/align lines: parallel"
-echo "efficiency, resident footprint, and the later phases (shuffle, p_update)."
+echo "The screen/align split, parallel efficiency and the later phases now live"
+echo "in metrics/<arm>.json, NOT in phase_split.txt: --verbose stopped printing"
+echo "the attribution tables in #162. Parse the JSON; phase_split.txt is kept"
+echo "alongside it only so archived captures stay format-comparable."
 echo "That matters because the screen's share is not fixed -- it ranges 0.9% to"
 echo "76.5% across datasets -- and thread-scaling-and-placement.md found the"
 echo "optimal thread count is PREDICTED by the screen/align split. A backend that"
