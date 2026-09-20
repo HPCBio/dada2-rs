@@ -852,7 +852,7 @@ mod tests {
         assert_eq!(err.len(), 16 * nq);
         // All rates should be in [0, 1].
         for &r in &err {
-            assert!(r >= 0.0 && r <= 1.0, "rate {r} out of [0,1]");
+            assert!((0.0..=1.0).contains(&r), "rate {r} out of [0,1]");
         }
     }
 

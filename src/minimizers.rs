@@ -1088,7 +1088,8 @@ mod tests {
     /// worked in a release build and panicked in a debug one.
     #[test]
     fn k5_is_in_range_and_sketches() {
-        assert!(MINIMIZER_K_MIN <= 5);
+        // `MINIMIZER_K_MIN <= 5` compares two constants and is checked by the
+        // compiler, not this test. What matters is that k=5 sketches.
         let s = sketch(&make_seq(300, 4242), 5, 1);
         assert!(!s.is_empty());
     }

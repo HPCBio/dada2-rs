@@ -2064,8 +2064,6 @@ mod tests {
         let al1 = &al[1];
         let n = al0.len();
         let mut score = 0i32;
-        let mut i0 = false; // was previous al0[k] a gap?
-        let mut i1 = false;
         for k in 0..n {
             let g0 = al0[k] == b'-';
             let g1 = al1[k] == b'-';
@@ -2075,23 +2073,14 @@ mod tests {
                 } else {
                     mismatch
                 };
-                i0 = false;
-                i1 = false;
             } else if g0 {
-                // gap in s1 (end-gap free if at start or end)
-                let _ = i1;
-                i1 = true;
-                i0 = false;
-                let _ = i0; // end-gap: skip penalty (ends-free)
-                // Only penalise interior gaps
+                // gap in s1, penalised only when interior (ends-free)
                 let at_start = al0[..k].iter().all(|&b| b == b'-');
                 let at_end = al0[k + 1..].iter().all(|&b| b == b'-');
                 if !at_start && !at_end {
                     score += gap_p;
                 }
             } else {
-                i0 = true;
-                i1 = false;
                 let at_start = al1[..k].iter().all(|&b| b == b'-');
                 let at_end = al1[k + 1..].iter().all(|&b| b == b'-');
                 if !at_start && !at_end {
@@ -3285,7 +3274,8 @@ mod tests {
         let s1: Vec<u8> = (0..240).map(|_| next_nt(&mut state)).collect();
         let mut s2 = s1.clone();
         for i in (0..240).step_by(50) {
-            s2[i] = nts[(s2[i] as usize) % 4 ^ 1];
+            // `%` binds tighter than `^`; parenthesised to say so, not to change it.
+            s2[i] = nts[((s2[i] as usize) % 4) ^ 1];
         }
         compare_alignments(&s1, &s2, "divergent-240");
     }
@@ -3319,7 +3309,7 @@ mod tests {
     fn sweep_vectorized_parity() {
         let nts = [1u8, 2, 3, 4];
         let mut st: u64 = 0x9E37_79B9_7F4A_7C15;
-        let mut rng = |st: &mut u64, m: usize| {
+        let rng = |st: &mut u64, m: usize| {
             *st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
             ((*st >> 33) as usize) % m
         };

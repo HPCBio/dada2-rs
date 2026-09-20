@@ -13,7 +13,7 @@ The R source lives at `https://github.com/benjjneb/dada2` (key files: `R/dada.R`
 ```bash
 cargo build --release          # binary → target/release/dada2-rs
 cargo test                     # all unit + integration tests
-cargo clippy -- -D warnings    # must be clean before committing
+cargo clippy --all-targets -- -D warnings   # must be clean before committing
 cargo fmt --all -- --check     # must be clean before committing
 ```
 

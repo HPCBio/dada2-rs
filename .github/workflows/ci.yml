@@ -70,7 +70,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy
+        # --all-targets and -D warnings, matching the justfile, the Makefile and
+        # the pre-commit hook. Bare `cargo clippy` failed only on errors, so
+        # warnings accumulated unnoticed (#174).
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Install just
         uses: taiki-e/install-action@just

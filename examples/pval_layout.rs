@@ -294,8 +294,10 @@ fn main() {
     // impossible 574 GB/s for want of exactly that.
     let mut cur_p = vec![0.0f64; nraw];
     let t = Instant::now();
-    for r in 0..rounds {
-        for &m in &rounds_members[r] {
+    // `rounds_members` is built as `(0..rounds).map(..)`, so iterating it is
+    // the same set of rounds -- and the index was only ever used to reach it.
+    for members in &rounds_members {
+        for &m in members {
             let r = &cur[m];
             let (reads, prior, h, l) = (
                 black_box(r.reads),
@@ -336,8 +338,10 @@ fn main() {
 
     let mut ali_p = vec![0.0f64; nraw];
     let t = Instant::now();
-    for r in 0..rounds {
-        for &m in &rounds_members[r] {
+    // `rounds_members` is built as `(0..rounds).map(..)`, so iterating it is
+    // the same set of rounds -- and the index was only ever used to reach it.
+    for members in &rounds_members {
+        for &m in members {
             let r = &ali[m];
             let (reads, prior, h, l) = (
                 black_box(r.reads),
@@ -356,8 +360,10 @@ fn main() {
     report("raw_aligned", t.elapsed());
 
     let t = Instant::now();
-    for r in 0..rounds {
-        for &m in &rounds_members[r] {
+    // `rounds_members` is built as `(0..rounds).map(..)`, so iterating it is
+    // the same set of rounds -- and the index was only ever used to reach it.
+    for members in &rounds_members {
+        for &m in members {
             let (reads, prior) = (black_box(spl[m].reads), black_box(spl[m].prior));
             let c = &sp_c[m];
             let (h, l) = (black_box(c.hamming), black_box(c.lambda));
@@ -372,8 +378,10 @@ fn main() {
     report("dense_split", t.elapsed());
 
     let t = Instant::now();
-    for r in 0..rounds {
-        for &m in &rounds_members[r] {
+    // `rounds_members` is built as `(0..rounds).map(..)`, so iterating it is
+    // the same set of rounds -- and the index was only ever used to reach it.
+    for members in &rounds_members {
+        for &m in members {
             let r = &pk[m];
             let (reads, prior, h, l) = (
                 black_box(r.reads),
@@ -408,8 +416,7 @@ fn main() {
     }
     let mut pf_p = vec![0.0f64; nraw];
     let t = Instant::now();
-    for r in 0..rounds {
-        let ms = &rounds_members[r];
+    for ms in &rounds_members {
         for (i, &m) in ms.iter().enumerate() {
             #[cfg(target_arch = "x86_64")]
             if let Some(&ahead) = ms.get(i + dist) {

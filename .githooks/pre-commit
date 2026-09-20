@@ -8,20 +8,19 @@ if ! cargo fmt --all -- --check; then
     exit 1
 fi
 
-echo "--- pre-commit: cargo clippy ---"
-cargo clippy -- -D warnings
-
-echo "--- pre-commit: test targets compile ---"
-# Clippy above covers lib+bin only, so adding a field to a struct that a
-# #[cfg(test)] helper constructs passes it and still breaks `cargo test`. That
-# happened when kdist_calibrate::Params gained `derive_cutoff`, and the commit
-# landed with a broken test build.
+echo "--- pre-commit: cargo clippy (all targets) ---"
+# --all-targets covers tests, examples and benches as well as lib+bin. That
+# matters twice over:
 #
-# --no-run compiles the test targets without running them, which is what catches
-# this. Deliberately not `clippy --all-targets`: that would also enforce lints on
-# test and example code, where 13 pre-existing warnings live, and clearing those
-# belongs in its own change rather than blocking every commit until then.
-cargo test --no-run --quiet
+#   * It lints test and example code. Five `field_reassign_with_default`
+#     warnings in metrics.rs's tests passed the old lib+bin-only step and only
+#     surfaced when --all-targets was run by hand (#174).
+#   * It COMPILES the test targets, so adding a field to a struct that a
+#     #[cfg(test)] helper constructs is caught here. That used to need its own
+#     `cargo test --no-run` step -- it happened when kdist_calibrate::Params
+#     gained `derive_cutoff`, and again when b_compare's verbose flag became a
+#     ProgressRecord. This subsumes it, so that step is gone.
+cargo clippy --all-targets -- -D warnings
 
 echo "--- pre-commit: justfile/Makefile sync ---"
 if command -v just >/dev/null 2>&1; then
