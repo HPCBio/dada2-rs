@@ -11,7 +11,9 @@ use crate::containers::{B, Bi, BirthType, Comparison};
 use crate::nwalign::{
     AlignBuffers, AlignParams, ScreenBackend, sub_new_with_buf, sub_new_with_screen,
 };
+use crate::progress::ProgressRecord;
 use crate::pval::compute_lambda;
+use crate::rec_print;
 
 /// Default chunk size for the parallel raw-compare loop.
 pub const PAR_GRAIN_DEFAULT: usize = 32;
@@ -127,16 +129,14 @@ pub fn b_compare(
     ncol: usize,
     params: &AlignParams,
     greedy: bool,
-    verbose: bool,
+    rec: &mut ProgressRecord,
 ) {
     let center_idx = b.clusters[i]
         .center
         .expect("b_compare: cluster has no center");
     let center_reads = b.raws[center_idx].reads;
 
-    if verbose {
-        eprint!("C{i}LU:");
-    }
+    rec_print!(rec, "C{i}LU:");
 
     let mut buf = AlignBuffers::new();
     for index in 0..b.raws.len() {
@@ -1494,7 +1494,7 @@ pub fn b_bud(
     min_fold: f64,
     min_hamming: u32,
     min_abund: u32,
-    verbose: bool,
+    rec: &mut ProgressRecord,
     raws_scanned: &mut u64,
 ) -> Option<usize> {
     let nraw = b.raws.len() as f64;
@@ -1586,9 +1586,10 @@ pub fn b_bud(
         b.bi_add_raw(new_ci, raw_idx);
         b.assign_center(new_ci);
 
-        if verbose {
-            eprint!(", Division (naive): Raw {raw_idx} from Bi {ci}, pA={p_a:.2e}");
-        }
+        rec_print!(
+            rec,
+            ", Division (naive): Raw {raw_idx} from Bi {ci}, pA={p_a:.2e}"
+        );
         return Some(new_ci);
     }
 
@@ -1614,28 +1615,28 @@ pub fn b_bud(
         b.bi_add_raw(new_ci, raw_idx);
         b.assign_center(new_ci);
 
-        if verbose {
-            eprint!(", Division (prior): Raw {raw_idx} from Bi {ci}, pP={p_p:.2e}");
-        }
+        rec_print!(
+            rec,
+            ", Division (prior): Raw {raw_idx} from Bi {ci}, pP={p_p:.2e}"
+        );
         return Some(new_ci);
     }
 
-    if verbose {
-        let (raw_idx_str, reads, ci_str) = match mini {
-            Some((ci, r, _)) => {
-                let raw_idx = b.clusters[ci].raws[r];
-                (raw_idx.to_string(), b.raws[raw_idx].reads, ci.to_string())
-            }
-            None => (
-                init_center.to_string(),
-                b.raws[init_center].reads,
-                String::from("0"),
-            ),
-        };
-        eprint!(
-            ", No Division. Minimum pA={p_a:.2e} (Raw {raw_idx_str} w/ {reads} reads in Bi {ci_str})."
-        );
-    }
+    let (raw_idx_str, reads, ci_str) = match mini {
+        Some((ci, r, _)) => {
+            let raw_idx = b.clusters[ci].raws[r];
+            (raw_idx.to_string(), b.raws[raw_idx].reads, ci.to_string())
+        }
+        None => (
+            init_center.to_string(),
+            b.raws[init_center].reads,
+            String::from("0"),
+        ),
+    };
+    rec_print!(
+        rec,
+        ", No Division. Minimum pA={p_a:.2e} (Raw {raw_idx_str} w/ {reads} reads in Bi {ci_str})."
+    );
     None
 }
 
@@ -1664,7 +1665,7 @@ pub fn b_bud_incremental(
     min_fold: f64,
     min_hamming: u32,
     min_abund: u32,
-    verbose: bool,
+    rec: &mut ProgressRecord,
     combine_len: &mut u64,
 ) -> Option<usize> {
     let nraw = b.raws.len() as f64;
@@ -1747,9 +1748,10 @@ pub fn b_bud_incremental(
         b.bi_add_raw(new_ci, raw_idx);
         b.assign_center(new_ci);
 
-        if verbose {
-            eprint!(", Division (naive): Raw {raw_idx} from Bi {ci}, pA={p_a:.2e}");
-        }
+        rec_print!(
+            rec,
+            ", Division (naive): Raw {raw_idx} from Bi {ci}, pA={p_a:.2e}"
+        );
         return Some(new_ci);
     }
 
@@ -1775,28 +1777,28 @@ pub fn b_bud_incremental(
         b.bi_add_raw(new_ci, raw_idx);
         b.assign_center(new_ci);
 
-        if verbose {
-            eprint!(", Division (prior): Raw {raw_idx} from Bi {ci}, pP={p_p:.2e}");
-        }
+        rec_print!(
+            rec,
+            ", Division (prior): Raw {raw_idx} from Bi {ci}, pP={p_p:.2e}"
+        );
         return Some(new_ci);
     }
 
-    if verbose {
-        let (raw_idx_str, reads, ci_str) = match mini {
-            Some((ci, r, _)) => {
-                let raw_idx = b.clusters[ci].raws[r];
-                (raw_idx.to_string(), b.raws[raw_idx].reads, ci.to_string())
-            }
-            None => (
-                init_center.to_string(),
-                b.raws[init_center].reads,
-                String::from("0"),
-            ),
-        };
-        eprint!(
-            ", No Division. Minimum pA={p_a:.2e} (Raw {raw_idx_str} w/ {reads} reads in Bi {ci_str})."
-        );
-    }
+    let (raw_idx_str, reads, ci_str) = match mini {
+        Some((ci, r, _)) => {
+            let raw_idx = b.clusters[ci].raws[r];
+            (raw_idx.to_string(), b.raws[raw_idx].reads, ci.to_string())
+        }
+        None => (
+            init_center.to_string(),
+            b.raws[init_center].reads,
+            String::from("0"),
+        ),
+    };
+    rec_print!(
+        rec,
+        ", No Division. Minimum pA={p_a:.2e} (Raw {raw_idx_str} w/ {reads} reads in Bi {ci_str})."
+    );
     None
 }
 
@@ -2065,7 +2067,15 @@ mod compare_fold_tests {
             b_compare_parallel(&mut par, 0, &err, 41, &params(), greedy, true);
 
             let mut ser = seeded();
-            b_compare(&mut ser, 0, &err, 41, &params(), greedy, false);
+            b_compare(
+                &mut ser,
+                0,
+                &err,
+                41,
+                &params(),
+                greedy,
+                &mut ProgressRecord::disabled(),
+            );
 
             assert_eq!(par.nalign, ser.nalign, "greedy={greedy}: nalign");
             assert_eq!(par.nshroud, ser.nshroud, "greedy={greedy}: nshroud");
