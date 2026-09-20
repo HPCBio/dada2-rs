@@ -12,14 +12,24 @@ CONTENT, not formatting: for each prose topic it names the JSON path that must
 carry it, and reports the ones that nothing carries.
 
 Usage:
+    # one run
     dada2-rs dada ... --verbose --metrics-json m.json --metrics-attribution 2> v.txt
     dev/check_metrics_superset.py v.txt m.json
+
+    # a whole sweep: phase_split.txt holds EVERY arm, so each is checked
+    # against its own metrics/<arm>.json
+    dev/check_metrics_superset.py <sweep-out-dir>
+
+Checking a multi-arm phase_split.txt against a single arm's JSON reports false
+gaps -- the minimizer arms' prose has no home in a k-mer arm's document, and
+rightly so. Pass the sweep directory and it splits by `===== <arm>` instead.
 
 Exit status is 1 when a topic the prose reports has no JSON home, so this can
 gate the follow-up PR that strips the prose.
 """
 
 import json
+import os
 import re
 import sys
 
@@ -86,17 +96,29 @@ def prose_topics(lines):
     return seen
 
 
-def main():
-    if len(sys.argv) != 3:
-        sys.exit(__doc__)
-    verbose_path, json_path = sys.argv[1], sys.argv[2]
+def split_arms(lines):
+    """Split a sweep phase_split.txt into {arm: lines}. One section if unmarked."""
+    arms, cur, name = {}, [], None
+    for line in lines:
+        m = re.match(r"^=====\s+(\S+)", line)
+        if m:
+            if name is not None:
+                arms[name] = cur
+            name, cur = m.group(1), []
+            continue
+        cur.append(line)
+    if name is None:
+        return None
+    arms[name] = cur
+    return arms
 
-    lines = open(verbose_path, errors="replace").read().splitlines()
-    doc = json.load(open(json_path))
 
+def check_one(lines, doc, label):
+    """Returns the number of topics with no JSON home."""
     if not doc.get("runs"):
-        sys.exit("metrics JSON has no runs[]")
-    run = doc["runs"][0]
+        print(f"{label}: metrics JSON has no runs[]")
+        return 1
+    runs = doc["runs"]
 
     print(f"schema_version : {doc.get('schema_version')}")
     print(f"measure_level  : {doc.get('measure_level')}")
@@ -106,19 +128,25 @@ def main():
 
     topics = prose_topics(lines)
     if not topics:
-        sys.exit("no [dada] topic headers found -- was --verbose passed?")
+        print(f"{label}: no [dada] topic headers found -- was --verbose passed?")
+        return 1
 
-    carried, staying, missing = [], [], []
+    # Checked across EVERY run, not just the first. A per-sample sweep emits one
+    # run per sample, and a field present in run 0 but absent in run 17 is a
+    # partial migration -- which reads as success if you only look at the head.
+    carried, staying, missing, partial = [], [], [], []
     for topic in topics:
         path = TOPICS[topic]
         if path is None:
             staying.append(topic)
             continue
-        ok, val = dig(run, path)
-        if ok and val is not None:
+        present = sum(1 for r in runs if dig(r, path)[1] is not None)
+        if present == len(runs):
             carried.append((topic, path))
-        else:
+        elif present == 0:
             missing.append((topic, path))
+        else:
+            partial.append((topic, path, present, len(runs)))
 
     print(f"CARRIED BY JSON ({len(carried)}) -- prose may be removed")
     for topic, path in carried:
@@ -129,6 +157,12 @@ def main():
         print(f"    {topic}")
     print()
 
+    if partial:
+        print(f"*** PARTIAL ({len(partial)}) -- present in SOME runs only")
+        for topic, path, n, tot in partial:
+            print(f"    {topic:36s} -> runs[].{path}  ({n}/{tot} runs)")
+        print()
+
     if missing:
         print(f"*** NOT CARRIED ({len(missing)}) -- removing these lines WOULD LOSE DATA")
         for topic, path in missing:
@@ -136,10 +170,59 @@ def main():
         print()
         print("Add these to the schema before stripping the prose, or record an")
         print("explicit decision that the quantity is not worth keeping.")
-        return 1
+        return len(missing) + len(partial)
 
-    print("Every migrated topic has a JSON home. Safe to strip the prose.")
+    if partial:
+        return len(partial)
+
+    print(f"Every migrated topic has a JSON home in all {len(runs)} run(s).")
+    print("Safe to strip the prose.")
     return 0
+
+
+def main():
+    args = sys.argv[1:]
+
+    # Sweep-directory mode: check each arm against its own document.
+    if len(args) == 1:
+        root = args[0]
+        split_path = os.path.join(root, "phase_split.txt")
+        if not os.path.isfile(split_path):
+            sys.exit(f"{split_path}: not found (expected a sweep output directory)")
+        arms = split_arms(open(split_path, errors="replace").read().splitlines())
+        if arms is None:
+            sys.exit(f"{split_path} has no `===== <arm>` markers; pass <verbose> <json>")
+        bad, checked = 0, 0
+        for arm, lines in arms.items():
+            mpath = os.path.join(root, "metrics", f"{arm}.json")
+            print("=" * 68)
+            print(f"ARM {arm}")
+            print("=" * 68)
+            if not os.path.isfile(mpath):
+                print(f"    no metrics/{arm}.json -- arm skipped or run before #162\n")
+                continue
+            checked += 1
+            bad += check_one(lines, json.load(open(mpath)), arm)
+            print()
+        if checked == 0:
+            sys.exit("no arm had a metrics JSON; was the sweep run on this branch?")
+        print(f"{checked} arm(s) checked, {bad} unmapped topic(s)")
+        return 1 if bad else 0
+
+    if len(args) != 2:
+        sys.exit(__doc__)
+
+    lines = open(args[0], errors="replace").read().splitlines()
+    arms = split_arms(lines)
+    if arms is not None:
+        print(
+            f"NOTE: {args[0]} holds {len(arms)} arms "
+            f"({', '.join(list(arms)[:4])}{' ...' if len(arms) > 4 else ''}).\n"
+            "      Checking ALL of their prose against ONE arm's JSON reports false\n"
+            "      gaps -- a k-mer arm has no minimizer index, and should not.\n"
+            "      Pass the sweep directory instead to check each arm on its own.\n"
+        )
+    return 1 if check_one(lines, json.load(open(args[1])), args[1]) else 0
 
 
 if __name__ == "__main__":
