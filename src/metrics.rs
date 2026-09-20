@@ -79,6 +79,10 @@ pub struct RunShape {
     pub nraw: usize,
     pub reads: u32,
     pub nclusters: usize,
+    /// Pairwise alignments performed, and comparisons the screen shrouded.
+    /// `u64` is required: these reach 1.4e10 on a diverse pool.
+    pub nalign: u64,
+    pub nshroud: u64,
     pub threads: usize,
     pub multithread: bool,
     pub align_backend: String,
@@ -200,6 +204,71 @@ pub struct ShuffleMetrics {
     pub move_raws: u64,
 }
 
+/// `b_bud` scan redundancy: the bud pass rescans raws every round to find the
+/// next cluster centre, and this is how much of that scanning repeats.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct BudMetrics {
+    pub calls: u64,
+    /// Calls that actually produced a new cluster.
+    pub successes: u64,
+    pub raws_scanned: u64,
+    pub raws_per_call: Option<f64>,
+}
+
+/// p-update churn (#85): how many raws get repriced per round, and by which
+/// exit path. `full_calc` is the only expensive one — the Poisson upper tail —
+/// so a high ratio of cheap exits means a p-ordered structure would buy little.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PUpdateMetrics {
+    /// In-loop rounds only. The pre-loop call reprices the whole partition once
+    /// and is not part of the per-bud churn.
+    pub rounds: u64,
+    pub repriced: u64,
+    pub exit_singleton: u64,
+    pub exit_center: u64,
+    pub exit_zero_lambda: u64,
+    pub full_calc: u64,
+    pub lock_scanned: u64,
+    pub dirty_clusters: u64,
+    pub clean_clusters: u64,
+}
+
+/// Reconcile internals (#136): how much of the scattered reconcile pass is
+/// recomputation that changes nothing, which bounds any future optimization.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ReconcileMetrics {
+    pub collect: f64,
+    pub rescan: f64,
+    /// Raws the reconcile recomputed.
+    pub affected: u64,
+    /// Of those, the ones whose best cluster actually changed.
+    pub changed: u64,
+    /// Raws that genuinely required a rescan.
+    pub rescan_required: u64,
+    pub rescan_comps: u64,
+    /// Ties, where the incremental path cannot shortcut.
+    pub ties: u64,
+    pub pairs: u64,
+}
+
+/// Move-pass dirty-set pruning (#132).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MovePruneMetrics {
+    pub unpruned: u64,
+    pub dirty: u64,
+    pub prunable: u64,
+    pub passes: u64,
+}
+
+/// Carrying `compmax` across buds (#139, reviving #87's projection): what the
+/// carry relocates, split by access pattern.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CarryMetrics {
+    pub first_reconcile_pairs: u64,
+    pub first_reconcile_comps: u64,
+    pub first_reconcile_calls: u64,
+}
+
 /// Resident bytes per Raw (#32). In pooled mode this is the whole resident set;
 /// in pseudo or per-sample mode it is one sample's share, so multiply by
 /// `--sample-jobs` for the peak.
@@ -260,6 +329,11 @@ pub struct RunMetrics {
     pub phases: PhaseTimes,
     pub compare: CompareMetrics,
     pub shuffle: ShuffleMetrics,
+    pub reconcile: ReconcileMetrics,
+    pub move_pruning: MovePruneMetrics,
+    pub carry_87: CarryMetrics,
+    pub bud: BudMetrics,
+    pub p_update: PUpdateMetrics,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub footprint: Option<FootprintMetrics>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -363,6 +437,31 @@ pub struct RawCounters {
     pub shuf_zero_move_calls: u64,
     pub shuf_move_raws: u64,
 
+    pub t_rec_collect: Duration,
+    pub t_rec_rescan: Duration,
+    pub shuf_rec_affected: u64,
+    pub shuf_rec_changed: u64,
+    pub shuf_rec_rescan: u64,
+    pub shuf_rec_rescan_comps: u64,
+    pub shuf_rec_ties: u64,
+    pub shuf_rec_pairs: u64,
+
+    pub shuf_move_unpruned: u64,
+    pub shuf_move_dirty: u64,
+    pub shuf_move_prunable: u64,
+    pub shuf_move_passes: u64,
+
+    pub shuf_first_rec_pairs: u64,
+    pub shuf_first_rec_comps: u64,
+    pub shuf_first_rec_calls: u64,
+
+    pub bud_calls: u64,
+    pub bud_success: u64,
+    pub bud_raws_scanned: u64,
+
+    pub pupd_rounds: u64,
+    pub pupd: PUpdateMetrics,
+
     pub footprint: Option<FootprintMetrics>,
 }
 
@@ -441,6 +540,38 @@ impl RawCounters {
                 moves: self.shuf_moves,
                 zero_move_calls: self.shuf_zero_move_calls,
                 move_raws: self.shuf_move_raws,
+            },
+            reconcile: ReconcileMetrics {
+                collect: secs(self.t_rec_collect),
+                rescan: secs(self.t_rec_rescan),
+                affected: self.shuf_rec_affected,
+                changed: self.shuf_rec_changed,
+                rescan_required: self.shuf_rec_rescan,
+                rescan_comps: self.shuf_rec_rescan_comps,
+                ties: self.shuf_rec_ties,
+                pairs: self.shuf_rec_pairs,
+            },
+            move_pruning: MovePruneMetrics {
+                unpruned: self.shuf_move_unpruned,
+                dirty: self.shuf_move_dirty,
+                prunable: self.shuf_move_prunable,
+                passes: self.shuf_move_passes,
+            },
+            carry_87: CarryMetrics {
+                first_reconcile_pairs: self.shuf_first_rec_pairs,
+                first_reconcile_comps: self.shuf_first_rec_comps,
+                first_reconcile_calls: self.shuf_first_rec_calls,
+            },
+            bud: BudMetrics {
+                calls: self.bud_calls,
+                successes: self.bud_success,
+                raws_scanned: self.bud_raws_scanned,
+                raws_per_call: (self.bud_calls > 0)
+                    .then(|| self.bud_raws_scanned as f64 / self.bud_calls as f64),
+            },
+            p_update: PUpdateMetrics {
+                rounds: self.pupd_rounds,
+                ..self.pupd.clone()
             },
             footprint: self.footprint.clone(),
             index: None,
