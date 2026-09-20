@@ -63,7 +63,7 @@ echo "==> arm B: 2>&1 | grep"
     --error-model "$ERR" --threads "$THREADS" --sample-jobs "$JOBS" --verbose \
     --metrics-json "$OUT/b.metrics.json" --metrics-attribution \
     --output-dir "$OUT/b.out" 2>&1 \
-  | grep -E "^\[dada\]|maximum resident|Maximum resident|elapsed|real" \
+  | grep -E "^\[(dada|derep)|maximum resident|Maximum resident|elapsed|real" \
   > "$OUT/b.stderr"
 
 runs=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['runs']))" \

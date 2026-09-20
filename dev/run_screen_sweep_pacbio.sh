@@ -431,7 +431,7 @@ mkdir -p "$OUT/metrics"
     # SLURM I/O forwarding with 12 concurrent samples. A file redirect takes
     # that layer out of the path. The JSON was unaffected either way, because
     # it is written once from memory at the end (issue #162).
-    grep -E "^\[dada\]|maximum resident|Maximum resident|elapsed|real" \
+    grep -E "^\[(dada|derep)|maximum resident|Maximum resident|elapsed|real" \
         "$OUT/metrics/$name.stderr" || echo "    (no output)"
   done
 } | tee "$OUT/phase_split.txt"
