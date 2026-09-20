@@ -20,6 +20,9 @@ Usage:
     # against its own metrics/<arm>.json
     dev/check_metrics_superset.py <sweep-out-dir>
 
+    # also compare the NUMBERS, not just which fields exist
+    dev/check_metrics_superset.py --numeric <sweep-out-dir>
+
 Checking a multi-arm phase_split.txt against a single arm's JSON reports false
 gaps -- the minimizer arms' prose has no home in a k-mer arm's document, and
 rightly so. Pass the sweep directory and it splits by `===== <arm>` instead.
@@ -94,6 +97,81 @@ def prose_topics(lines):
                 seen.append(topic)
                 break
     return seen
+
+
+# Prose row -> JSON field, inside the `compare attribution` block. The prose
+# prints 2 decimals, so a summed comparison carries +/-0.005s of rounding per
+# block; the tolerance below is derived from that, not guessed.
+ATTRIB_ROWS = {
+    "map": "map",
+    "reduction": "reduction",
+    "store": "store",
+    "free": "free",
+    "setup": "setup",
+    "unattributed": "unattributed",
+}
+
+
+def prose_attrib_sums(lines):
+    """Sum each compare-attribution row across every block in this arm.
+
+    Order-independent on purpose: a concurrent per-sample run emits prose in
+    completion order while the JSON is sorted by sample, so pairing block N
+    with runs[N] would compare different samples and call the mismatch a bug.
+    """
+    sums, blocks = {k: 0.0 for k in ATTRIB_ROWS}, 0
+    inside = False
+    for line in lines:
+        if "compare attribution (of" in line:
+            inside, blocks = True, blocks + 1
+            continue
+        if inside:
+            m = re.match(r"^\[dada\]\s+(\w+)\s+([0-9.]+)s", line)
+            if m and m.group(1) in ATTRIB_ROWS:
+                sums[m.group(1)] += float(m.group(2))
+                continue
+            # The block ends at the first line that is not one of its rows.
+            if not re.match(r"^\[dada\]\s{3,}", line):
+                inside = False
+    return sums, blocks
+
+
+def numeric_check(lines, doc, label):
+    """Do the prose and the JSON agree on the numbers, not just the fields?"""
+    prose, blocks = prose_attrib_sums(lines)
+    if blocks == 0:
+        print("    (no compare-attribution blocks in this arm's prose)")
+        return 0
+    runs = doc["runs"]
+    jsn = {k: 0.0 for k in ATTRIB_ROWS}
+    n = 0
+    for r in runs:
+        a = r.get("compare", {}).get("attribution")
+        if not a:
+            continue
+        n += 1
+        for prose_key, json_key in ATTRIB_ROWS.items():
+            jsn[prose_key] += float(a.get(json_key) or 0.0)
+
+    print(f"    prose blocks {blocks}  vs  json runs {n}")
+    if blocks != n:
+        print(f"    *** block count differs -- sums are not comparable")
+        return 1
+
+    # 2-decimal prose rounding, worst case, summed over the blocks.
+    tol = 0.005 * blocks
+    bad = 0
+    print(f"    {'row':14s} {'prose':>12s} {'json':>12s} {'diff':>10s}   (tol {tol:.3f}s)")
+    for k in ATTRIB_ROWS:
+        d = abs(prose[k] - jsn[k])
+        flag = "" if d <= tol else "  <-- MISMATCH"
+        if flag:
+            bad += 1
+        print(f"    {k:14s} {prose[k]:12.3f} {jsn[k]:12.3f} {d:10.3f}{flag}")
+    if bad:
+        print("    *** the prose and the JSON disagree beyond prose rounding.")
+        print("        They read the same accumulators, so a gap here is a real bug.")
+    return bad
 
 
 def split_arms(lines):
@@ -182,6 +260,8 @@ def check_one(lines, doc, label):
 
 def main():
     args = sys.argv[1:]
+    numeric = "--numeric" in args
+    args = [a for a in args if a != "--numeric"]
 
     # Sweep-directory mode: check each arm against its own document.
     if len(args) == 1:
@@ -202,7 +282,11 @@ def main():
                 print(f"    no metrics/{arm}.json -- arm skipped or run before #162\n")
                 continue
             checked += 1
-            bad += check_one(lines, json.load(open(mpath)), arm)
+            doc = json.load(open(mpath))
+            bad += check_one(lines, doc, arm)
+            if numeric:
+                print("NUMERIC CROSS-CHECK (compare attribution, summed over blocks)")
+                bad += numeric_check(lines, doc, arm)
             print()
         if checked == 0:
             sys.exit("no arm had a metrics JSON; was the sweep run on this branch?")
@@ -222,7 +306,12 @@ def main():
             "      gaps -- a k-mer arm has no minimizer index, and should not.\n"
             "      Pass the sweep directory instead to check each arm on its own.\n"
         )
-    return 1 if check_one(lines, json.load(open(args[1])), args[1]) else 0
+    doc = json.load(open(args[1]))
+    bad = check_one(lines, doc, args[1])
+    if numeric:
+        print("NUMERIC CROSS-CHECK (compare attribution, summed over blocks)")
+        bad += numeric_check(lines, doc, args[1])
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":
