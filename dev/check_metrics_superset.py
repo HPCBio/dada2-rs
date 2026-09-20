@@ -155,7 +155,34 @@ def numeric_check(lines, doc, label):
 
     print(f"    prose blocks {blocks}  vs  json runs {n}")
     if blocks != n:
-        print(f"    *** block count differs -- sums are not comparable")
+        print("    *** block count differs -- sums are not comparable")
+        # Say WHICH shape the loss has, so this does not need another round
+        # trip. Every one of these headers is printed once per run_dada call
+        # with no gate, so they should all equal the run count. If they all
+        # agree with each other but not with the JSON, a whole sample's output
+        # is missing; if only one differs, a single line was mangled -- which
+        # is what concurrent per-sample stderr does, and is itself a reason to
+        # read the JSON instead of the prose.
+        counts = {
+            "compare attribution": sum(1 for l in lines if "compare attribution (of" in l),
+            "phase times": sum(1 for l in lines if "] phase times" in l),
+            "compare split": sum(1 for l in lines if "compare split (of" in l),
+            "resident Raw footprint": sum(
+                1 for l in lines if "] resident Raw footprint" in l
+            ),
+            "ASV summary": sum(1 for l in lines if " ASV(s) from " in l),
+        }
+        print(f"    per-topic header counts (each should equal {n}):")
+        for k, v in counts.items():
+            flag = "" if v == n else "   <-- short"
+            print(f"        {k:24s} {v:4d}{flag}")
+        short = [k for k, v in counts.items() if v != n]
+        if len(short) == len(counts):
+            print("    -> every topic is short: a whole run's prose is missing.")
+        elif short:
+            print("    -> only some topics are short: individual lines were lost,")
+            print("       which concurrent per-sample stderr can do. The JSON is")
+            print("       written once from memory and cannot interleave.")
         return 1
 
     # 2-decimal prose rounding, worst case, summed over the blocks.
