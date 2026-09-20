@@ -28,6 +28,7 @@ pub mod metrics;
 pub mod minimizers;
 pub mod misc;
 pub mod nwalign;
+pub mod progress;
 pub mod pval;
 pub mod reference_eval;
 pub mod remove_bimera;

@@ -171,6 +171,11 @@ None of these change the ASVs.
 
 **`--verbose`** — progress to stderr.
 
+Under `--sample-jobs > 1` the per-round progress records are prefixed with the
+sample that produced them, since concurrent output is otherwise
+unattributable. With a single sample in flight — or under `dada-pooled` — the
+text is left exactly as DADA2's C layer writes it.
+
 **`--aux-outputs`** — emit R-DADA2-parity per-cluster diagnostics in the output
 JSON: `cluster_stats` (n0/n1/nunq/birth_qave/post-hoc p-value),
 `cluster_quality` (mean quality at each reference position), `birth_subs` (the

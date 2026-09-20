@@ -991,6 +991,7 @@ fn run() -> io::Result<()> {
                         compact,
                         collect_failed,
                         verbose,
+                        (jobs > 1).then(|| sample.clone()),
                     )?;
                     if collect_failed {
                         failed_rows.lock().unwrap().extend(failed);
@@ -2289,6 +2290,7 @@ fn run() -> io::Result<()> {
                         compact,
                         collect_failed,
                         verbose,
+                        (jobs > 1).then(|| sample_name.to_string()),
                     )?;
                     if collect_failed {
                         failed_rows.lock().unwrap().extend(failed);
@@ -2335,6 +2337,7 @@ fn run() -> io::Result<()> {
                         compact,
                         collect_failed,
                         verbose,
+                        (jobs > 1).then(|| sample_name.to_string()),
                     )?;
                     if collect_failed {
                         failed_rows.lock().unwrap().extend(failed);
@@ -3453,6 +3456,8 @@ fn run() -> io::Result<()> {
                 final_consensus: false,
                 multithread: threads > 1,
                 verbose,
+                // learn-errors denoises one sample at a time.
+                progress_tag: None,
                 // learn-errors has no --metrics-json yet; keep
                 // --verbose's measurements exactly as they were.
                 measure: if verbose {
@@ -4147,6 +4152,8 @@ fn run() -> io::Result<()> {
                 final_consensus: false,
                 multithread: threads > 1,
                 verbose,
+                // learn-errors denoises one sample at a time.
+                progress_tag: None,
                 // learn-errors has no --metrics-json yet; keep
                 // --verbose's measurements exactly as they were.
                 measure: if verbose {
@@ -4796,6 +4803,8 @@ fn resolve_dada_params(
         final_consensus: false,
         multithread: threads > 1,
         verbose,
+        // Set per sample by the concurrent paths; see denoise_and_serialize.
+        progress_tag: None,
         measure,
         greedy,
         aux_outputs,
@@ -5141,6 +5150,10 @@ fn denoise_and_serialize(
     compact: bool,
     collect_failed: bool,
     verbose: bool,
+    // Sample label for the bud-round progress records. `Some` only when samples
+    // are denoised concurrently, where the records would otherwise be
+    // unattributable; `None` keeps the text byte-identical to R's (#172).
+    progress_tag: Option<String>,
 ) -> io::Result<(
     String,
     Vec<failed_uniques::Row>,
@@ -5159,6 +5172,19 @@ fn denoise_and_serialize(
         map: Vec<Option<usize>>,
     }
 
+    // Only clone when a tag is actually needed: the copy carries `err_mat`,
+    // and a serial run has nothing to disambiguate anyway.
+    let tagged;
+    let params = match progress_tag {
+        Some(tag) => {
+            tagged = dada::DadaParams {
+                progress_tag: Some(tag),
+                ..params.clone()
+            };
+            &tagged
+        }
+        None => params,
+    };
     let mut result = pool
         .install(|| dada::dada_uniques(raw_inputs, params))
         .map_err(io::Error::other)?;

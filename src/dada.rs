@@ -33,7 +33,9 @@ use crate::minimizers::{self, MINIMIZER_K_MAX, MINIMIZER_K_MIN, MINIMIZER_W_MAX,
 use crate::misc::nt_encode;
 use crate::nwalign::ScreenBackend;
 use crate::nwalign::{AlignBuffers, AlignParams, sub_new_with_buf};
+use crate::progress::ProgressRecord;
 use crate::pval::{b_p_update, calc_pA};
+use crate::rec_print;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -89,6 +91,12 @@ pub struct DadaParams {
     pub multithread: bool,
     /// Write progress to stderr.
     pub verbose: bool,
+    /// Sample label prefixed to each bud-round progress record.
+    ///
+    /// Set only when samples are denoised concurrently. With a single
+    /// `run_dada` in flight there is nothing to disambiguate, so the records
+    /// stay byte-identical to the R output they were ported from (#172).
+    pub progress_tag: Option<String>,
     /// How much instrumentation to collect, independent of `verbose`.
     ///
     /// `verbose` decides what is *printed*; this decides what is *measured*.
@@ -961,6 +969,13 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     let mut pupd_rounds = 0u64;
     let mut pupd_stats = crate::pval::PUpdateStats::default();
 
+    // One progress record spans the whole bud loop. A DADA2 progress line is
+    // assembled as [New Cluster CN:][CNLU:][S per shuffle][the NEXT round's
+    // Division fragment], so it is closed at the top of the following round
+    // rather than the bottom of its own. Buffering it and emitting one line
+    // keeps that text byte-identical while making the write atomic (#172).
+    let mut rec = ProgressRecord::for_verbose(params.verbose, params.progress_tag.clone());
+
     // Initial compare: no k-mer distance screen so that cluster 0 accumulates
     // comparisons for every Raw (required by b_shuffle2).
     let init_params = AlignParams {
@@ -993,6 +1008,8 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         n_cmp_scanned += bb.raws.len() as u64;
         n_cmp_stored += ct.stored;
     } else {
+        // `b_compare`'s record drives the `C{i}LU:` progress print, which is a
+        // verbose concern, not a measurement one.
         b_compare(
             &mut bb,
             0,
@@ -1000,7 +1017,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             params.err_ncol,
             &init_params,
             params.greedy,
-            params.measure.attribution(),
+            &mut rec,
         );
     }
     t_compare += t.elapsed();
@@ -1057,7 +1074,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             params.min_fold,
             params.min_hamming,
             params.min_abund,
-            params.verbose,
+            &mut rec,
             &mut bud_scanned,
         );
         t_bud += t.elapsed();
@@ -1071,9 +1088,10 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             None => break,
         };
 
-        if params.verbose {
-            eprint!("\nNew Cluster C{newi}:");
-        }
+        // Close the previous round's line (which this round's bud just ended
+        // with its Division fragment), then open this one.
+        rec.flush();
+        rec_print!(rec, "New Cluster C{newi}:");
 
         let t = Instant::now();
         if params.multithread {
@@ -1107,7 +1125,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 params.err_ncol,
                 &params.align,
                 params.greedy,
-                params.measure.attribution(),
+                &mut rec,
             );
         }
         t_compare += t.elapsed();
@@ -1156,9 +1174,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         shuf_rec_changed += st.reconcile_changed as u64;
         shuf_nraw = st.nraw;
         shuf_zero_move_calls += st.zero_move_calls as u64;
-        if params.verbose {
-            eprint!("{}", "S".repeat(st.calls));
-        }
+        rec_print!(rec, "{}", "S".repeat(st.calls));
         t_shuffle += t.elapsed();
         if params.verbose && st.calls >= MAX_SHUFFLE {
             eprintln!("Warning: Reached maximum ({MAX_SHUFFLE}) shuffles.");
@@ -1240,6 +1256,11 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         }
     }
 
+    // Close the final line: the loop exits after a bud that found no
+    // division, and that `, No Division.` fragment is the last thing in the
+    // record.
+    rec.flush();
+
     // Advisory: did the probe's sample turn out to represent the run?
     //
     // The probe reads the first few clusters, but greedy skipping is NOT
@@ -1297,7 +1318,10 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
 
     if params.verbose {
         eprintln!(
-            "\nALIGN: {} aligns, {} shrouded ({} raw).",
+            // The leading newline used to terminate the bud loop's dangling
+            // partial line. The progress record now ends itself, so keeping it
+            // would leave a blank line behind (#172).
+            "ALIGN: {} aligns, {} shrouded ({} raw).",
             bb.nalign,
             bb.nshroud,
             bb.raws.len()
