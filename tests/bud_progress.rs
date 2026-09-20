@@ -15,7 +15,7 @@
 //!   is in flight, and is tagged only when samples run concurrently, which is
 //!   the only case where the line would otherwise be unattributable.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_dada2-rs");
@@ -32,7 +32,7 @@ fn tmpdir(tag: &str) -> PathBuf {
     d
 }
 
-fn learn_errors(dir: &PathBuf) -> PathBuf {
+fn learn_errors(dir: &Path) -> PathBuf {
     let errs = dir.join("errs.json");
     let out = Command::new(BIN)
         .args(["learn-errors", "--threads", "2", "-o"])
@@ -46,7 +46,7 @@ fn learn_errors(dir: &PathBuf) -> PathBuf {
 }
 
 /// Returns stderr from a verbose denoise.
-fn denoise_stderr(dir: &PathBuf, errs: &PathBuf, jobs: &str, pooled: bool) -> String {
+fn denoise_stderr(dir: &Path, errs: &Path, jobs: &str, pooled: bool) -> String {
     let out_dir = dir.join(format!("out{jobs}{}", u8::from(pooled)));
     let mut cmd = Command::new(BIN);
     if pooled {

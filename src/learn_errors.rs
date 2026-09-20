@@ -1128,8 +1128,16 @@ mod tests {
         write_derep_json(&path, /* declare_sorted */ false);
 
         let pool = unique_test_pool();
-        let samples =
-            load_fastq_samples(&[path.clone()], u64::MAX, false, None, 33, &pool, false).unwrap();
+        let samples = load_fastq_samples(
+            std::slice::from_ref(&path),
+            u64::MAX,
+            false,
+            None,
+            33,
+            &pool,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(samples.len(), 1, "one input file -> one sample");
         let inputs = &samples[0];
@@ -1154,8 +1162,16 @@ mod tests {
         write_derep_json(&path, /* declare_sorted */ true);
 
         let pool = unique_test_pool();
-        let samples =
-            load_fastq_samples(&[path.clone()], u64::MAX, false, None, 33, &pool, false).unwrap();
+        let samples = load_fastq_samples(
+            std::slice::from_ref(&path),
+            u64::MAX,
+            false,
+            None,
+            33,
+            &pool,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(samples.len(), 1);
         let inputs = &samples[0];
