@@ -86,6 +86,16 @@ so the cache is pure overhead except in narrow cases.
 
 ## Diagnostics
 
+**`--metrics-json`** — write a structured record of the run's phase times,
+compare attribution, shuffle split, footprint and index decision to this file.
+Free to leave on: it collects only what the run already pays for.
+
+**`--metrics-attribution`** — add the per-comparison timings (`busy`, map
+parallel efficiency, the screen / DP / `al2subs` split). This **slows the run**,
+so do not combine it with a timing measurement. Requires `--metrics-json`.
+
+See [Run metrics](metrics-json.md) for the schema and the two levels.
+
 **`--verbose`**, **`--failed-uniques`** — as in [`dada`](dada.md#diagnostics).
 
 ## Experimental

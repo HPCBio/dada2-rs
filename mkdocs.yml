@@ -73,6 +73,7 @@ nav:
     - learn-errors: commands/learn-errors.md
     - errors-from-sample: commands/errors-from-sample.md
     - dada: commands/dada.md
+    - 'Run metrics (--metrics-json)': commands/metrics-json.md
     - dada-pooled: commands/dada-pooled.md
     - dada-pseudo: commands/dada-pseudo.md
     - merge-pairs: commands/merge-pairs.md

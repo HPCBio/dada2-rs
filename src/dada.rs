@@ -28,6 +28,7 @@ use crate::error::{
     transition_counts,
 };
 use crate::kmers::{KMER_SIZE_MAX, KMER_SIZE_MIN, assign_kmer_order, raw_assign_kmers};
+use crate::metrics::{MeasureLevel, RawCounters, RunMetrics, RunShape};
 use crate::minimizers::{self, MINIMIZER_K_MAX, MINIMIZER_K_MIN, MINIMIZER_W_MAX, MINIMIZER_W_MIN};
 use crate::misc::nt_encode;
 use crate::nwalign::ScreenBackend;
@@ -88,6 +89,13 @@ pub struct DadaParams {
     pub multithread: bool,
     /// Write progress to stderr.
     pub verbose: bool,
+    /// How much instrumentation to collect, independent of `verbose`.
+    ///
+    /// `verbose` decides what is *printed*; this decides what is *measured*.
+    /// They are separate because [`MeasureLevel::Attribution`] costs 2-4
+    /// `Instant::now()` calls per comparison, so `--metrics-json` can collect
+    /// the free tier on a production run without paying for it (issue #162).
+    pub measure: MeasureLevel,
     /// Greedy mode: lock Raws whose expected abundance already exceeds observed.
     pub greedy: bool,
     /// Compute auxiliary outputs (R DADA2 parity: `$clustering`, `$birth_subs`,
@@ -213,6 +221,10 @@ pub struct DadaResult {
     /// presumed default.
     pub omega_a: f64,
     pub omega_p: f64,
+    /// Instrumentation from this invocation, when `DadaParams::measure` asked
+    /// for any. Reaches the user through `--metrics-json`; nothing serializes
+    /// it into a subcommand's own output (issue #162).
+    pub metrics: Option<RunMetrics>,
 }
 
 // ---------------------------------------------------------------------------
@@ -702,6 +714,7 @@ pub fn dada_uniques_cached(
         nraw: b.raws.len() as u32,
         omega_a: params.omega_a,
         omega_p: params.omega_p,
+        metrics: b.metrics.take(),
     };
 
     // Reclaim Raws for the caller to pass back on the next iteration.
@@ -964,7 +977,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             params.err_ncol,
             &init_params,
             params.greedy,
-            params.verbose,
+            params.measure.attribution(),
         );
         t_cmp_map += ct.map;
         t_cmp_serial += ct.serial;
@@ -987,7 +1000,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             params.err_ncol,
             &init_params,
             params.greedy,
-            params.verbose,
+            params.measure.attribution(),
         );
     }
     t_compare += t.elapsed();
@@ -1071,7 +1084,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 params.err_ncol,
                 &params.align,
                 params.greedy,
-                params.verbose,
+                params.measure.attribution(),
             );
             t_cmp_map += ct.map;
             t_cmp_serial += ct.serial;
@@ -1094,7 +1107,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 params.err_ncol,
                 &params.align,
                 params.greedy,
-                params.verbose,
+                params.measure.attribution(),
             );
         }
         t_compare += t.elapsed();
@@ -1837,6 +1850,154 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             pupd_stats.dirty_clusters + pupd_stats.clean_clusters,
             pupd_stats.lock_scanned,
         );
+    }
+
+    // ---- Machine-readable metrics (#162) -------------------------------
+    //
+    // Built from the SAME accumulators the prose above printed, so the two
+    // cannot drift. Gated on `measure`, not `verbose`: `--metrics-json` asks
+    // for numbers without asking for output.
+    if params.measure.enabled() {
+        let nthreads = rayon::current_num_threads().max(1);
+
+        // Recomputed here rather than threaded out of the Raw build: it is one
+        // O(nraw) walk over the same raws, so the numbers are identical, and
+        // the build runs in a scope that does not reach this one.
+        let footprint = {
+            let (mut kmer_b, mut seq_b) = (0usize, 0usize);
+            for r in &bb.raws {
+                kmer_b += r.kmer8.as_ref().map_or(0, |v| v.resident_bytes())
+                    + r.minimizers.as_ref().map_or(0, |m| m.resident_bytes())
+                    + r.kord.as_ref().map_or(0, |v| v.len() * 2);
+                seq_b += r.seq.len() + r.qual.as_ref().map_or(0, |q| q.len());
+            }
+            let nr = bb.raws.len();
+            crate::metrics::FootprintMetrics {
+                nraw: nr,
+                seq_qual_bytes: seq_b as u64,
+                screen_vector_bytes: kmer_b as u64,
+                screen_bytes_per_raw: (nr > 0).then(|| kmer_b as f64 / nr as f64),
+                screen_repr: match params.align.screen_backend {
+                    ScreenBackend::Minimizer => format!(
+                        "minimizer sketch k={}/w={}",
+                        params.align.minimizer_k, params.align.minimizer_w
+                    ),
+                    ScreenBackend::Kmer
+                        if params.align.kmer_size >= crate::kmers::SPARSE_KMER_MIN =>
+                    {
+                        "sparse #43".to_string()
+                    }
+                    ScreenBackend::Kmer => "dense".to_string(),
+                },
+            }
+        };
+
+        let counters = RawCounters {
+            t_compare,
+            t_shuffle,
+            t_bud,
+            t_pupdate,
+            t_index_add,
+            t_loop: t_loop.elapsed(),
+            t_cmp_map,
+            t_cmp_serial,
+            t_cmp_busy,
+            t_cmp_agg,
+            t_cmp_free,
+            t_cmp_setup,
+            t_cmp_screen,
+            t_cmp_dp,
+            t_cmp_post,
+            n_cmp_scanned,
+            n_cmp_stored,
+            n_cmp_screened,
+            n_cmp_aligned,
+            t_shuf_build,
+            t_shuf_reconcile,
+            t_shuf_move,
+            shuf_comps_build,
+            shuf_comps_reconcile,
+            shuf_calls,
+            shuf_converge_calls,
+            shuf_builds,
+            shuf_moves,
+            shuf_zero_move_calls,
+            shuf_move_raws,
+            t_rec_collect,
+            t_rec_rescan,
+            shuf_rec_affected,
+            shuf_rec_changed,
+            shuf_rec_rescan,
+            shuf_rec_rescan_comps,
+            shuf_rec_ties,
+            shuf_rec_pairs,
+            shuf_move_unpruned,
+            shuf_move_dirty,
+            shuf_move_prunable,
+            shuf_move_passes,
+            shuf_first_rec_pairs,
+            shuf_first_rec_comps,
+            shuf_first_rec_calls,
+            bud_calls,
+            bud_success,
+            bud_raws_scanned,
+            pupd_rounds,
+            pupd: crate::metrics::PUpdateMetrics {
+                repriced: pupd_stats.repriced,
+                exit_singleton: pupd_stats.exit_singleton,
+                exit_center: pupd_stats.exit_center,
+                exit_zero_lambda: pupd_stats.exit_zero_lambda,
+                full_calc: pupd_stats.full_calc,
+                lock_scanned: pupd_stats.lock_scanned,
+                dirty_clusters: pupd_stats.dirty_clusters,
+                clean_clusters: pupd_stats.clean_clusters,
+                // Filled from `pupd_rounds` in `finish`.
+                rounds: 0,
+            },
+            footprint: Some(footprint),
+        };
+
+        let shape = RunShape {
+            nraw: bb.raws.len(),
+            reads: bb.reads,
+            nclusters: bb.clusters.len(),
+            nalign: bb.nalign,
+            nshroud: bb.nshroud,
+            threads: nthreads,
+            multithread: params.multithread,
+            // The bare backend name, not the `backend_repr` log line: this is a
+            // field, not a sentence.
+            align_backend: format!("{:?}", params.align.backend).to_lowercase(),
+            screen_backend: format!("{:?}", params.align.screen_backend).to_lowercase(),
+            kmer_size: params.align.kmer_size,
+            kdist_cutoff: params.align.kdist_cutoff,
+            band: params.align.band,
+            minimizer_k: params.align.minimizer_k,
+            minimizer_w: params.align.minimizer_w,
+            gates: crate::gates::report(),
+        };
+
+        let mut m: RunMetrics = counters.finish(shape, nthreads, params.measure);
+        m.index = bb.minimizer_index_decision.map(|d| {
+            crate::metrics::IndexDecision {
+                use_index: d.use_index,
+                forced: d.forced,
+                probed_clusters: d.clusters,
+                scatter_ns: d.scatter_ns,
+                saving_ns: d.saving_ns,
+                merge_ns: d.merge_ns,
+                array_ns: d.array_ns,
+                screened_comps: d.ncomp as u64,
+                threads: d.threads,
+                distinct_minimizers: d.distinct as u64,
+                postings: d.entries as u64,
+                mean_posting: d.sharing,
+                // Filled by the caller's hindsight check above when it fired;
+                // false here means the probe and the run agreed.
+                hindsight_disagrees: false,
+            }
+        });
+        bb.metrics = Some(m);
     }
 
     bb

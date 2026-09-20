@@ -1,5 +1,10 @@
 #![allow(clippy::doc_overindented_list_items)]
-use std::{fs::File, io, path::Path, process::ExitCode};
+use std::{
+    fs::File,
+    io,
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
 use clap::Parser;
 use flate2::read::MultiGzDecoder;
@@ -10,7 +15,7 @@ use rayon::prelude::*;
 // modules this binary uses into scope so the existing `foo::Bar` paths resolve.
 use dada2_rs::{
     chimera_diagnostics, cli, cluster_trace, containers, dada, derep, error_models, failed_uniques,
-    filter_trim, kdist_calibrate, learn_errors, merge_pairs, minimizers, misc, nwalign,
+    filter_trim, kdist_calibrate, learn_errors, merge_pairs, metrics, minimizers, misc, nwalign,
     reference_eval, remove_bimera, remove_primers, sequence_table, summary, taxonomy,
 };
 
@@ -25,6 +30,7 @@ use learn_errors::{
     ErrFun, LearnDiagOptions, LearnedErrParams, learn_errors, load_derep_samples,
     load_fastq_samples,
 };
+use metrics::{MeasureLevel, MetricsDocument};
 use misc::{DADA2_RS_VERSION, Tagged, read_fasta_records, read_tagged_json};
 use nwalign::{AlignBackend, AlignParams, ScreenBackend};
 use remove_bimera::{BimeraParams, Method, remove_bimera_denovo};
@@ -804,8 +810,15 @@ fn run() -> io::Result<()> {
             failed_uniques: failed_uniques_path,
             compact,
             gzip,
+            metrics_json,
+            metrics_attribution,
             verbose,
         } => {
+            // Wall clock for `--metrics-json`, started before any I/O so the
+            // document measures the subcommand and not just the denoiser.
+            let t_start = std::time::Instant::now();
+            let measure_level =
+                resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution);
             check_input_paths("input", &input)?;
             // ---- Load uniques from FASTQ or a derep/sample JSON ----
             let pool = rayon::ThreadPoolBuilder::new()
@@ -875,6 +888,7 @@ fn run() -> io::Result<()> {
                     false, // aux_outputs (rejected above for multi-input)
                     false, // pool
                     verbose,
+                    resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution),
                     omega_a,
                     omega_c,
                     omega_p,
@@ -917,6 +931,11 @@ fn run() -> io::Result<()> {
                 }
                 let collect_failed = failed_uniques_path.is_some();
                 let failed_rows: std::sync::Mutex<Vec<failed_uniques::Row>> =
+                    std::sync::Mutex::new(Vec::new());
+                // One entry per sample. Samples finish out of order under
+                // `--sample-jobs`, so this is sorted before it is written.
+                type MetricRun = (String, Option<u8>, metrics::RunMetrics);
+                let metrics_runs: std::sync::Mutex<Vec<MetricRun>> =
                     std::sync::Mutex::new(Vec::new());
                 for_each_sample_concurrent(input.len(), jobs, threads, |i, sub_pool| {
                     let path = &input[i];
@@ -961,7 +980,7 @@ fn run() -> io::Result<()> {
                         }
                     }
                     let sample = json_sample.unwrap_or_else(|| fastq_stem(path));
-                    let (json, failed) = denoise_and_serialize(
+                    let (json, failed, run_metrics) = denoise_and_serialize(
                         "dada",
                         &sample,
                         &file_basename(path),
@@ -975,6 +994,9 @@ fn run() -> io::Result<()> {
                     )?;
                     if collect_failed {
                         failed_rows.lock().unwrap().extend(failed);
+                    }
+                    if let Some(m) = run_metrics {
+                        metrics_runs.lock().unwrap().push((sample.clone(), None, m));
                     }
                     let out_path = output_dir.join(if gzip {
                         format!("{sample}.json.gz")
@@ -995,6 +1017,21 @@ fn run() -> io::Result<()> {
                             "[dada] wrote {n} failed-unique row(s) to {}",
                             fu_path.display()
                         );
+                    }
+                }
+                if let Some(ref mpath) = metrics_json {
+                    let mut runs = metrics_runs.into_inner().unwrap();
+                    // Concurrent samples finish out of order; sort so two runs
+                    // of the same inputs produce byte-identical documents.
+                    runs.sort_by(|a, b| a.0.cmp(&b.0));
+                    let mut doc = MetricsDocument::new(t_start.elapsed(), measure_level);
+                    doc.pipeline.dada = Some(t_start.elapsed().as_secs_f64());
+                    for (sample, round, m) in runs {
+                        doc.push(sample, round, m);
+                    }
+                    write_metrics_json(mpath, &doc)?;
+                    if verbose {
+                        eprintln!("[dada] wrote run metrics to {}", mpath.display());
                     }
                 }
                 return Ok(());
@@ -1067,6 +1104,7 @@ fn run() -> io::Result<()> {
                 aux_outputs,
                 false, // pool
                 verbose,
+                resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution),
                 omega_a,
                 omega_c,
                 omega_p,
@@ -1097,9 +1135,22 @@ fn run() -> io::Result<()> {
             let nq = resolved.nq;
 
             // ---- Run DADA2 ----
-            let result = pool
+            let mut result = pool
                 .install(|| dada::dada_uniques(&raw_inputs, &dada_params))
                 .map_err(io::Error::other)?;
+            if let (Some(mpath), Some(m)) = (metrics_json.as_ref(), result.metrics.take()) {
+                let mut doc = MetricsDocument::new(t_start.elapsed(), measure_level);
+                doc.pipeline.dada = Some(t_start.elapsed().as_secs_f64());
+                doc.push(
+                    sample_name.clone().unwrap_or_else(|| "sample".to_string()),
+                    None,
+                    m,
+                );
+                write_metrics_json(mpath, &doc)?;
+                if verbose {
+                    eprintln!("[dada] wrote run metrics to {}", mpath.display());
+                }
+            }
 
             if verbose {
                 eprintln!(
@@ -1345,8 +1396,13 @@ fn run() -> io::Result<()> {
             trace_min_abund,
             compact,
             gzip,
+            metrics_json,
+            metrics_attribution,
             verbose,
         } => {
+            let t_start = std::time::Instant::now();
+            let measure_level =
+                resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution);
             check_input_paths("input", &input)?;
             use std::collections::{HashMap, HashSet};
 
@@ -1543,6 +1599,7 @@ fn run() -> io::Result<()> {
                 false, // aux_outputs
                 true,  // pool
                 verbose,
+                resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution),
                 omega_a,
                 omega_c,
                 omega_p,
@@ -1581,10 +1638,11 @@ fn run() -> io::Result<()> {
                 );
             }
             let t_dada = std::time::Instant::now();
-            let result = pool
+            let mut result = pool
                 .install(|| dada::dada_uniques(&raw_inputs, &dada_params))
                 .map_err(io::Error::other)?;
             let t_dada = t_dada.elapsed();
+            let pooled_metrics = result.metrics.take();
             if verbose {
                 eprintln!(
                     "[dada-pooled] peak RSS after dada: {} MB",
@@ -1790,8 +1848,22 @@ fn run() -> io::Result<()> {
                     );
                 }
             }
+            let t_output = t_output.elapsed();
+            if let (Some(mpath), Some(m)) = (metrics_json.as_ref(), pooled_metrics) {
+                let mut doc = MetricsDocument::new(t_start.elapsed(), measure_level);
+                doc.pipeline.derep = Some(t_derep.as_secs_f64());
+                doc.pipeline.merge = Some(t_merge.as_secs_f64());
+                doc.pipeline.dada = Some(t_dada.as_secs_f64());
+                doc.pipeline.output = Some(t_output.as_secs_f64());
+                // One invocation: pooled denoises the merged table once, so the
+                // per-sample outputs are slices of a single run, not runs.
+                doc.push("__pooled__", None, m);
+                write_metrics_json(mpath, &doc)?;
+                if verbose {
+                    eprintln!("[dada-pooled] wrote run metrics to {}", mpath.display());
+                }
+            }
             if verbose {
-                let t_output = t_output.elapsed();
                 let total = (t_derep + t_merge + t_dada + t_output)
                     .as_secs_f64()
                     .max(1e-9);
@@ -1852,8 +1924,13 @@ fn run() -> io::Result<()> {
             failed_uniques: failed_uniques_path,
             compact,
             gzip,
+            metrics_json,
+            metrics_attribution,
             verbose,
         } => {
+            let t_start = std::time::Instant::now();
+            let measure_level =
+                resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution);
             check_input_paths("input", &input)?;
             use std::collections::{HashMap, HashSet};
             use std::sync::Mutex;
@@ -1905,6 +1982,7 @@ fn run() -> io::Result<()> {
                 reestimate_err_between_rounds,
                 false, // pool (pseudo is per-sample, not pooled)
                 verbose,
+                resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution),
                 omega_a,
                 omega_c,
                 omega_p,
@@ -2176,6 +2254,12 @@ fn run() -> io::Result<()> {
             }
             let collect_failed = failed_uniques_path.is_some();
             let failed_rows: Mutex<Vec<failed_uniques::Row>> = Mutex::new(Vec::new());
+            // Round 2 only. Round 1 runs through a different path that does not
+            // serialize per-sample output, so its metrics are not collected
+            // here; the document says `round: 2` rather than implying it covers
+            // both turns.
+            type MetricRun = (String, Option<u8>, metrics::RunMetrics);
+            let metrics_runs: Mutex<Vec<MetricRun>> = Mutex::new(Vec::new());
             if !low_memory {
                 // Cached: mark priors serially (cheap; scoped so the &mut borrow
                 // is released), then denoise concurrently with shared read access.
@@ -2194,7 +2278,7 @@ fn run() -> io::Result<()> {
                 let sample_raws = sample_raws_opt.as_ref().unwrap();
                 for_each_sample_concurrent(n_samples, jobs, threads, |s, sub_pool| {
                     let sample_name = &sample_names[s];
-                    let (json, failed) = denoise_and_serialize(
+                    let (json, failed, run_metrics) = denoise_and_serialize(
                         "dada-pseudo",
                         sample_name,
                         &file_basename(&input[s]),
@@ -2208,6 +2292,12 @@ fn run() -> io::Result<()> {
                     )?;
                     if collect_failed {
                         failed_rows.lock().unwrap().extend(failed);
+                    }
+                    if let Some(m) = run_metrics {
+                        metrics_runs
+                            .lock()
+                            .unwrap()
+                            .push((sample_name.to_string(), Some(2), m));
                     }
                     let out_path = output_dir.join(if gzip {
                         format!("{sample_name}.json.gz")
@@ -2234,7 +2324,7 @@ fn run() -> io::Result<()> {
                             raws.len(),
                         );
                     }
-                    let (json, failed) = denoise_and_serialize(
+                    let (json, failed, run_metrics) = denoise_and_serialize(
                         "dada-pseudo",
                         sample_name,
                         &file_basename(&input[s]),
@@ -2248,6 +2338,12 @@ fn run() -> io::Result<()> {
                     )?;
                     if collect_failed {
                         failed_rows.lock().unwrap().extend(failed);
+                    }
+                    if let Some(m) = run_metrics {
+                        metrics_runs
+                            .lock()
+                            .unwrap()
+                            .push((sample_name.to_string(), Some(2), m));
                     }
                     let out_path = output_dir.join(if gzip {
                         format!("{sample_name}.json.gz")
@@ -2269,6 +2365,19 @@ fn run() -> io::Result<()> {
                         "[dada-pseudo] wrote {n} failed-unique row(s) to {}",
                         fu_path.display()
                     );
+                }
+            }
+            if let Some(ref mpath) = metrics_json {
+                let mut runs = metrics_runs.into_inner().unwrap();
+                runs.sort_by(|a, b| a.0.cmp(&b.0));
+                let mut doc = MetricsDocument::new(t_start.elapsed(), measure_level);
+                doc.pipeline.dada = Some(t_start.elapsed().as_secs_f64());
+                for (sample, round, m) in runs {
+                    doc.push(sample, round, m);
+                }
+                write_metrics_json(mpath, &doc)?;
+                if verbose {
+                    eprintln!("[dada-pseudo] wrote run metrics to {}", mpath.display());
                 }
             }
         }
@@ -3344,6 +3453,13 @@ fn run() -> io::Result<()> {
                 final_consensus: false,
                 multithread: threads > 1,
                 verbose,
+                // learn-errors has no --metrics-json yet; keep
+                // --verbose's measurements exactly as they were.
+                measure: if verbose {
+                    MeasureLevel::Attribution
+                } else {
+                    MeasureLevel::Off
+                },
                 greedy,
                 aux_outputs: false,
             };
@@ -4031,6 +4147,13 @@ fn run() -> io::Result<()> {
                 final_consensus: false,
                 multithread: threads > 1,
                 verbose,
+                // learn-errors has no --metrics-json yet; keep
+                // --verbose's measurements exactly as they were.
+                measure: if verbose {
+                    MeasureLevel::Attribution
+                } else {
+                    MeasureLevel::Off
+                },
                 greedy,
                 aux_outputs: false,
             };
@@ -4416,6 +4539,26 @@ fn note_homopolymer_gapping(verbose: bool, gap_p: i32, homo_gap_p: i32) {
 /// `aux_outputs` and `pool` are handler-specific and passed in. `n_prior` is
 /// filled in later by the caller (priors are marked after this point), so it is
 /// left at 0 here.
+/// Resolve how much instrumentation to collect from the flags that ask for it.
+///
+/// `--verbose` keeps implying full attribution, so today's stderr output stays
+/// byte-identical and the archived `docs/findings/data/*.txt` remain comparable
+/// with new runs (issue #162). `--metrics-json` on its own collects only the
+/// free tier, which is why it is safe to leave on for a production run.
+fn resolve_measure_level(
+    verbose: bool,
+    metrics_json: Option<&PathBuf>,
+    metrics_attribution: bool,
+) -> MeasureLevel {
+    if verbose || metrics_attribution {
+        MeasureLevel::Attribution
+    } else if metrics_json.is_some() {
+        MeasureLevel::Phases
+    } else {
+        MeasureLevel::Off
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn resolve_dada_params(
     error_model: &Path,
@@ -4425,6 +4568,7 @@ fn resolve_dada_params(
     aux_outputs: bool,
     pool: bool,
     verbose: bool,
+    measure: MeasureLevel,
     omega_a: Option<f64>,
     omega_c: Option<f64>,
     omega_p: Option<f64>,
@@ -4652,6 +4796,7 @@ fn resolve_dada_params(
         final_consensus: false,
         multithread: threads > 1,
         verbose,
+        measure,
         greedy,
         aux_outputs,
     };
@@ -4963,6 +5108,15 @@ fn asv_entry_from_cluster(cluster: &dada::ClusterSummary, abundance: u32) -> Asv
 }
 
 /// Serialize a value to JSON, compact or pretty per `compact`.
+/// Write the `--metrics-json` document. Always pretty-printed and always
+/// gzip-free: this is a small file read by humans and by `dev/` scripts, not a
+/// bulk artifact, and `jq` over a plain file is the point of it (issue #162).
+fn write_metrics_json(path: &Path, doc: &metrics::MetricsDocument) -> io::Result<()> {
+    let mut body = serde_json::to_string_pretty(doc).map_err(io::Error::other)?;
+    body.push('\n');
+    std::fs::write(path, body)
+}
+
 fn to_json<T: Serialize>(value: &T, compact: bool) -> io::Result<String> {
     if compact {
         serde_json::to_string(value)
@@ -4987,7 +5141,11 @@ fn denoise_and_serialize(
     compact: bool,
     collect_failed: bool,
     verbose: bool,
-) -> io::Result<(String, Vec<failed_uniques::Row>)> {
+) -> io::Result<(
+    String,
+    Vec<failed_uniques::Row>,
+    Option<metrics::RunMetrics>,
+)> {
     #[derive(Serialize)]
     struct DadaOutput {
         sample: String,
@@ -5001,9 +5159,10 @@ fn denoise_and_serialize(
         map: Vec<Option<usize>>,
     }
 
-    let result = pool
+    let mut result = pool
         .install(|| dada::dada_uniques(raw_inputs, params))
         .map_err(io::Error::other)?;
+    let run_metrics = result.metrics.take();
 
     if verbose {
         eprintln!(
@@ -5055,7 +5214,11 @@ fn denoise_and_serialize(
         map: result.map,
     };
 
-    Ok((to_json(&Tagged::new(tag, out), compact)?, failed))
+    Ok((
+        to_json(&Tagged::new(tag, out), compact)?,
+        failed,
+        run_metrics,
+    ))
 }
 
 /// Build a [`derep::Derep`] for `dada` / `dada-pooled` from either a FASTQ file

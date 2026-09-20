@@ -542,6 +542,12 @@ if command -v /usr/bin/time > /dev/null 2>&1; then
   fi
 fi
 [ ${#TIMER[@]} -eq 0 ] && echo "    (note: /usr/bin/time unavailable; peak RSS omitted, verbose block still captured)"
+# Dual-write (issue #162): phase_split.txt is kept EXACTLY as it was, because
+# docs/findings/data/*.txt archives that format as primary data and the
+# minimizer findings were derived from it. The JSON is the parsing surface
+# going forward; --metrics-attribution is passed because this block is a
+# measurement run, not a timing run (timings.tsv above is the timing source).
+mkdir -p "$OUT/metrics"
 rotate_out "$OUT/phase_split.txt"
 {
   for spec in "${ARMS[@]}"; do
@@ -555,9 +561,22 @@ rotate_out "$OUT/phase_split.txt"
     echo "===== $name"
     ${env[@]+"${env[@]}"} ${TIMER[@]+"${TIMER[@]}"} "$BIN" $DADA_CMD "${filtF[@]}" \
         --error-model "$OUT/base/errF.json" --threads "$THREADS" --verbose \
-        ${extra[@]+"${extra[@]}"} --output-dir "$OUT/.verbose" 2>&1 \
-      | grep -E "^\[dada\]|maximum resident|Maximum resident|elapsed|real" \
-      || echo "    (no output)"
+        --metrics-json "$OUT/metrics/$name.json" --metrics-attribution \
+        ${extra[@]+"${extra[@]}"} --output-dir "$OUT/.verbose" \
+        > "$OUT/metrics/$name.stdout" 2> "$OUT/metrics/$name.stderr" \
+      || echo "    (run failed; see $OUT/metrics/$name.stderr)"
+    # Capture stderr to a FILE first, then filter -- do not pipe the live
+    # stream through grep. On the ITS2 sweep the piped form lost lines: the
+    # 30-sample kmer arm kept only 4 of 30 `resident Raw footprint`, 2 of 30
+    # ASV summaries and 3 of 30 `wrote` lines, while `phase times` and
+    # `compare split` survived intact. All 30 samples were present in both the
+    # prose and the JSON (identical nraw sets), so nothing was lost by the
+    # binary -- the losses appeared between the process and the file, under
+    # SLURM I/O forwarding with 12 concurrent samples. A file redirect takes
+    # that layer out of the path. The JSON was unaffected either way, because
+    # it is written once from memory at the end (issue #162).
+    grep -E "^\[(dada|derep)|maximum resident|Maximum resident|elapsed|real" \
+        "$OUT/metrics/$name.stderr" || echo "    (no output)"
   done
 } | tee "$OUT/phase_split.txt"
 

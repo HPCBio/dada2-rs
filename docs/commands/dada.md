@@ -189,6 +189,16 @@ centers and birth metadata.
 **`--trace-min-abund`** (default 1) — only include trace members at or above
 this abundance.
 
+**`--metrics-json`** — write a structured record of the run's phase times,
+compare attribution, shuffle split, footprint and index decision to this file.
+Free to leave on: it collects only what the run already pays for.
+
+**`--metrics-attribution`** — add the per-comparison timings (`busy`, map
+parallel efficiency, the screen / DP / `al2subs` split). This **slows the run**,
+so do not combine it with a timing measurement. Requires `--metrics-json`.
+
+See [Run metrics](metrics-json.md) for the schema and the two levels.
+
 **`--failed-uniques`** — write a TSV of uniques that failed to denoise (final
 p-value < `omega_c`, `map == null`). Tidy long format with a header —
 `sequence<TAB>sample<TAB>reads` — one row per failed unique per sample it
