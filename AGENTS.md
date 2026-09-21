@@ -125,8 +125,12 @@ home.
 
 ## Prose style
 
-Applies to help text, docs pages, code comments and commit messages alike
-(issue #164).
+Applies to **written artifacts** — help text, docs pages, code comments, commit
+messages (issue #164).
+
+**Not** to conversation with the user. Terseness that suits a doc comment makes
+a poor answer to a question, and an agent that applies these rules to its own
+replies will under-explain. Judge dialog on whether it answered, not on length.
 
 - Lead with the outcome, then the detail. Key findings go at the top of a docs
   page, not after the methodology.
@@ -137,6 +141,38 @@ Applies to help text, docs pages, code comments and commit messages alike
   the issue rather than re-deriving its argument inline.
 - Do not let a hard-wrapped Markdown line begin with `#` — an issue reference
   wrapped to the start of a line renders as a heading.
+
+### Code comments
+
+Default to one or two lines. A comment earns more only when it records
+something the code cannot show: why an alternative was rejected, or what a
+constant was measured to be.
+
+- **Point, don't re-explain.** If an issue or a `docs/findings/` page holds the
+  reasoning, cite it and stop. Half the long comment blocks in `src/` already
+  carry such a reference and can be cut to it (survey on #179).
+- **Never delete a falsification record without giving it a home first.**
+  `cluster.rs`'s "32 was ~7% faster; 16 and 8 were not" and `minimizers.rs`'s
+  account of three closed-form scores that broke are not descriptions — they
+  are the reason nobody re-derives a formula that already failed. If such a
+  comment is too long, write the findings page, then cite it.
+- **Leave structured reference alone.** An ordered list of filter precedence or
+  a table of parameter defaults is already dense; prose-compressing it makes it
+  worse.
+- A module header (`//!`) says what the module is for and what it mirrors in R.
+  It is not the place for benchmark history.
+
+`src/cli.rs` is the model: 31.5% comment, zero blocks over ten lines.
+
+### Commit messages
+
+Subject line, then a body that says what changed and why. The median body in
+this repo is **12 lines** — treat that as the ceiling, not the average.
+
+Rationale, measurements and alternatives-considered belong in the PR body or
+the issue, where they are linked, searchable and read once. A commit message is
+read in `git log`, where a thirty-line essay buries the twenty commits around
+it. Cite the issue instead (issue #167).
 
 ## Testing guidance
 
