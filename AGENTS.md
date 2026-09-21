@@ -1,6 +1,6 @@
 # Agent Guide — dada2-rs
 
-Guidance for AI agents (Claude Code, Copilot, etc.) working in this repository.
+Guidance for AI agents (Claude Code, Codex, Copilot, Gemini, etc.) working in this repository. 
 
 ## What this project is
 
