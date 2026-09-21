@@ -60,7 +60,11 @@ floor that grows as a share of runtime as threads rise; see
 
 ## Diagnostics
 
-**`--verbose`** — progress to stderr.
+**`--verbose`** — the run's shape and results to stderr: CPU allocation,
+alignment backend, active tuning gates, resident footprint, the index decision,
+a phase-times one-liner, and per-cluster progress. The phase attribution and
+optimisation counters are not printed; pass
+[`--metrics-json`](metrics-json.md) for those.
 
 **`--failed-uniques`** — TSV of uniques that failed to denoise. Because pooled
 denoising runs once on the merged unique table, "failed" is a *global* property

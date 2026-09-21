@@ -8,9 +8,11 @@ dada2-rs dada-pooled derep/*.json.gz --error-model err.json \
   -o dada/ --threads 24 --metrics-json run_metrics.json
 ```
 
-This is the same information `--verbose` prints as prose, as a document you can
-parse. Tooling should read this rather than grepping `^\[dada\]` out of stderr —
-that is the whole point of it (issue #162).
+**This is the only place the attribution detail lives.** `--verbose` used to
+print it as ~130 lines of `ns/comp` tables; as of #162 it prints the run's shape
+and results and points here instead. The compare attribution and split, map
+parallel efficiency, the shuffle phases and scan split, bud redundancy,
+p-update churn and the optimisation projections are all here and nowhere else.
 
 ## The two measurement levels
 

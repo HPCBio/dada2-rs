@@ -96,6 +96,33 @@ When you condense a doc comment, the prose you remove is not deleted — it move
 to the docs page. Check any claim you carry across: several long help strings
 referenced flags and defaults that had since changed.
 
+## Verbose output vs metrics
+
+Two separate surfaces, and the split is deliberate (issue #162):
+
+- **`--verbose` is the run's shape and results**: CPU allocation, alignment
+  backend, active tuning gates, resident footprint, the index decision, a
+  phase-times one-liner, per-cluster progress, warnings, and what was written.
+  It answers "how big is this run and is it configured sanely".
+- **`--metrics-json` is every measured number**: compare attribution and split,
+  map parallel efficiency, shuffle phases, bud redundancy, p-update churn, and
+  the optimisation projections. Tooling parses this, never stderr.
+
+Do not add a multi-line measurement table to `--verbose`. Add the field to
+`src/metrics.rs` instead, and if a one-line summary genuinely helps an
+interactive run, make it one line.
+
+**Measurement is gated by `DadaParams::measure`, not `verbose`.** They are
+different switches: `MeasureLevel::Attribution` costs 2-4 `Instant::now()` calls
+per comparison, so it must never be turned on by a printing flag alone. When
+you touch a `verbose: bool` parameter, check whether it drives a *print* or a
+*measurement* — `b_compare`'s drives a print, and conflating the two was a real
+regression.
+
+`dev/check_metrics_superset.py` gates removing any prose line: it maps each
+topic to the JSON path that must carry it and exits non-zero when one has no
+home.
+
 ## Prose style
 
 Applies to help text, docs pages, code comments and commit messages alike

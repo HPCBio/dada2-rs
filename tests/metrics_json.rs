@@ -267,3 +267,69 @@ fn attribution_requires_metrics_json() {
         "expected a clear requirement error, got: {err}"
     );
 }
+
+/// `--verbose` carries the run's shape and results; the attribution tables live
+/// in `--metrics-json` and nowhere else (#162 item 2).
+///
+/// The point of the split is that stderr answers "how big is this run and is it
+/// configured sanely" while the JSON answers "where did the time go". A
+/// multi-line `ns/comp` table creeping back into stderr would undo that, and
+/// would also re-create the collision surface #172 closed.
+#[test]
+fn verbose_carries_run_shape_not_attribution_tables() {
+    let dir = tmpdir("quiet");
+    let errs = learn_errors(&dir);
+
+    let out = Command::new(BIN)
+        .args(["dada-pooled", "--threads", "2", "--error-model"])
+        .arg(&errs)
+        .arg("--output-dir")
+        .arg(dir.join("out"))
+        .arg("--verbose")
+        .arg(fixture("sam1F.fastq.gz"))
+        .arg(fixture("sam2F.fastq.gz"))
+        .output()
+        .expect("dada-pooled");
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+
+    // Moved to the JSON.
+    for gone in [
+        "compare attribution (of",
+        "compare split (of",
+        "map parallel efficiency",
+        "shuffle phases (",
+        "shuffle scan split",
+        "shuffle redundancy",
+        "bud redundancy",
+        "p-update churn",
+        "move pruning (#132)",
+        "reconcile incremental (#136)",
+        "#87 carry (#139)",
+    ] {
+        assert!(
+            !err.contains(gone),
+            "`{gone}` is back in --verbose; it belongs in --metrics-json"
+        );
+    }
+
+    // Kept: the run's shape and its results.
+    for kept in [
+        "alignment backend",
+        "cpu allocation",
+        "tuning gates",
+        "resident Raw footprint",
+        "phase times",
+        "ALIGN:",
+    ] {
+        assert!(err.contains(kept), "--verbose lost `{kept}`");
+    }
+
+    // And it says where the detail went, rather than just dropping it.
+    assert!(
+        err.contains("--metrics-json"),
+        "--verbose should point at --metrics-json for the attribution"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
