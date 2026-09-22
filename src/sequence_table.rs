@@ -200,6 +200,19 @@ impl HashAlgo {
     }
 }
 
+/// A `u64` derived from the MD5 digest of a sequence, for seeding a
+/// per-sequence RNG stream (issue #187).
+///
+/// Deliberately **not** routed through [`HashAlgo`]: `--hash` is a user-facing
+/// output option, and letting it reach this would mean an output-formatting
+/// flag changed taxonomic assignments. MD5 is pinned here because it is the
+/// sequence identifier the rest of the ecosystem uses, so the RNG stream is
+/// explainable from an ID a user can see.
+pub fn md5_seed(seq: &[u8]) -> u64 {
+    let digest = Md5::digest(seq);
+    u64::from_le_bytes(digest[..8].try_into().expect("MD5 digest is 16 bytes"))
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum OrderBy {
     Abundance,

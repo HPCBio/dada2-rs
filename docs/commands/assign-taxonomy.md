@@ -46,6 +46,25 @@ strings.
 **`--seed`** — RNG seed for reproducible bootstrap sampling. Set it if you need
 byte-identical reruns.
 
+!!! tip "What a seed guarantees here"
+    With `--seed`, each sequence's bootstrap stream is derived from the
+    **sequence itself**, so its classification depends only on the sequence, the
+    reference and the seed. Reruns, a different `--threads`, a reordered input
+    and a different set of companion sequences all give the same answer for the
+    same sequence.
+
+    Without `--seed` the sampling is drawn from system entropy and reruns differ
+    — on one 3,994-query test, two unseeded runs disagreed on 7.8% of
+    assignments, all at Family and Genus where a bootstrap sits near
+    `--min-boot`. That is inherent to the bootstrap, not a defect, but it means
+    **an unseeded run is not a reproducible result**.
+
+    R DADA2's `assignTaxonomy` cannot offer the same guarantee: its RNG advances
+    across sequences C-side and `set.seed()` does not reach it, so its output
+    depends on input order ([benjjneb/dada2#1115](https://github.com/benjjneb/dada2/issues/1115)).
+    Comparisons against R therefore have to be statistical rather than
+    exact-match.
+
 ## Performance
 
 **`--threads`** (default 1) — threads for parallel query classification.

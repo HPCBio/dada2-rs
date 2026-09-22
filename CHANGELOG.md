@@ -37,6 +37,16 @@ minor versions may carry breaking changes).
 - `just` / `make` task runners for build, install, test, and docs (#46).
 
 ### Fixed
+- `assign-taxonomy` with `--seed` is now reproducible regardless of **input
+  order and input set** (#187). Each sequence's bootstrap RNG is derived from
+  the sequence (pinned MD5) instead of its position, so a sequence's
+  classification depends only on itself, the reference and the seed. Shuffling
+  3,994 queries previously changed 7.6% of assignments at a fixed seed; it now
+  changes none. Thread-count independence is unchanged. This is the dada2-rs
+  counterpart of the long-standing R issue benjjneb/dada2#1115, from a
+  different cause. **Seeded output moves once with this change**, since every
+  sequence gets a new stream; unseeded runs were never reproducible and are
+  unaffected.
 - The `nalign` and `nshroud` counters no longer overflow on large pooled runs
   (#143). Both count pairwise comparisons (`nraw × nclusters`) and were `u32`,
   so any pool exceeding ~4.3 billion comparisons wrapped silently: a 1.23 M-

@@ -16,6 +16,7 @@
 //!
 //! ## Differences from the C++ original
 //! - Random numbers are generated on-the-fly per sequence via a local `SmallRng`
+//!   keyed on the sequence, so results do not depend on input order (issue #187)
 //!   instead of being pre-allocated by `Rcpp::runif`.
 //! - An optional seed can be set for reproducible results (see [`assign_taxonomy`]).
 //! - `RcppParallel::parallelFor` is replaced by Rayon `par_iter`.
@@ -27,6 +28,8 @@ use std::collections::HashMap;
 use rand::SeedableRng;
 use rand::distributions::{Distribution, Standard};
 use rand::rngs::SmallRng;
+
+use crate::sequence_table::md5_seed;
 use rayon::prelude::*;
 
 /// Number of bootstrap replicates.  Matches C++ `NBOOT`.
@@ -197,13 +200,20 @@ fn classify_seq(
 
 /// Build a per-sequence `SmallRng`.
 ///
-/// When `seed` is `Some(s)`, derives a deterministic seed as `s ^ (index as u64)`
-/// so that each sequence gets a unique but reproducible stream regardless of
-/// Rayon thread scheduling.  When `seed` is `None`, seeds from system entropy.
+/// When `seed` is `Some(s)`, derives the stream from the sequence itself, so a
+/// sequence's result depends only on the sequence, the reference and the seed --
+/// not on its position in the input, how many others were submitted, or how
+/// Rayon scheduled them.  When `seed` is `None`, seeds from system entropy.
+///
+/// Keying on the position instead (`s ^ index`) was reproducible only for a
+/// fixed input in a fixed order: shuffling 3994 queries moved 7.6% of the
+/// assignments (issue #187). That is the same symptom as R DADA2's
+/// `assignTaxonomy` (benjjneb/dada2#1115), from a different cause -- theirs is
+/// one C-side stream advancing across sequences.
 #[inline]
-fn make_rng(seed: Option<u64>, index: usize) -> SmallRng {
+fn make_rng(seed: Option<u64>, seq: &[u8]) -> SmallRng {
     match seed {
-        Some(s) => SmallRng::seed_from_u64(s ^ index as u64),
+        Some(s) => SmallRng::seed_from_u64(s ^ md5_seed(seq)),
         None => SmallRng::from_entropy(),
     }
 }
@@ -227,9 +237,9 @@ fn make_rng(seed: Option<u64>, index: usize) -> SmallRng {
 /// - `try_rc`: if true, also classify each sequence's reverse complement and
 ///   keep whichever orientation scores higher.
 /// - `seed`: optional RNG seed for reproducible results. When `Some(s)`, each
-///   sequence `j` uses `SmallRng::seed_from_u64(s ^ j as u64)`, giving identical
-///   output regardless of Rayon thread scheduling. When `None`, each sequence
-///   uses `SmallRng::from_entropy()`.
+///   sequence's stream is derived from the sequence itself, so output is
+///   identical regardless of input order, input set, or Rayon thread
+///   scheduling. When `None`, each sequence uses `SmallRng::from_entropy()`.
 /// - `verbose`: print progress to stderr.
 ///
 /// Equivalent to C++ `C_assign_taxonomy2`.
@@ -334,12 +344,12 @@ pub fn assign_taxonomy(
 
     // ---- Classify each query sequence in parallel ----
     // Each element: Option<(best_genus, karray)>.
-    // Each sequence gets its own RNG: seeded deterministically when a seed is
-    // provided (seed ^ j), or from system entropy otherwise.
+    // Each sequence gets its own RNG: derived from the sequence when a seed is
+    // provided, or from system entropy otherwise.
     let classified: Vec<Option<(usize, Vec<usize>)>> = (0..nseq)
         .into_par_iter()
         .map(|j| {
-            let mut rng = make_rng(seed, j);
+            let mut rng = make_rng(seed, seqs[j]);
             let rc = if try_rc { Some(rcs[j]) } else { None };
             classify_seq(seqs[j], rc, k, n_kmers, ngenus, &lgk, &mut rng)
         })
@@ -350,7 +360,7 @@ pub fn assign_taxonomy(
     let boot_results: Vec<(Vec<u32>, Vec<Option<usize>>)> = (0..nseq)
         .into_par_iter()
         .map(|j| {
-            let mut rng = make_rng(seed.map(|s| s ^ 0xdead_beef_cafe_0000), j);
+            let mut rng = make_rng(seed.map(|s| s ^ 0xdead_beef_cafe_0000), seqs[j]);
             let mut boot_counts = vec![0u32; nlevel];
             let mut boot_taxa: Vec<Option<usize>> = vec![None; NBOOT];
 
@@ -563,4 +573,127 @@ pub fn assign_species(
     }
 
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Queries, references, reference→genus, genus→taxon-IDs.
+    type Fixture = (Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<usize>, Vec<usize>);
+
+    /// Build a reference set of `ngenus` genera, each with several near-identical
+    /// members, plus queries that sit between two genera so the bootstrap has
+    /// something to disagree about. Without that ambiguity the test could not
+    /// fail even with a broken RNG key.
+    fn fixture() -> Fixture {
+        let base: Vec<u8> = (0..400u32)
+            .map(|i| b"ACGT"[((i * 7 + i / 3) % 4) as usize])
+            .collect();
+        let mut refs = Vec::new();
+        let mut ref_to_genus = Vec::new();
+        for g in 0..4usize {
+            for m in 0..3usize {
+                let mut r = base.clone();
+                for p in 0..40usize {
+                    let idx = (g * 97 + m * 13 + p * 9) % r.len();
+                    r[idx] = b"ACGT"[(g + p + m) % 4];
+                }
+                refs.push(r);
+                ref_to_genus.push(g);
+            }
+        }
+        // Queries: blends of genus 0 and genus 1 members, so the bootstrap
+        // draw decides between them.
+        let mut queries = Vec::new();
+        for q in 0..12usize {
+            let mut s = refs[0].clone();
+            for p in 0..(20 + q) {
+                let idx = (q * 31 + p * 17) % s.len();
+                s[idx] = refs[3][idx];
+            }
+            queries.push(s);
+        }
+        let genus_tax: Vec<usize> = (0..4usize).flat_map(|g| [g / 2, g]).collect();
+        (queries, refs, ref_to_genus, genus_tax)
+    }
+
+    fn classify(
+        order: &[usize],
+        queries: &[Vec<u8>],
+        refs: &[Vec<u8>],
+        r2g: &[usize],
+        gt: &[usize],
+    ) -> Vec<(Vec<u8>, Vec<Option<usize>>)> {
+        let seqs: Vec<&[u8]> = order.iter().map(|&i| queries[i].as_slice()).collect();
+        let refv: Vec<&[u8]> = refs.iter().map(|r| r.as_slice()).collect();
+        let res = assign_taxonomy(
+            &seqs,
+            &[],
+            &TaxonomyRef {
+                refs: &refv,
+                ref_to_genus: r2g,
+                genus_tax: gt,
+                nlevel: 2,
+            },
+            TaxonomyOptions {
+                try_rc: false,
+                seed: Some(42),
+                verbose: false,
+            },
+        )
+        .expect("classification failed");
+        order
+            .iter()
+            .enumerate()
+            .map(|(pos, &i)| (queries[i].clone(), res.boot_taxa[pos].clone()))
+            .collect()
+    }
+
+    /// A seeded run must give each sequence the same answer no matter where it
+    /// sits in the input (issue #187; the R analogue is benjjneb/dada2#1115).
+    ///
+    /// Compares `boot_taxa` rather than the final call: a changed RNG stream
+    /// always perturbs the per-replicate draws, while a final assignment only
+    /// moves when a replicate crosses the confidence threshold. Asserting on the
+    /// final call would make this test far less able to fail.
+    #[test]
+    fn seeded_assignment_is_independent_of_input_order() {
+        let (queries, refs, r2g, gt) = fixture();
+        let n = queries.len();
+        let forward: Vec<usize> = (0..n).collect();
+        let reversed: Vec<usize> = (0..n).rev().collect();
+        let rotated: Vec<usize> = (0..n).map(|i| (i + 5) % n).collect();
+
+        let a = classify(&forward, &queries, &refs, &r2g, &gt);
+        for order in [reversed, rotated] {
+            let b = classify(&order, &queries, &refs, &r2g, &gt);
+            for (seq, boots) in &b {
+                let (_, expect) = a.iter().find(|(s, _)| s == seq).expect("sequence missing");
+                assert_eq!(
+                    boots, expect,
+                    "bootstrap draws changed when the input order changed; \
+                     the per-sequence RNG is keyed on position, not on the sequence"
+                );
+            }
+        }
+    }
+
+    /// The stream must also not depend on which *other* sequences were submitted.
+    #[test]
+    fn seeded_assignment_is_independent_of_the_input_set() {
+        let (queries, refs, r2g, gt) = fixture();
+        let all: Vec<usize> = (0..queries.len()).collect();
+        let subset: Vec<usize> = vec![7, 2, 9];
+
+        let a = classify(&all, &queries, &refs, &r2g, &gt);
+        let b = classify(&subset, &queries, &refs, &r2g, &gt);
+        for (seq, boots) in &b {
+            let (_, expect) = a.iter().find(|(s, _)| s == seq).expect("sequence missing");
+            assert_eq!(
+                boots, expect,
+                "bootstrap draws depend on the rest of the input set"
+            );
+        }
+    }
 }
