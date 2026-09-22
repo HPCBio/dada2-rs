@@ -85,6 +85,24 @@ here is the evidence, and here is the path it opens or closes."
       primers behind heterogeneity spacers inflated the table 3–4× and *reversed
       the direction* of the effect, with no warning anywhere in the pipeline.
       The checks that catch it, for any dataset you did not prepare yourself.
+- [Threading the serial steps](threading-serial-steps.md) — **the unit of
+  parallelism is the sample, not the thread.** Denoising one sample on the whole
+  pool plateaued at ~6.8x on 16 threads while burning **+72% CPU** on
+  spin-waiting, against 85% efficiency for one-sample-per-process — so J samples
+  now run on sub-pools of `threads/J`, and J is a property of the phase (~4
+  threads per sample for denoising, ~1 for the pooled derep front). The
+  transferable result is a tuning error we made and corrected: the single-sample
+  sweep implied 8 threads per sample, the samples-in-flight sweep put the plateau
+  at 4, and tuning on the first curve left **~9%** on the table —
+  **per-sample scaling does not predict aggregate throughput.** Also the page
+  that reads the *bottom* of the benchmark table: `make_table` runs at 1.0
+  effective cores and is slower than R, `remove_bimera` is at parity on 23.6
+  cores, and the 284x on `remove-primers` is mostly a fact about R's serial
+  `removePrimers`. Includes the harness asymmetry that once made **a third of
+  our own wall time** an artifact, pointing against us, and the observation that
+  the effective-cores column — added before any of this work — is what later
+  exposed pooled `dada` at 9.9-12.9 of 24 cores and started the whole
+  `b_shuffle` / `b_compare` arc.
 - [The alignment paradigm is fixed](alignment-paradigm.md) — **the page to read
   before proposing a faster aligner.** The error model does not consume a score
   or an edit distance; `compute_lambda` takes a product over *every position of
