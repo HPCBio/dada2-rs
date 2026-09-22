@@ -8,7 +8,7 @@ edit_uri: edit/main/docs/
 theme:
   name: material
   features:
-    - navigation.sections
+    - navigation.indexes
     - navigation.top
     - navigation.tracking
     - content.code.copy
@@ -63,7 +63,7 @@ nav:
     - PacBio HiFi: walkthroughs/walkthrough-pacbio.md
     - PacBio - Binned Quality: walkthroughs/walkthrough-pacbio-binned.md
   - Commands:
-    - Overview: commands/index.md
+    - commands/index.md
     - 'Quality: summary': commands/summary.md
     - 'Quality: summary-merge': commands/summary-merge.md
     - filter-and-trim: commands/filter-and-trim.md
@@ -93,7 +93,7 @@ nav:
     - Tooling & metrics: benchmarking.md
     - Results: results.md
   - Findings:
-    - Overview: findings/index.md
+    - findings/index.md
     - KDIST cutoff decoupling: findings/kdist-cutoff-decoupling.md
     - K-mer screen size: findings/kmer-size-screening.md
     - Minimizers as the screen (experimental): findings/minimizer-screening.md
@@ -108,7 +108,7 @@ nav:
     - Thread scaling & memory placement: findings/thread-scaling-and-placement.md
     - Pseudo-pooling priors vs error model: findings/pseudo-pooling-priors-vs-error-model.md
     - Binned quality scores:
-      - Overview: findings/binned-quality.md
+      - findings/binned-quality.md
       - PacBio (SequelIIe & Revio): findings/binned-quality-error-model.md
       - Illumina NovaSeq 6000 (16S): findings/binned-quality-illumina-novaseq.md
       - Illumina NovaSeq 6000 (ITS2): findings/binned-quality-illumina-its2.md
