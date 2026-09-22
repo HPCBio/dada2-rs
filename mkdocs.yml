@@ -99,6 +99,7 @@ nav:
     - Minimizers as the screen (experimental): findings/minimizer-screening.md
     - learn-errors --nbases convergence: findings/learn-errors-nbases-convergence.md
     - Band size & platform defaults: findings/band-size-platform-defaults.md
+    - Threading the serial steps: findings/threading-serial-steps.md
     - Alignment paradigm (global ends-free): findings/alignment-paradigm.md
     - WFA as an alignment backend: findings/wfa-viability.md
     - Carrying compmax across buds: findings/shuffle-compmax-carry.md
