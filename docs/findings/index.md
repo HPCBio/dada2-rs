@@ -85,6 +85,23 @@ here is the evidence, and here is the path it opens or closes."
       primers behind heterogeneity spacers inflated the table 3–4× and *reversed
       the direction* of the effect, with no warning anywhere in the pipeline.
       The checks that catch it, for any dataset you did not prepare yourself.
+- [The alignment paradigm is fixed](alignment-paradigm.md) — **the page to read
+  before proposing a faster aligner.** The error model does not consume a score
+  or an edit distance; `compute_lambda` takes a product over *every position of
+  the read*, indexing the error matrix by transition and by the quality at the
+  query coordinate. So a distance carries no position at which to read a
+  quality, and a local alignment is not merely lossy -- every factor is below 1,
+  so trimming the domain makes lambda *larger* and shifts every abundance
+  p-value toward "explainable as error". Ends-free global is the only member of
+  the family that scores interior differences while leaving ragged ends
+  unpenalised. Also states plainly what surprises readers of `al2subs`: the
+  model is **substitution-only** -- an inserted base keeps its default *match*
+  transition, so indels move the correspondence but contribute no error
+  probability. The near-identity assumption is shared by the screen, the band
+  and the gapless shortcut, which is why they are one interlocking assumption
+  rather than three knobs. Survey conclusion: the field is *accelerating* global
+  DP, not replacing it, so only two candidates clear the bar -- WFA and a
+  pair-HMM.
 - [WFA as an alignment backend](wfa-viability.md) — **viable, not a drop-in.**
   Two results that are easy to conflate. The speed problem is *solved and was
   never what it looked like*: banding the aligner and capping its edit budget
