@@ -85,6 +85,22 @@ here is the evidence, and here is the path it opens or closes."
       primers behind heterogeneity spacers inflated the table 3–4× and *reversed
       the direction* of the effect, with no warning anywhere in the pipeline.
       The checks that catch it, for any dataset you did not prepare yourself.
+- [WFA as an alignment backend](wfa-viability.md) — **viable, not a drop-in.**
+  Two results that are easy to conflate. The speed problem is *solved and was
+  never what it looked like*: banding the aligner and capping its edit budget
+  turn a 2.3x PacBio slowdown into 141.8 -> 59.1 s, beating NW's 61.7 s, and the
+  slowdown was **k=5-only** -- at the recommended k=7 WFA was already 1.8x faster
+  uncapped, because the screen, not the aligner, decides which divergent pairs
+  WFA has to pay O(n*s) on. The correctness problem is **open and cannot be
+  closed from this repository**: WFA under-credits free end-gaps when the match
+  score is non-zero (upstream WFA2-lib #102), which an isolation run pins at 98%
+  of the divergence -- 550/10,000 ends-free vs 9/10,000 global -- so the gap
+  model is not implicated and affine scoring would make it worse. It is
+  invisible on the concordance fixtures (93 = 93 ASVs, recall and precision
+  1.000) and real at scale (Jaccard ~0.92-0.95 vs NW), which is the
+  fixture-coverage trap again. Four proposed fixes are ruled out, including the
+  edit cap itself: it bounds cost, not correctness. NW stays the default and the
+  error-model backend.
 - [Carrying `compmax` across buds](shuffle-compmax-carry.md) — the remaining
   serial lever in pooled `dada` is worth −7.5% wall on 16S and a +10.5%
   *regression* on ITS2 from the same NovaSeq run; comparison counts overstate
