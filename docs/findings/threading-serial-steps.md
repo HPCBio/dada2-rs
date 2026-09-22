@@ -38,12 +38,16 @@ pooled, k=7, dada2-rs vs R-single:
 On Illumina the same shape appears in `merge-pairs`, at **34–59×** across pooling
 modes. Both are steps where R processes samples one at a time.
 
-**Read the bottom two rows as carefully as the top one.** `make_table` runs at 1.0
-effective cores and is *slower than R*; `remove_bimera` sits at parity despite
-using 23.6 cores. Threading bought nothing in either place — the first because the
-work is a serial table assembly, the second because R already parallelises it.
-The wins are concentrated exactly where R is serial and the work is independent
-per sample, and nowhere else.
+**Read the bottom two rows as carefully as the top one — but read them
+differently.** `remove_bimera` sits at parity despite using 23.6 cores, because R
+already parallelises bimera detection: there was no serial baseline to beat.
+`make_table` runs at 1.0 effective cores, and its ratio is **not a result at
+all** — the two tools are handed different inputs and do different work there,
+and both finish in well under a second. See [what these tables do and do not
+compare](../results.md#what-these-tables-do-and-do-not-compare).
+
+So the wins are concentrated exactly where R is serial and the work is
+independent per sample, and nowhere else.
 
 ## A single sample cannot feed the pool
 
