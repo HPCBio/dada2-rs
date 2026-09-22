@@ -26,6 +26,32 @@ are regenerated from each run's `summary.csv` with
 - **Correctness** (ASV concordance) is validated separately — see
   [concordance tooling](benchmarking.md#5-concordance-validation-tooling).
 
+### What these tables do and do not compare
+
+Not every row is a like-for-like comparison, and the effort behind them is not
+evenly spread. Both matter for reading a speedup column honestly.
+
+- **Optimisation effort is concentrated in `dada` and `learn-errors`** —
+  specifically the k-mer screen and the pairwise aligner at their core. Almost
+  every [finding](findings/index.md) in this project comes from those two steps.
+- **The other steps have had multithreading and little else.** Trimming,
+  filtering, primer removal, chimera detection and removal are faster mainly
+  because per-sample work runs concurrently
+  ([threading the serial steps](findings/threading-serial-steps.md)), not because
+  the algorithms were reworked. Where chimera work *has* gone deeper — the
+  trimera screen and [`chimera-diagnostics`](commands/chimera-diagnostics.md) —
+  it deliberately departs from R's approach, so it is not an optimisation of the
+  R step and is not benchmarked as one.
+- **Taxonomic assignment is not in these tables at all.** `assign-taxonomy` and
+  `assign-species` have never been benchmarked head-to-head.
+- **`make_table` is not a comparable step.** The two tools are given different
+  inputs and do different work: dada2-rs reads several per-sample JSON artifacts
+  with no mapping information, while R converts a single in-memory RDS object
+  that already carries its read → ASV mapping. Both finish in well under a
+  second on every dataset here, so the only property that has ever mattered for
+  this step is that the **output is identical**; the ratio in the column is an
+  artifact of the comparison, not a result.
+
 !!! note "Populate from a cluster run"
     We generate the results using `dev/benchmark/bench_pooled.py` 
     and summarize with:
