@@ -18,7 +18,8 @@
 //! - Random numbers are generated on-the-fly per sequence via a local `SmallRng`
 //!   keyed on the sequence, so results do not depend on input order (issue #187)
 //!   instead of being pre-allocated by `Rcpp::runif`.
-//! - An optional seed can be set for reproducible results (see [`assign_taxonomy`]).
+//! - Runs are reproducible by default: the seed has a fixed value unless the
+//!   caller overrides it (see [`assign_taxonomy`]).
 //! - `RcppParallel::parallelFor` is replaced by Rayon `par_iter`.
 //! - All indexing is 0-based; callers should add 1 if they need R-style output.
 //! - `Rcpp::checkUserInterrupt()` is removed (no R event loop).
@@ -200,22 +201,22 @@ fn classify_seq(
 
 /// Build a per-sequence `SmallRng`.
 ///
-/// When `seed` is `Some(s)`, derives the stream from the sequence itself, so a
-/// sequence's result depends only on the sequence, the reference and the seed --
-/// not on its position in the input, how many others were submitted, or how
-/// Rayon scheduled them.  When `seed` is `None`, seeds from system entropy.
+/// The stream is derived from the sequence, so a sequence's result depends only
+/// on the sequence, the reference and the seed -- not on its position in the
+/// input, how many others were submitted, or how Rayon scheduled them.
 ///
-/// Keying on the position instead (`s ^ index`) was reproducible only for a
+/// Keying on the position instead (`seed ^ index`) was reproducible only for a
 /// fixed input in a fixed order: shuffling 3994 queries moved 7.6% of the
 /// assignments (issue #187). That is the same symptom as R DADA2's
 /// `assignTaxonomy` (benjjneb/dada2#1115), from a different cause -- theirs is
 /// one C-side stream advancing across sequences.
+///
+/// There is no unseeded mode. Sampling from entropy would only make a run
+/// unreproducible; a caller who wants to measure the bootstrap's sensitivity
+/// varies the seed instead, which gives the same spread and can be repeated.
 #[inline]
-fn make_rng(seed: Option<u64>, seq: &[u8]) -> SmallRng {
-    match seed {
-        Some(s) => SmallRng::seed_from_u64(s ^ md5_seed(seq)),
-        None => SmallRng::from_entropy(),
-    }
+fn make_rng(seed: u64, seq: &[u8]) -> SmallRng {
+    SmallRng::seed_from_u64(seed ^ md5_seed(seq))
 }
 
 // ---------------------------------------------------------------------------
@@ -236,10 +237,9 @@ fn make_rng(seed: Option<u64>, seq: &[u8]) -> SmallRng {
 /// - `nlevel`: number of taxonomic levels (columns of `genus_tax`).
 /// - `try_rc`: if true, also classify each sequence's reverse complement and
 ///   keep whichever orientation scores higher.
-/// - `seed`: optional RNG seed for reproducible results. When `Some(s)`, each
-///   sequence's stream is derived from the sequence itself, so output is
-///   identical regardless of input order, input set, or Rayon thread
-///   scheduling. When `None`, each sequence uses `SmallRng::from_entropy()`.
+/// - `seed`: RNG seed. Each sequence's stream is derived from the sequence
+///   itself, so output is identical regardless of input order, input set, or
+///   Rayon thread scheduling.
 /// - `verbose`: print progress to stderr.
 ///
 /// Equivalent to C++ `C_assign_taxonomy2`.
@@ -344,8 +344,7 @@ pub fn assign_taxonomy(
 
     // ---- Classify each query sequence in parallel ----
     // Each element: Option<(best_genus, karray)>.
-    // Each sequence gets its own RNG: derived from the sequence when a seed is
-    // provided, or from system entropy otherwise.
+    // Each sequence gets its own RNG, derived from the sequence itself.
     let classified: Vec<Option<(usize, Vec<usize>)>> = (0..nseq)
         .into_par_iter()
         .map(|j| {
@@ -360,7 +359,7 @@ pub fn assign_taxonomy(
     let boot_results: Vec<(Vec<u32>, Vec<Option<usize>>)> = (0..nseq)
         .into_par_iter()
         .map(|j| {
-            let mut rng = make_rng(seed.map(|s| s ^ 0xdead_beef_cafe_0000), seqs[j]);
+            let mut rng = make_rng(seed ^ 0xdead_beef_cafe_0000, seqs[j]);
             let mut boot_counts = vec![0u32; nlevel];
             let mut boot_taxa: Vec<Option<usize>> = vec![None; NBOOT];
 
@@ -429,7 +428,7 @@ pub struct TaxonomyRef<'a> {
 #[derive(Clone, Copy)]
 pub struct TaxonomyOptions {
     pub try_rc: bool,
-    pub seed: Option<u64>,
+    pub seed: u64,
     pub verbose: bool,
 }
 
@@ -638,7 +637,7 @@ mod tests {
             },
             TaxonomyOptions {
                 try_rc: false,
-                seed: Some(42),
+                seed: 42,
                 verbose: false,
             },
         )

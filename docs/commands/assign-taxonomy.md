@@ -43,21 +43,30 @@ guaranteed upstream.
 names, applied in order. Must match the depth of the reference's taxonomy
 strings.
 
-**`--seed`** — RNG seed for reproducible bootstrap sampling. Set it if you need
-byte-identical reruns.
+**`--seed`** — RNG seed for the bootstrap. Has a fixed default, so runs are
+reproducible without setting it.
 
-!!! tip "What a seed guarantees here"
-    With `--seed`, each sequence's bootstrap stream is derived from the
-    **sequence itself**, so its classification depends only on the sequence, the
-    reference and the seed. Reruns, a different `--threads`, a reordered input
-    and a different set of companion sequences all give the same answer for the
-    same sequence.
+!!! tip "Reproducibility, and how to measure the bootstrap's spread"
+    Each sequence's bootstrap stream is derived from the **sequence itself**, so
+    its classification depends only on the sequence, the reference and the seed.
+    Reruns, a different `--threads`, a reordered input and a different set of
+    companion sequences all give the same answer for the same sequence.
 
-    Without `--seed` the sampling is drawn from system entropy and reruns differ
-    — on one 3,994-query test, two unseeded runs disagreed on 7.8% of
-    assignments, all at Family and Genus where a bootstrap sits near
-    `--min-boot`. That is inherent to the bootstrap, not a defect, but it means
-    **an unseeded run is not a reproducible result**.
+    There is no unseeded mode, because sampling from entropy only makes a run
+    unreproducible. **To see how sensitive a call is, vary the seed** — that
+    gives the same spread and can be repeated:
+
+    ```bash
+    for s in 1 2 3 4 5; do
+      dada2-rs assign-taxonomy asvs.fa --ref-fasta silva.fa.gz --seed "$s" \
+        -o "tax.$s.json"
+    done
+    ```
+
+    Calls that move across seeds are the ones sitting near `--min-boot`. On one
+    3,994-query test that was ~7.6% of assignments, all at Family and Genus.
+    That spread is inherent to the bootstrap, not a defect — but it is worth
+    knowing which of your calls live in it.
 
     R DADA2's `assignTaxonomy` cannot offer the same guarantee: its RNG advances
     across sequences C-side and `set.seed()` does not reach it, so its output

@@ -1234,8 +1234,8 @@ pub enum Commands {
         tax_levels: Vec<String>,
 
         /// RNG seed for reproducible bootstrap sampling
-        #[arg(long, help_heading = H_TAX)]
-        seed: Option<u64>,
+        #[arg(long, default_value_t = 0x9E37_79B9_7F4A_7C15, help_heading = H_TAX)]
+        seed: u64,
 
         /// Number of threads for parallel query classification
         #[arg(long, default_value_t = 1, help_heading = H_PERF)]

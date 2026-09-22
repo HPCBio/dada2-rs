@@ -36,9 +36,16 @@ minor versions may carry breaking changes).
 - `merge-pairs` records input-file provenance and warns on mismatch (#10).
 - `just` / `make` task runners for build, install, test, and docs (#46).
 
+### Changed
+- `assign-taxonomy --seed` now has a **fixed default**, so taxonomic assignment
+  is reproducible out of the box (#187). There is no unseeded mode: entropy only
+  makes a run unrepeatable, and varying the seed gives the same spread while
+  staying reproducible. This follows `kdist-calibrate`, which already seeds by
+  default; R DADA2 cannot do this at all (benjjneb/dada2#1115).
+
 ### Fixed
-- `assign-taxonomy` with `--seed` is now reproducible regardless of **input
-  order and input set** (#187). Each sequence's bootstrap RNG is derived from
+- `assign-taxonomy` is now reproducible regardless of **input order and input
+  set** (#187). Each sequence's bootstrap RNG is derived from
   the sequence (pinned MD5) instead of its position, so a sequence's
   classification depends only on itself, the reference and the seed. Shuffling
   3,994 queries previously changed 7.6% of assignments at a fixed seed; it now
