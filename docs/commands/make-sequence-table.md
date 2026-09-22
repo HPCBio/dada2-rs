@@ -32,7 +32,9 @@ total), `nsamples` (decreasing number of samples present in), or `none`
 (first-seen order).
 
 **`--hash`** (default `md5`) — hash algorithm for sequence identifiers; `md5` or
-`sha1`.
+`sha1`. MD5 is the default for interoperability: it is what QIIME 2 and other
+tools in the ecosystem use, so the same sequence gets the same identifier across
+them. The choice is about ecosystem consistency, not cryptographic strength.
 
 **`--output` / `-o`** — write JSON here instead of stdout.
 
