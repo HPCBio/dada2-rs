@@ -20,8 +20,8 @@ Two independent results, which are easy to conflate:
 
 ## Why WFA at all
 
-The alignment paradigm is fixed to **ends-free global** alignment by the
-error-model contract: `pval.rs` consumes *positional* substitutions, so any replacement has to solve the
+The [alignment paradigm is fixed to **ends-free global**](alignment-paradigm.md)
+by the error-model contract: `pval.rs` consumes *positional* substitutions, so any replacement has to solve the
 same global problem and emit the same `Sub` contract, not merely produce a good
 alignment. WFA qualifies — it is exact for its scoring model, and its cost is
 O(n·s) in the *edit distance* rather than O(n·m) in the read lengths. Denoising
