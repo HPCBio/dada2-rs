@@ -187,6 +187,23 @@ reader benefit. Three homes, and only three:
   sparse k-mer gate is set at `k >= 8` because **sparse is measurably *worse* at
   k=6** (+20% memory *and* +20% wall) and loses on wall at k=7 while winning on
   memory — a crossover an argument from first principles would have missed.
+- [The pooled derep load is format-bound](derep-load-format-bound.md) — the
+  serial load front was **87% JSON parsing**, and the filesystem everyone
+  suspected ran at **868 MB/s on NFS**, indistinguishable from local disk with a
+  warm cache. Fixing the parse: phase 58.3 → 21.7 s (−63%), share of pooled wall
+  14% → 6%, total pooled wall −8.6%, byte-identical. Three things outlast the
+  speedup. The measurement was **built to choose between mutually exclusive
+  fixes** — under ~130 MB/s means stage inputs locally and no code helps, over
+  ~1 GB/s means the format — so the wrong branch could not be built by accident.
+  The **predicted cause was not the found cause**: parsing every file twice was
+  expected to cost time, and the `serde_json::Value` tree actually cost **36% of
+  peak RSS and no measurable time**, with the time coming from the second scan —
+  two effects that looked like one, separated only because the middle arm was
+  measured. And the **fixture under-stated the win** (−33% predicted, −70%
+  delivered), because the `Value` path degrades under sustained load in a way six
+  samples cannot show — the first case here of a small fixture erring in that
+  direction rather than the usual one. Ends with a lever deliberately *not*
+  built, and the arithmetic for why.
 - [Carrying `compmax` across buds](shuffle-compmax-carry.md) — the remaining
   serial lever in pooled `dada` is worth −7.5% wall on 16S and a +10.5%
   *regression* on ITS2 from the same NovaSeq run; comparison counts overstate

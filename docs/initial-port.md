@@ -169,10 +169,9 @@ for one reason — **simplicity while prototyping** — and it stuck, which is t
 usual fate of a format decision made before anyone knows the workload.
 
 It has since been pushed at from the efficiency side rather than replaced:
-gzip output (`--gzip`), a single-parse reader that removed 63% of the pooled
-derep load and 8.6% of pooled wall time
-([#133](https://github.com/HPCBio/dada2-rs/issues/133)), and dropping resident
-intermediates. The format itself has not changed.
+gzip output (`--gzip`), [a single-parse reader that removed 63% of the pooled
+derep load](findings/derep-load-format-bound.md) and 8.6% of pooled wall time,
+and dropping resident intermediates. The format itself has not changed.
 
 Whether something denser — Parquet, Avro, bincode — would be better is
 [#1](https://github.com/HPCBio/dada2-rs/issues/1), open since the prototyping
