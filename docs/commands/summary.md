@@ -3,6 +3,12 @@
 Compute per-position quality metrics from a FASTQ file. Output is a JSON object
 on stdout (or `--output`); optional metrics are off by default.
 
+This is the dada2-rs counterpart of R DADA2's `plotQualityProfile()`, the survey
+step near the start of the DADA2 SOP tutorial: look at raw read quality before
+choosing truncation and filtering parameters. `summary` computes the statistics
+and emits JSON; `scripts/plot_quality_profile.R` turns that JSON into the
+familiar figure.
+
 ```bash
 dada2-rs summary reads.fastq.gz --report -o summary.json
 ```
@@ -71,4 +77,7 @@ pipe.
 ## See also
 
 - `summary-merge` — union per-sample summaries into a run-level report
+- `scripts/plot_quality_profile.R` — reproduce DADA2's `plotQualityProfile()`
+  figure from one or more `summary` JSONs
 - [Binned quality scores](../findings/binned-quality.md)
+- [`filter-and-trim`](filter-and-trim.md) — the step these metrics inform

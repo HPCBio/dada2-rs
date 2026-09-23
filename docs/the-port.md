@@ -114,7 +114,7 @@ this design leaves open, not a goal it was built toward.
 
 | date | what landed |
 |---|---|
-| Apr 7 | `summary` — quality metrics, before any algorithm |
+| Apr 7 | `summary` — the tutorial's first step, before any algorithm |
 | Apr 8 | `derep`; then the whole C++ core: foundations → `nwalign` → `cluster`/`filter` → `Rmain` → `taxonomy` → `evaluate`/`error`/`chimera` |
 | Apr 9 | `error_models`, subsampling |
 | Apr 13 | `learn-errors` — the iterative self-consistency loop |
@@ -122,11 +122,26 @@ this design leaves open, not a goal it was built toward.
 | Apr 15 | `filter-and-trim`, `make-sequence-table`, `remove-bimera-denovo`, `seq-table-to-tsv`, `seq-table-to-fasta` — **the pipeline closes** |
 | Apr 17 | `sample`, `errors-from-sample` |
 
-The build order is the C++ dependency graph, bottom up: data structures and
+Two different orders are at work here, which is worth separating.
+
+**The core followed the C++ dependency graph, bottom up:** data structures and
 k-mers before alignment, alignment before clustering, clustering before the
 driver. Everything through `evaluate`/`error`/`chimera` landed on a single day,
 which is only possible because each layer could be written against a fixed,
 already-translated one below it.
+
+**The subcommands followed the DADA2 SOP tutorial**, in the order a user meets
+them. That is why `summary` came first, a day before any algorithm: the
+tutorial's early step is `plotQualityProfile()` — survey raw read quality and
+expected errors, *then* choose truncation and filtering parameters. A port that
+cannot tell you what your reads look like cannot be followed along with the
+tutorial, whatever else it can do. `scripts/plot_quality_profile.R` completes
+that step by rendering the figure from `summary`'s JSON.
+
+The same logic explains the rest of the sequence — `derep` next, then the
+denoising core, then `merge-pairs`, `make-sequence-table` and
+`remove-bimera-denovo` closing the pipeline on Apr 15 in exactly the order the
+tutorial walks through them.
 
 ### The pivot
 
