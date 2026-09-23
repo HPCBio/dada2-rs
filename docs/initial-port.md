@@ -1,4 +1,4 @@
-# The port: what was translated, what was rewritten
+# The initial port: what was translated, what was rewritten
 
 DADA2 is two layers, and dada2-rs treats them completely differently.
 
