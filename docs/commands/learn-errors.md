@@ -81,7 +81,25 @@ dada2-rs learn-errors ... \
 ```
 
 See [issue #14](https://github.com/HPCBio/dada2-rs/issues/14) for the full
-decomposition.
+decomposition, and [the LOESS findings
+page](../findings/loess-error-model-correctness.md) for why the error model is
+worth this much attention.
+
+To skip fitting entirely and use a model R has **already** learned, convert it
+once and pass it to `dada` with `--error-model`:
+
+```bash
+Rscript scripts/learnerrors_to_dada2rs.R errF.rds errF.json
+dada2-rs dada sample.derep.json.gz --error-model errF.json -o sample.dada.json
+```
+
+The input `.rds` may be the list `learnErrors()` returns or a bare 16-row error
+matrix. This is the closest route to R's output, since nothing about the model
+is re-derived.
+
+Both routes, the wire contract for writing your own script, and the caveats are
+in [Using an external error
+model](../walkthroughs/external-error-models.md).
 
 Use `binned-qual` on NovaSeq/NextSeq-style data where Phred scores are collapsed
 to a handful of levels — `summary --report` will tell you whether that is the
@@ -97,7 +115,8 @@ interpolation, e.g. `0,10,20,30,40`. Only used with `--errfun binned-qual`.
 into argv; the trans-input and err-output file paths are appended as the final
 two arguments. Both files use R's
 `read.table(..., row.names = 1, header = TRUE, check.names = FALSE)` layout.
-See `examples/external_errfun/` for reference scripts.
+See [Using an external error model](../walkthroughs/external-error-models.md)
+for the contract and the shipped reference scripts.
 
 ### LOESS knobs
 

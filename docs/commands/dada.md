@@ -36,7 +36,7 @@ uses `--omega-p` instead of `--omega-a`.
 
 ## Error model
 
-**`--error-model`** (required) — JSON error model produced by `learn-errors`.
+**`--error-model`** (required) — JSON error model produced by `learn-errors`, or converted from an R DADA2 `learnErrors()` `.rds` with `scripts/learnerrors_to_dada2rs.R`.
 
 **`--use-err-in`** — use the model's `err_in` matrix instead of `err_out`.
 `err_out` (the rates estimated from the final transition counts) is the default
