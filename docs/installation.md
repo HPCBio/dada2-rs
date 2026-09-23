@@ -80,7 +80,8 @@ just --list        # or: make help          → list available tasks
 `install` copies the binary plus the user-facing helper scripts (the R plotting
 scripts and a couple of Python utilities) into `$PREFIX/bin`. Helper scripts are
 made executable and namespaced as `dada2-rs-<name>` to avoid PATH collisions —
-for example `scripts/plot_errors.R` installs as `dada2-rs-plot-errors`.
+for example `scripts/plot_errors.R` installs as `dada2-rs-plot-errors`. See
+[Helper scripts](scripts/index.md) for what each one does.
 
 ```bash
 PREFIX=/usr/local make install        # or: PREFIX=/usr/local just install

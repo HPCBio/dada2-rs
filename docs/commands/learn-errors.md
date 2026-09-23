@@ -86,16 +86,8 @@ page](../findings/loess-error-model-correctness.md) for why the error model is
 worth this much attention.
 
 To skip fitting entirely and use a model R has **already** learned, convert it
-once and pass it to `dada` with `--error-model`:
-
-```bash
-Rscript scripts/learnerrors_to_dada2rs.R errF.rds errF.json
-dada2-rs dada sample.derep.json.gz --error-model errF.json -o sample.dada.json
-```
-
-The input `.rds` may be the list `learnErrors()` returns or a bare 16-row error
-matrix. This is the closest route to R's output, since nothing about the model
-is re-derived.
+with [`learnerrors_to_dada2rs.R`](../scripts/pipeline-helpers.md#learnerrors_to_dada2rsr)
+and pass the result to `dada --error-model`.
 
 Both routes, the wire contract for writing your own script, and the caveats are
 in [Using an external error
@@ -116,7 +108,9 @@ into argv; the trans-input and err-output file paths are appended as the final
 two arguments. Both files use R's
 `read.table(..., row.names = 1, header = TRUE, check.names = FALSE)` layout.
 See [Using an external error model](../walkthroughs/external-error-models.md)
-for the contract and the shipped reference scripts.
+for the contract and the shipped reference scripts, and
+[`plot_errors.R`](../scripts/plotting.md#plot_errorsr) for visualising the
+result.
 
 ### LOESS knobs
 
