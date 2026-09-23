@@ -105,6 +105,7 @@ nav:
     - Threading the serial steps: findings/threading-serial-steps.md
     - Alignment paradigm (global ends-free): findings/alignment-paradigm.md
     - WFA as an alignment backend: findings/wfa-viability.md
+    - Pooled memory: findings/pooled-memory.md
     - Carrying compmax across buds: findings/shuffle-compmax-carry.md
     - Redesigning b_shuffle (closed): findings/shuffle-build-scan.md
     - Inside b_compare — screen vs align: findings/compare-screen-vs-align.md

@@ -170,6 +170,23 @@ reader benefit. Three homes, and only three:
   fixture-coverage trap again. Four proposed fixes are ruled out, including the
   edit cap itself: it bounds cost, not correctness. NW stays the default and the
   error-model backend.
+- [Pooled memory: peeling the peak](pooled-memory.md) — pooled `dada` on 93
+  PacBio samples went **52.3 → 13.6 GB at k=7**, and k=8 from 42.8 GB to 13.6 GB
+  where it previously did not fit at all — every step byte-identical. The point
+  is not any one change but that **each fix moved the peak somewhere else**, so
+  the arc is four rounds of "what dominates *now*": the resident u16 k-mer vector
+  that turned out to be only a fallback, dead intermediates held live through the
+  dada call, all per-sample dereps resident at once, and finally the dense `4^k`
+  screen array at ~90% zeros. Three results generalise. **The instrument came
+  first** — a `--verbose` per-phase resident-footprint print, which also
+  corrected two earlier attempts that had gone after a ~15 MB term. **A
+  "+4.2% regression" was a misreading**: `pre` was being sampled near its floor
+  and `post` at its curve top, and a thread sweep showed `pre` erratic
+  (16.9-21.2 GB, spiking at N=1) against a smooth monotonic `post` — when a
+  baseline is allocation-timing sensitive, compare curves, not points. And the
+  sparse k-mer gate is set at `k >= 8` because **sparse is measurably *worse* at
+  k=6** (+20% memory *and* +20% wall) and loses on wall at k=7 while winning on
+  memory — a crossover an argument from first principles would have missed.
 - [Carrying `compmax` across buds](shuffle-compmax-carry.md) — the remaining
   serial lever in pooled `dada` is worth −7.5% wall on 16S and a +10.5%
   *regression* on ITS2 from the same NovaSeq run; comparison counts overstate
