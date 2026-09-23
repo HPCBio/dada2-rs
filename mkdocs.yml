@@ -50,6 +50,7 @@ extra_javascript:
 nav:
   - Home: index.md
   - About: about.md
+  - The port: the-port.md
   - Building & installing: installation.md
   - Algorithm:
     - Denoising modes: algorithm.md
