@@ -15,10 +15,13 @@ runtime anywhere, which is what makes this a standalone tool rather than a faste
 backend for the R package.
 
 One more thing worth stating plainly, because it explains the shape of the
-project's first months: **correctness against R was not the initial goal.**
-Workflow completeness was — FASTQ in, sequence table out. The concordance work
-began only once that pipeline existed end to end, and the first thing it found
-was the [error model](findings/loess-error-model-correctness.md).
+project's first months. The **short-term** goal was a rough but working port —
+FASTQ in, sequence table out. Correctness against R was a **mid-term** goal, not
+an afterthought, and the likely obstacle was named in advance: the error model,
+precisely because it is a port of R's LOESS rather than of C++. That suspicion
+was borne out, and working through it is the
+[LOESS page](findings/loess-error-model-correctness.md) — a rare case in this
+project of a predicted problem turning out to be the actual one.
 
 ## The C++ layer, translated
 
@@ -49,10 +52,10 @@ counterpart by construction.
   changed ordering.
 - **SSE2 intrinsics became scalar loops.** `kmer_dist_SSEi`, `kord_dist_SSEi`,
   `nwalign_endsfree_SSEi` and `dploop_vec_SSE2` were hand-written SIMD; the port
-  writes plain loops and lets LLVM auto-vectorise to NEON or AVX. This was a bet,
-  and it paid — see [the DP kernel work](findings/compare-screen-vs-align.md) —
-  but it is also why "does our kernel match theirs cell for cell?" was an open
-  question for the first months.
+  writes plain loops and lets LLVM auto-vectorise to NEON or AVX. This is
+  [deferred, not decided](#hand-written-simd-deferred-not-rejected), and it is
+  why "does our kernel match theirs cell for cell?" was an open question for the
+  first months.
 - **RcppParallel became Rayon**, in `b_compare_parallel` and in
   `table_bimera2`.
 - **R's `ppois` became `statrs`**, which uses the same regularised incomplete
@@ -142,6 +145,61 @@ reimplementation held to a standard. The habit every findings page now assumes �
 score on ASV-level concordance, not on whether the output looks reasonable —
 dates from there.
 
+## Two early decisions still open
+
+### JSON as the intermediate format
+
+Every subcommand hands work to the next through JSON. That was chosen early and
+for one reason — **simplicity while prototyping** — and it stuck, which is the
+usual fate of a format decision made before anyone knows the workload.
+
+It has since been pushed at from the efficiency side rather than replaced:
+gzip output (`--gzip`), a single-parse reader that removed 63% of the pooled
+derep load and 8.6% of pooled wall time
+([#133](https://github.com/HPCBio/dada2-rs/issues/133)), and dropping resident
+intermediates. The format itself has not changed.
+
+Whether something denser — Parquet, Avro, bincode — would be better is
+[#1](https://github.com/HPCBio/dada2-rs/issues/1), open since the prototyping
+phase and deliberately unhurried. The case for revisiting is a measured one, not
+a tidiness one: it needs a workload where serialisation is demonstrably the
+constraint. Note that JSON's readability has been load-bearing more than once —
+several findings on this site were possible because an intermediate artefact
+could be opened and inspected without tooling.
+
+### Hand-written SIMD: deferred, not rejected
+
+Dropping the C++ intrinsic paths is not a permanent verdict, but it is a
+well-supported default. The repeated finding has been that the hot kernels are
+**not execution-bound where SIMD would help**: `b_compare`'s DP kernel is
+[memory-bandwidth-bound above ~48 threads](findings/compare-screen-vs-align.md),
+the pooled scans are
+[bandwidth-bound rather than op-count-bound](findings/shuffle-build-scan.md), and
+the serial store turned out to be
+[a cache-line problem, not a compute one](findings/compare-store-scan.md).
+Auto-vectorisation has been competitive everywhere it has been measured.
+
+Reopening it would mean a **from-scratch survey against the current code**, not a
+re-reading of the old ones — the kernel has changed substantially since those
+surveys, and the conclusion is only as current as the code it was drawn on.
+
+Worth watching as precedent: `wfa2lib-rs`, the crate behind
+[our WFA backend](findings/wfa-viability.md), has
+[added hand-rolled SIMD](https://github.com/COMBINE-lab/wfa2lib-rs/commit/bc838bba260d2f154c5bf045a1c863a5e47a8930)
+— NEON processing 4 diagonals per iteration, AVX2 8, with runtime feature
+detection and a scalar fallback. Their reported gains on Apple Silicon are
+**1.7× on edit distance, 1.4× on gap-linear, ~1.06× on affine**, with affine-2p
+reaching parity with the C reference. Two things to take from it: hand-rolled
+intrinsics in a Rust bioinformatics port are tractable and bounded in size, and
+their gains are largest on the simplest scoring model — which is not the regime
+our banded NW spends its time in.
+
+One detail there corroborates our own result. They leave the **extend kernel
+scalar deliberately**, judging SIMD unlikely to help it on algorithmic grounds.
+That is exactly the kernel our profiling blamed for the PacBio WFA slowdown, and
+it is why the fix was an
+[edit-budget cap rather than a faster extend](findings/wfa-viability.md).
+
 ## What this dictates
 
 - **Know which layer you are in.** A difference from R inside the translated C++
@@ -154,9 +212,12 @@ dates from there.
 - **`dada_uniques` is the contract.** Anything that wants to consume the
   denoising core — a library user, a future R binding — goes through it, which
   is why its signature has stayed stable while everything under it changed.
-- **The auto-vectorisation bet is still being cashed.** Dropping hand-written
-  SIMD is what allowed the kernel to be rewritten repeatedly for
+- **Hand-written SIMD is deferred, not rejected** — see below. Its absence is
+  what allowed the kernel to be rewritten repeatedly for
   [banding](findings/band-size-platform-defaults.md),
   [rolling `d16`](findings/compare-screen-vs-align.md) and
   [an alternative backend](findings/wfa-viability.md) without maintaining four
-  intrinsic paths.
+  intrinsic paths, which is a real benefit independent of the performance
+  question.
+- **JSON is a prototyping decision that stuck.** Revisit it as a measurement
+  ([#1](https://github.com/HPCBio/dada2-rs/issues/1)), not as a cleanup.
