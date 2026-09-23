@@ -23,6 +23,19 @@ here is the evidence, and here is the path it opens or closes."
   `n_asv` counts — see the [concordance
   guardrail](../benchmarking.md#5-concordance-validation-tooling).
 
+**Performance arcs belong here too.** An optimisation that was measured,
+reasoned about and decided is a finding in exactly the same sense as an accuracy
+result — several of the pages below are perf work, negative results included. A
+separate "engineering improvements" section was considered and rejected: it
+would have split one story across three places for an organisational gain and no
+reader benefit. Three homes, and only three:
+
+| Where | What |
+|---|---|
+| `docs/findings/` | any arc with a verdict — perf or accuracy, wins and nulls |
+| [Results](../results.md) | the head-to-head scoreboard and A/B tables |
+| `CHANGELOG.md` | per-release "what changed" |
+
 ## Index
 
 - [KDIST cutoff decoupling](kdist-cutoff-decoupling.md) — the learn-errors and
