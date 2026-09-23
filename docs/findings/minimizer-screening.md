@@ -2474,3 +2474,14 @@ python3 dev/compare_seqtab_matrix.py /tmp/k1/seqtab.nochim.json /tmp/mini/seqtab
 The MiSeq SOP lives at `~/projects/hpcbio/dada2-rs-data/miseq/MiSeq_SOP` (raw;
 the harness runs `filter-and-trim` itself). The harness expects
 `<sample>F/<sample>R.fastq.gz`, so symlink the `_R1_001`/`_R2_001` names across.
+
+## Tracking
+
+The screen shipped in [#161](https://github.com/HPCBio/dada2-rs/pull/161)
+(opt-in, experimental). The run-time index probe that replaced the third and
+last closed-form score is [#163](https://github.com/HPCBio/dada2-rs/pull/163) —
+see [the index choice is measured, not
+predicted](#the-index-choice-is-measured-not-predicted).
+
+Flags and defaults: [`dada`](../commands/dada.md) and
+[Parameters](../parameters.md).
