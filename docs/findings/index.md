@@ -85,6 +85,27 @@ here is the evidence, and here is the path it opens or closes."
       primers behind heterogeneity spacers inflated the table 3–4× and *reversed
       the direction* of the effect, with no warning anywhere in the pipeline.
       The checks that catch it, for any dataset you did not prepare yourself.
+- [The LOESS error model: a silent floor](loess-error-model-correctness.md) —
+  **the worst failure mode there is.** On binned-quality data the default errfun
+  returned an error model pinned at the `1e-7` floor in **every one of 480
+  cells**, with no warning and output structurally indistinguishable from a real
+  model; R handled the same input fine. The cause is a tricube weight of exactly
+  zero — `max_dist` was the distance to the farthest *included* neighbour, so
+  that point is always dropped and `n_local` points yield `n_local - 1` usable
+  ones, which starves a quadratic at 5 populated columns. It stayed hidden
+  because a uniform matrix is a valid matrix and because `binned_qual_errfun`
+  never calls LOESS, so only the *default* errfun on binned input was affected.
+  Fixed in #97 by fitting the highest degree the neighbourhood can identify
+  (dense fits byte-identical) and by returning `Result` — **a routine that
+  cannot fit must say so.** The page is also the record of an evaluation that
+  found the bug while aimed elsewhere, and of **two claims withdrawn because the
+  instrument was wrong in our favour**: "the external crate fails at n=3" was a
+  guard in our own probe, and "catastrophic on binned input" was a missing API
+  scored as an accuracy failure. When your instrument says someone else's tool
+  failed, suspect the instrument. Ends with the one measurement that goes
+  against us (our vertex partition is far worse at 4-6 anchors on the surface we
+  ship) and the open robustness/weighting arms, which all move rates in the
+  high-count region that decides calls.
 - [Threading the serial steps](threading-serial-steps.md) — **the unit of
   parallelism is the sample, not the thread.** Denoising one sample on the whole
   pool plateaued at ~6.8x on 16 threads while burning **+72% CPU** on
