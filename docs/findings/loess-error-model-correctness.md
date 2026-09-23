@@ -122,7 +122,8 @@ vertex, direct evaluation is arguably the more accurate of the two.
 ### Two ways to run R's error model inside the Rust workflow
 
 The concordance push produced two escape hatches that outlived their diagnostic
-purpose and are now supported features:
+purpose and are now supported features, documented together in [Using an
+external error model](../walkthroughs/external-error-models.md):
 
 - **`--errfun external --errfun-cmd "<command>"`** hands the fit to any external
   program. `dada2-rs` writes a transition TSV, runs `<command> <trans-tsv>
