@@ -89,6 +89,10 @@ nav:
     - tax-to-tsv: commands/tax-to-tsv.md
     - kdist-calibrate: commands/kdist-calibrate.md
     - reference-eval: commands/reference-eval.md
+  - Helper scripts:
+    - scripts/index.md
+    - Plotting: scripts/plotting.md
+    - Pipeline helpers: scripts/pipeline-helpers.md
   - Parameters: parameters.md
   - Performance:
     - Tuning for your data: tuning-for-your-data.md

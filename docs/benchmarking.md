@@ -273,8 +273,8 @@ against R, independent of timing:
 | `dev/compare_errors.R` | compares the learned error matrices against R's `learnErrors()` |
 | `dev/run_kmer_sweep.sh` | sweeps `--kmer-size`, reporting shroud %, ASV count, wall, RSS (issue #15) |
 | `dev/plot_cluster_diag.R` | plots per-iteration cluster diagnostics from `--diag-dir` output |
-| `scripts/plot_errors.R` | plots an error-model JSON |
-| `scripts/track_reads.py` | per-stage read-count tracking (the DADA2 "track" table) |
+| [`plot_errors.R`](scripts/plotting.md#plot_errorsr) | plots an error-model JSON |
+| [`track_reads.py`](scripts/pipeline-helpers.md#track_readspy) | per-stage read-count tracking (the DADA2 "track" table) |
 | `dev/summarize_learn_errors.py` | summarizes a learned error model |
 
 Typical correctness loop for a benchmark run:
