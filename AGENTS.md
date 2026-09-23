@@ -86,6 +86,13 @@ prose lives on ReadTheDocs, under `docs/commands/<subcommand>.md`.
 - **Point at the docs.** Every subcommand carries
   `after_help = docs_link!("<page>")`. Add the page in the same change, and add
   it to the `nav:` block in `mkdocs.yml`.
+- **Link the companions.** Before a docs page is done, check `scripts/` and
+  `examples/` for a file that serves the same subcommand, and name the R
+  function it mirrors. Three pages were missing one: `learnerrors_to_dada2rs.R`
+  appeared in no page at all, `summary` named neither `plotQualityProfile()` nor
+  its plotting script, and the minimizer findings page never cited the PRs that
+  built it. In each case the provenance was sitting in the source header the
+  whole time and the page a user reads did not carry it.
 - **`Experimental` beats the topical heading.** An unstable flag goes under
   `H_EXP` even when it is an alignment or screening knob, so the stability
   boundary is visible in one block.
