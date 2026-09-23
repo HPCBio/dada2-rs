@@ -85,27 +85,27 @@ here is the evidence, and here is the path it opens or closes."
       primers behind heterogeneity spacers inflated the table 3–4× and *reversed
       the direction* of the effect, with no warning anywhere in the pipeline.
       The checks that catch it, for any dataset you did not prepare yourself.
-- [The LOESS error model: a silent floor](loess-error-model-correctness.md) —
-  **the worst failure mode there is.** On binned-quality data the default errfun
-  returned an error model pinned at the `1e-7` floor in **every one of 480
-  cells**, with no warning and output structurally indistinguishable from a real
-  model; R handled the same input fine. The cause is a tricube weight of exactly
-  zero — `max_dist` was the distance to the farthest *included* neighbour, so
-  that point is always dropped and `n_local` points yield `n_local - 1` usable
-  ones, which starves a quadratic at 5 populated columns. It stayed hidden
-  because a uniform matrix is a valid matrix and because `binned_qual_errfun`
-  never calls LOESS, so only the *default* errfun on binned input was affected.
-  Fixed in #97 by fitting the highest degree the neighbourhood can identify
-  (dense fits byte-identical) and by returning `Result` — **a routine that
-  cannot fit must say so.** The page is also the record of an evaluation that
-  found the bug while aimed elsewhere, and of **two claims withdrawn because the
-  instrument was wrong in our favour**: "the external crate fails at n=3" was a
-  guard in our own probe, and "catastrophic on binned input" was a missing API
-  scored as an accuracy failure. When your instrument says someone else's tool
-  failed, suspect the instrument. Ends with the one measurement that goes
-  against us (our vertex partition is far worse at 4-6 anchors on the surface we
-  ship) and the open robustness/weighting arms, which all move rates in the
-  high-count region that decides calls.
+- [The LOESS error model: fidelity, and a silent floor](loess-error-model-correctness.md)
+  — **the error model is an amplifier**, which is why a smoother gets chased to
+  machine precision: the first round of fidelity fixes moved F3D0 from 194
+  clusters to R's 132, and on a 363-sample run three ways of producing the error
+  model ranked the *same way every time* in the final counts. Arc one ends with
+  native LOESS bit-equivalent to R's `loess(surface = "direct")` at **1.97e-13**,
+  every remaining difference from R DADA2 attributed to the kd-tree surface R
+  defaults to — after the compelling explanation (normal-equations conditioning,
+  cond(X)²) came back **bit-identical under QR** and the real cause turned out to
+  be `n_local` rounding: R's docs say `round`, `loessc.c` does *floor*, we did
+  `ceil`. Arc two is the opposite: on binned-quality data the default errfun
+  returned an error model at the `1e-7` floor in **every one of 480 cells**,
+  silently, because a tricube weight of exactly zero drops one point from every
+  neighbourhood. The two arcs meet badly — **the `None`-outside-range convention
+  that fixed arc one is the channel arc two failed down**, a caution about every
+  sentinel that means "fall back". Fixed in #97 by fitting the highest degree the
+  neighbourhood can identify and by returning `Result`: a routine that cannot fit
+  must say so. Ends on three withdrawn claims that share one shape — a guard in
+  our own probe, a missing API scored as inaccuracy, and a *summary* of the R
+  source standing in for the source — so: when a measurement says the other
+  implementation is wrong, suspect the measurement.
 - [Threading the serial steps](threading-serial-steps.md) — **the unit of
   parallelism is the sample, not the thread.** Denoising one sample on the whole
   pool plateaued at ~6.8x on 16 threads while burning **+72% CPU** on

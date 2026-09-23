@@ -1,26 +1,135 @@
-# The LOESS error model: a silent floor, and the probe that found it
+# The LOESS error model: fidelity, and a silent floor
 
-**On binned-quality data, the default error function returned an error model
-pinned at the `1e-7` floor in every cell — with no warning, no error, and output
-that was structurally indistinguishable from a real model.** Fixed in
-[#97](https://github.com/HPCBio/dada2-rs/pull/97). It bit exactly the regime
-sequencing is moving toward: NovaSeq bins quality to 4 distinct values, and the
-Illumina i100 data we have seen carries 3.
+**The error model is an amplifier.** From the first weeks of the port it was
+clear that small deviations in the fitted error rates move the ASVs and the
+counts that come out the other end — so "close enough" is not a property the
+smoother is allowed to have. Everything on this page follows from that.
 
-Three results, and the order they happened in matters:
+Two arcs, opposite in character:
 
-1. **The bug was found by a probe aimed at something else.** We were evaluating
-   whether to adopt an external LOESS crate. The comparison harness turned up a
-   defect in *our* code, not theirs.
-2. **Two of that evaluation's headline claims were wrong, and both were the
-   instrument's fault.** "The crate fails at n=3" was a guard in our own throwaway
-   probe; "it is catastrophic on binned input" was a missing API being scored as
-   an accuracy failure. Corrected in public, and the harness is now committed so
-   the numbers do not have to be re-derived from memory.
-3. **The recommendation did not change** — do not adopt — but for different
-   reasons than first given, and the crate is better than the first write-up said.
+1. **Fidelity (#4, #14).** Chasing the error model to R took three distinct
+   fixes and ruled out two plausible hypotheses. It ended with native LOESS
+   **bit-equivalent to R's `loess(surface = "direct")` to machine precision**
+   (1.97e-13), and with every remaining difference from R DADA2 attributed to
+   one thing: the kd-tree interpolation surface R defaults to.
+2. **A silent floor (#95, #97).** On binned-quality data the default errfun
+   returned an error model pinned at the `1e-7` floor in **every one of 480
+   cells** — no warning, output structurally indistinguishable from a real
+   model. R handled the same input. It bit exactly the regime sequencing is
+   moving toward: NovaSeq bins quality to 4 distinct values, the Illumina i100
+   data we have seen carries 3.
 
-## The bug: a tricube weight of exactly zero
+The two are connected, and not pleasantly: **the boundary convention that fixed
+the first arc is the channel through which the second one failed silently.**
+
+Along the way, three claims had to be withdrawn, and all three were the
+instrument's fault rather than the thing being measured. That pattern is the
+third result on this page.
+
+## Why fidelity here is not pedantry
+
+Error rates feed `pval.rs` pointwise, so a shifted rate moves abundance
+p-values, which moves partition decisions. The effect is small but it is
+systematically *there*:
+
+- On F3D0, the three #4 fixes moved steady-state clusters from **194 to 132** —
+  R's answer is 132 — and total transition counts from 1,579,172 to 1,700,083
+  against R's 1,700,323 (−0.014%).
+- On a 363-sample run, three ways of producing the error model ranked
+  consistently in the final output: R `learnErrors` ≻ our `learn-errors` with an
+  external R loess ≻ our native loess. The worst case was 240 sequences out of
+  3.6M and ≤1 ASV per sample — close to noise, but it *ordered* the same way
+  every time, which is the signature of a real effect rather than jitter.
+
+So the target is not aesthetic. It is that the choice of smoother should not be
+visible in the ASV table.
+
+## Arc one: chasing R (#4, #14)
+
+### The low-Q extrapolation fix
+
+Our `loess_predict` returned a polynomial extrapolation at every x. R's
+`predict.loess` returns `NA` outside the fitted-data range, and `loessErrfun`
+then flat-fills from the nearest fitted value. On F3D0, where nothing is
+observed below Q=12, we extrapolated A2C at Q=0 to **0.0083 against R's
+0.0637**.
+
+Fixing it — return `None` outside `[x_min, x_max]`, let `extrapolate_flat`
+handle the boundary — dropped mean absolute `err_mat` difference per row from
+**1–30% to 0.05–0.15%**.
+
+Two other fixes landed alongside it: R's `nconsist=0` init pass, which we
+lacked entirely (run `dada` with `MAX_CLUST=1`, fit the errfun on the
+accumulated trans, force the diagonals to 1.0), and a Poisson fix that was what
+finally moved steady state from 194 clusters to 132.
+
+**Remember the `None`-outside-range convention.** It is correct, it is what R
+does, and it is the exact mechanism that made the second arc silent.
+
+### Two hypotheses, falsified
+
+The residual against R was ~1e-3 to 1e-2, concentrated at low-Q edges. The
+obvious explanation was conditioning: we solved the local weighted least squares
+with **normal equations**, whose condition number goes as cond(X)², while R's
+`loessc.c` uses QR. At low-Q edges the local x-range shrinks and the basis
+`[1, q, q²]` goes nearly collinear — the story fit the evidence exactly.
+
+It was wrong. Weighted Householder QR with a centred basis came out
+**bit-identical**, iteration counts included. Branch deleted. Conditioning was
+never the bottleneck, and the mechanism that "explained" the edge signature had
+nothing to do with it.
+
+What did explain it was smaller and duller: **`n_local` rounding.** R's docs say
+`round(α · n)`; `loessc.c` actually computes `(int)(s · n)`, which is *floor*.
+We used `ceil`. At `nv = 35`, span 0.75, that is 26 against our 27.
+
+With that one change, native LOESS matched R `loess(surface = "direct")` at
+**1.97e-13** — machine precision on real 362-sample data. It also closed four
+other checklist items at a stroke (tricube boundary epsilon, tie-breaking, NaN
+bookkeeping, exact-vs-approximate statistics): they would have shown up in that
+comparison and did not.
+
+### What was left, and the port that addressed it
+
+| comparison | max abs diff |
+|---|---|
+| ours ↔ R `surface = "direct"` | **1.97e-13** |
+| ours ↔ R `surface = "interpolate"` (R DADA2's default) | ~1e-3 to 1e-2 |
+
+No unexplained divergence remained — all of it was the kd-tree surface R
+defaults to. So `ehg124`/`ehg128` were ported (kd-tree partition subdividing at
+the *median data point*, plus cubic Hermite blending) and exposed through
+`LoessConfig` and `--loess-preset`: `default` keeps the historical direct
+surface, `r-dada2` mirrors R DADA2's interpolate surface.
+
+On the 362-sample data the two presets produce **visibly different error models
+and an identical set of ASVs** — which is the most reassuring possible outcome
+for a knob, and the empirical bound on how much this particular choice matters.
+
+R DADA2's use of `surface = "interpolate"` appears to be R's default rather than
+a deliberate choice; on an integer-Q grid, where every data point is already a
+vertex, direct evaluation is arguably the more accurate of the two.
+
+### A correction that reshaped the presets
+
+For a while this investigation believed R DADA2 did **not** clamp the fitted
+rates, and the `r-dada2` preset was built to match: interpolate surface, no
+clamp. That was wrong. R clamps off-diagonals to `[1e-7, 0.25]` in
+`errorModels.R:53-56`, in R rather than C, under a comment reading `# HACKY`.
+
+The error came from working off a *summary* of the R source that omitted those
+lines, and from three "reference" scripts that were themselves incomplete ports
+of `loessErrfun` — so the reference and the implementation shared a blind spot,
+and the comparison could not see it. A measured 1.06e-2 hotspot at `A2C q=0..9`,
+confidently attributed to the clamp, was a mismeasurement: real R DADA2 produces
+0.25 there too.
+
+Corrected, the presets differ in **exactly one thing** — Direct versus
+Interpolate. Clamp bounds, `n_local` flooring and blending are shared.
+
+## Arc two: the silent floor (#95, #97)
+
+### A tricube weight of exactly zero
 
 `fit_local_at` set `max_dist` to the distance of the farthest *included*
 neighbour. That point therefore gets `u == 1.0`, a tricube weight of exactly
@@ -38,6 +147,15 @@ coefficients):
 `None` became `NaN` in `extrapolate_flat`, and `NaN` became `min_error_rate` in
 `loess_errfun`. Every cell, all 480 of them, at `1e-7`.
 
+**This is where the two arcs meet.** `loess_predict` returns `None` outside the
+fitted range because that is what R does, and adopting it is what closed the
+low-Q gap in arc one. It made `None` an *expected* value with a defined
+fallback — so when a genuinely unfittable neighbourhood later produced the same
+`None`, the pipeline handled it quietly and correctly-looking, instead of
+failing. A correct fix built the channel the later fault travelled down. Worth
+remembering when adding a sentinel: every "this means fall back" path is also a
+path a real failure can hide in.
+
 Two things kept it hidden:
 
 - **The output looked fine.** A uniform matrix is a valid matrix. Nothing
@@ -49,7 +167,7 @@ Two things kept it hidden:
 R's `loess(rlogp ~ q, weights = tot)` returns finite, sensible values at all 40
 columns on the identical input, so this was ours alone.
 
-## The fix
+### The fix
 
 Two changes, deliberately scoped:
 
@@ -108,10 +226,10 @@ value at an unpopulated quality column at all.
 **Decision: parked, not adopted.** What would reopen it: `ehg128` parity at the
 boundaries, a published R-reference suite with stated tolerances, and a 1.0.
 
-## Two withdrawn claims, and what they cost
+## Three withdrawn claims, and the pattern they share
 
-The first write-up of that evaluation contained two errors, both flattering to
-us and both the instrument's fault rather than the crate's:
+The `loess-rs` write-up contained two errors, both flattering to us and both the
+instrument's fault rather than the crate's:
 
 1. **"`loess-rs` fails at n_valid = 3."** It does not; it matches R to ~4e-16
    there. The failure was an `if idx.len() < 4 { return NaN }` guard in our own
@@ -126,9 +244,13 @@ us and both the instrument's fault rather than the crate's:
    blocker for us — `loess_errfun` must emit a rate for every column — but a
    missing-API criticism, not an accuracy one.
 
-The rule both share: **when your instrument reports that someone else's tool
-failed, suspect the instrument first.** The same discipline that applies to a
-null result applies to a flattering one. Rebuilding the probe as a committed
+Add the R-clamp mistake from arc one and there are three, with one shape between
+them. In each case the *instrument* was wrong — a guard in our own probe, a
+missing API scored as inaccuracy, a summary of source standing in for the source
+— and in each case the error flattered us or simplified the story. The rule:
+**when a measurement says the other implementation is wrong, suspect the
+measurement first.** The same discipline this project already applies to
+a null result applies to a flattering one. Rebuilding the probe as a committed
 harness — `dev/loess-oracle`, `./run.sh <learn_errors.json>` — is what exposed
 both, and is why this is not a story that has to be re-derived next time.
 
@@ -195,6 +317,11 @@ set identity, not on how the curves look.**
 
 ## What this dictates
 
+- **The error model is an amplifier, so fidelity work on it is justified by
+  default.** Small rate changes move partition decisions; the #4 fixes moved
+  F3D0 from 194 clusters to R's 132. The bar is that the choice of smoother
+  should not be visible in the ASV table — which is also the *only* acceptable
+  score for a proposed change, not how the curves look.
 - **Binned quality is the stress case for the error model, not an edge case.**
   Every defect on this page was invisible on dense MiSeq data and obvious on 3–4
   distinct quality values. New error-model work gets a sparse arm from the start.
@@ -204,6 +331,10 @@ set identity, not on how the curves look.**
 - **A fit that cannot be made must be reported, never floored.** The `Result`
   return is the durable part of #97; the degree fallback merely makes the error
   rare.
+- **`--loess-preset` is the fidelity knob**, and the two presets differ in
+  exactly one thing: the fitting surface. `default` is direct, `r-dada2` is R's
+  interpolate. On 362 samples they give different error models and the same
+  ASVs.
 - **Do not tune the smoother on curve shape.** Every arm in #96 changes rates in
   the high-count region; the only acceptable score is ASV-level churn.
 - One user-facing note worth carrying upstream: R's `Error rates could not be
