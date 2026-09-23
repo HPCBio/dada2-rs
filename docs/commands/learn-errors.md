@@ -81,7 +81,21 @@ dada2-rs learn-errors ... \
 ```
 
 See [issue #14](https://github.com/HPCBio/dada2-rs/issues/14) for the full
-decomposition.
+decomposition, and [the LOESS findings
+page](../findings/loess-error-model-correctness.md) for why the error model is
+worth this much attention.
+
+To skip fitting entirely and use a model R has **already** learned, convert it
+once and pass it to `dada` with `--error-model`:
+
+```bash
+Rscript scripts/learnerrors_to_dada2rs.R errF.rds errF.json
+dada2-rs dada sample.derep.json.gz --error-model errF.json -o sample.dada.json
+```
+
+The input `.rds` may be the list `learnErrors()` returns or a bare 16-row error
+matrix. This is the closest route to R's output, since nothing about the model
+is re-derived.
 
 Use `binned-qual` on NovaSeq/NextSeq-style data where Phred scores are collapsed
 to a handful of levels — `summary --report` will tell you whether that is the

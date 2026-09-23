@@ -46,6 +46,15 @@ visible in the ASV table.
 
 ## Arc one: chasing R (#4, #14)
 
+This is where the project changed what it was optimising for. The original port
+aimed at **workflow completeness** — FASTQ in, sequence table out, ASVs and
+counts that looked reasonable — with correctness against R not yet the emphasis.
+Once that pipeline existed end to end, attention turned to R concordance, and
+the first place a real deviation surfaced was the LOESS fit. Small differences
+in the fitted rates were producing different ASVs. The habit of scoring changes
+on ASV-level concordance rather than on how close a curve looks, which the rest
+of these pages take for granted, starts here.
+
 ### The low-Q extrapolation fix
 
 Our `loess_predict` returned a polynomial extrapolation at every x. R's
@@ -109,6 +118,37 @@ for a knob, and the empirical bound on how much this particular choice matters.
 R DADA2's use of `surface = "interpolate"` appears to be R's default rather than
 a deliberate choice; on an integer-Q grid, where every data point is already a
 vertex, direct evaluation is arguably the more accurate of the two.
+
+### Two ways to run R's error model inside the Rust workflow
+
+The concordance push produced two escape hatches that outlived their diagnostic
+purpose and are now supported features:
+
+- **`--errfun external --errfun-cmd "<command>"`** hands the fit to any external
+  program. `dada2-rs` writes a transition TSV, runs `<command> <trans-tsv>
+  <err-tsv>` once per self-consistency iteration, and reads the result back.
+  `examples/external_errfun/` ships R references (`loess_reference.R`,
+  `loess_reference_direct.R`, `pacbio_reference.R`, a modified `loess_modified.R`)
+  and a pure-stdlib Python `noqual.py`. It is the way to prototype a model for a
+  new chemistry, or to run a published R errfun, without rebuilding anything.
+- **`scripts/learnerrors_to_dada2rs.R`** converts an R DADA2 `learnErrors()`
+  `.rds` straight to a dada2-rs JSON error model for `--error-model`, so R's own
+  fitted model can drive Rust inference.
+
+Both were built to isolate the fit from everything around it — and both showed
+the same thing. **With either R-sourced model, ASVs and counts hew much closer
+to R's**, which is what established that the smoother was the thing to chase.
+Neither is bit-exact with full R DADA2, though, and the most likely reason is
+not the fit at all: **the two runs may be learning from different input
+sequences.**
+
+That hypothesis has since been measured, and it is larger than it sounds. A
+model's sensitivity to *which samples were drawn* at a fixed `--nbases` budget is
+comparable to its sensitivity to the budget itself — see
+[`--nbases` and error-model convergence](learn-errors-nbases-convergence.md),
+and [#68](https://github.com/HPCBio/dada2-rs/issues/68) for the sample-level
+accumulation that causes it. An error-model comparison that does not pin the
+input set is measuring two things at once.
 
 ### A correction that reshaped the presets
 
@@ -331,6 +371,12 @@ set identity, not on how the curves look.**
 - **A fit that cannot be made must be reported, never floored.** The `Result`
   return is the durable part of #97; the degree fallback merely makes the error
   rare.
+- **Two supported routes exist for running R's error model** — `--errfun
+  external` for the fit, `scripts/learnerrors_to_dada2rs.R` for a finished
+  `learnErrors()` model. They are the answer for anyone who needs R parity today,
+  and the reference arm for any future comparison.
+- **Pin the input set before comparing error models.** Otherwise the fit and the
+  sample draw move together, and the residual cannot be attributed.
 - **`--loess-preset` is the fidelity knob**, and the two presets differ in
   exactly one thing: the fitting surface. `default` is direct, `r-dada2` is R's
   interpolate. On 362 samples they give different error models and the same
