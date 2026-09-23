@@ -56,8 +56,12 @@ dada2-rs-plot-errors err.json errors.pdf
 | `learnerrors_to_dada2rs.R` | `dada2-rs-learnerrors-to-dada2rs` |
 | `track_reads.py` | `dada2-rs-track-reads` |
 
-`cargo install dada2-rs` installs **only the binary** — it has no way to place
-these — so a crates.io install needs a checkout for the helpers. See
+The published crate **does carry these scripts** — `scripts/` is not in
+`Cargo.toml`'s `exclude` list, so all six ship in the `.crate` tarball. But
+`cargo install` only places *binary targets* on `PATH`; it has no mechanism for
+data files. So after `cargo install dada2-rs` they exist, unpacked, under
+`~/.cargo/registry/src/<index>/dada2-rs-<version>/scripts/` and you invoke them
+from there or copy them out. See
 [Installation](../installation.md#installing-onto-path).
 
 `examples/import_mia.R` is not installed; it is a template to copy.
