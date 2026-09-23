@@ -24,7 +24,7 @@ cargo clippy --all-targets -- -D warnings
 
 echo "--- pre-commit: justfile/Makefile sync ---"
 if command -v just >/dev/null 2>&1; then
-    ./scripts/check-build-sync.sh
+    ./dev/maintenance/check-build-sync.sh
 else
     echo "skip: 'just' not installed (CI enforces this check)"
 fi

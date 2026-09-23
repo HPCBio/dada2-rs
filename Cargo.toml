@@ -61,7 +61,7 @@ wfa2lib-rs = { git = "https://github.com/HPCBio/wfa2lib-rs", rev = "4cfeda86a3e1
 wfa = ["dep:wfa2lib-rs"]
 
 [lints.rust]
-# The publish script (scripts/publish-crate.sh) strips the `wfa` feature from the
+# The publish script (dev/maintenance/publish-crate.sh) strips the `wfa` feature from the
 # manifest for the crates.io release, since it depends on a git crate. Declaring
 # `feature="wfa"` as a known cfg value keeps the `#[cfg(feature = "wfa")]` code in
 # nwalign.rs from emitting `unexpected_cfgs` warnings when built without the
