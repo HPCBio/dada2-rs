@@ -57,11 +57,16 @@ alignment work across iterations.
 
 ```bash
 dada2-rs dada filtered/sample_R1.fastq.gz \
-  --error-model errors_fwd.json --show-map \
+  --error-model errors_fwd.json \
   -o dada/sample_R1.json --verbose
 ```
 
 Repeat for reverse reads using the reverse error model.
+
+The read → cluster map is always in the output; there is no flag for it, and
+downstream tools rely on it being there. (`derep` is the one that gates its
+map — `--show-map` there adds the per-read → unique index, which is off by
+default because of its size.)
 
 !!! tip "Multiple samples at once"
     `dada` accepts more than one input. Pass several filtered FASTQs and an
