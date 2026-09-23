@@ -91,8 +91,8 @@ clean:
 # publish an NW-only crate to crates.io (strips the WFA git dep; see issue #63).
 # Pass --dry-run to verify without uploading: `just publish-crate --dry-run`.
 publish-crate *ARGS:
-    ./scripts/publish-crate.sh {{ARGS}}
+    ./dev/maintenance/publish-crate.sh {{ARGS}}
 
 # fail if justfile recipes and Makefile targets have drifted apart
 check-build-sync:
-    ./scripts/check-build-sync.sh
+    ./dev/maintenance/check-build-sync.sh

@@ -9,12 +9,12 @@
 # (`cargo build --features wfa`).
 #
 # Usage:
-#   scripts/publish-crate.sh --dry-run     # verify packaging without uploading
-#   scripts/publish-crate.sh               # real publish (needs `cargo login`)
+#   dev/maintenance/publish-crate.sh --dry-run     # verify packaging without uploading
+#   dev/maintenance/publish-crate.sh               # real publish (needs `cargo login`)
 #
 # Any extra arguments are passed straight through to `cargo publish`.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 MANIFEST="Cargo.toml"
 BACKUP="$(mktemp)"

@@ -10,7 +10,7 @@
 # (just's `default` lister vs make's `all`/`help`).
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 # Names present in one tool but not meaningfully comparable in the other.
 IGNORE='^(default|all|help)$'

@@ -89,11 +89,11 @@ clean:
 
 ## publish-crate: publish NW-only crate to crates.io (strips WFA git dep; PUBLISH_ARGS=--dry-run to test)
 publish-crate:
-	./scripts/publish-crate.sh $(PUBLISH_ARGS)
+	./dev/maintenance/publish-crate.sh $(PUBLISH_ARGS)
 
 ## check-build-sync: fail if justfile recipes and Makefile targets have drifted
 check-build-sync:
-	./scripts/check-build-sync.sh
+	./dev/maintenance/check-build-sync.sh
 
 ## help: list documented targets
 help:
