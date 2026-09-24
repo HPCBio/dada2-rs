@@ -165,6 +165,34 @@ R DADA2 1.40.0 was run end to end on these 20 samples with the same parameters:
 The ASV *sets* are identical. Abundance differs on 6 of the 232, by at most 6
 reads.
 
+### Where that last 0.003% comes from — and how to remove it
+
+All of it is the **LOESS fitting surface**, and nothing downstream of the error
+model. Three arms, same filtered reads, same everything else:
+
+| arm | ASVs vs R | abundances differing | read delta |
+|---|---|---:|---:|
+| default (`--loess-preset default`, direct surface) | 232, none unique either way | 6 / 232 | −4 |
+| **`--loess-preset r-dada2`** (R's interpolate surface) | 232 | **0** | **0** |
+| R's own error model, via [`learnerrors_to_dada2rs.R`](../scripts/pipeline-helpers.md#learnerrors_to_dada2rsr) | 232 | **0** | **0** |
+
+So **`--loess-preset r-dada2` reproduces R's chimera-filtered table exactly on
+this dataset** — every ASV, every count — and handing our pipeline R's own
+fitted model does no better, which is the point: once the error model agrees,
+denoising, merging, table construction and chimera removal are already exact.
+
+Note what is *not* a factor here. `--nbases 1e8` against ~33 Mbases of forward
+reads means neither tool subsamples, so both fit on identical input; the
+difference is purely how the surface is fitted. On a run large enough to
+trigger subsampling, [which reads get drawn becomes its own
+term](../findings/learn-errors-nbases-convergence.md).
+
+The background is [the LOESS
+page](../findings/loess-error-model-correctness.md): our native LOESS matches R's
+`loess(surface = "direct")` to machine precision, while R DADA2 takes R's
+default `surface = "interpolate"`. The default here stays `direct`; `r-dada2` is
+for when bit-parity with R is what you want.
+
 ## 8. Track reads through the pipeline
 
 The tutorial's sanity table — where a sample loses reads, if it does.

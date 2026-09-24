@@ -115,6 +115,31 @@ On the 362-sample data the two presets produce **visibly different error models
 and an identical set of ASVs** — which is the most reassuring possible outcome
 for a knob, and the empirical bound on how much this particular choice matters.
 
+### The surface accounts for the whole residual, at the ASV level
+
+That was later closed end to end on the MiSeq SOP, where R was run start to
+finish alongside us on the same 20 samples
+([walkthrough](../walkthroughs/dada2-sop.md)). Three arms, identical filtered
+reads:
+
+| arm | abundances differing from R | read delta |
+|---|---:|---:|
+| `--loess-preset default` (direct) | 6 / 232 | −4 |
+| `--loess-preset r-dada2` (interpolate) | **0** | **0** |
+| R's own fitted model, fed to our `dada` | **0** | **0** |
+
+Every arm produced the same 232 ASVs with none unique to either side. Two
+things follow. **The interpolate surface is the entire residual** — not a
+component of it — and **handing our pipeline R's own model does no better than
+matching its surface**, which means denoising, merging, table construction and
+chimera removal are already exact against R given the same error rates.
+
+`--nbases 1e8` against ~33 Mbases means neither tool subsampled, so sample draw
+is excluded by construction here; on a run large enough to subsample it becomes
+its own term. One dataset, and a small clean one — but it is the first
+ASV-level confirmation that the `ehg124`/`ehg128` port does what it was written
+to do.
+
 R DADA2's use of `surface = "interpolate"` appears to be R's default rather than
 a deliberate choice; on an integer-Q grid, where every data point is already a
 vertex, direct evaluation is arguably the more accurate of the two.
