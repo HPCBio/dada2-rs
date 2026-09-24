@@ -4,7 +4,9 @@ A step-for-step mirror of the [DADA2 MiSeq SOP
 tutorial](https://benjjneb.github.io/dada2/tutorial.html), on the same data, with
 the R function named at every step.
 
-Every command below was run to produce the numbers shown. The dataset is the
+Every command below was run to produce the numbers shown, and the results were
+checked against an end-to-end R run on the same data — **identical ASV sets,
+abundances within 0.003%**. The dataset is the
 tutorial's own: 20 samples of mouse gut V4 16S (19 timepoints plus a mock),
 available from the [DADA2 tutorial
 page](https://benjjneb.github.io/dada2/tutorial.html).
@@ -146,8 +148,22 @@ dada2-rs remove-bimera-denovo seqtab.json --method consensus --threads 10 \
 
 **96.4% of reads survive chimera removal** while 61 of 293 ASVs are removed —
 the tutorial's point that chimeras are a large fraction of unique sequences and
-a small fraction of reads. These are the counts the tutorial publishes for this
-dataset.
+a small fraction of reads.
+
+### Checked against R, on the same data
+
+R DADA2 1.40.0 was run end to end on these 20 samples with the same parameters:
+
+| | R | dada2-rs |
+|---|---:|---:|
+| reads in → filtered | 152,360 → 139,642 | **identical** |
+| sequence table | 293 ASVs | **293** |
+| after chimera removal | 232 ASVs | **232** |
+| ASV sequences | — | **232 shared, 0 unique to either side** |
+| total reads retained | 124,249 | 124,245 (−0.0032%) |
+
+The ASV *sets* are identical. Abundance differs on 6 of the 232, by at most 6
+reads.
 
 ## 8. Track reads through the pipeline
 
@@ -171,6 +187,19 @@ F3D142_S208  3183   2914      2914       2914       2595    2521
 ...
 TOTAL        152360 139642    139642     139642     128895  124245
 ```
+
+!!! bug "The denoised columns do not match R yet"
+    `denoisedF` and `denoisedR` above equal `filtered`, because our `dada`
+    assigns every read to a cluster. R attributes ~1.6–1.9% fewer — for F3D0 it
+    reports 6,976 / 6,979 against our 7,113, and R's are the figures the
+    tutorial publishes. R produces the *same clusters* (128 for F3D0 forward, as
+    we do) and simply declines to place some reads in them.
+
+    It does not propagate: `merged` differs by 11 reads across all 20 samples
+    and `nochim` by 4, and the ASV set is identical. But it means these two
+    columns cannot currently do the job they exist for, which is showing a
+    sample that loses reads at denoising. Tracked in
+    [#204](https://github.com/HPCBio/dada2-rs/issues/204).
 
 !!! warning "One row per sample depends on step 2's naming"
     `track_reads.py` joins the steps on sample name. If the filtered files carry
