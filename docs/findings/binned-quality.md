@@ -10,6 +10,26 @@ what gets denoised.
 dada2-rs provides `--errfun binned-qual` for this case. These pages record what
 we measured when we varied the error model on binned input.
 
+!!! success "The implementation is not a variable here"
+    `binned_qual_errfun` was checked against R's `makeBinnedQualErrfun` by
+    feeding **one `trans` matrix** (16 × 38, 76.4 M counts, NovaSeq soil) through
+    both: **608 of 608 cells agree**, worst cell 2.03e-15 on `|log10(ratio)|`.
+    Unlike the `loess` path there is no fitting surface to differ over — the
+    binned errfun is raw MLE per column, linear interpolation between anchors,
+    flat extrapolation and a clamp.
+
+    So the dataset-dependence these pages document is a property of **the model
+    choice**, not of the port. See [#120](https://github.com/HPCBio/dada2-rs/issues/120).
+
+One structural point worth carrying into any comparison on this page: the binned
+errfun reads the per-column error rate **only at the anchors** and interpolates
+between them. Dereplication averages qualities across reads sharing a unique
+sequence, so a 3-bin dataset produces counts in every column between the
+extremes — on the NovaSeq soil run above, the anchors hold 74.2% of the
+transition mass and **25.8% sits off-bin and is never read** (Q36 alone is
+11.9%). A `binned-qual` arm and a `loess` arm on the same data therefore do not
+merely fit differently; they see different amounts of it.
+
 ## The headline: the answer is dataset-dependent, and we cannot yet predict it
 
 This is the single most important thing to carry away, and it is why these pages
