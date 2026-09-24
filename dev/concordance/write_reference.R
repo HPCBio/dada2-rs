@@ -22,17 +22,48 @@
 suppressPackageStartupMessages(library(dada2))
 
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) < 3) stop("usage: write_reference.R <illumina|pacbio> <data-dir> <out.csv> [primer_fwd primer_rev] [--pool=false|pseudo]")
+if (length(args) < 3) stop(paste(
+  "usage: write_reference.R <illumina|pacbio> <data-dir> <out.csv>",
+  "[primer_fwd primer_rev] [--pool=false|pseudo|true] [--errfun=loess|binned-qual]",
+  "[--binned-quals=2,11,25,37] [--prefiltered]"))
 platform <- args[1]; data_dir <- args[2]; out_csv <- args[3]
 
 # --pool=pseudo generates a reference for `dada(pool="pseudo")` instead of the
 # per-sample default, so run_illumina.sh POOL=pseudo can be compared against a
 # matching R run. Anywhere in the args; default per-sample.
-pool_arg <- grep("^--pool=", args, value = TRUE)
-POOL <- if (length(pool_arg)) sub("^--pool=", "", pool_arg[1]) else "false"
-POOL <- if (identical(POOL, "pseudo")) "pseudo" else FALSE
-args <- args[!grepl("^--pool=", args)]
-cat(sprintf("pool mode: %s\n", if (identical(POOL, "pseudo")) "pseudo" else "FALSE (per-sample)"))
+flag <- function(name, default = NA_character_) {
+  hit <- grep(paste0("^--", name, "="), args, value = TRUE)
+  if (length(hit)) sub(paste0("^--", name, "="), "", hit[1]) else default
+}
+
+pool_raw <- flag("pool", "false")
+POOL <- switch(pool_raw, pseudo = "pseudo", true = TRUE, TRUE_ = TRUE, FALSE)
+cat(sprintf("pool mode: %s\n",
+            if (identical(POOL, "pseudo")) "pseudo"
+            else if (isTRUE(POOL)) "TRUE (full pooling)" else "FALSE (per-sample)"))
+
+# Error function, mirroring run_illumina.sh's ERRFUN / ERRFUN_ARGS so the two
+# sides can be pointed at the same model. `binned-qual` needs its anchors.
+ERRFUN <- flag("errfun", "loess")
+BINNED <- flag("binned-quals")
+ERRFUN_FN <- if (identical(ERRFUN, "binned-qual")) {
+  if (is.na(BINNED)) stop("--errfun=binned-qual requires --binned-quals=a,b,c")
+  bins <- as.numeric(strsplit(BINNED, ",")[[1]])
+  cat(sprintf("errfun: binned-qual, anchors %s\n", paste(bins, collapse = ",")))
+  makeBinnedQualErrfun(bins)
+} else {
+  cat("errfun: loess (R default)\n")
+  loessErrfun
+}
+
+# --prefiltered: the inputs are ALREADY trimmed and filtered, so use them as-is,
+# mirroring run_illumina.sh's PREFILTERED. This is what lets ONE filtering pass
+# feed both sides, rather than each tool filtering separately and the comparison
+# silently carrying that difference too.
+PREFILTERED <- any(args == "--prefiltered")
+if (PREFILTERED) cat("inputs treated as pre-filtered; skipping filterAndTrim\n")
+
+args <- args[!grepl("^--", args)]
 
 write_long <- function(seqtab, path) {
   # seqtab: matrix rows = samples, cols = sequences (colnames = ASV seqs)
@@ -63,15 +94,19 @@ if (platform == "illumina") {
   if (length(fnFs) == 0) stop("no *F.fastq.gz in ", data_dir)
   sample.names <- sub("F\\.fastq\\.gz$", "", basename(fnFs))
 
-  filt_dir <- file.path(tempdir(), "filtered")
-  filtFs <- file.path(filt_dir, paste0(sample.names, "_F_filt.fastq.gz"))
-  filtRs <- file.path(filt_dir, paste0(sample.names, "_R_filt.fastq.gz"))
-  filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen = TRUNC_LEN,
-                maxN = MAX_N, maxEE = MAX_EE, truncQ = TRUNC_Q,
-                rm.phix = FALSE, compress = TRUE, multithread = TRUE)
+  if (PREFILTERED) {
+    filtFs <- fnFs; filtRs <- fnRs
+  } else {
+    filt_dir <- file.path(tempdir(), "filtered")
+    filtFs <- file.path(filt_dir, paste0(sample.names, "_F_filt.fastq.gz"))
+    filtRs <- file.path(filt_dir, paste0(sample.names, "_R_filt.fastq.gz"))
+    filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen = TRUNC_LEN,
+                  maxN = MAX_N, maxEE = MAX_EE, truncQ = TRUNC_Q,
+                  rm.phix = FALSE, compress = TRUE, multithread = TRUE)
+  }
 
-  errF <- learnErrors(filtFs, multithread = TRUE)
-  errR <- learnErrors(filtRs, multithread = TRUE)
+  errF <- learnErrors(filtFs, errorEstimationFunction = ERRFUN_FN, multithread = TRUE)
+  errR <- learnErrors(filtRs, errorEstimationFunction = ERRFUN_FN, multithread = TRUE)
   ddF <- dada(filtFs, err = errF, pool = POOL, multithread = TRUE)
   ddR <- dada(filtRs, err = errR, pool = POOL, multithread = TRUE)
   mergers <- mergePairs(ddF, filtFs, ddR, filtRs)
