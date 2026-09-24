@@ -683,9 +683,24 @@ pub fn dada_uniques_cached(
                 member_lambdas.push(b.raws[raw_idx].comp.lambda);
                 member_pvals.push(b.raws[raw_idx].p);
             }
+            // EXPERIMENTAL (#204): report only reads the omega_c gate actually
+            // corrected to this centre, matching R's `clustering$abundance` /
+            // `getUniques()`, which count mapped uniques only. `bi.reads` is the
+            // whole partition and includes members whose `correct` flag is
+            // false -- the same reads `map` records as belonging to no cluster,
+            // so the two outputs currently contradict each other.
+            //
+            // Only the *reported* figure changes. `bi.reads` stays the
+            // algorithm's own partition total everywhere it drives inference.
+            let corrected_reads: u32 = members
+                .iter()
+                .filter(|&&raw_idx| b.raws[raw_idx].correct)
+                .map(|&raw_idx| b.raws[raw_idx].reads)
+                .sum();
+
             ClusterSummary {
                 sequence: bi.seq.clone(),
-                reads: bi.reads,
+                reads: corrected_reads,
                 members,
                 member_hammings,
                 member_lambdas,
