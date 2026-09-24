@@ -316,6 +316,32 @@ pub fn binned_qual_errfun(
         ));
     }
 
+    // R warns when the observed extremes bracket but do not *land on* an anchor
+    // (`makeBinnedQualErrfun`, errorModels.R). That is the case where nothing is
+    // wrong enough to stop: the model is built, but its outermost interpolation
+    // anchor has no observations behind it. The usual way in is a bin set read
+    // off one or two samples, or carried over from a run trimmed differently
+    // (issue #208). Unconditional, like the error-matrix extrapolation warning
+    // in #102 — a model quietly resting on an absent anchor is worth saying out
+    // loud.
+    let on_anchor = |q: f64| binned_quals.iter().any(|&b| (b - q).abs() < 1e-9);
+    let bins = binned_quals
+        .iter()
+        .map(|b| format!("{b}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    for (label, q) in [("minimum", qmin), ("maximum", qmax)] {
+        if !on_anchor(q) {
+            eprintln!(
+                "dada2-rs: warning: {label} observed quality Q{q} is not one of the \
+                 supplied binned values ({bins}); the outermost interpolation anchor on \
+                 that side has no observations behind it. Check the bin set against the \
+                 whole run rather than a few samples -- `summary --report` reports what \
+                 is present in the data it was given."
+            );
+        }
+    }
+
     let mut off_diag = vec![0.0f64; 12 * nq];
     let mut off_row = 0usize;
 
@@ -910,6 +936,68 @@ mod tests {
                 "q={q}: {r} != {expected} — expected a flat constant model"
             );
         }
+    }
+
+    /// Build a binned `trans` with observations only at `obs` quality columns.
+    fn binned_trans(nq: usize, obs: &[usize]) -> Vec<u32> {
+        let mut trans = vec![0u32; 16 * nq];
+        for (rank, &q) in obs.iter().enumerate() {
+            for nti in 0..4usize {
+                for ntj in 0..4usize {
+                    let count = if nti == ntj {
+                        10_000 * (rank as u32 + 1)
+                    } else {
+                        100 / (rank as u32 + 1) + 1
+                    };
+                    trans[(nti * 4 + ntj) * nq + q] = count;
+                }
+            }
+        }
+        trans
+    }
+
+    /// Anchors that bracket the data but do not land on it still fit — R warns
+    /// rather than stopping there, and so do we (issue #208).
+    ///
+    /// The warning goes to stderr, so this asserts the surrounding contract: the
+    /// fit succeeds, and the same call with anchors that *do* land on the data
+    /// succeeds too. The distinguishing behaviour is verified by the bracket
+    /// tests below, which must still error.
+    #[test]
+    fn binned_qual_errfun_fits_when_anchors_bracket_without_landing() {
+        let nq = 40;
+        let qs: Vec<f64> = (0..nq).map(|i| i as f64).collect();
+        let bins = vec![2.0, 11.0, 25.0, 37.0];
+
+        // Observed min Q12 sits between anchors 11 and 25 -- warns, still fits.
+        let off = binned_trans(nq, &[12, 25, 37]);
+        let err = binned_qual_errfun(&off, &qs, &bins, &LoessConfig::default())
+            .expect("bracketed-but-unlanded anchors should still fit");
+        assert_eq!(err.len(), 16 * nq);
+
+        // Observed extremes on anchors -- no warning, same shape.
+        let on = binned_trans(nq, &[11, 25, 37]);
+        let err_on = binned_qual_errfun(&on, &qs, &bins, &LoessConfig::default())
+            .expect("anchored observations should fit");
+        assert_eq!(err_on.len(), 16 * nq);
+    }
+
+    /// Anchors must bracket the observed range; outside it is an error, matching
+    /// R's two `stop()` cases rather than its warnings.
+    #[test]
+    fn binned_qual_errfun_errors_when_data_escapes_the_anchors() {
+        let nq = 40;
+        let qs: Vec<f64> = (0..nq).map(|i| i as f64).collect();
+
+        let high = binned_trans(nq, &[11, 25, 38]);
+        let e = binned_qual_errfun(&high, &qs, &[11.0, 25.0, 37.0], &LoessConfig::default())
+            .expect_err("Q38 above the top anchor must error");
+        assert!(e.contains("higher"), "unexpected message: {e}");
+
+        let low = binned_trans(nq, &[9, 25, 37]);
+        let e = binned_qual_errfun(&low, &qs, &[11.0, 25.0, 37.0], &LoessConfig::default())
+            .expect_err("Q9 below the bottom anchor must error");
+        assert!(e.contains("lower"), "unexpected message: {e}");
     }
 
     /// The complement: realistic binned-quality input still fits, so the guard

@@ -8,6 +8,12 @@ minor versions may carry breaking changes).
 ## [0.2.0] - Unreleased
 
 ### Added
+- `--errfun binned-qual` now warns when the **observed** minimum or maximum
+  quality is not one of the supplied `--binned-quals` anchors (#208). The
+  anchors still only have to *bracket* the data — that case fits, and R warns
+  there too — but an outermost anchor with no observations behind it is worth
+  surfacing, since the usual way in is a bin set read off one or two samples of
+  a much larger run. Unconditional, like the error-matrix extrapolation warning.
 - `--verbose` now reports the **resolved** values of the `DADA2RS_*` development
   tuning gates, and any `DADA2RS_*` variable that is set but not recognised is
   warned about **regardless of `--verbose`** (#145). Retired spellings carry an
