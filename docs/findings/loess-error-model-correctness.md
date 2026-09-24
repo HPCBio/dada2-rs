@@ -129,10 +129,15 @@ reads:
 | R's own fitted model, fed to our `dada` | **0** | **0** |
 
 Every arm produced the same 232 ASVs with none unique to either side. Two
-things follow. **The interpolate surface is the entire residual** — not a
-component of it — and **handing our pipeline R's own model does no better than
-matching its surface**, which means denoising, merging, table construction and
-chimera removal are already exact against R given the same error rates.
+things follow **on this dataset**: the interpolate surface accounts for the
+entire residual rather than part of it, and handing our pipeline R's own model
+does no better than matching its surface.
+
+Do not read the second as "everything downstream of the error model is exact in
+general". It is not the project's experience. Earlier work found that even when
+supplied with R's exact models, low-level count differences remained — much
+closer to R than without, but not identical. The SOP is a small, clean dataset
+and reaching zero there is a best case, not a guarantee.
 
 `--nbases 1e8` against ~33 Mbases means neither tool subsampled, so sample draw
 is excluded by construction here; on a run large enough to subsample it becomes
@@ -175,7 +180,10 @@ is larger in rare ones — the 93-read ASV moves 2.15%, the 8,862-read ASV moves
 0.03%.
 
 The practical verdict on this dataset is still that it does not matter: no ASV
-was gained or lost, and the whole table moves by 4 reads in 124,249. But "these
+was gained or lost, and the whole table moves by 4 reads in 124,249. For
+context, the [concordance guardrail](../benchmarking.md#5-concordance-validation-tooling)
+gates on count correlation at 0.95 and its own PacBio baseline sits at 0.994 —
+count-level agreement has never been exact there either. But "these
 are fringe calls" is the wrong model of where it acts, and two caveats keep it
 from generalising. The error model is an amplifier — [the KDIST
 work](kdist-cutoff-decoupling.md) found error-model perturbation churning

@@ -277,6 +277,33 @@ against R, independent of timing:
 | [`track_reads.py`](scripts/pipeline-helpers.md#track_readspy) | per-stage read-count tracking (the DADA2 "track" table) |
 | `dev/summarize_learn_errors.py` | summarizes a learned error model |
 
+### What CI actually gates on
+
+`.github/workflows/concordance.yml` runs the comparison with `--gate`, so a
+metric below its threshold fails the build. Three metrics, not one — **counts are
+checked, by correlation**:
+
+| metric | threshold | observed baseline |
+|---|---|---|
+| recall | 0.85 | 1.000 both platforms |
+| precision | 0.80 | 1.000 both platforms |
+| **`count_corr`** | **0.95** | Illumina 1.000, **PacBio 0.994** |
+
+(`dada-pseudo` runs tighter: recall 0.93, precision 0.95.) Thresholds are
+deliberately generous against those baselines, to catch a real regression
+without flaking.
+
+Two things worth reading off that table. Count agreement **is** gated, so a
+change that preserves the ASV set while moving abundances will be caught. And
+PacBio has never been at 1.000 — count-level agreement with R is close rather
+than exact there, and always has been.
+
+What the gate does not instrument is **per-stage read accounting**: the
+intermediate counts that never reach the sequence table, such as the denoised
+per-sample totals. See [#204](https://github.com/HPCBio/dada2-rs/issues/204).
+
+CI never runs R; the reference tables are committed as static CSVs.
+
 Typical correctness loop for a benchmark run:
 
 1. Run the harness for the stack(s).

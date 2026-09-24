@@ -178,8 +178,20 @@ model. Three arms, same filtered reads, same everything else:
 
 So **`--loess-preset r-dada2` reproduces R's chimera-filtered table exactly on
 this dataset** — every ASV, every count — and handing our pipeline R's own
-fitted model does no better, which is the point: once the error model agrees,
-denoising, merging, table construction and chimera removal are already exact.
+fitted model does no better.
+
+!!! note "Exact here, not exact everywhere"
+    Reaching zero on this dataset is a best case. Earlier work on other data
+    found small count-level differences persisting *even when supplied with R's
+    exact error models* — much closer than without, but not identical. The SOP is
+    20 samples of clean, deeply-characterised data.
+
+    There is also a limit to what "matching R" can mean at all. R DADA2's output
+    shifts slightly across package versions, R releases and platforms (Linux
+    against macOS), so exact agreement is a statement about *one* R build on
+    *one* machine, not a property two implementations can hold in general.
+    Reproducing a specific published table means pinning the version and the
+    environment, in R as much as here.
 
 Note what is *not* a factor here. `--nbases 1e8` against ~33 Mbases of forward
 reads means neither tool subsamples, so both fit on identical input; the
