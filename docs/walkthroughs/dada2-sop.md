@@ -202,8 +202,22 @@ term](../findings/learn-errors-nbases-convergence.md).
 The background is [the LOESS
 page](../findings/loess-error-model-correctness.md): our native LOESS matches R's
 `loess(surface = "direct")` to machine precision, while R DADA2 takes R's
-default `surface = "interpolate"`. The default here stays `direct`; `r-dada2` is
-for when bit-parity with R is what you want.
+default `surface = "interpolate"`.
+
+!!! tip "You probably do not need any of this"
+    The default settings are the recommended ones. `--loess-preset r-dada2`, the
+    [external errfun route](external-error-models.md) and the R-model converter
+    exist for **fidelity to a specific R run** — reproducing a published table,
+    or diffing against an R pipeline during a migration. They are not a
+    correction: there is no sense in which the default is the less accurate
+    choice, and on an integer-Q grid `direct` is arguably the better evaluation.
+
+    At larger scale the picture is the same shape as here — ASV concordance
+    holds, with residual noise concentrated in per-sample totals and count
+    correlation staying high. Results are also held to
+    [a stricter standard than the concordance gate](../benchmarking.md#the-gate-is-the-floor-not-the-practice):
+    changes expected to be result-neutral are checked for byte-identical output
+    before they land, so what you get should not drift between releases.
 
 ## 8. Track reads through the pipeline
 

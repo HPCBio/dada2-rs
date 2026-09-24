@@ -304,6 +304,21 @@ per-sample totals. See [#204](https://github.com/HPCBio/dada2-rs/issues/204).
 
 CI never runs R; the reference tables are committed as static CSVs.
 
+### The gate is the floor, not the practice
+
+The thresholds above catch regressions. They are not the standard changes are
+held to. A change that is expected to leave results untouched — a performance
+change, a refactor, a memory reduction — is checked for **byte-identical
+output** before it lands, and the findings pages throughout this site report
+churn of exactly 0 for that reason. Where a change legitimately *does* move
+results, the amount is measured and stated rather than absorbed.
+
+That discipline is the substantive answer to "can I trust these numbers". It
+also means results should stay stable release to release: the same guardrail
+that blocks an accidental change blocks an accidental *drift*, which is a
+property worth more to a long-running analysis than agreeing with any single
+external run to the last read.
+
 Typical correctness loop for a benchmark run:
 
 1. Run the harness for the stack(s).

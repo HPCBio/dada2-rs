@@ -6,9 +6,15 @@ already learned. Both routes are supported, and both exist because the project
 needed them to establish R concordance in the first place — see
 [the LOESS findings page](../findings/loess-error-model-correctness.md).
 
+This is a **fidelity** facility, not a correctness one. The built-in error
+functions are the recommended path; nothing here produces a *more accurate*
+model, it produces *R's* model. Reach for it when agreeing with a particular R
+run is the requirement.
+
 Three reasons this comes up:
 
-- **R parity.** You need output as close to R DADA2 as possible.
+- **R parity.** You are reproducing a published table, or diffing against an R
+  pipeline during a migration, and need output as close to that run as possible.
 - **Binned quality data.** The stock `loessErrfun` is known to misbehave on
   NovaSeq-style data, and the R community has proposed several replacements. You
   want to try one without waiting for it to be ported.
