@@ -44,6 +44,13 @@ minor versions may carry breaking changes).
   default; R DADA2 cannot do this at all (benjjneb/dada2#1115).
 
 ### Fixed
+- `assign-species` matched a query against a reference only when the two
+  sequences were **equal in full**, so it returned nothing on any full-length
+  reference — the ordinary case, since species FASTAs hold ~1.4 kb 16S and
+  queries are sub-region amplicons (#200). It now matches by **containment**,
+  as R does (`vcountPDict(...) > 0`). On the MiSeq SOP, 232 ASVs against Silva
+  138.2: 0 species before, 16 after — per-ASV identical to R's `addSpecies`.
+  The failure was silent: exit 0, valid JSON, a present-but-null Species column.
 - `assign-taxonomy` is now reproducible regardless of **input order and input
   set** (#187). Each sequence's bootstrap RNG is derived from
   the sequence (pinned MD5) instead of its position, so a sequence's
