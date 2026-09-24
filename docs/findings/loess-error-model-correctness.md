@@ -140,6 +140,49 @@ its own term. One dataset, and a small clean one — but it is the first
 ASV-level confirmation that the `ehg124`/`ehg128` port does what it was written
 to do.
 
+### Why there is a difference at all, and whether it matters
+
+**It is not an implementation error.** Our direct surface matches R's
+`loess(surface = "direct")` to 1.97e-13. The gap exists because `loessErrfun`
+calls `loess()` without naming a surface and so inherits R's default,
+`surface = "interpolate"` — kd-tree vertices plus cubic Hermite blending, which
+is an approximation adopted for speed. On the integer-Q grid every data point is
+already a vertex, so direct evaluation is arguably the *more* faithful
+evaluation of the same fit, and the deviation is R's approximation rather than
+ours. We implement both and default to `direct`.
+
+**Whether it matters is a different question, and the intuition is wrong.** The
+natural guess is that a small error-rate shift only moves borderline calls near
+the abundance cutoff. On the SOP the six affected ASVs sit here:
+
+| rank by abundance | R | ours | delta | share of that ASV |
+|---:|---:|---:|---:|---:|
+| 3 | 8,862 | 8,859 | −3 | −0.03% |
+| 8 | 5,318 | 5,312 | −6 | −0.11% |
+| 10 | 3,969 | 3,970 | +1 | +0.03% |
+| 18 | 1,257 | 1,258 | +1 | +0.08% |
+| 100 | 148 | 149 | +1 | +0.68% |
+| 120 | 93 | 95 | +2 | +2.15% |
+
+Four of the six are in the **top 8% by abundance**, and the two largest absolute
+shifts are the rank-3 and rank-8 ASVs. Together the six hold 15.8% of the reads
+in the table.
+
+That makes sense once stated: the error model acts on *reads near a partition
+boundary*, and an abundant cluster has more such reads than a rare one. So the
+**absolute** effect concentrates in abundant ASVs while the **relative** effect
+is larger in rare ones — the 93-read ASV moves 2.15%, the 8,862-read ASV moves
+0.03%.
+
+The practical verdict on this dataset is still that it does not matter: no ASV
+was gained or lost, and the whole table moves by 4 reads in 124,249. But "these
+are fringe calls" is the wrong model of where it acts, and two caveats keep it
+from generalising. The error model is an amplifier — [the KDIST
+work](kdist-cutoff-decoupling.md) found error-model perturbation churning
+*real-abundance* ASVs — and this is one small, clean dataset. Where exact counts
+matter, such as reproducing a published table or testing concordance,
+`--loess-preset r-dada2` removes the question entirely.
+
 R DADA2's use of `surface = "interpolate"` appears to be R's default rather than
 a deliberate choice; on an integer-Q grid, where every data point is already a
 vertex, direct evaluation is arguably the more accurate of the two.
