@@ -178,8 +178,20 @@ model. Three arms, same filtered reads, same everything else:
 
 So **`--loess-preset r-dada2` reproduces R's chimera-filtered table exactly on
 this dataset** — every ASV, every count — and handing our pipeline R's own
-fitted model does no better, which is the point: once the error model agrees,
-denoising, merging, table construction and chimera removal are already exact.
+fitted model does no better.
+
+!!! note "Exact here, not exact everywhere"
+    Reaching zero on this dataset is a best case. Earlier work on other data
+    found small count-level differences persisting *even when supplied with R's
+    exact error models* — much closer than without, but not identical. The SOP is
+    20 samples of clean, deeply-characterised data.
+
+    There is also a limit to what "matching R" can mean at all. R DADA2's output
+    shifts slightly across package versions, R releases and platforms (Linux
+    against macOS), so exact agreement is a statement about *one* R build on
+    *one* machine, not a property two implementations can hold in general.
+    Reproducing a specific published table means pinning the version and the
+    environment, in R as much as here.
 
 Note what is *not* a factor here. `--nbases 1e8` against ~33 Mbases of forward
 reads means neither tool subsamples, so both fit on identical input; the
@@ -190,8 +202,22 @@ term](../findings/learn-errors-nbases-convergence.md).
 The background is [the LOESS
 page](../findings/loess-error-model-correctness.md): our native LOESS matches R's
 `loess(surface = "direct")` to machine precision, while R DADA2 takes R's
-default `surface = "interpolate"`. The default here stays `direct`; `r-dada2` is
-for when bit-parity with R is what you want.
+default `surface = "interpolate"`.
+
+!!! tip "You probably do not need any of this"
+    The default settings are the recommended ones. `--loess-preset r-dada2`, the
+    [external errfun route](external-error-models.md) and the R-model converter
+    exist for **fidelity to a specific R run** — reproducing a published table,
+    or diffing against an R pipeline during a migration. They are not a
+    correction: there is no sense in which the default is the less accurate
+    choice, and on an integer-Q grid `direct` is arguably the better evaluation.
+
+    At larger scale the picture is the same shape as here — ASV concordance
+    holds, with residual noise concentrated in per-sample totals and count
+    correlation staying high. Results are also held to
+    [a stricter standard than the concordance gate](../benchmarking.md#the-gate-is-the-floor-not-the-practice):
+    changes expected to be result-neutral are checked for byte-identical output
+    before they land, so what you get should not drift between releases.
 
 ## 8. Track reads through the pipeline
 

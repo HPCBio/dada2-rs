@@ -277,6 +277,48 @@ against R, independent of timing:
 | [`track_reads.py`](scripts/pipeline-helpers.md#track_readspy) | per-stage read-count tracking (the DADA2 "track" table) |
 | `dev/summarize_learn_errors.py` | summarizes a learned error model |
 
+### What CI actually gates on
+
+`.github/workflows/concordance.yml` runs the comparison with `--gate`, so a
+metric below its threshold fails the build. Three metrics, not one — **counts are
+checked, by correlation**:
+
+| metric | threshold | observed baseline |
+|---|---|---|
+| recall | 0.85 | 1.000 both platforms |
+| precision | 0.80 | 1.000 both platforms |
+| **`count_corr`** | **0.95** | Illumina 1.000, **PacBio 0.994** |
+
+(`dada-pseudo` runs tighter: recall 0.93, precision 0.95.) Thresholds are
+deliberately generous against those baselines, to catch a real regression
+without flaking.
+
+Two things worth reading off that table. Count agreement **is** gated, so a
+change that preserves the ASV set while moving abundances will be caught. And
+PacBio has never been at 1.000 — count-level agreement with R is close rather
+than exact there, and always has been.
+
+What the gate does not instrument is **per-stage read accounting**: the
+intermediate counts that never reach the sequence table, such as the denoised
+per-sample totals. See [#204](https://github.com/HPCBio/dada2-rs/issues/204).
+
+CI never runs R; the reference tables are committed as static CSVs.
+
+### The gate is the floor, not the practice
+
+The thresholds above catch regressions. They are not the standard changes are
+held to. A change that is expected to leave results untouched — a performance
+change, a refactor, a memory reduction — is checked for **byte-identical
+output** before it lands, and the findings pages throughout this site report
+churn of exactly 0 for that reason. Where a change legitimately *does* move
+results, the amount is measured and stated rather than absorbed.
+
+That discipline is the substantive answer to "can I trust these numbers". It
+also means results should stay stable release to release: the same guardrail
+that blocks an accidental change blocks an accidental *drift*, which is a
+property worth more to a long-running analysis than agreeing with any single
+external run to the last read.
+
 Typical correctness loop for a benchmark run:
 
 1. Run the harness for the stack(s).
