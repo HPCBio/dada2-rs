@@ -24,7 +24,7 @@
 //! - All indexing is 0-based; callers should add 1 if they need R-style output.
 //! - `Rcpp::checkUserInterrupt()` is removed (no R event loop).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use rand::SeedableRng;
 use rand::distributions::{Distribution, Standard};
@@ -490,6 +490,103 @@ fn escsh(s: &str) -> &str {
 /// - `N > 1` — up to N distinct species joined with `"/"`
 ///
 /// Equivalent to R's `assignSpecies`.
+/// For each query, the set of reference indices whose sequence *contains* it.
+///
+/// Mirrors R's `vcountPDict(PDict(seqs), sread(refs)) > 0`. `PDict` requires
+/// equal-width patterns, so R batches queries by length; the same grouping is
+/// what makes a rolling hash usable here.
+///
+/// Rabin-Karp per length class: hash each `len`-wide window of a reference once
+/// and look it up, rather than searching each (query, reference) pair
+/// separately -- 352k references and 517 Mbases make the pairwise form
+/// hopeless. Hash collisions are resolved by comparing the bytes, so the
+/// result is exact.
+///
+/// `n_fwd` is the number of forward queries; patterns at or above it are
+/// reverse complements and fold back onto `pattern_index - n_fwd`.
+fn find_containing_refs(
+    patterns: &[&[u8]],
+    ref_seqs: &[&[u8]],
+    n_fwd: usize,
+) -> Vec<BTreeSet<usize>> {
+    const BASE: u64 = 0x100_0000_01b3; // FNV prime, arbitrary but odd
+
+    // Length class -> (hash -> pattern indices), plus the class's leading
+    // coefficient for the rolling update.
+    let mut by_len: HashMap<usize, HashMap<u64, Vec<usize>>> = HashMap::new();
+    for (pi, p) in patterns.iter().enumerate() {
+        if p.is_empty() {
+            continue;
+        }
+        let h = p.iter().fold(0u64, |acc, &b| {
+            acc.wrapping_mul(BASE).wrapping_add(b as u64)
+        });
+        by_len
+            .entry(p.len())
+            .or_default()
+            .entry(h)
+            .or_default()
+            .push(pi);
+    }
+    /// One query-length class: the width, `BASE^(width-1)` for the rolling
+    /// update, and that width's hash → pattern-index table.
+    type LenClass<'a> = (usize, u64, &'a HashMap<u64, Vec<usize>>);
+
+    let classes: Vec<LenClass<'_>> = by_len
+        .iter()
+        .map(|(&len, map)| {
+            // BASE^(len-1), the weight of the byte leaving the window.
+            let high = (0..len.saturating_sub(1)).fold(1u64, |acc, _| acc.wrapping_mul(BASE));
+            (len, high, map)
+        })
+        .collect();
+
+    ref_seqs
+        .par_iter()
+        .enumerate()
+        .fold(
+            || vec![BTreeSet::new(); n_fwd],
+            |mut acc, (ri, &r)| {
+                for &(len, high, map) in &classes {
+                    if r.len() < len {
+                        continue;
+                    }
+                    let mut h = r[..len]
+                        .iter()
+                        .fold(0u64, |a, &b| a.wrapping_mul(BASE).wrapping_add(b as u64));
+                    let mut start = 0usize;
+                    loop {
+                        if let Some(cands) = map.get(&h) {
+                            for &pi in cands {
+                                if patterns[pi] == &r[start..start + len] {
+                                    acc[if pi >= n_fwd { pi - n_fwd } else { pi }].insert(ri);
+                                }
+                            }
+                        }
+                        if start + len >= r.len() {
+                            break;
+                        }
+                        h = h
+                            .wrapping_sub((r[start] as u64).wrapping_mul(high))
+                            .wrapping_mul(BASE)
+                            .wrapping_add(r[start + len] as u64);
+                        start += 1;
+                    }
+                }
+                acc
+            },
+        )
+        .reduce(
+            || vec![BTreeSet::new(); n_fwd],
+            |mut a, b| {
+                for (dst, src) in a.iter_mut().zip(b) {
+                    dst.extend(src);
+                }
+                a
+            },
+        )
+}
+
 pub fn assign_species(
     seqs: &[&[u8]],
     ref_db: &SpeciesRef<'_>,
@@ -508,26 +605,29 @@ pub fn assign_species(
     assert_eq!(ref_seqs.len(), ref_genus.len());
     assert_eq!(ref_seqs.len(), ref_species.len());
 
-    let mut map: HashMap<&[u8], Vec<usize>> = HashMap::new();
-    for (i, &seq) in ref_seqs.iter().enumerate() {
-        map.entry(seq).or_default().push(i);
-    }
+    // A query matches a reference when it occurs *within* it, not when the two
+    // are equal: R's `vcountPDict(PDict(seqs), sread(refs)) > 0` (taxonomy.R).
+    // The distinction is the whole feature -- species references are full-length
+    // 16S and queries are sub-region amplicons, so equality never holds (#200).
+    let mut patterns: Vec<&[u8]> = seqs.to_vec();
+    let rcs: Vec<Vec<u8>> = if try_rc {
+        seqs.iter().map(|q| rc_seq(q)).collect()
+    } else {
+        Vec::new()
+    };
+    // Query i's reverse complement is pattern `seqs.len() + i`. R reverse-
+    // complements the *reference* instead; searching for RC(query) in the
+    // reference is the same predicate.
+    patterns.extend(rcs.iter().map(|v| v.as_slice()));
+
+    let hits_per_query = find_containing_refs(&patterns, ref_seqs, seqs.len());
 
     let mut results = Vec::with_capacity(seqs.len());
     let mut n_assigned = 0usize;
 
-    for &query in seqs {
-        let mut hit_indices: Vec<usize> = Vec::new();
-
-        if let Some(hits) = map.get(query) {
-            hit_indices.extend_from_slice(hits);
-        }
-        if try_rc {
-            let rc = rc_seq(query);
-            if let Some(hits) = map.get(rc.as_slice()) {
-                hit_indices.extend_from_slice(hits);
-            }
-        }
+    for (qi, &query) in seqs.iter().enumerate() {
+        let _ = query;
+        let hit_indices: Vec<usize> = hits_per_query[qi].iter().copied().collect();
 
         if hit_indices.is_empty() {
             results.push(SpeciesHit {
@@ -647,6 +747,98 @@ mod tests {
             .enumerate()
             .map(|(pos, &i)| (queries[i].clone(), res.boot_taxa[pos].clone()))
             .collect()
+    }
+
+    /// A query matches a reference it is *contained in*, not only one it equals
+    /// (issue #200; R does `vcountPDict(...) > 0`).
+    ///
+    /// The flanks are what make this able to fail: with whole-sequence equality
+    /// the query is never found, which is what shipped. Species references are
+    /// full-length 16S and queries are sub-region amplicons, so containment is
+    /// the ordinary case and equality is the degenerate one.
+    #[test]
+    fn species_match_is_containment_not_equality() {
+        let query: Vec<u8> = b"ACGTACGTACGTTTGGCCAA".to_vec();
+        let mut reference = b"TTTTTTGGGG".to_vec();
+        reference.extend_from_slice(&query);
+        reference.extend_from_slice(b"CCCCAAAATT");
+        assert!(
+            reference.len() > query.len(),
+            "flanks must make this a proper substring"
+        );
+
+        let refs: Vec<&[u8]> = vec![reference.as_slice()];
+        let hits = assign_species(
+            &[query.as_slice()],
+            &SpeciesRef {
+                ref_seqs: &refs,
+                ref_genus: &["Blautia"],
+                ref_species: &["coccoides"],
+            },
+            SpeciesOptions {
+                max_species: 1,
+                try_rc: false,
+                verbose: false,
+            },
+        );
+        assert_eq!(hits[0].genus.as_deref(), Some("Blautia"));
+        assert_eq!(hits[0].species.as_deref(), Some("coccoides"));
+    }
+
+    /// Equality is just containment with empty flanks, and must keep working.
+    #[test]
+    fn species_match_still_accepts_an_exact_reference() {
+        let query: Vec<u8> = b"ACGTACGTACGTTTGGCCAA".to_vec();
+        let refs: Vec<&[u8]> = vec![query.as_slice()];
+        let hits = assign_species(
+            &[query.as_slice()],
+            &SpeciesRef {
+                ref_seqs: &refs,
+                ref_genus: &["Blautia"],
+                ref_species: &["coccoides"],
+            },
+            SpeciesOptions {
+                max_species: 1,
+                try_rc: false,
+                verbose: false,
+            },
+        );
+        assert_eq!(hits[0].species.as_deref(), Some("coccoides"));
+    }
+
+    /// `--try-rc` has to use the same predicate: R reverse-complements the
+    /// reference, we reverse-complement the query, and containment makes those
+    /// the same test.
+    #[test]
+    fn species_try_rc_also_matches_by_containment() {
+        let query: Vec<u8> = b"ACGTACGTACGTTTGGCCAA".to_vec();
+        let rc = rc_seq(&query);
+        let mut reference = b"TTTTTTGGGG".to_vec();
+        reference.extend_from_slice(&rc);
+        reference.extend_from_slice(b"CCCCAAAATT");
+
+        let refs: Vec<&[u8]> = vec![reference.as_slice()];
+        let opts = |try_rc| SpeciesOptions {
+            max_species: 1,
+            try_rc,
+            verbose: false,
+        };
+        let sref = SpeciesRef {
+            ref_seqs: &refs,
+            ref_genus: &["Blautia"],
+            ref_species: &["coccoides"],
+        };
+        assert_eq!(
+            assign_species(&[query.as_slice()], &sref, opts(false))[0].species,
+            None,
+            "forward-only must not find the reverse-complemented reference"
+        );
+        assert_eq!(
+            assign_species(&[query.as_slice()], &sref, opts(true))[0]
+                .species
+                .as_deref(),
+            Some("coccoides")
+        );
     }
 
     /// A seeded run must give each sequence the same answer no matter where it
