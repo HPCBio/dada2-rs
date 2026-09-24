@@ -1,9 +1,14 @@
 # Illumina MiSeq (paired-end) workflow
 
-An end-to-end paired-end example. The steps below follow the
-[DADA2 MiSeq SOP](http://benjjneb.github.io/dada2/tutorial.html). All
-intermediate outputs are JSON and can be inspected or plotted independently. Run
-`dada2-rs <subcommand> --help` for the full parameter set of any step.
+An end-to-end paired-end example in the shape of the
+[DADA2 MiSeq SOP](http://benjjneb.github.io/dada2/tutorial.html), with generic
+paths so it applies to your own data. All intermediate outputs are JSON and can
+be inspected or plotted independently. Run `dada2-rs <subcommand> --help` for
+the full parameter set of any step.
+
+For the tutorial itself — same dataset, R function named at each step, real
+counts from a run — see [The DADA2 SOP tutorial, in
+dada2-rs](dada2-sop.md).
 
 ## 1. Filter and trim
 

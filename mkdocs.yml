@@ -59,6 +59,7 @@ nav:
     - Pooled (dada-pooled): algorithm-dada-pooled.md
     - Pseudo-pooled (dada-pseudo): algorithm-dada-pseudo.md
   - Walkthroughs:
+    - DADA2 SOP tutorial: walkthroughs/dada2-sop.md
     - Illumina MiSeq: walkthroughs/walkthrough-illumina.md
     - Illumina - Binned Quality: walkthroughs/walkthrough-illumina-binned.md
     - PacBio HiFi: walkthroughs/walkthrough-pacbio.md
