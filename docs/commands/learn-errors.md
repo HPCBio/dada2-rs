@@ -103,6 +103,22 @@ with `--errfun noqual`.
 **`--binned-quals`** — comma-separated anchor quality values for piecewise-linear
 interpolation, e.g. `0,10,20,30,40`. Only used with `--errfun binned-qual`.
 
+!!! tip "Observed bins can be narrower than the instrument's documented ones"
+    `summary --report` tells you which quality values are *present in your data*,
+    which is not necessarily the scheme the vendor documents. NovaSeq is
+    documented as binning to **2, 11, 25, 37**, but the Q2 tail is routinely
+    removed by trimming or `--trunc-q`, so a trimmed dataset commonly shows only
+    **11, 25, 37**.
+
+    Either set works. An anchor with no observations behind it contributes
+    nothing — the interpolation segment that would need it is skipped and the
+    values below the lowest *observed* anchor are flat-filled, so on one NovaSeq
+    soil dataset `2,11,25,37` and `11,25,37` produce **bit-identical** error
+    matrices.
+
+    What matters is that the anchors **bracket** the observed range: a quality
+    score outside them is an error, not a warning, and the same is true in R.
+
 **`--errfun-cmd`** — command to invoke for `--errfun external`. Whitespace-split
 into argv; the trans-input and err-output file paths are appended as the final
 two arguments. Both files use R's
