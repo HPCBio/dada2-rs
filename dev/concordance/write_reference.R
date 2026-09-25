@@ -183,6 +183,17 @@ if (platform == "illumina") {
   if (length(sample.names) == 1) rownames(seqtab.nochim) <- sample.names
   write_long(seqtab.nochim, out_csv)
   save_artifacts(out_csv, seqtab, list(errF = errF, errR = errR))
+  # Per-DIRECTION tables, before mergePairs. Without these a merged-table
+  # difference cannot be attributed: "R never called this ASV" may mean R's
+  # forward or reverse dada never called the component, or that both were called
+  # and the pair failed to merge. Chasing one extra ASV on the 362-sample run
+  # ran out of evidence at exactly this point.
+  stem <- sub("\\.csv$", "", out_csv)
+  for (nm in c("F", "R")) {
+    st_dir <- makeSequenceTable(if (nm == "F") ddF else ddR)
+    saveRDS(st_dir, paste0(stem, ".dada", nm, ".rds"))
+    write_long(st_dir, paste0(stem, ".dada", nm, ".csv"))
+  }
 
 } else if (platform == "pacbio") {
   # --- Parameters: keep in sync with run_pacbio.sh ---
