@@ -119,6 +119,26 @@ write_long <- function(seqtab, path) {
               path, length(seqs), nrow(seqtab), nrow(df)))
 }
 
+# Save what the post-chimera CSV cannot answer later. Two things have already
+# been wanted and were not there:
+#   * the error models, which `scripts/learnerrors_to_dada2rs.R` converts so our
+#     dada can run on R's model -- the arm that separates the error model from
+#     everything downstream of it;
+#   * the PRE-chimera table, because "R does not have this ASV" and "R had it and
+#     called it chimeric" are different findings and the post-chimera CSV cannot
+#     tell them apart (three extras on the 362-sample MiSeq run turned out to be
+#     clean two-parent bimeras, and confirming that needed R's pre-chimera set).
+save_artifacts <- function(out_csv, seqtab_pre, errs) {
+  stem <- sub("\\.csv$", "", out_csv)
+  for (nm in names(errs)) {
+    path <- paste0(stem, ".", nm, ".rds")
+    saveRDS(errs[[nm]], path)
+    cat(sprintf("wrote %s (learnErrors object; feed to scripts/learnerrors_to_dada2rs.R)\n", path))
+  }
+  saveRDS(seqtab_pre, paste0(stem, ".prechimera.rds"))
+  write_long(seqtab_pre, paste0(stem, ".prechimera.csv"))
+}
+
 if (platform == "illumina") {
   # --- Parameters: keep in sync with run_illumina.sh ---
   TRUNC_LEN <- c(240, 160); MAX_EE <- c(2, 2); TRUNC_Q <- 2; MAX_N <- 0
@@ -161,6 +181,7 @@ if (platform == "illumina") {
                                       multithread = MT, verbose = TRUE)
   if (length(sample.names) == 1) rownames(seqtab.nochim) <- sample.names
   write_long(seqtab.nochim, out_csv)
+  save_artifacts(out_csv, seqtab, list(errF = errF, errR = errR))
 
 } else if (platform == "pacbio") {
   # --- Parameters: keep in sync with run_pacbio.sh ---
@@ -192,6 +213,7 @@ if (platform == "illumina") {
                                       multithread = MT, verbose = TRUE)
   if (length(sample.names) == 1) rownames(seqtab.nochim) <- sample.names
   write_long(seqtab.nochim, out_csv)
+  save_artifacts(out_csv, seqtab, list(err = err))
 
 } else {
   stop("unknown platform: ", platform, " (expected illumina or pacbio)")
