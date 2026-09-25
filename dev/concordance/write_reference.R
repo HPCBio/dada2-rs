@@ -25,7 +25,7 @@ args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 3) stop(paste(
   "usage: write_reference.R <illumina|pacbio> <data-dir> <out.csv>",
   "[primer_fwd primer_rev] [--pool=false|pseudo|true] [--errfun=loess|binned-qual]",
-  "[--binned-quals=2,11,25,37] [--prefiltered]"))
+  "[--binned-quals=2,11,25,37] [--prefiltered] [--threads=N]"))
 platform <- args[1]; data_dir <- args[2]; out_csv <- args[3]
 
 # --pool=pseudo generates a reference for `dada(pool="pseudo")` instead of the
@@ -62,6 +62,22 @@ ERRFUN_FN <- if (identical(ERRFUN, "binned-qual")) {
 # silently carrying that difference too.
 PREFILTERED <- any(args == "--prefiltered")
 if (PREFILTERED) cat("inputs treated as pre-filtered; skipping filterAndTrim\n")
+
+# Thread count. `multithread = MT` makes DADA2 call parallel::detectCores(),
+# which reports the PHYSICAL machine rather than a cgroup or cpuset -- so under
+# SLURM it happily spawns one thread per host core against a much smaller
+# allocation, oversubscribing the node and making any timing meaningless.
+# Prefer an explicit count: --threads=N, else $SLURM_CPUS_PER_TASK, else the old
+# TRUE so off-cluster behaviour is unchanged.
+THREADS <- flag("threads")
+MT <- if (!is.na(THREADS)) {
+  as.integer(THREADS)
+} else if (nzchar(Sys.getenv("SLURM_CPUS_PER_TASK"))) {
+  as.integer(Sys.getenv("SLURM_CPUS_PER_TASK"))
+} else {
+  TRUE
+}
+cat(sprintf("threads: %s\n", if (isTRUE(MT)) "TRUE (detectCores; NOT cgroup-aware)" else MT))
 
 args <- args[!grepl("^--", args)]
 
@@ -102,17 +118,17 @@ if (platform == "illumina") {
     filtRs <- file.path(filt_dir, paste0(sample.names, "_R_filt.fastq.gz"))
     filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen = TRUNC_LEN,
                   maxN = MAX_N, maxEE = MAX_EE, truncQ = TRUNC_Q,
-                  rm.phix = FALSE, compress = TRUE, multithread = TRUE)
+                  rm.phix = FALSE, compress = TRUE, multithread = MT)
   }
 
-  errF <- learnErrors(filtFs, errorEstimationFunction = ERRFUN_FN, multithread = TRUE)
-  errR <- learnErrors(filtRs, errorEstimationFunction = ERRFUN_FN, multithread = TRUE)
-  ddF <- dada(filtFs, err = errF, pool = POOL, multithread = TRUE)
-  ddR <- dada(filtRs, err = errR, pool = POOL, multithread = TRUE)
+  errF <- learnErrors(filtFs, errorEstimationFunction = ERRFUN_FN, multithread = MT)
+  errR <- learnErrors(filtRs, errorEstimationFunction = ERRFUN_FN, multithread = MT)
+  ddF <- dada(filtFs, err = errF, pool = POOL, multithread = MT)
+  ddR <- dada(filtRs, err = errR, pool = POOL, multithread = MT)
   mergers <- mergePairs(ddF, filtFs, ddR, filtRs)
   seqtab <- makeSequenceTable(mergers)
   seqtab.nochim <- removeBimeraDenovo(seqtab, method = "consensus",
-                                      multithread = TRUE, verbose = TRUE)
+                                      multithread = MT, verbose = TRUE)
   if (length(sample.names) == 1) rownames(seqtab.nochim) <- sample.names
   write_long(seqtab.nochim, out_csv)
 
@@ -136,14 +152,14 @@ if (platform == "illumina") {
   filts <- file.path(filt_dir, paste0(sample.names, "_filt.fastq.gz"))
   filterAndTrim(nops, filts, minLen = MIN_LEN, maxLen = MAX_LEN, maxN = MAX_N,
                 maxEE = MAX_EE, truncQ = TRUNC_Q, rm.phix = FALSE,
-                compress = TRUE, multithread = TRUE)
+                compress = TRUE, multithread = MT)
 
   err <- learnErrors(filts, errorEstimationFunction = PacBioErrfun,
-                     BAND_SIZE = 32, multithread = TRUE)
-  dd <- dada(filts, err = err, pool = FALSE, BAND_SIZE = 32, multithread = TRUE)
+                     BAND_SIZE = 32, multithread = MT)
+  dd <- dada(filts, err = err, pool = FALSE, BAND_SIZE = 32, multithread = MT)
   seqtab <- makeSequenceTable(dd)
   seqtab.nochim <- removeBimeraDenovo(seqtab, method = "consensus",
-                                      multithread = TRUE, verbose = TRUE)
+                                      multithread = MT, verbose = TRUE)
   if (length(sample.names) == 1) rownames(seqtab.nochim) <- sample.names
   write_long(seqtab.nochim, out_csv)
 
