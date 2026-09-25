@@ -22,36 +22,122 @@
 suppressPackageStartupMessages(library(dada2))
 
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) < 3) stop("usage: write_reference.R <illumina|pacbio> <data-dir> <out.csv> [primer_fwd primer_rev] [--pool=false|pseudo]")
+if (length(args) < 3) stop(paste(
+  "usage: write_reference.R <illumina|pacbio> <data-dir> <out.csv>",
+  "[primer_fwd primer_rev] [--pool=false|pseudo|true] [--errfun=loess|binned-qual]",
+  "[--binned-quals=2,11,25,37] [--prefiltered] [--threads=N] [--nbases=N]"))
 platform <- args[1]; data_dir <- args[2]; out_csv <- args[3]
 
 # --pool=pseudo generates a reference for `dada(pool="pseudo")` instead of the
 # per-sample default, so run_illumina.sh POOL=pseudo can be compared against a
 # matching R run. Anywhere in the args; default per-sample.
-pool_arg <- grep("^--pool=", args, value = TRUE)
-POOL <- if (length(pool_arg)) sub("^--pool=", "", pool_arg[1]) else "false"
-POOL <- if (identical(POOL, "pseudo")) "pseudo" else FALSE
-args <- args[!grepl("^--pool=", args)]
-cat(sprintf("pool mode: %s\n", if (identical(POOL, "pseudo")) "pseudo" else "FALSE (per-sample)"))
+flag <- function(name, default = NA_character_) {
+  hit <- grep(paste0("^--", name, "="), args, value = TRUE)
+  if (length(hit)) sub(paste0("^--", name, "="), "", hit[1]) else default
+}
+
+pool_raw <- flag("pool", "false")
+POOL <- switch(pool_raw, pseudo = "pseudo", true = TRUE, TRUE_ = TRUE, FALSE)
+cat(sprintf("pool mode: %s\n",
+            if (identical(POOL, "pseudo")) "pseudo"
+            else if (isTRUE(POOL)) "TRUE (full pooling)" else "FALSE (per-sample)"))
+
+# Error function, mirroring run_illumina.sh's ERRFUN / ERRFUN_ARGS so the two
+# sides can be pointed at the same model. `binned-qual` needs its anchors.
+ERRFUN <- flag("errfun", "loess")
+BINNED <- flag("binned-quals")
+ERRFUN_FN <- if (identical(ERRFUN, "binned-qual")) {
+  if (is.na(BINNED)) stop("--errfun=binned-qual requires --binned-quals=a,b,c")
+  bins <- as.numeric(strsplit(BINNED, ",")[[1]])
+  cat(sprintf("errfun: binned-qual, anchors %s\n", paste(bins, collapse = ",")))
+  makeBinnedQualErrfun(bins)
+} else {
+  cat("errfun: loess (R default)\n")
+  loessErrfun
+}
+
+# --prefiltered: the inputs are ALREADY trimmed and filtered, so use them as-is,
+# mirroring run_illumina.sh's PREFILTERED. This is what lets ONE filtering pass
+# feed both sides, rather than each tool filtering separately and the comparison
+# silently carrying that difference too.
+PREFILTERED <- any(args == "--prefiltered")
+if (PREFILTERED) cat("inputs treated as pre-filtered; skipping filterAndTrim\n")
+
+# Thread count. `multithread = MT` makes DADA2 call parallel::detectCores(),
+# which reports the PHYSICAL machine rather than a cgroup or cpuset -- so under
+# SLURM it happily spawns one thread per host core against a much smaller
+# allocation, oversubscribing the node and making any timing meaningless.
+# Prefer an explicit count: --threads=N, else $SLURM_CPUS_PER_TASK, else the old
+# TRUE so off-cluster behaviour is unchanged.
+THREADS <- flag("threads")
+MT <- if (!is.na(THREADS)) {
+  as.integer(THREADS)
+} else if (nzchar(Sys.getenv("SLURM_CPUS_PER_TASK"))) {
+  as.integer(Sys.getenv("SLURM_CPUS_PER_TASK"))
+} else {
+  TRUE
+}
+cat(sprintf("threads: %s\n", if (isTRUE(MT)) "TRUE (detectCores; NOT cgroup-aware)" else MT))
+
+# learnErrors' subsampling budget. R defaults to 1e8; run_illumina.sh defaults to
+# 2e7 -- so left alone the two sides train on DIFFERENT amounts of data, and any
+# arm comparison is measuring the budget as well as whatever it meant to test.
+# Set both, and set them above the run total if the surface or errfun is the
+# thing under test.
+# --train-samples=FILE: learn the error model from ONLY these samples (one name
+# per line), then denoise everything. Pinning the training set is what makes an
+# arm comparison mean anything once a run is large enough to subsample: with a
+# budget alone, each tool draws its own reads and the arms differ in their
+# training data as well as in whatever was under test. It is also closer to real
+# use -- nobody trains on a whole run.
+TRAIN_SAMPLES <- flag("train-samples")
+
+NBASES <- flag("nbases")
+NBASES <- if (!is.na(NBASES)) as.numeric(NBASES) else 1e8
+cat(sprintf("nbases: %s%s\n", format(NBASES, scientific = TRUE),
+            if (is.na(flag("nbases"))) " (R default; run_illumina.sh defaults to 2e7 -- match them)" else ""))
+
+args <- args[!grepl("^--", args)]
 
 write_long <- function(seqtab, path) {
   # seqtab: matrix rows = samples, cols = sequences (colnames = ASV seqs)
   seqs <- colnames(seqtab)
-  rows <- list()
-  for (si in seq_len(nrow(seqtab))) {
-    sample <- rownames(seqtab)[si]
-    for (j in seq_along(seqs)) {
-      cnt <- seqtab[si, j]
-      if (cnt > 0) rows[[length(rows) + 1]] <- data.frame(
-        sequence = seqs[j], sample = sample, count = as.integer(cnt),
-        stringsAsFactors = FALSE)
-    }
-  }
-  df <- do.call(rbind, rows)
+  # Vectorised: the old form allocated one data.frame per non-zero cell and
+  # rbound them, which is fine for a fixture and hopeless for a real table --
+  # a 2,823 x 362 pre-chimera matrix has ~10^5-10^6 non-zero cells, and the
+  # pre-chimera CSV silently failed to appear on the first 362-sample run
+  # because of it.
+  nz <- which(seqtab > 0, arr.ind = TRUE)
+  df <- data.frame(
+    sequence = seqs[nz[, "col"]],
+    sample   = rownames(seqtab)[nz[, "row"]],
+    count    = as.integer(seqtab[nz]),
+    stringsAsFactors = FALSE)
+  df <- df[order(df$sample, df$sequence), , drop = FALSE]
   dir.create(dirname(path), showWarnings = FALSE, recursive = TRUE)
   write.csv(df, path, row.names = FALSE, quote = FALSE)
   cat(sprintf("wrote %s: %d ASVs, %d sample(s), %d rows\n",
               path, length(seqs), nrow(seqtab), nrow(df)))
+}
+
+# Save what the post-chimera CSV cannot answer later. Two things have already
+# been wanted and were not there:
+#   * the error models, which `scripts/learnerrors_to_dada2rs.R` converts so our
+#     dada can run on R's model -- the arm that separates the error model from
+#     everything downstream of it;
+#   * the PRE-chimera table, because "R does not have this ASV" and "R had it and
+#     called it chimeric" are different findings and the post-chimera CSV cannot
+#     tell them apart (three extras on the 362-sample MiSeq run turned out to be
+#     clean two-parent bimeras, and confirming that needed R's pre-chimera set).
+save_artifacts <- function(out_csv, seqtab_pre, errs) {
+  stem <- sub("\\.csv$", "", out_csv)
+  for (nm in names(errs)) {
+    path <- paste0(stem, ".", nm, ".rds")
+    saveRDS(errs[[nm]], path)
+    cat(sprintf("wrote %s (learnErrors object; feed to scripts/learnerrors_to_dada2rs.R)\n", path))
+  }
+  saveRDS(seqtab_pre, paste0(stem, ".prechimera.rds"))
+  write_long(seqtab_pre, paste0(stem, ".prechimera.csv"))
 }
 
 if (platform == "illumina") {
@@ -63,23 +149,51 @@ if (platform == "illumina") {
   if (length(fnFs) == 0) stop("no *F.fastq.gz in ", data_dir)
   sample.names <- sub("F\\.fastq\\.gz$", "", basename(fnFs))
 
-  filt_dir <- file.path(tempdir(), "filtered")
-  filtFs <- file.path(filt_dir, paste0(sample.names, "_F_filt.fastq.gz"))
-  filtRs <- file.path(filt_dir, paste0(sample.names, "_R_filt.fastq.gz"))
-  filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen = TRUNC_LEN,
-                maxN = MAX_N, maxEE = MAX_EE, truncQ = TRUNC_Q,
-                rm.phix = FALSE, compress = TRUE, multithread = TRUE)
+  if (PREFILTERED) {
+    filtFs <- fnFs; filtRs <- fnRs
+  } else {
+    filt_dir <- file.path(tempdir(), "filtered")
+    filtFs <- file.path(filt_dir, paste0(sample.names, "_F_filt.fastq.gz"))
+    filtRs <- file.path(filt_dir, paste0(sample.names, "_R_filt.fastq.gz"))
+    filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen = TRUNC_LEN,
+                  maxN = MAX_N, maxEE = MAX_EE, truncQ = TRUNC_Q,
+                  rm.phix = FALSE, compress = TRUE, multithread = MT)
+  }
 
-  errF <- learnErrors(filtFs, multithread = TRUE)
-  errR <- learnErrors(filtRs, multithread = TRUE)
-  ddF <- dada(filtFs, err = errF, pool = POOL, multithread = TRUE)
-  ddR <- dada(filtRs, err = errR, pool = POOL, multithread = TRUE)
+  trainFs <- filtFs; trainRs <- filtRs
+  if (!is.na(TRAIN_SAMPLES)) {
+    keep <- trimws(readLines(TRAIN_SAMPLES))
+    keep <- keep[nzchar(keep)]
+    idx <- match(keep, sample.names)
+    if (anyNA(idx)) stop("--train-samples names not found in ", data_dir, ": ",
+                         paste(keep[is.na(idx)], collapse = ", "))
+    trainFs <- filtFs[idx]; trainRs <- filtRs[idx]
+    cat(sprintf("training on %d of %d samples (pinned via %s); denoising all %d\n",
+                length(idx), length(sample.names), TRAIN_SAMPLES, length(sample.names)))
+  }
+
+  errF <- learnErrors(trainFs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
+  errR <- learnErrors(trainRs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
+  ddF <- dada(filtFs, err = errF, pool = POOL, multithread = MT)
+  ddR <- dada(filtRs, err = errR, pool = POOL, multithread = MT)
   mergers <- mergePairs(ddF, filtFs, ddR, filtRs)
   seqtab <- makeSequenceTable(mergers)
   seqtab.nochim <- removeBimeraDenovo(seqtab, method = "consensus",
-                                      multithread = TRUE, verbose = TRUE)
+                                      multithread = MT, verbose = TRUE)
   if (length(sample.names) == 1) rownames(seqtab.nochim) <- sample.names
   write_long(seqtab.nochim, out_csv)
+  save_artifacts(out_csv, seqtab, list(errF = errF, errR = errR))
+  # Per-DIRECTION tables, before mergePairs. Without these a merged-table
+  # difference cannot be attributed: "R never called this ASV" may mean R's
+  # forward or reverse dada never called the component, or that both were called
+  # and the pair failed to merge. Chasing one extra ASV on the 362-sample run
+  # ran out of evidence at exactly this point.
+  stem <- sub("\\.csv$", "", out_csv)
+  for (nm in c("F", "R")) {
+    st_dir <- makeSequenceTable(if (nm == "F") ddF else ddR)
+    saveRDS(st_dir, paste0(stem, ".dada", nm, ".rds"))
+    write_long(st_dir, paste0(stem, ".dada", nm, ".csv"))
+  }
 
 } else if (platform == "pacbio") {
   # --- Parameters: keep in sync with run_pacbio.sh ---
@@ -101,16 +215,17 @@ if (platform == "illumina") {
   filts <- file.path(filt_dir, paste0(sample.names, "_filt.fastq.gz"))
   filterAndTrim(nops, filts, minLen = MIN_LEN, maxLen = MAX_LEN, maxN = MAX_N,
                 maxEE = MAX_EE, truncQ = TRUNC_Q, rm.phix = FALSE,
-                compress = TRUE, multithread = TRUE)
+                compress = TRUE, multithread = MT)
 
-  err <- learnErrors(filts, errorEstimationFunction = PacBioErrfun,
-                     BAND_SIZE = 32, multithread = TRUE)
-  dd <- dada(filts, err = err, pool = FALSE, BAND_SIZE = 32, multithread = TRUE)
+  err <- learnErrors(filts, errorEstimationFunction = PacBioErrfun, nbases = NBASES,
+                     BAND_SIZE = 32, multithread = MT)
+  dd <- dada(filts, err = err, pool = FALSE, BAND_SIZE = 32, multithread = MT)
   seqtab <- makeSequenceTable(dd)
   seqtab.nochim <- removeBimeraDenovo(seqtab, method = "consensus",
-                                      multithread = TRUE, verbose = TRUE)
+                                      multithread = MT, verbose = TRUE)
   if (length(sample.names) == 1) rownames(seqtab.nochim) <- sample.names
   write_long(seqtab.nochim, out_csv)
+  save_artifacts(out_csv, seqtab, list(err = err))
 
 } else {
   stop("unknown platform: ", platform, " (expected illumina or pacbio)")
