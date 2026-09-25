@@ -84,6 +84,14 @@ cat(sprintf("threads: %s\n", if (isTRUE(MT)) "TRUE (detectCores; NOT cgroup-awar
 # arm comparison is measuring the budget as well as whatever it meant to test.
 # Set both, and set them above the run total if the surface or errfun is the
 # thing under test.
+# --train-samples=FILE: learn the error model from ONLY these samples (one name
+# per line), then denoise everything. Pinning the training set is what makes an
+# arm comparison mean anything once a run is large enough to subsample: with a
+# budget alone, each tool draws its own reads and the arms differ in their
+# training data as well as in whatever was under test. It is also closer to real
+# use -- nobody trains on a whole run.
+TRAIN_SAMPLES <- flag("train-samples")
+
 NBASES <- flag("nbases")
 NBASES <- if (!is.na(NBASES)) as.numeric(NBASES) else 1e8
 cat(sprintf("nbases: %s%s\n", format(NBASES, scientific = TRUE),
@@ -131,8 +139,20 @@ if (platform == "illumina") {
                   rm.phix = FALSE, compress = TRUE, multithread = MT)
   }
 
-  errF <- learnErrors(filtFs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
-  errR <- learnErrors(filtRs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
+  trainFs <- filtFs; trainRs <- filtRs
+  if (!is.na(TRAIN_SAMPLES)) {
+    keep <- trimws(readLines(TRAIN_SAMPLES))
+    keep <- keep[nzchar(keep)]
+    idx <- match(keep, sample.names)
+    if (anyNA(idx)) stop("--train-samples names not found in ", data_dir, ": ",
+                         paste(keep[is.na(idx)], collapse = ", "))
+    trainFs <- filtFs[idx]; trainRs <- filtRs[idx]
+    cat(sprintf("training on %d of %d samples (pinned via %s); denoising all %d\n",
+                length(idx), length(sample.names), TRAIN_SAMPLES, length(sample.names)))
+  }
+
+  errF <- learnErrors(trainFs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
+  errR <- learnErrors(trainRs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
   ddF <- dada(filtFs, err = errF, pool = POOL, multithread = MT)
   ddR <- dada(filtRs, err = errR, pool = POOL, multithread = MT)
   mergers <- mergePairs(ddF, filtFs, ddR, filtRs)
