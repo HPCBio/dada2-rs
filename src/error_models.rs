@@ -202,10 +202,26 @@ pub fn loess_errfun(
 /// then estimates rates as `count / total_from_that_nucleotide`.  The same
 /// rate is broadcast to every quality-score column.
 ///
+/// This is a compatibility path, not a recommended one: it reproduces the
+/// behaviour of pre-DADA2 denoisers that ignored quality scores entirely.
+/// Distinct from `USE_QUALS = FALSE`, which changes how `dada` computes lambda
+/// rather than making the *model* quality-independent.
+///
+/// # Divergence from R
+/// R's `noqualErrfun` returns `tot.trans / tot.init.nt` **unclamped** — it has
+/// no equivalent of `loessErrfun`'s `[1e-7, 0.25]` step. We apply
+/// `config.clamp()`, which is the only thing `config` is used for here; no
+/// LOESS surface is involved on either side. Measured inert on real data: the
+/// twelve off-diagonal rates from the pinned 362-sample MiSeq SOP forward
+/// `trans` span 3.7e-4 to 2.4e-3, three orders inside the window at both ends.
+/// It could only bite on a transition that is essentially never observed in a
+/// very deep run.
+///
 /// # Arguments
 /// - `trans`: flat 16 × `nq` row-major matrix of transition counts
 /// - `nq`: number of quality-score columns
 /// - `pseudocount`: added to each row sum before computing rates (R default: 1)
+/// - `config`: used **only** for `clamp()`; see the divergence note above
 ///
 /// # Returns
 /// Flat 16 × `nq` row-major error rate matrix (all columns identical).
