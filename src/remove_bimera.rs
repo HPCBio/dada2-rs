@@ -21,6 +21,25 @@ pub enum Method {
     PerSample,
 }
 
+impl Method {
+    /// Parent-abundance defaults, which R makes method-conditional (issue #211).
+    ///
+    /// `removeBimeraDenovo` dispatches `method = "consensus"` to
+    /// `isBimeraDenovoTable` (`minFoldParentOverAbundance = 1.5`,
+    /// `minParentAbundance = 2`) and both `"pooled"` and `"per-sample"` to
+    /// `isBimeraDenovo` (`2` and `8`). The two functions have different
+    /// signature defaults, so a single CLI default would silently be wrong for
+    /// two of the three methods.
+    ///
+    /// Returns `(min_fold_parent_over_abundance, min_parent_abundance)`.
+    pub fn default_parent_abundance(&self) -> (f64, u32) {
+        match self {
+            Method::Consensus => (1.5, 2),
+            Method::Pooled | Method::PerSample => (2.0, 8),
+        }
+    }
+}
+
 pub struct BimeraParams {
     pub min_fold_parent_over_abundance: f64,
     pub min_parent_abundance: u32,
@@ -345,5 +364,20 @@ fn zero_and_drop(
         sequences,
         sequence_ids,
         counts,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R's `removeBimeraDenovo` routes `"consensus"` to `isBimeraDenovoTable`
+    /// and the other two methods to `isBimeraDenovo`, which carry different
+    /// parent-abundance defaults (issue #211).
+    #[test]
+    fn parent_abundance_defaults_follow_r_by_method() {
+        assert_eq!(Method::Consensus.default_parent_abundance(), (1.5, 2));
+        assert_eq!(Method::Pooled.default_parent_abundance(), (2.0, 8));
+        assert_eq!(Method::PerSample.default_parent_abundance(), (2.0, 8));
     }
 }
