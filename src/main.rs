@@ -2931,9 +2931,12 @@ fn run() -> io::Result<()> {
                 "per-sample" => Method::PerSample,
                 _ => Method::Consensus,
             };
+            // R's defaults for these two differ by method (issue #211).
+            let (default_fold, default_abund) = method.default_parent_abundance();
             let params = BimeraParams {
-                min_fold_parent_over_abundance,
-                min_parent_abundance,
+                min_fold_parent_over_abundance: min_fold_parent_over_abundance
+                    .unwrap_or(default_fold),
+                min_parent_abundance: min_parent_abundance.unwrap_or(default_abund),
                 allow_one_off,
                 min_one_off_parent_distance,
                 max_shift,

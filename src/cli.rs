@@ -1056,13 +1056,13 @@ pub enum Commands {
               value_parser = ["consensus", "pooled", "per-sample"])]
         method: String,
 
-        /// Minimum fold-difference in abundance for a sequence to be a parent
-        #[arg(long, default_value_t = 1.5, help_heading = H_CHIMERA)]
-        min_fold_parent_over_abundance: f64,
+        /// Parent fold-abundance minimum [default: 1.5 consensus, 2 pooled/per-sample]
+        #[arg(long, help_heading = H_CHIMERA)]
+        min_fold_parent_over_abundance: Option<f64>,
 
-        /// Minimum abundance for a sequence to be a parent
-        #[arg(long, default_value_t = 2, help_heading = H_CHIMERA)]
-        min_parent_abundance: u32,
+        /// Parent abundance minimum [default: 2 consensus, 8 pooled/per-sample]
+        #[arg(long, help_heading = H_CHIMERA)]
+        min_parent_abundance: Option<u32>,
 
         /// Also flag sequences one mismatch/indel away from an exact bimera
         #[arg(long, default_value_t = false, help_heading = H_CHIMERA)]

@@ -20,11 +20,17 @@ sequences identified as bimeras — chimeras of two more-abundant parents.
 `consensus` flags per sample and then votes, which is R's default and the safest
 choice on multi-sample runs.
 
-**`--min-fold-parent-over-abundance`** (default 1.5) — minimum fold-difference
-in abundance for a sequence to be considered a parent.
+**`--min-fold-parent-over-abundance`** (default 1.5 for `consensus`, 2 for
+`pooled` and `per-sample`) — minimum fold-difference in abundance for a sequence
+to be considered a parent.
 
-**`--min-parent-abundance`** (default 2) — minimum abundance for a sequence to
-be a parent.
+**`--min-parent-abundance`** (default 2 for `consensus`, 8 for `pooled` and
+`per-sample`) — minimum abundance for a sequence to be a parent.
+
+The default pair is method-conditional because R's is: `removeBimeraDenovo`
+dispatches `consensus` to `isBimeraDenovoTable` (1.5 / 2) and both other methods
+to `isBimeraDenovo` (2 / 8). Passing either flag explicitly overrides the
+method's default.
 
 **`--allow-one-off`** — also flag sequences one mismatch or indel away from an
 exact bimera. Off by default, and it raises false positives on data with real
