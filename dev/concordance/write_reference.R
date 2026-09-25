@@ -170,6 +170,29 @@ if (platform == "illumina") {
     trainFs <- filtFs[idx]; trainRs <- filtRs[idx]
     cat(sprintf("training on %d of %d samples (pinned via %s); denoising all %d\n",
                 length(idx), length(sample.names), TRAIN_SAMPLES, length(sample.names)))
+
+    # nbases must NOT truncate a pinned training set.  The whole point of
+    # --train-samples is that both tools see exactly these samples; if nbases
+    # bites first, R silently trains on a PREFIX of the manifest and the arms
+    # differ in training data as well as in whatever is under test.  This cost a
+    # full 362-sample comparison once: the manifest held 3.0e8 bases, nbases sat
+    # at its 1e8 default, and R trained on the first third while dada2-rs (run
+    # with --nbases 1e12) used all of it -- a 2.99x gap in the transition matrix
+    # that looked like a self-consistency-loop difference.
+    # countFastq reads the headers only -- do NOT pull the records into memory
+    # just to total them.
+    train_bases <- sum(as.numeric(ShortRead::countFastq(trainFs)$nucleotides))
+    cat(sprintf("training set: %d samples, %s bases; nbases = %s\n",
+                length(trainFs), format(train_bases, big.mark = ","),
+                format(NBASES, scientific = TRUE)))
+    if (NBASES < train_bases) {
+      stop(sprintf(paste0("--nbases (%s) is smaller than the pinned training set (%s bases), ",
+                          "so learnErrors would train on only a prefix of it. Pass ",
+                          "--nbases=%s or larger, or shrink the manifest."),
+                   format(NBASES, scientific = TRUE),
+                   format(train_bases, big.mark = ","),
+                   format(ceiling(train_bases * 1.1), scientific = TRUE)))
+    }
   }
 
   errF <- learnErrors(trainFs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
