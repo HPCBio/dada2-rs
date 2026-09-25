@@ -102,17 +102,18 @@ args <- args[!grepl("^--", args)]
 write_long <- function(seqtab, path) {
   # seqtab: matrix rows = samples, cols = sequences (colnames = ASV seqs)
   seqs <- colnames(seqtab)
-  rows <- list()
-  for (si in seq_len(nrow(seqtab))) {
-    sample <- rownames(seqtab)[si]
-    for (j in seq_along(seqs)) {
-      cnt <- seqtab[si, j]
-      if (cnt > 0) rows[[length(rows) + 1]] <- data.frame(
-        sequence = seqs[j], sample = sample, count = as.integer(cnt),
-        stringsAsFactors = FALSE)
-    }
-  }
-  df <- do.call(rbind, rows)
+  # Vectorised: the old form allocated one data.frame per non-zero cell and
+  # rbound them, which is fine for a fixture and hopeless for a real table --
+  # a 2,823 x 362 pre-chimera matrix has ~10^5-10^6 non-zero cells, and the
+  # pre-chimera CSV silently failed to appear on the first 362-sample run
+  # because of it.
+  nz <- which(seqtab > 0, arr.ind = TRUE)
+  df <- data.frame(
+    sequence = seqs[nz[, "col"]],
+    sample   = rownames(seqtab)[nz[, "row"]],
+    count    = as.integer(seqtab[nz]),
+    stringsAsFactors = FALSE)
+  df <- df[order(df$sample, df$sequence), , drop = FALSE]
   dir.create(dirname(path), showWarnings = FALSE, recursive = TRUE)
   write.csv(df, path, row.names = FALSE, quote = FALSE)
   cat(sprintf("wrote %s: %d ASVs, %d sample(s), %d rows\n",
