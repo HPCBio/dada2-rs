@@ -259,6 +259,24 @@ fn eval_poly(coeffs: &[f64], x: f64) -> f64 {
     acc
 }
 
+/// Fraction of the data range by which R's `ehg126` pads the kd-tree bounding
+/// box on each side before partitioning.  Only the `Interpolate` surface uses
+/// it; `Direct` never builds a tree.
+const KD_BOX_PAD: f64 = 0.005;
+
+/// Half-width of R's kd-tree bounding-box expansion, `mu` in `ehg126`
+/// (`R/src/library/stats/src/loessf.f`, "expand the box a little"):
+///
+/// ```text
+/// mu = 0.005 * max(beta - alpha, 1e-10 * max(|alpha|, |beta|) + 1e-30)
+/// ```
+///
+/// The second branch only bites when the data range collapses, keeping the box
+/// non-degenerate when every x is equal.
+fn kd_box_pad(lo: f64, hi: f64) -> f64 {
+    KD_BOX_PAD * (hi - lo).max(1e-10 * lo.abs().max(hi.abs()) + 1e-30)
+}
+
 /// Build the unique sorted vertex positions of a 1-D kd-tree partition of
 /// `sorted_valid_xs`.  Mirrors R's `ehg124` (`stats/src/loessf.f`):
 /// cells with more than `threshold` observations are subdivided at the
@@ -266,12 +284,22 @@ fn eval_poly(coeffs: &[f64], x: f64) -> f64 {
 /// and the new vertex is the median point's x value `x[pi(m)]`.
 /// Left cell takes indices `l..=m`, right cell `m+1..=u`.
 ///
-/// Returns at minimum `[x_min, x_max]`.  Vertices are sorted ascending and
-/// deduplicated; consecutive pairs form the leaf cells.
+/// The outermost vertices are **not** `x_min`/`x_max`.  R's `ehg126` pads the
+/// cell bounding box by [`KD_BOX_PAD`] of the data range on each side before
+/// the tree is built (`kd$vert` on a `q in [12, 40]` fit reads
+/// `[11.86, 40.14]`), so R's boundary polynomials are fitted just outside the
+/// data.  Omitting the pad left every query in the first cell blended from the
+/// wrong left-hand fit: on the pinned MiSeq SOP error model that was a 1.4e-3
+/// relative error at `q = 12`, flat-filled across `q <= 12`, against 1.5e-14
+/// from the first interior vertex up.  Interior cuts are unaffected.
+///
+/// Returns at minimum the two padded bounds.  Vertices are sorted ascending
+/// and deduplicated; consecutive pairs form the leaf cells.
 fn build_kd_vertices_1d(sorted_valid_xs: &[f64], threshold: usize) -> Vec<f64> {
     let n = sorted_valid_xs.len();
-    let x_min = sorted_valid_xs[0];
-    let x_max = sorted_valid_xs[n - 1];
+    let pad = kd_box_pad(sorted_valid_xs[0], sorted_valid_xs[n - 1]);
+    let x_min = sorted_valid_xs[0] - pad;
+    let x_max = sorted_valid_xs[n - 1] + pad;
     let mut vertices = vec![x_min, x_max];
 
     // Stack of inclusive index ranges into `sorted_valid_xs`.
@@ -498,6 +526,35 @@ pub fn extrapolate_flat(raw: Vec<Option<f64>>, n: usize) -> Vec<f64> {
 
 #[cfg(test)]
 mod tests {
+    /// R's `ehg126` pads the kd-tree bounding box by 0.5% of the data range on
+    /// each side, so the boundary polynomials are fitted just outside the data.
+    /// Checked against `loess(rlogp ~ q, ...)$kd$vert` on the pinned MiSeq SOP
+    /// error model: `q in [12, 40]` gives `[11.86, 40.14]` and `q in [12, 39]`
+    /// gives `[11.865, 39.135]`. Without the pad the first cell blends from the
+    /// wrong left-hand fit and `q = 12` lands 1.4e-3 off R.
+    #[test]
+    fn kd_vertices_pad_the_box_like_r() {
+        for (lo, hi, want_lo, want_hi) in [(12.0, 40.0, 11.86, 40.14), (12.0, 39.0, 11.865, 39.135)]
+        {
+            let xs: Vec<f64> = ((lo as u32)..=(hi as u32)).map(f64::from).collect();
+            let v = super::build_kd_vertices_1d(&xs, 4);
+            assert!(
+                (v[0] - want_lo).abs() < 1e-12,
+                "low vertex {} != {want_lo}",
+                v[0]
+            );
+            assert!(
+                (v[v.len() - 1] - want_hi).abs() < 1e-12,
+                "high vertex {} != {want_hi}",
+                v[v.len() - 1]
+            );
+            // Interior cuts stay on data points; only the bounds are padded.
+            for x in &v[1..v.len() - 1] {
+                assert_eq!(*x, x.round(), "interior vertex {x} is not a data point");
+            }
+        }
+    }
+
     use super::*;
 
     /// Sparse quality anchors with the shape binned-quality data produces:
