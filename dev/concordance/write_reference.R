@@ -25,7 +25,7 @@ args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 3) stop(paste(
   "usage: write_reference.R <illumina|pacbio> <data-dir> <out.csv>",
   "[primer_fwd primer_rev] [--pool=false|pseudo|true] [--errfun=loess|binned-qual]",
-  "[--binned-quals=2,11,25,37] [--prefiltered] [--threads=N]"))
+  "[--binned-quals=2,11,25,37] [--prefiltered] [--threads=N] [--nbases=N]"))
 platform <- args[1]; data_dir <- args[2]; out_csv <- args[3]
 
 # --pool=pseudo generates a reference for `dada(pool="pseudo")` instead of the
@@ -79,6 +79,16 @@ MT <- if (!is.na(THREADS)) {
 }
 cat(sprintf("threads: %s\n", if (isTRUE(MT)) "TRUE (detectCores; NOT cgroup-aware)" else MT))
 
+# learnErrors' subsampling budget. R defaults to 1e8; run_illumina.sh defaults to
+# 2e7 -- so left alone the two sides train on DIFFERENT amounts of data, and any
+# arm comparison is measuring the budget as well as whatever it meant to test.
+# Set both, and set them above the run total if the surface or errfun is the
+# thing under test.
+NBASES <- flag("nbases")
+NBASES <- if (!is.na(NBASES)) as.numeric(NBASES) else 1e8
+cat(sprintf("nbases: %s%s\n", format(NBASES, scientific = TRUE),
+            if (is.na(flag("nbases"))) " (R default; run_illumina.sh defaults to 2e7 -- match them)" else ""))
+
 args <- args[!grepl("^--", args)]
 
 write_long <- function(seqtab, path) {
@@ -121,8 +131,8 @@ if (platform == "illumina") {
                   rm.phix = FALSE, compress = TRUE, multithread = MT)
   }
 
-  errF <- learnErrors(filtFs, errorEstimationFunction = ERRFUN_FN, multithread = MT)
-  errR <- learnErrors(filtRs, errorEstimationFunction = ERRFUN_FN, multithread = MT)
+  errF <- learnErrors(filtFs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
+  errR <- learnErrors(filtRs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
   ddF <- dada(filtFs, err = errF, pool = POOL, multithread = MT)
   ddR <- dada(filtRs, err = errR, pool = POOL, multithread = MT)
   mergers <- mergePairs(ddF, filtFs, ddR, filtRs)
@@ -154,7 +164,7 @@ if (platform == "illumina") {
                 maxEE = MAX_EE, truncQ = TRUNC_Q, rm.phix = FALSE,
                 compress = TRUE, multithread = MT)
 
-  err <- learnErrors(filts, errorEstimationFunction = PacBioErrfun,
+  err <- learnErrors(filts, errorEstimationFunction = PacBioErrfun, nbases = NBASES,
                      BAND_SIZE = 32, multithread = MT)
   dd <- dada(filts, err = err, pool = FALSE, BAND_SIZE = 32, multithread = MT)
   seqtab <- makeSequenceTable(dd)
