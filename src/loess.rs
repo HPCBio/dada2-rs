@@ -153,7 +153,28 @@ impl LoessConfig {
 /// in raw basis `[1, x, x², …]`.
 ///
 /// Shared by [`loess_predict`]'s Direct (one call per query) and Interpolate
-/// (one call per kd-tree vertex) paths.  Returns `None` only if the
+/// (one call per kd-tree vertex) paths.
+///
+/// # Basis
+///
+/// The design is built in the basis **centred at `x0`** — `[1, (x - x0),
+/// (x - x0)^2, ...]` — matching R's `ehg127`, which fills its design matrix
+/// with `w(i) * (x(psi(i),j) - q(j))` where `q` is the query point
+/// (`stats/src/loessf.f`). So `coeffs[0]` is the fitted value at `x0` and
+/// `coeffs[1]` its first derivative; neither needs a polynomial evaluation.
+///
+/// This is not cosmetic. The raw basis `[1, x, x^2]` puts entries up to
+/// `x^2 = 1600` in the Vandermonde at `q = 40`, and forming the normal
+/// equations squares that condition number. Centring cost four orders of
+/// agreement with R: on the pinned MiSeq SOP model the oracle's max
+/// |log10 ratio| went 8.586e-12 -> 1.630e-14 (direct) and 8.192e-12 ->
+/// 7.474e-15 (interpolate), i.e. from "clearly ours" to double-precision
+/// round-off.
+///
+/// Still unlike R: R factors the weighted design by QR (`dqrdc`/`dqrsl`) with
+/// a condition-number check and an SVD pseudoinverse fallback, where we form
+/// `X^T W X` and drop a degree on singularity. Centring removes most of the
+/// conditioning penalty that difference used to carry.  Returns `None` only if the
 /// neighborhood is empty after weighting, or if even a local constant fit is
 /// numerically singular.
 ///
@@ -223,10 +244,10 @@ fn fit_local_at(
             let yi = ys[i];
 
             let mut row = vec![1.0f64; p_eff];
-            let mut xpow = xi;
+            let mut xpow = xi - x0;
             for j in row.iter_mut().take(p_eff).skip(1) {
                 *j = xpow;
-                xpow *= xi;
+                xpow *= xi - x0;
             }
 
             for j in 0..p_eff {
@@ -245,18 +266,6 @@ fn fit_local_at(
     }
 
     None
-}
-
-/// Evaluate a polynomial in raw basis at `x` via Horner-equivalent loop.
-#[inline]
-fn eval_poly(coeffs: &[f64], x: f64) -> f64 {
-    let mut acc = 0.0;
-    let mut xpow = 1.0;
-    for &c in coeffs {
-        acc += c * xpow;
-        xpow *= x;
-    }
-    acc
 }
 
 /// Fraction of the data range by which R's `ehg126` pads the kd-tree bounding
@@ -351,26 +360,6 @@ fn build_kd_vertices_1d(sorted_valid_xs: &[f64], threshold: usize) -> Vec<f64> {
     vertices
 }
 
-/// Evaluate the value and first derivative of a polynomial in raw basis
-/// `[c_0, c_1, c_2, …]` (so `f(x) = Σ c_j x^j`) at `x`.
-#[inline]
-fn eval_poly_and_deriv(coeffs: &[f64], x: f64) -> (f64, f64) {
-    // value = Σ c_j x^j ;  derivative = Σ j·c_j x^(j-1)
-    let mut val = 0.0;
-    let mut xpow = 1.0;
-    for &c in coeffs {
-        val += c * xpow;
-        xpow *= x;
-    }
-    let mut der = 0.0;
-    let mut xpow_dm1 = 1.0; // x^(j-1) for j = 1
-    for (j, &c) in coeffs.iter().enumerate().skip(1) {
-        der += (j as f64) * c * xpow_dm1;
-        xpow_dm1 *= x;
-    }
-    (val, der)
-}
-
 /// Locally-weighted polynomial regression (LOESS).
 ///
 /// Mirrors R's `loess(y ~ x, data, weights=w)` with `span = 0.75` and
@@ -435,7 +424,7 @@ pub fn loess_predict(
                     return None;
                 }
                 let coeffs = fit_local_at(x0, &valid, xs, ys, weights, n_local, p)?;
-                Some(eval_poly(&coeffs, x0))
+                Some(coeffs[0])
             })
             .collect(),
 
@@ -483,8 +472,8 @@ pub fn loess_predict(
                     let c_a = vertex_coeffs[lo_idx].as_ref()?;
                     let c_b = vertex_coeffs[hi_idx].as_ref()?;
 
-                    let (f_a, fp_a) = eval_poly_and_deriv(c_a, a);
-                    let (f_b, fp_b) = eval_poly_and_deriv(c_b, b);
+                    let (f_a, fp_a) = (c_a[0], c_a.get(1).copied().unwrap_or(0.0));
+                    let (f_b, fp_b) = (c_b[0], c_b.get(1).copied().unwrap_or(0.0));
 
                     if a == b {
                         return Some(f_a);
