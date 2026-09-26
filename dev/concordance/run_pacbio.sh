@@ -87,6 +87,19 @@ PACBIO_TRAIN_SAMPLES="${PACBIO_TRAIN_SAMPLES:-}"
 # reference's --pool, or the comparison is measuring the pooling mode.
 POOL="${POOL:-false}"
 
+# VERBOSE=1: per-step progress to stderr. A pooled PacBio run can sit in
+# `dada-pooled` for hours with nothing on the terminal, which is
+# indistinguishable from a hang; `--verbose` prints the bud loop's progress
+# line so you can see it advancing and estimate the remaining work.
+# METRICS=1 additionally writes <step>.metrics.json per denoising step --
+# machine-readable phase timings, which is what to attach when a run is slow
+# rather than a wall-clock number (see docs/findings on the screen vs align
+# split).
+VERBOSE="${VERBOSE:-}"
+verbose_arg=()
+[ -n "$VERBOSE" ] && verbose_arg=(--verbose)
+METRICS="${METRICS:-}"
+
 mkdir -p "$OUT"/{filtered,dada}
 
 reads=("$DATA"/*.fastq.gz)
@@ -120,6 +133,7 @@ else
         --max-mismatch "$MAX_MISMATCH" --trim-fwd --trim-rev --orient \
         --min-len "$MIN_LEN" --max-len "$MAX_LEN" --max-n "$MAX_N" \
         --max-ee "$MAX_EE" --trunc-q "$TRUNC_Q" --compress \
+        ${verbose_arg[@]+"${verbose_arg[@]}"} \
         -o "$OUT/primers_${name}.json"
     filts+=("$ff")
     names+=("$name")
@@ -158,18 +172,25 @@ fi
 echo "==> learn-errors (pacbio errfun, k=$KMER)"
 "$BIN" learn-errors "${trains[@]}" --nbases "$NBASES" --errfun pacbio \
     --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
-    ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} -o "$OUT/err.json"
+    ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} \
+    ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/err.json"
 
 if [ "$POOL" = "true" ]; then
   echo "==> dada-pooled (full pooling)"
+  metrics_arg=()
+  [ -n "$METRICS" ] && metrics_arg=(--metrics-json "$OUT/dada-pooled.metrics.json")
   "$BIN" dada-pooled "${filts[@]}" --error-model "$OUT/err.json" \
       -o "$OUT/dada" --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
-      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} \
+      ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"}
 else
   echo "==> dada (per-sample)"
+  metrics_arg=()
+  [ -n "$METRICS" ] && metrics_arg=(--metrics-json "$OUT/dada.metrics.json")
   "$BIN" dada "${filts[@]}" --error-model "$OUT/err.json" \
       --output-dir "$OUT/dada" --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
-      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} \
+      ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"}
 fi
 
 echo "==> make-sequence-table"
@@ -177,6 +198,7 @@ echo "==> make-sequence-table"
 
 echo "==> remove-bimera-denovo"
 "$BIN" remove-bimera-denovo "$OUT/seqtab.json" --method consensus \
-    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} -o "$OUT/seqtab.nochim.json"
+    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} \
+    ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/seqtab.nochim.json"
 
 echo "==> done: $OUT/seqtab.nochim.json"
