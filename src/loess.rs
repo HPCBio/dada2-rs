@@ -153,7 +153,28 @@ impl LoessConfig {
 /// in raw basis `[1, x, x², …]`.
 ///
 /// Shared by [`loess_predict`]'s Direct (one call per query) and Interpolate
-/// (one call per kd-tree vertex) paths.  Returns `None` only if the
+/// (one call per kd-tree vertex) paths.
+///
+/// # Basis
+///
+/// The design is built in the basis **centred at `x0`** — `[1, (x - x0),
+/// (x - x0)^2, ...]` — matching R's `ehg127`, which fills its design matrix
+/// with `w(i) * (x(psi(i),j) - q(j))` where `q` is the query point
+/// (`stats/src/loessf.f`). So `coeffs[0]` is the fitted value at `x0` and
+/// `coeffs[1]` its first derivative; neither needs a polynomial evaluation.
+///
+/// This is not cosmetic. The raw basis `[1, x, x^2]` puts entries up to
+/// `x^2 = 1600` in the Vandermonde at `q = 40`, and forming the normal
+/// equations squares that condition number. Centring cost four orders of
+/// agreement with R: on the pinned MiSeq SOP model the oracle's max
+/// |log10 ratio| went 8.586e-12 -> 1.630e-14 (direct) and 8.192e-12 ->
+/// 7.474e-15 (interpolate), i.e. from "clearly ours" to double-precision
+/// round-off.
+///
+/// Still unlike R: R factors the weighted design by QR (`dqrdc`/`dqrsl`) with
+/// a condition-number check and an SVD pseudoinverse fallback, where we form
+/// `X^T W X` and drop a degree on singularity. Centring removes most of the
+/// conditioning penalty that difference used to carry.  Returns `None` only if the
 /// neighborhood is empty after weighting, or if even a local constant fit is
 /// numerically singular.
 ///
@@ -174,6 +195,7 @@ impl LoessConfig {
 /// binned-quality data, where a handful of distinct Q values is normal (NovaSeq
 /// bins to 4; MiSeq i100 is documented as 4, though the data we have evaluated
 /// so far shows 3).  See issue #95.
+#[allow(clippy::too_many_arguments)]
 fn fit_local_at(
     x0: f64,
     valid: &[usize],
@@ -182,11 +204,19 @@ fn fit_local_at(
     weights: &[f64],
     n_local: usize,
     p: usize,
+    span: f64,
 ) -> Option<Vec<f64>> {
     let mut dists: Vec<(usize, f64)> = valid.iter().map(|&i| (i, (xs[i] - x0).abs())).collect();
     dists.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
-    let max_dist = dists[n_local - 1].1;
+    // R's `ehg127`: `rho = dist(psi(nf)) * max(1, f)` on SQUARED distances, so
+    // the kernel bandwidth is the nf-th neighbour distance scaled by
+    // `sqrt(max(1, span))`. With `span <= 1` the factor is 1 and this is just
+    // the nf-th distance. Above 1 the neighbourhood is already every point
+    // (`n_local` is capped at `nv`), and the inflation is what keeps the
+    // farthest point from being zero-weighted -- without it a span of 2 is
+    // indistinguishable from a span of 1.
+    let max_dist = dists[n_local - 1].1 * span.max(1.0).sqrt();
 
     let ws: Vec<(usize, f64)> = dists[..n_local]
         .iter()
@@ -223,10 +253,10 @@ fn fit_local_at(
             let yi = ys[i];
 
             let mut row = vec![1.0f64; p_eff];
-            let mut xpow = xi;
+            let mut xpow = xi - x0;
             for j in row.iter_mut().take(p_eff).skip(1) {
                 *j = xpow;
-                xpow *= xi;
+                xpow *= xi - x0;
             }
 
             for j in 0..p_eff {
@@ -245,18 +275,6 @@ fn fit_local_at(
     }
 
     None
-}
-
-/// Evaluate a polynomial in raw basis at `x` via Horner-equivalent loop.
-#[inline]
-fn eval_poly(coeffs: &[f64], x: f64) -> f64 {
-    let mut acc = 0.0;
-    let mut xpow = 1.0;
-    for &c in coeffs {
-        acc += c * xpow;
-        xpow *= x;
-    }
-    acc
 }
 
 /// Fraction of the data range by which R's `ehg126` pads the kd-tree bounding
@@ -293,6 +311,36 @@ fn kd_box_pad(lo: f64, hi: f64) -> f64 {
 /// relative error at `q = 12`, flat-filled across `q <= 12`, against 1.5e-14
 /// from the first interior vertex up.  Interior cuts are unaffected.
 ///
+/// Subdivision stops at `count <= threshold` (R's `fc`), or at a single point.
+/// Two earlier guards are deliberately gone (issue #215):
+///
+/// * a `.max(degree + 1)` floor on `threshold`, which only ever bound when
+///   `nv < 20` and made the tree refuse to split at all in the sparse regime;
+/// * a `m == l || m == u` check that forbade splitting a two-point cell, so
+///   the cell's own data point never became a vertex.
+///
+/// Together those left few-distinct-Q fits blending across one giant cell,
+/// ignoring the interior anchors entirely. With both removed the anchors-only
+/// sweep matches R to machine precision at `n_valid` 3, 6, 7 and 8 (and to
+/// ~3e-4 at 4 and 5), against 1.6e-1 to 5.1e-1 before. The dense grid is
+/// untouched: at `nv = 29` the threshold is 4, so neither guard was reachable,
+/// and the vertex set still equals R's `kd$xi` exactly.
+///
+/// # Leaf rule
+/// R makes a cell a leaf when `(u-l)+1 <= fc`, **or** when the chosen split
+/// value coincides with either of the cell's own boundaries
+/// (`ehg124:1938`). The second test is geometric, not index-based, and it is
+/// what terminates the recursion — R will happily split a *single-point* cell
+/// whose point lies strictly inside its bounds, which is how the rightmost
+/// data point becomes a vertex.
+///
+/// `fc` is `ifloor(n * v(2))` where `loessc.c` sets `v(2) = cell * span`, i.e.
+/// our `threshold`. R's other leaf test, `diam <= fd`, is inert: `lowesd` sets
+/// `v(3) = 0` and `ehg131` computes `fd = v(3) * ||box diagonal|| = 0`.
+///
+/// R also carries a tie-shifting loop for equal abscissae. It cannot fire
+/// here: `sorted_valid_xs` holds distinct quality values.
+///
 /// Returns at minimum the two padded bounds.  Vertices are sorted ascending
 /// and deduplicated; consecutive pairs form the leaf cells.
 fn build_kd_vertices_1d(sorted_valid_xs: &[f64], threshold: usize) -> Vec<f64> {
@@ -302,51 +350,31 @@ fn build_kd_vertices_1d(sorted_valid_xs: &[f64], threshold: usize) -> Vec<f64> {
     let x_max = sorted_valid_xs[n - 1] + pad;
     let mut vertices = vec![x_min, x_max];
 
-    // Stack of inclusive index ranges into `sorted_valid_xs`.
-    let mut stack: Vec<(usize, usize)> = vec![(0, n - 1)];
-    while let Some((l, u)) = stack.pop() {
-        let count = u - l + 1;
-        if count <= threshold {
+    // Inclusive index range plus the cell's own geometric bounds, which the
+    // leaf test needs.
+    let mut stack: Vec<(usize, usize, f64, f64)> = vec![(0, n - 1, x_min, x_max)];
+    while let Some((l, u, lo, hi)) = stack.pop() {
+        if u < l || (u - l + 1) <= threshold {
             continue;
         }
-        // R's `ehg124`: m = floor((l + u) / 2), vertex = x[pi(m)].
-        // (l, u are 1-indexed in Fortran; here zero-indexed but the
-        // arithmetic is identical.)
+        // R's `ehg124`: m = floor((l + u) / 2), cut at x[pi(m)].
         let m = (l + u) / 2;
-        if m == l || m == u {
-            // No room to subdivide further while keeping both halves nonempty.
+        let cut = sorted_valid_xs[m];
+        // The split value landing on a boundary makes this a leaf. Without it
+        // the single-point cells below would recurse forever.
+        if cut == lo || cut == hi {
             continue;
         }
-        let vertex_x = sorted_valid_xs[m];
-        vertices.push(vertex_x);
-        // Left: l..=m, right: m+1..=u (the median point belongs to the left).
-        stack.push((l, m));
-        stack.push((m + 1, u));
+        vertices.push(cut);
+        // Left son keeps the median point; an empty right son is a leaf by the
+        // count test above, so pushing it is harmless.
+        stack.push((l, m, lo, cut));
+        stack.push((m + 1, u, cut, hi));
     }
 
     vertices.sort_by(|a, b| a.partial_cmp(b).unwrap());
     vertices.dedup();
     vertices
-}
-
-/// Evaluate the value and first derivative of a polynomial in raw basis
-/// `[c_0, c_1, c_2, …]` (so `f(x) = Σ c_j x^j`) at `x`.
-#[inline]
-fn eval_poly_and_deriv(coeffs: &[f64], x: f64) -> (f64, f64) {
-    // value = Σ c_j x^j ;  derivative = Σ j·c_j x^(j-1)
-    let mut val = 0.0;
-    let mut xpow = 1.0;
-    for &c in coeffs {
-        val += c * xpow;
-        xpow *= x;
-    }
-    let mut der = 0.0;
-    let mut xpow_dm1 = 1.0; // x^(j-1) for j = 1
-    for (j, &c) in coeffs.iter().enumerate().skip(1) {
-        der += (j as f64) * c * xpow_dm1;
-        xpow_dm1 *= x;
-    }
-    (val, der)
 }
 
 /// Locally-weighted polynomial regression (LOESS).
@@ -394,9 +422,29 @@ pub fn loess_predict(
     // previously used `ceil`, which agrees when `span * nv` is integer but
     // differs by 1 otherwise — enough to nudge the local fit at nontrivial
     // numbers of observations. See issue #14 checklist item 1.
-    let n_local = ((span * nv as f64).floor() as usize)
-        .max(eff_degree + 1)
-        .min(nv);
+    // R's `nf` is `min(n, floor(n * span))` (`simpleLoess`), with no floor at
+    // `degree + 1`. Ours had one, which only bound when `floor(span * nv) < 3`
+    // — i.e. `nv <= 5` at the default span and degree — and there it widened
+    // the neighbourhood past R's. That is what made our vertex fits carry the
+    // secant slope where R's carry zero: with R's `nf`, the tricube
+    // zero-weights the farther point, one informative point is left for three
+    // coefficients, and the fit collapses to a constant. R reaches that via a
+    // pseudoinverse; our degree reduction below reaches the same place.
+    // `kd$vval` on three anchors reads (value, 0) at every data-point vertex.
+    //
+    // Tradeoff on the `Direct` surface in the same degenerate regime: with
+    // three anchors, a query midway between two of them sits at the SAME
+    // distance from both, so the bandwidth equals that distance and the
+    // tricube zeroes every neighbour. We then have no fit and
+    // `extrapolate_flat` leaves the cell at `min_error_rate`; on the
+    // binned-shaped oracle case that is 24 of 492 cells. R reaches the same
+    // dead end -- `ehg127` warns "all weights zero" -- and returns 0, which as
+    // a log10 rate is 1.0, i.e. a 100% error rate clamped to
+    // `max_error_rate`. Neither answer carries information; ours errs low and
+    // R's errs maximally high. `Interpolate` (R's own default) is unaffected
+    // and becomes exact here, and `--errfun binned-qual` exists so binned data
+    // need not go through LOESS at all.
+    let n_local = ((span * nv as f64).floor() as usize).max(1).min(nv);
     let p = eff_degree + 1;
 
     let (x_min, x_max) = valid
@@ -412,8 +460,8 @@ pub fn loess_predict(
                 if x0 < x_min || x0 > x_max {
                     return None;
                 }
-                let coeffs = fit_local_at(x0, &valid, xs, ys, weights, n_local, p)?;
-                Some(eval_poly(&coeffs, x0))
+                let coeffs = fit_local_at(x0, &valid, xs, ys, weights, n_local, p, span)?;
+                Some(coeffs[0])
             })
             .collect(),
 
@@ -424,7 +472,6 @@ pub fn loess_predict(
             // their enclosing cell's two vertex polynomials with a cubic
             // smoothstep.
             let threshold = (cell * span * nv as f64).floor() as usize;
-            let threshold = threshold.max(p); // sanity floor
 
             let mut sorted_xs: Vec<f64> = valid.iter().map(|&i| xs[i]).collect();
             sorted_xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -435,7 +482,7 @@ pub fn loess_predict(
             // the local fit was rank-deficient.
             let vertex_coeffs: Vec<Option<Vec<f64>>> = vertices
                 .iter()
-                .map(|&v| fit_local_at(v, &valid, xs, ys, weights, n_local, p))
+                .map(|&v| fit_local_at(v, &valid, xs, ys, weights, n_local, p, span))
                 .collect();
 
             (0..n)
@@ -462,8 +509,8 @@ pub fn loess_predict(
                     let c_a = vertex_coeffs[lo_idx].as_ref()?;
                     let c_b = vertex_coeffs[hi_idx].as_ref()?;
 
-                    let (f_a, fp_a) = eval_poly_and_deriv(c_a, a);
-                    let (f_b, fp_b) = eval_poly_and_deriv(c_b, b);
+                    let (f_a, fp_a) = (c_a[0], c_a.get(1).copied().unwrap_or(0.0));
+                    let (f_b, fp_b) = (c_b[0], c_b.get(1).copied().unwrap_or(0.0));
 
                     if a == b {
                         return Some(f_a);
@@ -532,6 +579,31 @@ mod tests {
     /// error model: `q in [12, 40]` gives `[11.86, 40.14]` and `q in [12, 39]`
     /// gives `[11.865, 39.135]`. Without the pad the first cell blends from the
     /// wrong left-hand fit and `q = 12` lands 1.4e-3 off R.
+    /// The sparse regime (#215): with three anchors R's `kd$xi` is
+    /// `{12, 24, 38}` and the tree must still subdivide even though
+    /// `floor(cell * span * n)` is 0. Getting the rightmost cut requires R's
+    /// *geometric* leaf test — a split value landing on a cell boundary — not
+    /// an index-based one, because R reaches 38 by splitting a single-point
+    /// cell whose point lies strictly inside its bounds.
+    #[test]
+    fn kd_vertices_match_r_kd_xi_when_sparse() {
+        let xs = [12.0, 24.0, 38.0];
+        let v = super::build_kd_vertices_1d(&xs, 0);
+        assert_eq!(v[1..v.len() - 1].to_vec(), vec![12.0, 24.0, 38.0]);
+    }
+
+    /// The dense regime must be untouched by the sparse work: at `nv = 29` the
+    /// threshold is 4 and R's `kd$xi` is `{15, 19, 23, 26, 30, 33, 37}`.
+    #[test]
+    fn kd_vertices_match_r_kd_xi_when_dense() {
+        let xs: Vec<f64> = (12..=40).map(f64::from).collect();
+        let v = super::build_kd_vertices_1d(&xs, 4);
+        assert_eq!(
+            v[1..v.len() - 1].to_vec(),
+            vec![15.0, 19.0, 23.0, 26.0, 30.0, 33.0, 37.0]
+        );
+    }
+
     #[test]
     fn kd_vertices_pad_the_box_like_r() {
         for (lo, hi, want_lo, want_hi) in [(12.0, 40.0, 11.86, 40.14), (12.0, 39.0, 11.865, 39.135)]
