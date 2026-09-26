@@ -98,6 +98,22 @@ POOL="${POOL:-false}"
 VERBOSE="${VERBOSE:-}"
 verbose_arg=()
 [ -n "$VERBOSE" ] && verbose_arg=(--verbose)
+
+# Per-step stderr is TEED to $OUT/logs/<step>.log as well as the terminal.
+# Without this every step's --verbose output lands interleaved in one stream
+# (and, under SLURM, interleaved with every other job line), which is exactly
+# the state in which a slow step cannot be attributed to a step. Kept
+# unconditional: the logs are small, and the time you want them is the run you
+# did not think to enable them for.
+LOG_DIR="$OUT/logs"
+mkdir -p "$LOG_DIR"
+# run <step-name> <cmd...> -- tee stderr to the step's log, preserving the
+# command's exit status rather than tee's.
+run_step() {
+  local name="$1"; shift
+  set -o pipefail
+  "$@" 2> >(tee "$LOG_DIR/${name}.log" >&2)
+}
 METRICS="${METRICS:-}"
 
 mkdir -p "$OUT"/{filtered,dada}
@@ -128,7 +144,7 @@ else
     name=$(basename "$f" .fastq.gz)
     ff="$OUT/filtered/${name}_filt.fastq.gz"
     echo "==> remove-primers + filter $name"
-    "$BIN" remove-primers "$f" --fout "$ff" \
+    run_step "remove-primers.${name}" "$BIN" remove-primers "$f" --fout "$ff" \
         --primer-fwd "$PRIMER_FWD" --primer-rev "$PRIMER_REV" \
         --max-mismatch "$MAX_MISMATCH" --trim-fwd --trim-rev --orient \
         --min-len "$MIN_LEN" --max-len "$MAX_LEN" --max-n "$MAX_N" \
@@ -197,7 +213,7 @@ if [ -n "$ERR_DIR" ]; then
   cp "$ERR_DIR/err.json" "$OUT/err.json"
 else
 echo "==> learn-errors (pacbio errfun, k=$KMER)"
-"$BIN" learn-errors "${trains[@]}" --nbases "$NBASES" --errfun pacbio \
+run_step learn-errors "$BIN" learn-errors "${trains[@]}" --nbases "$NBASES" --errfun pacbio \
     ${errfun_extra[@]+"${errfun_extra[@]}"} \
     --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
     ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} \
@@ -208,7 +224,7 @@ if [ "$POOL" = "true" ]; then
   echo "==> dada-pooled (full pooling)"
   metrics_arg=()
   [ -n "$METRICS" ] && metrics_arg=(--metrics-json "$OUT/dada-pooled.metrics.json")
-  "$BIN" dada-pooled "${filts[@]}" --error-model "$OUT/err.json" \
+  run_step dada-pooled "$BIN" dada-pooled "${filts[@]}" --error-model "$OUT/err.json" \
       -o "$OUT/dada" --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
       ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} \
       ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"}
@@ -216,17 +232,17 @@ else
   echo "==> dada (per-sample)"
   metrics_arg=()
   [ -n "$METRICS" ] && metrics_arg=(--metrics-json "$OUT/dada.metrics.json")
-  "$BIN" dada "${filts[@]}" --error-model "$OUT/err.json" \
+  run_step dada "$BIN" dada "${filts[@]}" --error-model "$OUT/err.json" \
       --output-dir "$OUT/dada" --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
       ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} \
       ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"}
 fi
 
 echo "==> make-sequence-table"
-"$BIN" make-sequence-table "$OUT"/dada/*.json -o "$OUT/seqtab.json"
+run_step make-sequence-table "$BIN" make-sequence-table "$OUT"/dada/*.json -o "$OUT/seqtab.json"
 
 echo "==> remove-bimera-denovo"
-"$BIN" remove-bimera-denovo "$OUT/seqtab.json" --method consensus \
+run_step remove-bimera-denovo "$BIN" remove-bimera-denovo "$OUT/seqtab.json" --method consensus \
     --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} \
     ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/seqtab.nochim.json"
 
