@@ -195,6 +195,7 @@ impl LoessConfig {
 /// binned-quality data, where a handful of distinct Q values is normal (NovaSeq
 /// bins to 4; MiSeq i100 is documented as 4, though the data we have evaluated
 /// so far shows 3).  See issue #95.
+#[allow(clippy::too_many_arguments)]
 fn fit_local_at(
     x0: f64,
     valid: &[usize],
@@ -203,11 +204,19 @@ fn fit_local_at(
     weights: &[f64],
     n_local: usize,
     p: usize,
+    span: f64,
 ) -> Option<Vec<f64>> {
     let mut dists: Vec<(usize, f64)> = valid.iter().map(|&i| (i, (xs[i] - x0).abs())).collect();
     dists.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
-    let max_dist = dists[n_local - 1].1;
+    // R's `ehg127`: `rho = dist(psi(nf)) * max(1, f)` on SQUARED distances, so
+    // the kernel bandwidth is the nf-th neighbour distance scaled by
+    // `sqrt(max(1, span))`. With `span <= 1` the factor is 1 and this is just
+    // the nf-th distance. Above 1 the neighbourhood is already every point
+    // (`n_local` is capped at `nv`), and the inflation is what keeps the
+    // farthest point from being zero-weighted -- without it a span of 2 is
+    // indistinguishable from a span of 1.
+    let max_dist = dists[n_local - 1].1 * span.max(1.0).sqrt();
 
     let ws: Vec<(usize, f64)> = dists[..n_local]
         .iter()
@@ -317,16 +326,20 @@ fn kd_box_pad(lo: f64, hi: f64) -> f64 {
 /// untouched: at `nv = 29` the threshold is 4, so neither guard was reachable,
 /// and the vertex set still equals R's `kd$xi` exactly.
 ///
-/// # Known remaining gap (#215)
-/// R's `ehg124` has a **second** leaf condition we do not implement: a cell is
-/// also a leaf once its diameter falls below `fd`, which `ehg131` sets to 5% of
-/// the padded box diagonal (`v(2) = 0.05d0` in `lowesd`). And our split is
-/// index-median, `m = (l + u) / 2`, which biases left — on three anchors we
-/// produce interior vertices `{12, 24}` where R's `kd$xi` is `{12, 24, 38}`,
-/// missing the rightmost. That is why the binned-shaped case (predictions
-/// *between* three anchors) is still 2.5e-1 off. Note R itself warns
-/// "pseudoinverse used" and "reciprocal condition number 0" on that fit, so
-/// the target there is R's own degenerate output.
+/// # Leaf rule
+/// R makes a cell a leaf when `(u-l)+1 <= fc`, **or** when the chosen split
+/// value coincides with either of the cell's own boundaries
+/// (`ehg124:1938`). The second test is geometric, not index-based, and it is
+/// what terminates the recursion — R will happily split a *single-point* cell
+/// whose point lies strictly inside its bounds, which is how the rightmost
+/// data point becomes a vertex.
+///
+/// `fc` is `ifloor(n * v(2))` where `loessc.c` sets `v(2) = cell * span`, i.e.
+/// our `threshold`. R's other leaf test, `diam <= fd`, is inert: `lowesd` sets
+/// `v(3) = 0` and `ehg131` computes `fd = v(3) * ||box diagonal|| = 0`.
+///
+/// R also carries a tie-shifting loop for equal abscissae. It cannot fire
+/// here: `sorted_valid_xs` holds distinct quality values.
 ///
 /// Returns at minimum the two padded bounds.  Vertices are sorted ascending
 /// and deduplicated; consecutive pairs form the leaf cells.
@@ -337,22 +350,26 @@ fn build_kd_vertices_1d(sorted_valid_xs: &[f64], threshold: usize) -> Vec<f64> {
     let x_max = sorted_valid_xs[n - 1] + pad;
     let mut vertices = vec![x_min, x_max];
 
-    // Stack of inclusive index ranges into `sorted_valid_xs`.
-    let mut stack: Vec<(usize, usize)> = vec![(0, n - 1)];
-    while let Some((l, u)) = stack.pop() {
-        let count = u - l + 1;
-        if count <= threshold || count < 2 {
+    // Inclusive index range plus the cell's own geometric bounds, which the
+    // leaf test needs.
+    let mut stack: Vec<(usize, usize, f64, f64)> = vec![(0, n - 1, x_min, x_max)];
+    while let Some((l, u, lo, hi)) = stack.pop() {
+        if u < l || (u - l + 1) <= threshold {
             continue;
         }
-        // R's `ehg124`: m = floor((l + u) / 2), vertex = x[pi(m)].
-        // (l, u are 1-indexed in Fortran; here zero-indexed but the
-        // arithmetic is identical.)
+        // R's `ehg124`: m = floor((l + u) / 2), cut at x[pi(m)].
         let m = (l + u) / 2;
-        let vertex_x = sorted_valid_xs[m];
-        vertices.push(vertex_x);
-        // Left: l..=m, right: m+1..=u (the median point belongs to the left).
-        stack.push((l, m));
-        stack.push((m + 1, u));
+        let cut = sorted_valid_xs[m];
+        // The split value landing on a boundary makes this a leaf. Without it
+        // the single-point cells below would recurse forever.
+        if cut == lo || cut == hi {
+            continue;
+        }
+        vertices.push(cut);
+        // Left son keeps the median point; an empty right son is a leaf by the
+        // count test above, so pushing it is harmless.
+        stack.push((l, m, lo, cut));
+        stack.push((m + 1, u, cut, hi));
     }
 
     vertices.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -423,7 +440,7 @@ pub fn loess_predict(
                 if x0 < x_min || x0 > x_max {
                     return None;
                 }
-                let coeffs = fit_local_at(x0, &valid, xs, ys, weights, n_local, p)?;
+                let coeffs = fit_local_at(x0, &valid, xs, ys, weights, n_local, p, span)?;
                 Some(coeffs[0])
             })
             .collect(),
@@ -445,7 +462,7 @@ pub fn loess_predict(
             // the local fit was rank-deficient.
             let vertex_coeffs: Vec<Option<Vec<f64>>> = vertices
                 .iter()
-                .map(|&v| fit_local_at(v, &valid, xs, ys, weights, n_local, p))
+                .map(|&v| fit_local_at(v, &valid, xs, ys, weights, n_local, p, span))
                 .collect();
 
             (0..n)
@@ -544,18 +561,26 @@ mod tests {
     /// wrong left-hand fit and `q = 12` lands 1.4e-3 off R.
     /// The sparse regime (#215): with three anchors R's `kd$xi` is
     /// `{12, 24, 38}` and the tree must still subdivide even though
-    /// `floor(cell * span * n)` is 0. Two removed guards each used to prevent
-    /// that — a `degree + 1` floor on the threshold, and a refusal to split a
-    /// two-point cell. We still miss R's rightmost cut; see the function docs.
+    /// `floor(cell * span * n)` is 0. Getting the rightmost cut requires R's
+    /// *geometric* leaf test — a split value landing on a cell boundary — not
+    /// an index-based one, because R reaches 38 by splitting a single-point
+    /// cell whose point lies strictly inside its bounds.
     #[test]
-    fn kd_vertices_subdivide_when_the_threshold_is_zero() {
+    fn kd_vertices_match_r_kd_xi_when_sparse() {
         let xs = [12.0, 24.0, 38.0];
         let v = super::build_kd_vertices_1d(&xs, 0);
-        let interior: Vec<f64> = v[1..v.len() - 1].to_vec();
+        assert_eq!(v[1..v.len() - 1].to_vec(), vec![12.0, 24.0, 38.0]);
+    }
+
+    /// The dense regime must be untouched by the sparse work: at `nv = 29` the
+    /// threshold is 4 and R's `kd$xi` is `{15, 19, 23, 26, 30, 33, 37}`.
+    #[test]
+    fn kd_vertices_match_r_kd_xi_when_dense() {
+        let xs: Vec<f64> = (12..=40).map(f64::from).collect();
+        let v = super::build_kd_vertices_1d(&xs, 4);
         assert_eq!(
-            interior,
-            vec![12.0, 24.0],
-            "three anchors must still yield interior vertices"
+            v[1..v.len() - 1].to_vec(),
+            vec![15.0, 19.0, 23.0, 26.0, 30.0, 33.0, 37.0]
         );
     }
 
