@@ -169,11 +169,23 @@ if [ -n "$PACBIO_TRAIN_SAMPLES" ]; then
   fi
 fi
 
+# ERR_DIR: reuse an error model instead of learning one, mirroring
+# run_illumina.sh. The k-mer screen is active inside build_trans_mat, so
+# PACBIO_KMER changes the LEARNED MODEL as well as the denoising -- a k=7 run
+# is therefore not comparable to an R reference on the model axis, because R's
+# KMER_SIZE is a compile-time 5. This lets the two be decoupled: learn once at
+# k=5 to match R, then denoise at k=7 for the ~7x screen saving.
+ERR_DIR="${ERR_DIR:-}"
+if [ -n "$ERR_DIR" ]; then
+  echo "==> reusing error model from $ERR_DIR (skipping learn-errors)"
+  cp "$ERR_DIR/err.json" "$OUT/err.json"
+else
 echo "==> learn-errors (pacbio errfun, k=$KMER)"
 "$BIN" learn-errors "${trains[@]}" --nbases "$NBASES" --errfun pacbio \
     --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
     ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} \
     ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/err.json"
+fi
 
 if [ "$POOL" = "true" ]; then
   echo "==> dada-pooled (full pooling)"
