@@ -14,12 +14,27 @@
 #   <data-dir> holds raw <sample>.fastq.gz (primered, single-end).
 set -euo pipefail
 
-BIN="${1:?usage: run_pacbio.sh <binary> <data-dir> <out-dir> <primer_fwd> <primer_rev> [threads]}"
+BIN="${1:?usage: run_pacbio.sh <binary> <data-dir> <out-dir> [primer_fwd primer_rev] [threads]}"
 DATA="${2:?missing data-dir}"
 OUT="${3:?missing out-dir}"
-PRIMER_FWD="${4:?missing primer_fwd}"
-PRIMER_REV="${5:?missing primer_rev}"
-THREADS="${6:-2}"
+
+# PREFILTERED=1: <data-dir> already holds primer-stripped, length/EE-filtered
+# reads, so remove-primers and the filter are skipped and the primers are not
+# needed. Mirrors run_illumina.sh's PREFILTERED and write_reference.R's
+# --prefiltered. This is what lets ONE filtering pass feed both tools, rather
+# than each filtering separately and the comparison silently carrying that
+# difference too.
+PREFILTERED="${PREFILTERED:-}"
+
+PRIMER_FWD="${4:-}"
+PRIMER_REV="${5:-}"
+if [ -z "$PREFILTERED" ]; then
+  : "${PRIMER_FWD:?missing primer_fwd (or set PREFILTERED=1)}"
+  : "${PRIMER_REV:?missing primer_rev (or set PREFILTERED=1)}"
+fi
+# Positional 6 still works; THREADS= is the form to use with PREFILTERED=1,
+# where there are no primer arguments to hold its place.
+THREADS="${THREADS:-${6:-2}}"
 
 # Optional alignment backend (nw|wfa2), threaded through the alignment-using
 # subcommands (learn-errors, dada, remove-bimera-denovo) so the concordance
@@ -80,31 +95,52 @@ if [ ! -e "${reads[0]}" ]; then
   exit 1
 fi
 
+# `names` runs parallel to `filts` so the training pin can resolve a manifest
+# entry to a file without assuming how the file is named.
 filts=()
-for f in "${reads[@]}"; do
-  name=$(basename "$f" .fastq.gz)
-  ff="$OUT/filtered/${name}_filt.fastq.gz"
-  echo "==> remove-primers + filter $name"
-  "$BIN" remove-primers "$f" --fout "$ff" \
-      --primer-fwd "$PRIMER_FWD" --primer-rev "$PRIMER_REV" \
-      --max-mismatch "$MAX_MISMATCH" --trim-fwd --trim-rev --orient \
-      --min-len "$MIN_LEN" --max-len "$MAX_LEN" --max-n "$MAX_N" \
-      --max-ee "$MAX_EE" --trunc-q "$TRUNC_Q" --compress \
-      -o "$OUT/primers_${name}.json"
-  filts+=("$ff")
-done
+names=()
+if [ -n "$PREFILTERED" ]; then
+  echo "==> PREFILTERED: using ${#reads[@]} input(s) as-is (no remove-primers, no filter)"
+  for f in "${reads[@]}"; do
+    name=$(basename "$f" .fastq.gz)
+    # Strip the suffix run_pacbio.sh itself writes, so a manifest built from
+    # either raw or filtered names resolves. Matches write_reference.R, which
+    # strips `_filt` only under --prefiltered.
+    name=${name%_filt}
+    filts+=("$f")
+    names+=("$name")
+  done
+else
+  for f in "${reads[@]}"; do
+    name=$(basename "$f" .fastq.gz)
+    ff="$OUT/filtered/${name}_filt.fastq.gz"
+    echo "==> remove-primers + filter $name"
+    "$BIN" remove-primers "$f" --fout "$ff" \
+        --primer-fwd "$PRIMER_FWD" --primer-rev "$PRIMER_REV" \
+        --max-mismatch "$MAX_MISMATCH" --trim-fwd --trim-rev --orient \
+        --min-len "$MIN_LEN" --max-len "$MAX_LEN" --max-n "$MAX_N" \
+        --max-ee "$MAX_EE" --trunc-q "$TRUNC_Q" --compress \
+        -o "$OUT/primers_${name}.json"
+    filts+=("$ff")
+    names+=("$name")
+  done
+fi
 
 trains=("${filts[@]}")
 if [ -n "$PACBIO_TRAIN_SAMPLES" ]; then
   trains=()
-  while IFS= read -r name; do
-    [ -z "$name" ] && continue
-    ff="$OUT/filtered/${name}_filt.fastq.gz"
-    if [ ! -e "$ff" ]; then
-      echo "run_pacbio.sh: --train-samples name not found: $ff" >&2
+  while IFS= read -r want; do
+    want=$(printf '%s' "$want" | tr -d '[:space:]')   # tolerate CRLF manifests
+    [ -z "$want" ] && continue
+    found=""
+    for i in "${!names[@]}"; do
+      if [ "${names[$i]}" = "$want" ]; then found="${filts[$i]}"; break; fi
+    done
+    if [ -z "$found" ]; then
+      echo "run_pacbio.sh: --train-samples name not present in $DATA: $want" >&2
       exit 1
     fi
-    trains+=("$ff")
+    trains+=("$found")
   done < "$PACBIO_TRAIN_SAMPLES"
   echo "==> training on ${#trains[@]} of ${#filts[@]} samples (pinned via $PACBIO_TRAIN_SAMPLES)"
   # Guard the mirror image of the trap write_reference.R catches: a pinned
