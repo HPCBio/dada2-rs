@@ -59,7 +59,14 @@ ERRFUN_FN <- if (identical(ERRFUN, "binned-qual")) {
   cat(sprintf("errfun: binned-qual, anchors %s\n", paste(bins, collapse = ",")))
   makeBinnedQualErrfun(bins)
 } else {
-  cat("errfun: loess (R default)\n")
+  # NB: the pacbio branch ignores this and uses PacBioErrfun. Say so here
+  # rather than print "loess" into a PacBio log, which reads as though the
+  # platform default had been overridden.
+  if (identical(platform, "pacbio")) {
+    cat("errfun: PacBioErrfun (fixed for this platform; --errfun is ignored)\n")
+  } else {
+    cat("errfun: loess (R default)\n")
+  }
   loessErrfun
 }
 
