@@ -18,6 +18,11 @@
 #   # PacBio (single-end, primered raw reads)
 #   Rscript write_reference.R pacbio <data-dir> reference/pacbio_seqtab_nochim.csv \
 #       AGRGTTYGATYMTGGCTCAG RGYTACCTTGTTACGACTT
+#
+#   # PacBio against run_pacbio.sh's own filtered output (the like-for-like form:
+#   # ONE filtering pass feeds both tools, and the training set is pinned)
+#   Rscript write_reference.R pacbio <out-dir>/filtered pacbio_ref.csv \
+#       --prefiltered --train-samples=train.txt --nbases=1e12 --threads=24
 
 suppressPackageStartupMessages(library(dada2))
 
@@ -25,7 +30,9 @@ args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 3) stop(paste(
   "usage: write_reference.R <illumina|pacbio> <data-dir> <out.csv>",
   "[primer_fwd primer_rev] [--pool=false|pseudo|true] [--errfun=loess|binned-qual]",
-  "[--binned-quals=2,11,25,37] [--prefiltered] [--threads=N] [--nbases=N]"))
+  "[--binned-quals=2,11,25,37] [--prefiltered] [--threads=N] [--nbases=N]",
+  "[--train-samples=FILE]",
+  "(--pool/--prefiltered/--train-samples/--nbases apply to BOTH platforms)"))
 platform <- args[1]; data_dir <- args[2]; out_csv <- args[3]
 
 # --pool=pseudo generates a reference for `dada(pool="pseudo")` instead of the
@@ -80,8 +87,9 @@ MT <- if (!is.na(THREADS)) {
 cat(sprintf("threads: %s\n", if (isTRUE(MT)) "TRUE (detectCores; NOT cgroup-aware)" else MT))
 
 # learnErrors' subsampling budget. R defaults to 1e8; run_illumina.sh defaults to
-# 2e7 -- so left alone the two sides train on DIFFERENT amounts of data, and any
-# arm comparison is measuring the budget as well as whatever it meant to test.
+# 2e7 and run_pacbio.sh to 2e8 -- so left alone the two sides train on DIFFERENT
+# amounts of data, and any arm comparison is measuring the budget as well as
+# whatever it meant to test.
 # Set both, and set them above the run total if the surface or errfun is the
 # thing under test.
 # --train-samples=FILE: learn the error model from ONLY these samples (one name
@@ -95,7 +103,9 @@ TRAIN_SAMPLES <- flag("train-samples")
 NBASES <- flag("nbases")
 NBASES <- if (!is.na(NBASES)) as.numeric(NBASES) else 1e8
 cat(sprintf("nbases: %s%s\n", format(NBASES, scientific = TRUE),
-            if (is.na(flag("nbases"))) " (R default; run_illumina.sh defaults to 2e7 -- match them)" else ""))
+            if (is.na(flag("nbases")))
+              " (R default; run_illumina.sh defaults to 2e7, run_pacbio.sh to 2e8 -- match them)"
+            else ""))
 
 args <- args[!grepl("^--", args)]
 
@@ -129,6 +139,51 @@ write_long <- function(seqtab, path) {
 #     called it chimeric" are different findings and the post-chimera CSV cannot
 #     tell them apart (three extras on the 362-sample MiSeq run turned out to be
 #     clean two-parent bimeras, and confirming that needed R's pre-chimera set).
+# --- Training-set pinning, shared by both platforms ----------------------------
+# Kept as functions rather than inlined per branch: the Illumina path grew these
+# first and the PacBio path silently lacked them, so a PacBio arm comparison was
+# not pinned and the nbases guard below could never fire on it.
+
+# Indices into sample.names for the pinned training set, or all of them.
+training_index <- function(sample.names) {
+  if (is.na(TRAIN_SAMPLES)) return(seq_along(sample.names))
+  keep <- trimws(readLines(TRAIN_SAMPLES))
+  keep <- keep[nzchar(keep)]
+  idx <- match(keep, sample.names)
+  if (anyNA(idx)) stop("--train-samples names not found in ", data_dir, ": ",
+                       paste(keep[is.na(idx)], collapse = ", "))
+  cat(sprintf("training on %d of %d samples (pinned via %s); denoising all %d\n",
+              length(idx), length(sample.names), TRAIN_SAMPLES, length(sample.names)))
+  idx
+}
+
+# nbases must NOT truncate a pinned training set.  The whole point of
+# --train-samples is that both tools see exactly these samples; if nbases bites
+# first, R silently trains on a PREFIX of the manifest and the arms differ in
+# training data as well as in whatever is under test.  This cost a full
+# 362-sample comparison once: the manifest held 3.0e8 bases, nbases sat at its
+# 1e8 default, and R trained on the first third while dada2-rs (run with
+# --nbases 1e12) used all of it -- a 2.99x gap in the transition matrix that
+# looked like a self-consistency-loop difference.
+assert_nbases_covers <- function(files, label) {
+  if (is.na(TRAIN_SAMPLES)) return(invisible(NULL))
+  # countFastq reads the headers only -- do NOT pull the records into memory
+  # just to total them.
+  train_bases <- sum(as.numeric(ShortRead::countFastq(files)$nucleotides))
+  cat(sprintf("training set (%s): %d samples, %s bases; nbases = %s\n",
+              label, length(files), format(train_bases, big.mark = ","),
+              format(NBASES, scientific = TRUE)))
+  if (NBASES < train_bases) {
+    stop(sprintf(paste0("--nbases (%s) is smaller than the pinned %s training set (%s bases), ",
+                        "so learnErrors would train on only a prefix of it. Pass ",
+                        "--nbases=%s or larger, or shrink the manifest."),
+                 format(NBASES, scientific = TRUE), label,
+                 format(train_bases, big.mark = ","),
+                 format(ceiling(train_bases * 1.1), scientific = TRUE)))
+  }
+  invisible(NULL)
+}
+
 save_artifacts <- function(out_csv, seqtab_pre, errs) {
   stem <- sub("\\.csv$", "", out_csv)
   for (nm in names(errs)) {
@@ -160,40 +215,13 @@ if (platform == "illumina") {
                   rm.phix = FALSE, compress = TRUE, multithread = MT)
   }
 
-  trainFs <- filtFs; trainRs <- filtRs
-  if (!is.na(TRAIN_SAMPLES)) {
-    keep <- trimws(readLines(TRAIN_SAMPLES))
-    keep <- keep[nzchar(keep)]
-    idx <- match(keep, sample.names)
-    if (anyNA(idx)) stop("--train-samples names not found in ", data_dir, ": ",
-                         paste(keep[is.na(idx)], collapse = ", "))
-    trainFs <- filtFs[idx]; trainRs <- filtRs[idx]
-    cat(sprintf("training on %d of %d samples (pinned via %s); denoising all %d\n",
-                length(idx), length(sample.names), TRAIN_SAMPLES, length(sample.names)))
-
-    # nbases must NOT truncate a pinned training set.  The whole point of
-    # --train-samples is that both tools see exactly these samples; if nbases
-    # bites first, R silently trains on a PREFIX of the manifest and the arms
-    # differ in training data as well as in whatever is under test.  This cost a
-    # full 362-sample comparison once: the manifest held 3.0e8 bases, nbases sat
-    # at its 1e8 default, and R trained on the first third while dada2-rs (run
-    # with --nbases 1e12) used all of it -- a 2.99x gap in the transition matrix
-    # that looked like a self-consistency-loop difference.
-    # countFastq reads the headers only -- do NOT pull the records into memory
-    # just to total them.
-    train_bases <- sum(as.numeric(ShortRead::countFastq(trainFs)$nucleotides))
-    cat(sprintf("training set: %d samples, %s bases; nbases = %s\n",
-                length(trainFs), format(train_bases, big.mark = ","),
-                format(NBASES, scientific = TRUE)))
-    if (NBASES < train_bases) {
-      stop(sprintf(paste0("--nbases (%s) is smaller than the pinned training set (%s bases), ",
-                          "so learnErrors would train on only a prefix of it. Pass ",
-                          "--nbases=%s or larger, or shrink the manifest."),
-                   format(NBASES, scientific = TRUE),
-                   format(train_bases, big.mark = ","),
-                   format(ceiling(train_bases * 1.1), scientific = TRUE)))
-    }
-  }
+  idx <- training_index(sample.names)
+  trainFs <- filtFs[idx]; trainRs <- filtRs[idx]
+  # Both directions: learnErrors is called separately on each, each with its own
+  # nbases, and the reverse set is the smaller of the two -- so checking only
+  # the forward would let nbases truncate the reverse unnoticed.
+  assert_nbases_covers(trainFs, "forward")
+  assert_nbases_covers(trainRs, "reverse")
 
   errF <- learnErrors(trainFs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
   errR <- learnErrors(trainRs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
@@ -220,29 +248,49 @@ if (platform == "illumina") {
 
 } else if (platform == "pacbio") {
   # --- Parameters: keep in sync with run_pacbio.sh ---
-  if (length(args) < 5) stop("pacbio needs primer_fwd primer_rev")
-  primer_fwd <- args[4]; primer_rev <- args[5]
+  # --prefiltered means the reads are ALREADY primer-stripped and length/EE
+  # filtered, so both removePrimers and filterAndTrim are skipped and the
+  # primers are not needed. Without it this branch filtered into tempdir(),
+  # which is destroyed on exit -- so dada2-rs could never consume the same
+  # reads and every PacBio comparison silently carried two filtering passes.
   MIN_LEN <- 1000; MAX_LEN <- 1600; MAX_EE <- 2; TRUNC_Q <- 0; MAX_N <- 0
-  rc <- getFromNamespace("rc", "dada2")
 
   fns <- sort(list.files(data_dir, pattern = "\\.fastq\\.gz$", full.names = TRUE))
   if (length(fns) == 0) stop("no *.fastq.gz in ", data_dir)
   sample.names <- sub("\\.fastq\\.gz$", "", basename(fns))
+  # run_pacbio.sh writes its filtered reads as <sample>_filt.fastq.gz into a
+  # PERSISTENT $OUT/filtered, which is what --prefiltered is meant to consume.
+  # Strip the suffix so these agree with pick_training_subset.py's manifest
+  # (run it with --suffix _filt.fastq.gz). Only under --prefiltered, so raw
+  # reads that happen to end in _filt are left alone.
+  if (PREFILTERED) sample.names <- sub("_filt$", "", sample.names)
 
-  nop_dir <- file.path(tempdir(), "noprimers")
-  nops <- file.path(nop_dir, paste0(sample.names, "_noprimer.fastq.gz"))
-  removePrimers(fns, nops, primer.fwd = primer_fwd, primer.rev = rc(primer_rev),
-                orient = TRUE, verbose = TRUE)
+  if (PREFILTERED) {
+    filts <- fns
+  } else {
+    if (length(args) < 5) stop("pacbio needs primer_fwd primer_rev (or --prefiltered)")
+    primer_fwd <- args[4]; primer_rev <- args[5]
+    rc <- getFromNamespace("rc", "dada2")
 
-  filt_dir <- file.path(tempdir(), "filtered")
-  filts <- file.path(filt_dir, paste0(sample.names, "_filt.fastq.gz"))
-  filterAndTrim(nops, filts, minLen = MIN_LEN, maxLen = MAX_LEN, maxN = MAX_N,
-                maxEE = MAX_EE, truncQ = TRUNC_Q, rm.phix = FALSE,
-                compress = TRUE, multithread = MT)
+    nop_dir <- file.path(tempdir(), "noprimers")
+    nops <- file.path(nop_dir, paste0(sample.names, "_noprimer.fastq.gz"))
+    removePrimers(fns, nops, primer.fwd = primer_fwd, primer.rev = rc(primer_rev),
+                  orient = TRUE, verbose = TRUE)
 
-  err <- learnErrors(filts, errorEstimationFunction = PacBioErrfun, nbases = NBASES,
+    filt_dir <- file.path(tempdir(), "filtered")
+    filts <- file.path(filt_dir, paste0(sample.names, "_filt.fastq.gz"))
+    filterAndTrim(nops, filts, minLen = MIN_LEN, maxLen = MAX_LEN, maxN = MAX_N,
+                  maxEE = MAX_EE, truncQ = TRUNC_Q, rm.phix = FALSE,
+                  compress = TRUE, multithread = MT)
+  }
+
+  idx <- training_index(sample.names)
+  trains <- filts[idx]
+  assert_nbases_covers(trains, "reads")
+
+  err <- learnErrors(trains, errorEstimationFunction = PacBioErrfun, nbases = NBASES,
                      BAND_SIZE = 32, multithread = MT)
-  dd <- dada(filts, err = err, pool = FALSE, BAND_SIZE = 32, multithread = MT)
+  dd <- dada(filts, err = err, pool = POOL, BAND_SIZE = 32, multithread = MT)
   seqtab <- makeSequenceTable(dd)
   seqtab.nochim <- removeBimeraDenovo(seqtab, method = "consensus",
                                       multithread = MT, verbose = TRUE)
