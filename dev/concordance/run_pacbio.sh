@@ -116,6 +116,27 @@ run_step() {
 }
 METRICS="${METRICS:-}"
 
+# TRACE=1: write a full cluster trace from the denoising step. This is the only
+# way to see WHY a given sequence ended up a centre or a member -- the per-sample
+# JSONs record the outcome, not the partition. Needed to settle things like the
+# Cx3/Cx2 homopolymer disagreement on the 95-sample PacBio run, where our arms
+# call one length and R the other and no parameter moves it.
+#
+# SIZE WARNING: the trace carries every cluster's member list. On a 272k-unique
+# pooled MiSeq run that was ~130 MB; a 547k-unique PacBio pool is larger.
+# TRACE_MIN_ABUND drops members below an abundance (singletons dominate the
+# count), and TRACE_NO_MEMBERS=1 keeps only the per-cluster summary (~10x
+# smaller) when the question is about centres rather than membership.
+TRACE="${TRACE:-}"
+TRACE_MIN_ABUND="${TRACE_MIN_ABUND:-}"
+TRACE_NO_MEMBERS="${TRACE_NO_MEMBERS:-}"
+trace_arg=()
+if [ -n "$TRACE" ]; then
+  trace_arg=(--cluster-trace "$OUT/clusters.json")
+  [ -n "$TRACE_MIN_ABUND" ] && trace_arg+=(--trace-min-abund "$TRACE_MIN_ABUND")
+  [ -n "$TRACE_NO_MEMBERS" ] && trace_arg+=(--trace-no-members)
+fi
+
 mkdir -p "$OUT"/{filtered,dada}
 
 reads=("$DATA"/*.fastq.gz)
@@ -227,7 +248,8 @@ if [ "$POOL" = "true" ]; then
   run_step dada-pooled "$BIN" dada-pooled "${filts[@]}" --error-model "$OUT/err.json" \
       -o "$OUT/dada" --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
       ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} \
-      ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"}
+      ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"} \
+      ${trace_arg[@]+"${trace_arg[@]}"}
 else
   echo "==> dada (per-sample)"
   metrics_arg=()
@@ -235,7 +257,8 @@ else
   run_step dada "$BIN" dada "${filts[@]}" --error-model "$OUT/err.json" \
       --output-dir "$OUT/dada" --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
       ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} \
-      ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"}
+      ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"} \
+      ${trace_arg[@]+"${trace_arg[@]}"}
 fi
 
 echo "==> make-sequence-table"
