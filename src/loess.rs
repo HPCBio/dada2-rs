@@ -293,6 +293,32 @@ fn kd_box_pad(lo: f64, hi: f64) -> f64 {
 /// relative error at `q = 12`, flat-filled across `q <= 12`, against 1.5e-14
 /// from the first interior vertex up.  Interior cuts are unaffected.
 ///
+/// Subdivision stops at `count <= threshold` (R's `fc`), or at a single point.
+/// Two earlier guards are deliberately gone (issue #215):
+///
+/// * a `.max(degree + 1)` floor on `threshold`, which only ever bound when
+///   `nv < 20` and made the tree refuse to split at all in the sparse regime;
+/// * a `m == l || m == u` check that forbade splitting a two-point cell, so
+///   the cell's own data point never became a vertex.
+///
+/// Together those left few-distinct-Q fits blending across one giant cell,
+/// ignoring the interior anchors entirely. With both removed the anchors-only
+/// sweep matches R to machine precision at `n_valid` 3, 6, 7 and 8 (and to
+/// ~3e-4 at 4 and 5), against 1.6e-1 to 5.1e-1 before. The dense grid is
+/// untouched: at `nv = 29` the threshold is 4, so neither guard was reachable,
+/// and the vertex set still equals R's `kd$xi` exactly.
+///
+/// # Known remaining gap (#215)
+/// R's `ehg124` has a **second** leaf condition we do not implement: a cell is
+/// also a leaf once its diameter falls below `fd`, which `ehg131` sets to 5% of
+/// the padded box diagonal (`v(2) = 0.05d0` in `lowesd`). And our split is
+/// index-median, `m = (l + u) / 2`, which biases left — on three anchors we
+/// produce interior vertices `{12, 24}` where R's `kd$xi` is `{12, 24, 38}`,
+/// missing the rightmost. That is why the binned-shaped case (predictions
+/// *between* three anchors) is still 2.5e-1 off. Note R itself warns
+/// "pseudoinverse used" and "reciprocal condition number 0" on that fit, so
+/// the target there is R's own degenerate output.
+///
 /// Returns at minimum the two padded bounds.  Vertices are sorted ascending
 /// and deduplicated; consecutive pairs form the leaf cells.
 fn build_kd_vertices_1d(sorted_valid_xs: &[f64], threshold: usize) -> Vec<f64> {
@@ -306,17 +332,13 @@ fn build_kd_vertices_1d(sorted_valid_xs: &[f64], threshold: usize) -> Vec<f64> {
     let mut stack: Vec<(usize, usize)> = vec![(0, n - 1)];
     while let Some((l, u)) = stack.pop() {
         let count = u - l + 1;
-        if count <= threshold {
+        if count <= threshold || count < 2 {
             continue;
         }
         // R's `ehg124`: m = floor((l + u) / 2), vertex = x[pi(m)].
         // (l, u are 1-indexed in Fortran; here zero-indexed but the
         // arithmetic is identical.)
         let m = (l + u) / 2;
-        if m == l || m == u {
-            // No room to subdivide further while keeping both halves nonempty.
-            continue;
-        }
         let vertex_x = sorted_valid_xs[m];
         vertices.push(vertex_x);
         // Left: l..=m, right: m+1..=u (the median point belongs to the left).
@@ -424,7 +446,6 @@ pub fn loess_predict(
             // their enclosing cell's two vertex polynomials with a cubic
             // smoothstep.
             let threshold = (cell * span * nv as f64).floor() as usize;
-            let threshold = threshold.max(p); // sanity floor
 
             let mut sorted_xs: Vec<f64> = valid.iter().map(|&i| xs[i]).collect();
             sorted_xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -532,6 +553,23 @@ mod tests {
     /// error model: `q in [12, 40]` gives `[11.86, 40.14]` and `q in [12, 39]`
     /// gives `[11.865, 39.135]`. Without the pad the first cell blends from the
     /// wrong left-hand fit and `q = 12` lands 1.4e-3 off R.
+    /// The sparse regime (#215): with three anchors R's `kd$xi` is
+    /// `{12, 24, 38}` and the tree must still subdivide even though
+    /// `floor(cell * span * n)` is 0. Two removed guards each used to prevent
+    /// that — a `degree + 1` floor on the threshold, and a refusal to split a
+    /// two-point cell. We still miss R's rightmost cut; see the function docs.
+    #[test]
+    fn kd_vertices_subdivide_when_the_threshold_is_zero() {
+        let xs = [12.0, 24.0, 38.0];
+        let v = super::build_kd_vertices_1d(&xs, 0);
+        let interior: Vec<f64> = v[1..v.len() - 1].to_vec();
+        assert_eq!(
+            interior,
+            vec![12.0, 24.0],
+            "three anchors must still yield interior vertices"
+        );
+    }
+
     #[test]
     fn kd_vertices_pad_the_box_like_r() {
         for (lo, hi, want_lo, want_hi) in [(12.0, 40.0, 11.86, 40.14), (12.0, 39.0, 11.865, 39.135)]
