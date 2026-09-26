@@ -53,7 +53,24 @@ BAND=32
 # should give the same ASVs (see issue #15).
 KMER="${PACBIO_KMER:-5}"
 MAX_MISMATCH=2
-NBASES=200000000
+# learnErrors' subsampling budget. MUST be raised past the training set when
+# PACBIO_TRAIN_SAMPLES pins one -- otherwise dada2-rs trains on a PREFIX of the
+# manifest while R (given a matching --nbases) uses all of it, and the arms
+# differ in training data as well as in whatever is under test. write_reference.R
+# refuses that on the R side; nothing can refuse it here, because this script
+# hands learn-errors an explicit file list and cannot know the manifest's size
+# without reading every FASTQ. So it is checked below instead.
+NBASES="${NBASES:-200000000}"
+
+# Pin the error-model training set to these samples (one name per line, matching
+# the filtered stems without the _filt suffix), then denoise everything --
+# the same contract as write_reference.R's --train-samples. Produce the manifest
+# with pick_training_subset.py --suffix _filt.fastq.gz so both sides agree.
+PACBIO_TRAIN_SAMPLES="${PACBIO_TRAIN_SAMPLES:-}"
+
+# Full pooling (R pool=TRUE) instead of per-sample dada. Must match the R
+# reference's --pool, or the comparison is measuring the pooling mode.
+POOL="${POOL:-false}"
 
 mkdir -p "$OUT"/{filtered,dada}
 
@@ -77,15 +94,47 @@ for f in "${reads[@]}"; do
   filts+=("$ff")
 done
 
+trains=("${filts[@]}")
+if [ -n "$PACBIO_TRAIN_SAMPLES" ]; then
+  trains=()
+  while IFS= read -r name; do
+    [ -z "$name" ] && continue
+    ff="$OUT/filtered/${name}_filt.fastq.gz"
+    if [ ! -e "$ff" ]; then
+      echo "run_pacbio.sh: --train-samples name not found: $ff" >&2
+      exit 1
+    fi
+    trains+=("$ff")
+  done < "$PACBIO_TRAIN_SAMPLES"
+  echo "==> training on ${#trains[@]} of ${#filts[@]} samples (pinned via $PACBIO_TRAIN_SAMPLES)"
+  # Guard the mirror image of the trap write_reference.R catches: a pinned
+  # manifest bigger than NBASES means learn-errors silently takes a prefix.
+  train_bases=$(gzip -cd "${trains[@]}" | awk 'NR%4==2 {n+=length($0)} END {print n+0}')
+  echo "==> training set: $train_bases bases; nbases = $NBASES"
+  if [ "$train_bases" -gt "$NBASES" ]; then
+    echo "run_pacbio.sh: NBASES ($NBASES) is smaller than the pinned training set" >&2
+    echo "  ($train_bases bases), so learn-errors would train on only a prefix." >&2
+    echo "  Re-run with NBASES=$(( train_bases * 11 / 10 )) or larger." >&2
+    exit 1
+  fi
+fi
+
 echo "==> learn-errors (pacbio errfun, k=$KMER)"
-"$BIN" learn-errors "${filts[@]}" --nbases "$NBASES" --errfun pacbio \
+"$BIN" learn-errors "${trains[@]}" --nbases "$NBASES" --errfun pacbio \
     --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
     ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} -o "$OUT/err.json"
 
-echo "==> dada (per-sample)"
-"$BIN" dada "${filts[@]}" --error-model "$OUT/err.json" \
-    --output-dir "$OUT/dada" --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
-    ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
+if [ "$POOL" = "true" ]; then
+  echo "==> dada-pooled (full pooling)"
+  "$BIN" dada-pooled "${filts[@]}" --error-model "$OUT/err.json" \
+      -o "$OUT/dada" --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
+else
+  echo "==> dada (per-sample)"
+  "$BIN" dada "${filts[@]}" --error-model "$OUT/err.json" \
+      --output-dir "$OUT/dada" --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
+fi
 
 echo "==> make-sequence-table"
 "$BIN" make-sequence-table "$OUT"/dada/*.json -o "$OUT/seqtab.json"
