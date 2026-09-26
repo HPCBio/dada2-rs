@@ -175,6 +175,22 @@ fi
 # is therefore not comparable to an R reference on the model axis, because R's
 # KMER_SIZE is a compile-time 5. This lets the two be decoupled: learn once at
 # k=5 to match R, then denoise at k=7 for the ~7x screen saving.
+# Extra arguments for learn-errors, whitespace-split -- the same escape hatch
+# run_illumina.sh has. `--errfun` itself is fixed to `pacbio` here, but the
+# errfun's LOESS config is not: `pacbio_errfun` calls `loess_errfun` for every
+# column below Q93, so --loess-preset applies to PacBio exactly as it does to
+# Illumina.
+#
+# This matters for R comparisons. Our default preset is `direct`; R's
+# `PacBioErrfun` calls `loessErrfun`, which calls `loess()` with R's default
+# surface, `interpolate`. So a default PacBio run differs from R by the whole
+# direct-vs-interpolate gap, and closing it needs
+# ERRFUN_ARGS='--loess-preset r-dada2'. Before this existed that string was
+# silently ignored here, which looks identical to having had no effect.
+ERRFUN_ARGS="${ERRFUN_ARGS:-}"
+# shellcheck disable=SC2206
+errfun_extra=($ERRFUN_ARGS)
+
 ERR_DIR="${ERR_DIR:-}"
 if [ -n "$ERR_DIR" ]; then
   echo "==> reusing error model from $ERR_DIR (skipping learn-errors)"
@@ -182,6 +198,7 @@ if [ -n "$ERR_DIR" ]; then
 else
 echo "==> learn-errors (pacbio errfun, k=$KMER)"
 "$BIN" learn-errors "${trains[@]}" --nbases "$NBASES" --errfun pacbio \
+    ${errfun_extra[@]+"${errfun_extra[@]}"} \
     --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
     ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} \
     ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/err.json"
