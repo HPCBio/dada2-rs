@@ -422,9 +422,29 @@ pub fn loess_predict(
     // previously used `ceil`, which agrees when `span * nv` is integer but
     // differs by 1 otherwise — enough to nudge the local fit at nontrivial
     // numbers of observations. See issue #14 checklist item 1.
-    let n_local = ((span * nv as f64).floor() as usize)
-        .max(eff_degree + 1)
-        .min(nv);
+    // R's `nf` is `min(n, floor(n * span))` (`simpleLoess`), with no floor at
+    // `degree + 1`. Ours had one, which only bound when `floor(span * nv) < 3`
+    // — i.e. `nv <= 5` at the default span and degree — and there it widened
+    // the neighbourhood past R's. That is what made our vertex fits carry the
+    // secant slope where R's carry zero: with R's `nf`, the tricube
+    // zero-weights the farther point, one informative point is left for three
+    // coefficients, and the fit collapses to a constant. R reaches that via a
+    // pseudoinverse; our degree reduction below reaches the same place.
+    // `kd$vval` on three anchors reads (value, 0) at every data-point vertex.
+    //
+    // Tradeoff on the `Direct` surface in the same degenerate regime: with
+    // three anchors, a query midway between two of them sits at the SAME
+    // distance from both, so the bandwidth equals that distance and the
+    // tricube zeroes every neighbour. We then have no fit and
+    // `extrapolate_flat` leaves the cell at `min_error_rate`; on the
+    // binned-shaped oracle case that is 24 of 492 cells. R reaches the same
+    // dead end -- `ehg127` warns "all weights zero" -- and returns 0, which as
+    // a log10 rate is 1.0, i.e. a 100% error rate clamped to
+    // `max_error_rate`. Neither answer carries information; ours errs low and
+    // R's errs maximally high. `Interpolate` (R's own default) is unaffected
+    // and becomes exact here, and `--errfun binned-qual` exists so binned data
+    // need not go through LOESS at all.
+    let n_local = ((span * nv as f64).floor() as usize).max(1).min(nv);
     let p = eff_degree + 1;
 
     let (x_min, x_max) = valid
