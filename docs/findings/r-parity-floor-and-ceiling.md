@@ -93,6 +93,15 @@ tie-break sensitivity underneath it is a floor and must be recognised.
     A parity result is evidence about the code path that produced it, and
     nothing else.
 
+!!! note "The same underflow reaches a second decision"
+    `OMEGA_C`'s final pass tests `p >= omega_c` on the same `calc_pA` output.
+    At `p = 0.00e0` that is **false** for `dada`'s `1e-40` (reads left unplaced)
+    and **true** for `learn-errors`' `0` (reads placed), so the two defaults we
+    ship diverge precisely on the saturated set. There the underflow is not a
+    tie to be broken but a step change, which is a different problem from the
+    one above — tracked as
+    [issue 228](https://github.com/HPCBio/dada2-rs/issues/228).
+
 ## The ceiling: where we follow the intent, not the behaviour
 
 Parity is a means, not the goal. Where R's implemented behaviour diverges from

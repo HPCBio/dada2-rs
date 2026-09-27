@@ -230,8 +230,9 @@ positives clear it by ~100. Full account:
 [OMEGA_A is well calibrated on PacBio HiFi](omega-a-calibration.md).
 
 So the 4–76 read churn band is real but `OMEGA_A` does not explain it, and
-tuning the threshold is not the lever. Note the probe addressed `OMEGA_A` only —
-`OMEGA_C` was parked alongside it and remains open.
+tuning the threshold is not the lever. Note the probe addressed `OMEGA_A` only — `OMEGA_C` was parked alongside it,
+acts on read attribution rather than on the ASV set, and therefore needs a
+different instrument: [issue 228](https://github.com/HPCBio/dada2-rs/issues/228).
 
 **Still open — the binned-quality platforms.** Everything on this page comes from
 conventional-quality Illumina and PacBio HiFi. Whether the same decoupling

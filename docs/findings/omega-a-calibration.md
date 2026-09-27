@@ -66,9 +66,13 @@ The two arms are independent and could have disagreed. They did not.
   removal does not catch, which points at
   [issue 55](https://github.com/HPCBio/dada2-rs/issues/55) (higher-order and
   trimera screening), not at a denoising threshold.
-- **`OMEGA_C` is not covered by this.** The probe addressed `OMEGA_A`. The
-  abundance/error threshold pair was parked together, and only one of them has
-  been answered.
+- **`OMEGA_C` is not covered by this**, and cannot be by the same instrument.
+  The probe addressed `OMEGA_A`, which decides whether an ASV is *born* and so
+  shows up in truth-set scoring. `OMEGA_C` decides read *attribution* after
+  clustering, leaving the per-orientation ASV set unchanged — an ASV-level TP/FP
+  arm is largely blind to it. The pair was parked together and only one half has
+  been answered; the other is
+  [issue 228](https://github.com/HPCBio/dada2-rs/issues/228).
 - **This verdict is mock-specific and platform-specific.** It is one community,
   one region, one primer pair, on PacBio HiFi. An Illumina truth set on the
   *same* mock is needed before any cross-platform statement, because an Illumina
