@@ -16,6 +16,16 @@ priors-only default is not merely a defensible reading of the published
 definition, it is the intended semantics, and `--reestimate-err-between-rounds`
 emulates a behaviour its author does not intend.
 
+**Both behaviours are now pinned in CI.** The concordance harness carries two
+pseudo arms, each compared against an R reference built the same way, and both
+are exact on the 4-sample fixture: `POOL=pseudo` against R's native
+`pool="pseudo"` (152 vs 152, with `--reestimate-err-between-rounds`), and
+`POOL=pseudo-fixed-err` against R run non-pooled twice with round-1 priors and
+one error model (148 vs 148, our default). The 152-vs-148 difference *between*
+the arms is the re-fit, isolated. Before this, only the native arm existed, so
+the path users actually run had no coverage and the mismatch read as a ~4-ASV
+deficiency in our implementation (#221).
+
 **R's behaviour is confirmed, both by direct observation and at the table level.**
 Tracing R's own `dada_uniques` shows `pool="pseudo"` denoising its second round
 with an error model the caller never supplied, while `pool=FALSE` uses the supplied
