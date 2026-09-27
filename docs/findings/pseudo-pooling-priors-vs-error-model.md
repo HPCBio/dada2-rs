@@ -195,7 +195,7 @@ Rscript dev/probe_r_pseudo_err.R          # uses the data/dada2 fixtures
 The decisive test does not require patching R. If R re-fits, its ASV table should
 sit closer to our `--reestimate-err-between-rounds` arm than to our default. Run
 on the same MiSeq data via `dev/benchmark/bench_pooled.py --pool pseudo --run-r`
-with `--loess-preset r-dada2` on both arms (so the loess surface is not a second
+with the same loess surface on both arms (so the surface is not a second
 difference), compared with `dev/compare_pseudo_vs_r.py` on the **pre-chimera**
 tables:
 

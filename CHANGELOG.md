@@ -43,11 +43,30 @@ minor versions may carry breaking changes).
 - `just` / `make` task runners for build, install, test, and docs (#46).
 
 ### Changed
+- **The default LOESS fitting surface is now `interpolate`** (#205), matching
+  the surface R's `loess()` — and therefore `loessErrfun` — uses. This changes
+  error models and can shift ASVs and counts; a stock `learn-errors` run now
+  agrees with R without extra flags. `--loess-surface direct` restores the old
+  behaviour. The previous default was exact against
+  `loess(surface = "direct")`, but R DADA2 never calls that: on a 95-sample
+  pooled PacBio run the surface was the largest remaining term in the error
+  model (median 1.088e-03 between surfaces, against 2.599e-04 for the k-mer
+  screen), and on a 362-sample MiSeq run `interpolate` landed +14 reads from R
+  against `direct`'s -1,699. Cost at ASV level is nil on both platforms.
 - `assign-taxonomy --seed` now has a **fixed default**, so taxonomic assignment
   is reproducible out of the box (#187). There is no unseeded mode: entropy only
   makes a run unrepeatable, and varying the seed gives the same spread while
   staying reproducible. This follows `kdist-calibrate`, which already seeds by
   default; R DADA2 cannot do this at all (benjjneb/dada2#1115).
+
+### Deprecated
+- `--loess-preset` on `learn-errors` and `errors-from-sample`. It bundled
+  `--loess-surface`, `--loess-cell`, `--loess-max-rate` and `--loess-min-rate`,
+  with `default` selecting `direct` and `r-dada2` selecting `interpolate`. Now
+  that `interpolate` is the default, `r-dada2` is redundant and `default` names
+  the non-default surface, which is actively misleading. The flag still works
+  and maps onto `--loess-surface`, but warns; `--loess-surface` wins if both
+  are given.
 
 ### Fixed
 - `assign-species` matched a query against a reference only when the two

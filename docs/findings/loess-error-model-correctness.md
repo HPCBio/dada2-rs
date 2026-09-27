@@ -108,7 +108,7 @@ comparison and did not.
 No unexplained divergence remained — all of it was the kd-tree surface R
 defaults to. So `ehg124`/`ehg128` were ported (kd-tree partition subdividing at
 the *median data point*, plus cubic Hermite blending) and exposed through
-`LoessConfig` and `--loess-preset`: `default` keeps the historical direct
+`LoessConfig` and `--loess-surface`: `direct` keeps the historical direct
 surface, `r-dada2` mirrors R DADA2's interpolate surface.
 
 On the 362-sample data the two presets produce **visibly different error models
@@ -124,8 +124,8 @@ reads:
 
 | arm | abundances differing from R | read delta |
 |---|---:|---:|
-| `--loess-preset default` (direct) | 6 / 232 | −4 |
-| `--loess-preset r-dada2` (interpolate) | **0** | **0** |
+| `--loess-surface direct` | 6 / 232 | −4 |
+| `--loess-surface interpolate` (now the default) | **0** | **0** |
 | R's own fitted model, fed to our `dada` | **0** | **0** |
 
 Every arm produced the same 232 ASVs with none unique to either side. Two
@@ -189,7 +189,7 @@ from generalising. The error model is an amplifier — [the KDIST
 work](kdist-cutoff-decoupling.md) found error-model perturbation churning
 *real-abundance* ASVs — and this is one small, clean dataset. Where exact counts
 matter, such as reproducing a published table or testing concordance,
-`--loess-preset r-dada2` removes the question entirely.
+`interpolate`, the default since #205, removes the question entirely.
 
 R DADA2's use of `surface = "interpolate"` appears to be R's default rather than
 a deliberate choice; on an integer-Q grid, where every data point is already a
@@ -454,7 +454,7 @@ set identity, not on how the curves look.**
   and the reference arm for any future comparison.
 - **Pin the input set before comparing error models.** Otherwise the fit and the
   sample draw move together, and the residual cannot be attributed.
-- **`--loess-preset` is the fidelity knob**, and the two presets differ in
+- **`--loess-surface` is the fidelity knob**, and the two surfaces differ in
   exactly one thing: the fitting surface. `default` is direct, `r-dada2` is R's
   interpolate. On 362 samples they give different error models and the same
   ASVs.

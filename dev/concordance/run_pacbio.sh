@@ -215,15 +215,15 @@ fi
 # Extra arguments for learn-errors, whitespace-split -- the same escape hatch
 # run_illumina.sh has. `--errfun` itself is fixed to `pacbio` here, but the
 # errfun's LOESS config is not: `pacbio_errfun` calls `loess_errfun` for every
-# column below Q93, so --loess-preset applies to PacBio exactly as it does to
+# column below Q93, so --loess-surface applies to PacBio exactly as it does to
 # Illumina.
 #
-# This matters for R comparisons. Our default preset is `direct`; R's
-# `PacBioErrfun` calls `loessErrfun`, which calls `loess()` with R's default
-# surface, `interpolate`. So a default PacBio run differs from R by the whole
-# direct-vs-interpolate gap, and closing it needs
-# ERRFUN_ARGS='--loess-preset r-dada2'. Before this existed that string was
-# silently ignored here, which looks identical to having had no effect.
+# As of #205 `interpolate` is the DEFAULT -- the surface R's loess() uses, and
+# therefore what `PacBioErrfun` -> `loessErrfun` produces -- so nothing needs
+# passing for R parity. Use ERRFUN_ARGS='--loess-surface direct' to get the
+# old behaviour. (`--loess-preset r-dada2` still works but warns; it was also
+# silently ignored here before 5fcc94c, which looks identical to having had no
+# effect.)
 ERRFUN_ARGS="${ERRFUN_ARGS:-}"
 # shellcheck disable=SC2206
 errfun_extra=($ERRFUN_ARGS)

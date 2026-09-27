@@ -22,7 +22,7 @@ this test has no power on that dataset and says so rather than reporting a winne
 CONFOUND YOU MUST CONTROL: our default loess surface is `direct`; R DADA2's
 `loessErrfun` uses R's default `interpolate`. That difference alone moves ~1 read
 per sample on a 362-sample benchmark -- the same order as the effect being
-measured here. Run our arms with `--loess-preset r-dada2` (or, for bit-parity,
+measured here. Our arms now match R's surface by default (#205); for bit-parity,
 `--errfun external --errfun-cmd "Rscript examples/external_errfun/loess_reference.R"`)
 so the error-model fit is not a second difference. A sequence table records no
 error-model provenance, so this script cannot verify it -- it prints the reminder
@@ -167,7 +167,7 @@ def main():
     # counts only), so this cannot be checked from the inputs -- state it every
     # time instead of pretending to verify it.
     print("\n  CHECK BEFORE TRUSTING THE VERDICT: were both of our arms run with an")
-    print("  R-matched error model (--loess-preset r-dada2, or --errfun external with")
+    print("  R-matched error model (the default since #205, or --errfun external with")
     print("  loess_reference.R)? Our default loess surface is 'direct' while R's")
     print("  loessErrfun uses 'interpolate'; that alone moves ~1 read/sample on a")
     print("  362-sample run -- the same order as the effect under test. If the arms")
