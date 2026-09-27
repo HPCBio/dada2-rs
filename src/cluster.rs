@@ -165,34 +165,16 @@ pub fn b_compare(
             if new_e > b.e_minmax[index] {
                 b.e_minmax[index] = new_e;
             }
-            // #219: only store a comparison that HAS an alignment. A screened
-            // or greedy-skipped pair has no `sub`, and recording it with
-            // `hamming = 0` is not a neutral default -- `get_pA`'s second
-            // branch reads `hamming == 0` as "cluster centre (or exact match):
-            // always valid" and returns p = 1.0, which no `b_bud` minimum can
-            // ever beat. The raw is then inert however abundant or divergent.
-            //
-            // R reaches `comp.hamming = sub->nsubs` with a NULL `sub` here
-            // (`al2subs` returns NULL outside the k-mer threshold), which is
-            // undefined behaviour on their side; the port made it memory-safe
-            // by substituting 0 and thereby gave it a meaning. Not storing is
-            // what the gate's own comment intends -- "store comparison if
-            // potentially useful", and a screened pair is by definition not.
-            //
-            // The genuine centre still stores hamming 0: it aligns to itself,
-            // so `sub` is Some.
-            if let Some(sub) = sub.as_ref() {
-                let update_raw = i == 0 || index == center_idx;
-                let comp = Comparison {
-                    i: i as u32,
-                    index: index as u32,
-                    lambda,
-                    hamming: sub.nsubs() as u32,
-                };
-                b.clusters[i].comp.push(comp.clone());
-                if update_raw {
-                    b.raws[index].comp = comp;
-                }
+            let update_raw = i == 0 || index == center_idx;
+            let comp = Comparison {
+                i: i as u32,
+                index: index as u32,
+                lambda,
+                hamming: sub.as_ref().map_or(0, |s| s.nsubs() as u32),
+            };
+            b.clusters[i].comp.push(comp.clone());
+            if update_raw {
+                b.raws[index].comp = comp;
             }
         }
     }
@@ -527,22 +509,17 @@ pub fn b_compare_parallel(
             if new_e > b.e_minmax[index] {
                 b.e_minmax[index] = new_e;
             }
-            // #219, as in `b_compare`: `u32::MAX` is this path's "no alignment"
-            // sentinel, and collapsing it to 0 makes `get_pA` treat the raw as
-            // its own cluster centre (p = 1.0, permanently unbuddable).
-            if hamming != u32::MAX {
-                let update_raw = i == 0 || index == center_idx;
-                let comp = Comparison {
-                    i: i as u32,
-                    index: index as u32,
-                    lambda,
-                    hamming,
-                };
-                b.clusters[i].comp.push(comp.clone());
-                stored += 1;
-                if update_raw {
-                    b.raws[index].comp = comp;
-                }
+            let update_raw = i == 0 || index == center_idx;
+            let comp = Comparison {
+                i: i as u32,
+                index: index as u32,
+                lambda,
+                hamming: if hamming == u32::MAX { 0 } else { hamming },
+            };
+            b.clusters[i].comp.push(comp.clone());
+            stored += 1;
+            if update_raw {
+                b.raws[index].comp = comp;
             }
         }
     }
