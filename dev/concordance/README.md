@@ -26,7 +26,7 @@ breakdown labels them so.
 | `write_reference.R` | Run **once** in R to produce the reference CSV. Defines the CSV schema. |
 | `reference/` | Committed reference CSVs (you generate these). |
 | `data/pacbio/` | Committed subsampled PacBio fixture (you add this). |
-| `data/illumina_pseudo/` | 4-sample MiSeq SOP fixture for the pseudo arm — the 2-sample `illumina` fixture cannot exercise priors (see below). |
+| `data/illumina_pseudo/` | 4-sample MiSeq SOP fixture for the pseudo arms — the 2-sample `illumina` fixture cannot exercise priors (see below). Two references are built from it, one per pseudo semantics. |
 | `../../.github/workflows/concordance.yml` | The workflow: PRs + branch pushes + manual on main. |
 
 Both toy fixtures are committed under `dev/concordance/data/` (the repo-root
@@ -133,3 +133,31 @@ Rscript dev/concordance/write_reference.R illumina \
     dev/concordance/data/illumina_pseudo \
     dev/concordance/reference/illumina_pseudo_seqtab_nochim.csv --pool=pseudo
 ```
+
+## The two pseudo arms
+
+R's `dada(pool="pseudo")` re-fits the error model between its two rounds
+(`dada.R:370-380` runs `errorEstimationFunction` on every pass, and the pseudo
+loop does not break until `nconsist >= 2`) even when handed a fixed model. Per
+Ben Callahan that regeneration is **not intended** — the model should be the
+same in both rounds — so it is not what `dada-pseudo` does by default (#100).
+
+Comparing our default against R's native output therefore measures two
+different algorithms. Each arm is compared against a reference built the same
+way:
+
+| `POOL=` | `write_reference.R --pool=` | what it tests | result |
+|---|---|---|---|
+| `pseudo` | `pseudo` | R's native behaviour; `run_illumina.sh` adds `--reestimate-err-between-rounds` | 152 vs 152, exact |
+| `pseudo-fixed-err` | `pseudo-fixed-err` | our default — one model across both rounds, the path users run | 148 vs 148, exact |
+
+`pseudo-fixed-err` is not an R pooling mode. `write_reference.R` builds it by
+hand: `dada(pool=FALSE)`, derive priors from round 1 by R's own rule
+(`dada.R:400`, present in `>= PSEUDO_PREVALENCE` samples), then
+`dada(priors=..., pool=FALSE)` with the **same** `err`.
+
+The 152-vs-148 difference *between* the arms is R's re-estimation, isolated.
+Do not read the native arm as evidence about our default: it is generated from
+behaviour R does not intend, and on a fixture this small re-estimating happens
+to find a few more low-abundance ASVs. #100 found the opposite on typical
+data.

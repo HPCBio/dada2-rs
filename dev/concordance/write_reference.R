@@ -31,6 +31,7 @@ if (length(args) < 3) stop(paste(
   "usage: write_reference.R <illumina|pacbio> <data-dir> <out.csv>",
   "[primer_fwd primer_rev] [--pool=false|pseudo|true] [--errfun=loess|binned-qual]",
   "[--binned-quals=2,11,25,37] [--prefiltered] [--threads=N] [--nbases=N]",
+  "  --pool=pseudo-fixed-err: two pseudo rounds sharing ONE error model (#221)",
   "[--train-samples=FILE]",
   "(--pool/--prefiltered/--train-samples/--nbases apply to BOTH platforms)"))
 platform <- args[1]; data_dir <- args[2]; out_csv <- args[3]
@@ -43,10 +44,25 @@ flag <- function(name, default = NA_character_) {
   if (length(hit)) sub(paste0("^--", name, "="), "", hit[1]) else default
 }
 
+# `pseudo-fixed-err` is not an R pooling mode. It builds the two pseudo rounds
+# by hand so the SAME error model is used in both -- which is what pseudo-
+# pooling is supposed to do, and what dada2-rs does by default.
+#
+# R's own `pool="pseudo"` re-fits the model between rounds: dada.R:370-380 runs
+# `errorEstimationFunction(cur)` on every pass and the pseudo loop does not
+# break until nconsist >= 2, so round 2 sees a regenerated model even when
+# handed a fixed one. Per Ben Callahan that is not intended (#100). Comparing
+# `dada-pseudo` against it therefore measures two different algorithms, which
+# is why `--pool=pseudo` needs `--reestimate-err-between-rounds` on our side.
+#
+# This mode gives the other arm: R constructed the intended way, to compare
+# against `dada-pseudo` WITHOUT that flag -- the path users actually run (#221).
 pool_raw <- flag("pool", "false")
+PSEUDO_FIXED <- identical(pool_raw, "pseudo-fixed-err")
 POOL <- switch(pool_raw, pseudo = "pseudo", true = TRUE, TRUE_ = TRUE, FALSE)
 cat(sprintf("pool mode: %s\n",
-            if (identical(POOL, "pseudo")) "pseudo"
+            if (PSEUDO_FIXED) "pseudo-fixed-err (two rounds, one error model)"
+            else if (identical(POOL, "pseudo")) "pseudo (R native; re-fits err between rounds)"
             else if (isTRUE(POOL)) "TRUE (full pooling)" else "FALSE (per-sample)"))
 
 # Error function, mirroring run_illumina.sh's ERRFUN / ERRFUN_ARGS so the two
@@ -232,8 +248,25 @@ if (platform == "illumina") {
 
   errF <- learnErrors(trainFs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
   errR <- learnErrors(trainRs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
-  ddF <- dada(filtFs, err = errF, pool = POOL, multithread = MT)
-  ddR <- dada(filtRs, err = errR, pool = POOL, multithread = MT)
+  if (PSEUDO_FIXED) {
+    # Mirror dada2-rs's default pseudo-pooling: round 1 per-sample, derive
+    # priors, round 2 per-sample with the SAME err. R's prior rule is
+    # dada.R:400 -- present in >= PSEUDO_PREVALENCE samples OR total abundance
+    # >= PSEUDO_ABUNDANCE (default Inf, so prevalence alone in practice).
+    prev <- getOption("dada2.PSEUDO_PREVALENCE", 2)
+    two_round <- function(filts, err) {
+      r1 <- dada(filts, err = err, pool = FALSE, multithread = MT)
+      st <- makeSequenceTable(r1)
+      priors <- colnames(st)[colSums(st > 0) >= prev]
+      cat(sprintf("  pseudo-fixed-err: %d prior(s) from round 1\n", length(priors)))
+      dada(filts, err = err, priors = priors, pool = FALSE, multithread = MT)
+    }
+    ddF <- two_round(filtFs, errF)
+    ddR <- two_round(filtRs, errR)
+  } else {
+    ddF <- dada(filtFs, err = errF, pool = POOL, multithread = MT)
+    ddR <- dada(filtRs, err = errR, pool = POOL, multithread = MT)
+  }
   mergers <- mergePairs(ddF, filtFs, ddR, filtRs)
   seqtab <- makeSequenceTable(mergers)
   seqtab.nochim <- removeBimeraDenovo(seqtab, method = "consensus",

@@ -190,7 +190,7 @@ run_step learn-errors.rev "$BIN" learn-errors "${filtRs[@]}" --nbases "$NBASES" 
     --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${learn_screen_arg[@]+"${learn_screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/errR.json"
 fi
 
-if [ "$POOL" = "pseudo" ]; then
+if [ "$POOL" = "pseudo" ] || [ "$POOL" = "pseudo-fixed-err" ]; then
   # Pseudo-pooling. NOTE: dada-pseudo takes -o for its output DIRECTORY, whereas
   # `dada` uses --output-dir (-o there means a single-sample output FILE).
   #
@@ -212,14 +212,26 @@ if [ "$POOL" = "pseudo" ]; then
   # changing it. A separate arm -- R run non-pooled twice, priors from round 1
   # fed to round 2 -- would test our intended semantics against R; that is
   # tracked on #100 and is not what this comparison does.
-  echo "==> dada-pseudo (fwd, rev; --reestimate-err-between-rounds to match R's native pseudo)"
+  # POOL=pseudo            -> match R's NATIVE pseudo, which re-fits the error
+  #                           model between rounds; needs the flag.
+  # POOL=pseudo-fixed-err  -> our DEFAULT semantics, one model across both
+  #                           rounds, compared against a reference built the
+  #                           same way (write_reference.R --pool=pseudo-fixed-err).
+  #                           This is the path users actually run (#221).
+  reest_arg=()
+  if [ "$POOL" = "pseudo" ]; then
+    reest_arg=(--reestimate-err-between-rounds)
+    echo "==> dada-pseudo (fwd, rev; --reestimate-err-between-rounds, matching R's native pseudo)"
+  else
+    echo "==> dada-pseudo (fwd, rev; one error model across both rounds -- our default)"
+  fi
   run_step dada-pseudo.fwd "$BIN" dada-pseudo "${filtFs[@]}" --error-model "$OUT/errF.json" \
       -o "$OUT/dada_fwd" --priors-out "$OUT/priors_fwd.fasta" \
-      --reestimate-err-between-rounds \
+      ${reest_arg[@]+"${reest_arg[@]}"} \
       --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
   run_step dada-pseudo.rev "$BIN" dada-pseudo "${filtRs[@]}" --error-model "$OUT/errR.json" \
       -o "$OUT/dada_rev" --priors-out "$OUT/priors_rev.fasta" \
-      --reestimate-err-between-rounds \
+      ${reest_arg[@]+"${reest_arg[@]}"} \
       --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
 
   # Positive control: did the priors actually CHANGE anything?

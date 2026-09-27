@@ -130,15 +130,23 @@ jobs:
       # would pass while testing nothing. run_illumina.sh POOL=pseudo enforces
       # this with a positive control that fails if the priors turn out inert.
       #
-      # A KNOWN, UNDERSTOOD GAP is expected here. R re-fits the error model
-      # between its two pseudo rounds; we deliberately do not (see
-      # docs/findings/pseudo-pooling-priors-vs-error-model.md). On this fixture
-      # that costs recall 0.974 / precision 0.993 -- 4 low-abundance ASVs R calls
-      # and we do not. Running our opt-in emulation
-      # (--reestimate-err-between-rounds) instead scores 1.000/1.000 against the
-      # same reference, which is how we know the residual is entirely the re-fit
-      # and not drift. Thresholds are set below the measured default-arm values,
-      # so a regression in the pseudo path still trips the gate.
+      # TWO ARMS, both expected EXACT (#221). R re-fits the error model between
+      # its two pseudo rounds; per Ben Callahan that is not intended, so we do
+      # not (see docs/findings/pseudo-pooling-priors-vs-error-model.md, #100).
+      # Comparing the two therefore measures two different algorithms, so each
+      # is compared against a reference built the SAME way:
+      #
+      #   POOL=pseudo            vs --pool=pseudo            152 vs 152 exact
+      #   POOL=pseudo-fixed-err  vs --pool=pseudo-fixed-err  148 vs 148 exact
+      #
+      # The first needs --reestimate-err-between-rounds (run_illumina.sh adds
+      # it for that POOL value only); the second is our default path, the one
+      # users actually run. The 152/148 difference BETWEEN the arms is R's
+      # re-estimation, isolated -- which is what #100 wanted and could not get
+      # while only one arm existed.
+      #
+      # Both previously scored 0.974/0.993 against the native reference, which
+      # was the harness comparing mismatched algorithms, not drift.
       - name: Illumina pseudo — run pipeline
         run: |
           POOL=pseudo bash dev/concordance/run_illumina.sh \
@@ -160,6 +168,30 @@ jobs:
               --min-precision "$PSEUDO_MIN_PRECISION" \
               --min-count-corr "$MIN_COUNT_CORR" --gate \
               --summary "$GITHUB_STEP_SUMMARY" --json work/illumina_pseudo_report.json
+
+      # Our DEFAULT pseudo semantics: one error model across both rounds,
+      # against an R reference constructed the same way. This is the arm that
+      # covers the path users run; the native arm above covers R's behaviour.
+      - name: Illumina pseudo (fixed err) — run pipeline
+        run: |
+          POOL=pseudo-fixed-err bash dev/concordance/run_illumina.sh \
+              ./target/release/dada2-rs \
+              dev/concordance/data/illumina_pseudo work/illumina_pseudo_fixederr 2
+
+      - name: Illumina pseudo (fixed err) — compare to R reference
+        run: |
+          ref=dev/concordance/reference/illumina_pseudo_fixederr_seqtab_nochim.csv
+          if [ ! -f "$ref" ]; then
+            echo "::notice::pseudo-fixed-err reference not committed ($ref); skipping. Generate with: Rscript dev/concordance/write_reference.R illumina dev/concordance/data/illumina_pseudo \"$ref\" --pool=pseudo-fixed-err"
+            exit 0
+          fi
+          python3 dev/concordance/compare_to_reference.py \
+              --rs work/illumina_pseudo_fixederr/seqtab.nochim.json --reference "$ref" \
+              --label illumina-pseudo-fixed-err --min-abundance "$MIN_ABUNDANCE" \
+              --min-recall "$PSEUDO_MIN_RECALL" \
+              --min-precision "$PSEUDO_MIN_PRECISION" \
+              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --summary "$GITHUB_STEP_SUMMARY" --json work/illumina_pseudo_fixederr_report.json
 
       # ---------------- PacBio (committed subsampled fixture) -----------------
       # Skipped until both the fixture and the reference CSV are committed.
