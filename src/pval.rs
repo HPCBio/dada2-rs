@@ -263,6 +263,75 @@ pub fn b_p_update(
     st
 }
 
+/// At loop termination, report any raw whose cached `p` disagrees with what
+/// `get_pA` returns for its *own current* comparison. A stale `p` is invisible
+/// to [`report_missed_bud`]: the incremental cache and the full serial scan
+/// both read `raw.p`, so they agree with each other while both being wrong.
+///
+/// Deliberately compares against ANY value rather than only 1.0. The earlier
+/// narrow form stayed silent on two production runs, and the narrowness was
+/// the reason -- a `p` stranded at some intermediate value is just as
+/// unbuddable as one stranded at 1.0, and far less obvious.
+///
+/// Issue #219: a 66,937-read raw at hamming 311 whose lambda underflowed to
+/// zero. `get_pA` maps that to 0.0, which would make it the global minimum in
+/// round one, yet it appears in none of 2,818 divisions. Only reachable at
+/// k=5 -- at k=7 the screen rejects the pair (21.5% divergent, and k=7's
+/// closest rejection on this data is 10.49%), so no comparison exists and the
+/// state is consistent for an uninteresting reason.
+///
+/// O(members) once at termination. Release-safe, non-fatal.
+/// Returns `(count, worst_reads)`.
+pub fn report_stale_p(b: &B, detect_singletons: bool, verbose: bool) -> (usize, u32) {
+    let mut worst: Vec<(u32, usize, usize, f64, f64, u32, f64)> = Vec::new();
+    for ci in 0..b.clusters.len() {
+        let bi_reads = b.clusters[ci].reads;
+        for &raw_idx in &b.clusters[ci].raws {
+            let r = &b.raws[raw_idx];
+            let want = get_pA_counted(
+                r.reads,
+                r.prior,
+                r.comp.lambda,
+                r.comp.hamming,
+                bi_reads,
+                detect_singletons,
+                None,
+            );
+            // Exact comparison: both sides come from the same function on the
+            // same inputs, so any difference is staleness, not rounding.
+            if r.p != want {
+                worst.push((
+                    r.reads,
+                    raw_idx,
+                    ci,
+                    r.p,
+                    want,
+                    r.comp.hamming,
+                    r.comp.lambda,
+                ));
+            }
+        }
+    }
+    if worst.is_empty() {
+        return (0, 0);
+    }
+    worst.sort_unstable_by_key(|t| std::cmp::Reverse(t.0));
+    if verbose {
+        eprintln!(
+            "[dada] WARNING: {} raw(s) whose cached p disagrees with their own comparison \
+             (issue #219)",
+            worst.len()
+        );
+        for (rd, raw_idx, ci, got, want, ham, lam) in worst.iter().take(5) {
+            eprintln!(
+                "[dada]   raw {raw_idx} in cluster {ci}: {rd} reads, hamming {ham}, \
+                 lambda {lam:.3e} -- cached p {got:.3e}, get_pA says {want:.3e}"
+            );
+        }
+    }
+    (worst.len(), worst[0].0)
+}
+
 /// At loop termination, cross-check the incremental `bud_min` cache against a
 /// full serial scan. If the scan finds a candidate the cache did not offer,
 /// the loop stopped early and every raw behind that candidate is unreachable.
@@ -694,6 +763,50 @@ mod diag_tests {
     /// a null from an instrument is worth nothing until the instrument is
     /// shown capable of returning something else. This reproduces the #219
     /// raw: 66,937 reads, hamming 311, lambda underflowed to 0, cached p 1.0.
+    /// The stale-p check must fire on a value that is NOT 1.0 -- that
+    /// narrowness is why the earlier diagnostic stayed silent on two
+    /// production runs. Here the raw's comp implies 0.0 and its cached p sits
+    /// at an intermediate value, which is just as unbuddable and far less
+    /// obvious.
+    #[test]
+    fn report_stale_p_fires_on_a_non_unit_stale_value() {
+        let a = b"ACGTACGTAGCTAGCTAAGGCCTTAGCTAGCTACGTACGTTTGACTGACAGCTTAAGGCCA".to_vec();
+        let z = b"TTTTTTTTTTGGGGGGGGGGCCCCCCCCCCAAAAAAAAAATTTTTTTTTTGGGGGGGGGGCC".to_vec();
+        let raws = vec![
+            Raw::new(a, None, 200_000, false),
+            Raw::new(z, None, 66_937, false),
+        ];
+        let mut b = B::new(raws, 1e-40, 1e-4, false);
+        b.clusters[0].center = Some(0);
+        b.raws[0].p = 1.0; // centre, as get_pA forces it
+        b.raws[1].comp = Comparison {
+            i: 0,
+            index: 1,
+            lambda: 0.0,
+            hamming: 311,
+        };
+        b.raws[1].p = 3.7e-12; // stale: get_pA on this comp gives 0.0
+        let (n, reads) = super::report_stale_p(&b, false, false);
+        assert_eq!(n, 1, "a stale intermediate p must be caught");
+        assert_eq!(reads, 66_937);
+    }
+
+    /// ... and must stay quiet when every cached p matches its comparison.
+    #[test]
+    fn report_stale_p_quiet_when_consistent() {
+        let a = b"ACGTACGTAGCTAGCTAAGGCCTTAGCTAGCTACGTACGTTTGACTGACAGCTTAAGGCCA".to_vec();
+        let z = b"TTTTTTTTTTGGGGGGGGGGCCCCCCCCCCAAAAAAAAAATTTTTTTTTTGGGGGGGGGGCC".to_vec();
+        let raws = vec![
+            Raw::new(a, None, 200_000, false),
+            Raw::new(z, None, 66_937, false),
+        ];
+        let mut b = B::new(raws, 1e-40, 1e-4, false);
+        b.clusters[0].center = Some(0);
+        b.clusters[0].update_e = true;
+        super::b_p_update(&mut b, false, false, 1.0, 1, 1);
+        assert_eq!(super::report_stale_p(&b, false, false).0, 0);
+    }
+
     /// The cross-check must fire when the cache would miss a candidate. Built
     /// by hand: a raw whose `p` makes it a valid bud target, with the
     /// per-cluster `bud_min` cache left empty as a stale cache would leave it.

@@ -1082,6 +1082,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 // #219: the loop has decided nothing more can bud. Surface any
                 // non-singleton whose cached p contradicts its own stored
                 // comparison -- those are inert for the wrong reason.
+                crate::pval::report_stale_p(&bb, params.detect_singletons, params.verbose);
                 crate::pval::report_missed_bud(
                     &bb,
                     params.min_fold,
