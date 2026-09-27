@@ -132,28 +132,61 @@ def loess_extra():
 # need, and none of `binned-qual` or `noqual` is exercised by any benchmark or
 # concordance run today.
 #
-# An arm is a string. Built-in forms, implemented here:
+# An arm is a string naming ONE error model. Three kinds, because not every
+# error model is something we fit:
 #
-#   loess                errfun by name
-#   loess:direct         built-in plus a LOESS surface (interpolate|direct)
-#   binned-qual:2,11,25,37   built-in plus its anchor list
-#   noqual               ...
-#   pacbio               ...
+#   learn    we run `dada2-rs learn-errors` with these flags
+#     loess                      errfun by name, binary's default surface
+#     loess:direct               ... pinned to a surface (interpolate|direct)
+#     binned-qual:2,11,25,37     ... plus its anchor list
+#     noqual / pacbio
+#     external:<command>         --errfun external --errfun-cmd <command>
 #
-# Still to come: `external:<cmd>`, `model:<path.json>`, `r-model`.
+#   model    nothing is fitted; a pre-built error-model JSON is used as-is
+#     model:err.json             PacBio (one model)
+#     model:errF.json:errR.json  Illumina (forward and reverse)
 #
-# PLATFORM-AGNOSTIC BY CONSTRUCTION: `arm_learn_args` returns the flags for a
-# `learn-errors` invocation and both platform paths call it, so a sweep works
-# on HiFi as written. The default arm per platform preserves today's behaviour
-# exactly (`loess` for Illumina, `pacbio` for PacBio), so an ordinary run is
-# unchanged.
+#   r-model  R DADA2's learnErrors() fits it, on OUR shared filtered reads,
+#     r-model                    converted to JSON by the shipped converter
+#
+# Any arm may carry a display label: `r-loess=external:Rscript foo.R` keeps the
+# results table and the output directory readable when the spec is a long
+# command or path. A prefix only counts as a label if it looks like one
+# ([A-Za-z0-9._-]+=), so a path containing `=` is not mistaken for one.
+#
+# PLATFORM-AGNOSTIC BY CONSTRUCTION: an arm resolves to error-model PATHS, and
+# both platform paths resolve theirs the same way, so a sweep works on HiFi as
+# written. The default arm per platform is what used to be hardcoded (`loess`
+# for Illumina, `pacbio` for PacBio), so an ordinary run is unchanged.
 
 BUILTIN_ERRFUNS = {"loess", "noqual", "binned-qual", "pacbio"}
 LOESS_SURFACES = {"direct", "interpolate"}
+LABEL_RE = re.compile(r"^([A-Za-z0-9._-]+)=(.*)$", re.DOTALL)
+
+
+def _arm_error(arm, msg):
+    return ValueError(f"arm {arm!r}: {msg}")
+
+
+def _short_label(kind, tokens):
+    """A readable default label for an arm whose spec is a command or a set of
+    paths: `external:Rscript examples/external_errfun/loess_reference.R` prints
+    and creates a directory as `external:loess_reference.R`.
+
+    Lossy on purpose -- the full spec is kept in the CSV's `spec` column, and
+    two arms that shorten to the same thing are rejected with a message telling
+    the caller to label them."""
+    named = [t for t in tokens if "/" in t or "." in t] or tokens
+    return f"{kind}:" + "+".join(os.path.basename(t) for t in named[-2:]) \
+        if kind == "model" else f"{kind}:{os.path.basename(named[-1])}"
 
 
 def parse_errfun_arm(arm, platform):
-    """Parse an arm string into (label, [learn-errors flags]).
+    """Parse an arm string into a dict describing ONE error model:
+
+        {"label": str, "kind": "learn"|"model"|"r-model",
+         "flags": [...],      # kind == "learn"
+         "paths": [Path,...]} # kind == "model"
 
     Raises ValueError with an actionable message -- a benchmark that silently
     ignores a misspelled arm reports timings for the wrong thing, and the arm
@@ -161,52 +194,123 @@ def parse_errfun_arm(arm, platform):
     """
     if arm is None:
         arm = "pacbio" if platform == "pacbio" else "loess"
-    name, _, param = arm.partition(":")
+    spec = arm
+    label = arm
+    m = LABEL_RE.match(arm)
+    if m:
+        label, spec = m.group(1), m.group(2)
+    name, sep, param = spec.partition(":")
+
+    if name == "r-model":
+        if sep:
+            raise _arm_error(arm, "r-model takes no ':' parameter")
+        # Fail here, before any filtering, rather than an hour into a sweep.
+        if shutil.which(R_BIN_FOR_ARMS[0]) is None:
+            raise _arm_error(
+                arm, f"cannot run {R_BIN_FOR_ARMS[0]!r} (not found or not "
+                f"executable); this arm fits the model with R DADA2's "
+                f"learnErrors. Point --rscript at it, or drop this arm -- "
+                f"every other arm runs without R.")
+        return {"label": label, "kind": "r-model"}
+
+    if name == "model":
+        want = 2 if platform == "illumina" else 1
+        parts = [q for q in param.split(":") if q] if param else []
+        if len(parts) != want:
+            raise _arm_error(
+                arm, f"model: needs {want} JSON path(s) on {platform}"
+                + (" (forward:reverse)" if want == 2 else "")
+                + f", got {len(parts)}. Colon-separated, e.g. "
+                + ("model:errF.json:errR.json" if want == 2 else "model:err.json"))
+        paths = [Path(q).expanduser() for q in parts]
+        missing = [str(q) for q in paths if not q.is_file()]
+        if missing:
+            raise _arm_error(arm, "no such error-model file: " + ", ".join(missing))
+        return {"label": label if m else _short_label("model", parts),
+                "kind": "model", "paths": [q.resolve() for q in paths]}
+
+    if name == "external":
+        if not param.strip():
+            raise _arm_error(
+                arm, "external: needs the command to run, e.g. "
+                "external:Rscript examples/external_errfun/loess_reference.R . "
+                "It is whitespace-split into argv with no shell interpolation; "
+                "wrap it in a script if you need quoting.")
+        return {"label": label if m else _short_label("external", param.split()),
+                "kind": "learn",
+                "flags": ["--errfun", "external", "--errfun-cmd", param]}
+
     if name not in BUILTIN_ERRFUNS:
-        raise ValueError(
-            f"unknown errfun arm {arm!r}: expected one of "
-            f"{', '.join(sorted(BUILTIN_ERRFUNS))}, optionally with a ':' "
-            f"parameter (e.g. loess:direct, binned-qual:2,11,25,37). "
-            f"external:/model:/r-model arms are not implemented yet."
-        )
+        raise _arm_error(
+            arm, f"unknown error model {name!r}. Expected one of "
+            f"{', '.join(sorted(BUILTIN_ERRFUNS))}, or external:<cmd>, "
+            f"model:<json>, r-model -- optionally with a ':' parameter "
+            f"(e.g. loess:direct, binned-qual:2,11,25,37).")
+
     flags = ["--errfun", name]
     if name == "loess":
         if param:
             if param not in LOESS_SURFACES:
-                raise ValueError(
-                    f"arm {arm!r}: loess takes a surface "
+                raise _arm_error(
+                    arm, f"loess takes a surface "
                     f"({'|'.join(sorted(LOESS_SURFACES))}), got {param!r}. "
                     f"The old preset names are gone -- `r-dada2` is now "
-                    f"`interpolate`, which is also the default (#205)."
-                )
+                    f"`interpolate`, which is also the default (#205).")
             flags += ["--loess-surface", param]
     elif name == "binned-qual":
         if not param:
-            raise ValueError(
-                f"arm {arm!r}: binned-qual needs its anchors, e.g. "
-                f"binned-qual:2,11,25,37. `dada2-rs summary --report` detects "
-                f"a run's bins."
-            )
+            raise _arm_error(
+                arm, "binned-qual needs its anchors, e.g. "
+                "binned-qual:2,11,25,37. `dada2-rs summary --report` detects "
+                "a run's bins.")
         flags += ["--binned-quals", param]
     elif param:
-        raise ValueError(f"arm {arm!r}: {name} takes no ':' parameter")
-    return arm, flags
+        raise _arm_error(arm, f"{name} takes no ':' parameter")
+    return {"label": label, "kind": "learn", "flags": flags}
 
 
 # Set from --errfun-arm in main(), rebound per arm by errfun_sweep().
 ERRFUN_ARM = None
+
+# Populated from --rscript in main(); a list so parse_errfun_arm can check the
+# binary before a sweep starts.
+R_BIN_FOR_ARMS = ["Rscript"]
 
 
 def arm_learn_args(args, platform):
     """learn-errors flags for the configured arm, replacing the old hardcoded
     `--errfun`. `--loess-surface` from the standalone flag still applies when
     the arm does not set one itself."""
-    _label, flags = parse_errfun_arm(ERRFUN_ARM, platform)
+    flags = parse_errfun_arm(ERRFUN_ARM, platform)["flags"]
     # --loess-surface is only read by the loess-based errfuns; passing it to
-    # noqual/binned-qual would be inert noise in the logged command line.
+    # noqual/binned-qual/external would be inert noise in the logged command.
     if flags[1] in ("loess", "pacbio") and "--loess-surface" not in flags:
         flags = flags + loess_extra()
     return flags
+
+
+def r_learn_model(args, filts, out_json, step, outdir, results, extra=None):
+    """Fit ONE error model with R DADA2's learnErrors() on the given filtered
+    reads and convert it to dada2-rs JSON.
+
+    Two processes on purpose: `learn_errors_r.R` only fits and saves the .rds,
+    then the SHIPPED converter (scripts/learnerrors_to_dada2rs.R, which the
+    external-error-model walkthrough documents) turns it into JSON. Copying the
+    conversion in here would give us a second implementation to keep in step
+    with the first.
+    """
+    rds = out_json.with_suffix(".rds")
+    cmd = [R_BIN_FOR_ARMS[0], str(Path(__file__).parent / "learn_errors_r.R"),
+           f"platform={args.platform}", f"out={rds}",
+           f"threads={args.threads}", f"nbases={int(args.nbases)}"]
+    cmd += extra or []
+    cmd += [str(q) for q in filts]
+    run_step(step, cmd, outdir / f"{step}.log", results, capture_stdout=True)
+    run_step(f"{step}_convert",
+             [R_BIN_FOR_ARMS[0],
+              str(Path(__file__).resolve().parents[2] / "scripts"
+                  / "learnerrors_to_dada2rs.R"), str(rds), str(out_json)],
+             outdir / f"{step}_convert.log", results, capture_stdout=True)
 
 
 def maybe_verbose(cmd):
@@ -405,15 +509,22 @@ def numa_wrap(cmd):
     return [*NUMA_PREFIX, *cmd] if NUMA_PREFIX else cmd
 
 
-def run_step(name, cmd, logf, results, append_log=False):
-    """Run cmd as one process; record (name, wall_s, maxrss_kb, rc). Returns rc."""
+def run_step(name, cmd, logf, results, append_log=False, capture_stdout=False):
+    """Run cmd as one process; record (name, wall_s, maxrss_kb, rc). Returns rc.
+
+    stdout is discarded by default -- dada2-rs writes progress to stderr, and
+    the steps that do print to stdout print the artifact itself. Pass
+    capture_stdout for a step whose useful output goes to stdout: R writes
+    learnErrors()'s convergence there, so an R arm's log would otherwise be
+    empty even on a successful fit."""
     cmd = numa_wrap(maybe_align_backend(maybe_verbose(cmd)))
     print(f"  ==> {name}: {' '.join(str(c) for c in cmd)}", flush=True)
     start = time.time()
+    to_log = append_log or capture_stdout
     with open(logf, "ab" if append_log else "wb") as lf:
         proc = subprocess.Popen([str(c) for c in cmd],
-                                stdout=lf if append_log else subprocess.DEVNULL,
-                                stderr=subprocess.STDOUT if append_log else lf)
+                                stdout=lf if to_log else subprocess.DEVNULL,
+                                stderr=subprocess.STDOUT if to_log else lf)
         _pid, status, rusage = os.wait4(proc.pid, 0)
     wall = time.time() - start
     rc = os.waitstatus_to_exitcode(status)
@@ -553,11 +664,23 @@ def filter_illumina(args, bin_, outdir, results):
 
 
 def learn_illumina(args, bin_, filtFs, filtRs, outdir, results):
-    """The learn-errors half of prepare_illumina, split out so an errfun sweep
-    can re-learn on filtered reads it did not re-produce (#205)."""
+    """Resolve the arm's forward and reverse error models.
+
+    Split out of prepare_illumina so an errfun sweep can re-learn on filtered
+    reads it did not re-produce (#205). Depending on the arm this fits them
+    with dada2-rs, fits them with R, or just points at files that already
+    exist -- the caller only needs the paths."""
+    arm = parse_errfun_arm(ERRFUN_ARM, "illumina")
+    if arm["kind"] == "model":
+        # Nothing is fitted, so no step is recorded: an arm should not be
+        # charged wall time it did not spend.
+        return {"errF": arm["paths"][0], "errR": arm["paths"][1]}
     errF = outdir / "errors_fwd.json"; errR = outdir / "errors_rev.json"
     for step, filts, out in (("learn_fwd", filtFs, errF),
                              ("learn_rev", filtRs, errR)):
+        if arm["kind"] == "r-model":
+            r_learn_model(args, filts, out, step, outdir, results)
+            continue
         run_step(step, [bin_, "learn-errors", *map(str, filts),
                  "--nbases", str(int(args.nbases)),
                  *arm_learn_args(args, "illumina"), *learn_kdist_extra(),
@@ -648,8 +771,19 @@ def filter_pacbio(args, bin_, outdir, results):
 
 
 def learn_pacbio(args, bin_, filts, outdir, results):
-    """The learn-errors half of prepare_pacbio; see learn_illumina."""
+    """Resolve the arm's error model; see learn_illumina."""
+    arm = parse_errfun_arm(ERRFUN_ARM, "pacbio")
+    if arm["kind"] == "model":
+        return {"err": arm["paths"][0]}
     err = outdir / "errors_pacbio.json"
+    if arm["kind"] == "r-model":
+        # R's PacBio learn needs the same alignment params as the dada step,
+        # for the reason the comment below gives.
+        extra = [f"band={args.band}"]
+        if args.homo_gap is not None:
+            extra.append(f"homo_gap={args.homo_gap}")
+        r_learn_model(args, filts, err, "learn", outdir, results, extra=extra)
+        return {"err": err}
     # Learn with the SAME alignment params used for denoising (band, homo-gap-p,
     # kmer) so the error model matches the dada step — if --homo-gap is set but
     # only passed to dada, the model would be learned at a different homo-gap-p
@@ -828,10 +962,17 @@ def errfun_sweep(args, bin_, outdir):
     arms = [a.strip() for a in args.errfun_sweep.split(",") if a.strip()]
     if len(arms) < 2:
         sys.exit("--errfun-sweep needs at least two comma-separated arms")
-    # Parse them ALL before running anything: a typo in the last arm should not
-    # surface an hour into the sweep.
-    for a in arms:
-        parse_errfun_arm(a, args.platform)
+    # Parse them ALL before running anything: a typo in the last arm, a missing
+    # model file, or a missing Rscript should not surface an hour in.
+    try:
+        labels = [parse_errfun_arm(a, args.platform)["label"] for a in arms]
+    except ValueError as e:
+        sys.exit(f"--errfun-sweep: {e}")
+    dups = {q for q in labels if labels.count(q) > 1}
+    if dups:
+        sys.exit(f"duplicate arm label(s) {sorted(dups)}: arms share an output "
+                 f"directory and a results row. Give them distinct labels with "
+                 f"the `label=spec` prefix.")
 
     prep_dir = outdir / "prep"
     prep_dir.mkdir(parents=True, exist_ok=True)
@@ -841,10 +982,10 @@ def errfun_sweep(args, bin_, outdir):
               else filter_pacbio)(args, bin_, prep_dir, [])
 
     rows = []
-    for arm in arms:
-        print(f"\n=== arm {arm} ===", flush=True)
+    for arm, label in zip(arms, labels):
+        print(f"\n=== arm {label} ===", flush=True)
         ERRFUN_ARM = arm
-        adir = outdir / re.sub(r"[^A-Za-z0-9._-]", "_", arm)
+        adir = outdir / re.sub(r"[^A-Za-z0-9._-]", "_", label)
         adir.mkdir(parents=True, exist_ok=True)
         res = []
         if args.platform == "illumina":
@@ -857,7 +998,8 @@ def errfun_sweep(args, bin_, outdir):
             denoise_to_table_pacbio(args, bin_, prep, adir, res)
         rows_c = collapse(res)
         rows.append({
-            "arm": arm,
+            "arm": label,
+            "spec": arm,
             "wall_s": sum(r["wall_s"] for r in rows_c),
             "cpu_s": sum(r.get("cpu_s", 0.0) for r in rows_c),
             "maxrss_kb": max((r["maxrss_kb"] for r in rows_c), default=0),
@@ -875,7 +1017,7 @@ def errfun_sweep(args, bin_, outdir):
           f"{'asvs':>7}{'jaccard':>9}{'counts=':>9}{'ident':>7}")
     csv_path = outdir / "sweep_errfun.csv"
     with open(csv_path, "w") as cf:
-        cf.write("arm,wall_s,learn_s,cpu_s,cores,maxrss_kb,n_asv,"
+        cf.write("arm,spec,wall_s,learn_s,cpu_s,cores,maxrss_kb,n_asv,"
                  "jaccard_vs_ref,exact_count_frac,identical\n")
         for r in rows:
             jac, exact, ident = table_equiv(ref["table"], r["table"])
@@ -888,7 +1030,8 @@ def errfun_sweep(args, bin_, outdir):
                   f"{(n_asv if n_asv is not None else 'n/a'):>7}"
                   f"{f(jac, 9)}{f(exact, 9)}"
                   f"{('yes' if ident else 'no') if ident is not None else 'n/a':>7}")
-            cf.write(f"{r['arm']},{r['wall_s']:.2f},{r['learn_s']:.2f},"
+            spec = r["spec"].replace('"', '""')
+            cf.write(f"{r['arm']},\"{spec}\",{r['wall_s']:.2f},{r['learn_s']:.2f},"
                      f"{r['cpu_s']:.2f},{co:.2f},{r['maxrss_kb']:.0f},"
                      f"{'' if n_asv is None else n_asv},"
                      f"{'' if jac is None else f'{jac:.6f}'},"
@@ -1239,14 +1382,18 @@ def main():
                         "sub-pools get too small). e.g. --sample-jobs-sweep 1,2,3,4,6,8")
     p.add_argument("--errfun-arm", default=None, metavar="ARM",
                    help="error model to benchmark, replacing the per-platform "
-                        "default (loess on illumina, pacbio on pacbio). One of "
+                        "default (loess on illumina, pacbio on pacbio): "
                         "loess[:direct|:interpolate], noqual, "
-                        "binned-qual:Q,Q,..., pacbio.")
+                        "binned-qual:Q,Q,..., pacbio, external:<command>, "
+                        "model:<json>[:<json>] (pre-fitted, nothing learned), "
+                        "r-model (R DADA2 fits it). Prefix `label=` to rename "
+                        "it in the results.")
     p.add_argument("--errfun-sweep", default=None, metavar="ARM,ARM,...",
                    help="dada2-rs-only error-model study: FILTER ONCE, then "
                         "learn + denoise + table + chimera per arm on those "
                         "same reads, reporting cost and ASV concordance "
-                        "against the first arm. Arm syntax as --errfun-arm. "
+                        "against the first arm. Arm syntax as --errfun-arm; "
+                        "an arm containing a comma needs a wrapper script. "
                         "e.g. --errfun-sweep loess:interpolate,loess:direct")
     p.add_argument("--dada2rs", help="path to dada2-rs binary (REQUIRED; e.g. "
                    "target/release/dada2-rs or target/release-native/dada2-rs)")
@@ -1355,6 +1502,7 @@ def main():
     LEARN_KDIST = args.learn_kdist_cutoff
     LOESS_SURFACE = args.loess_surface
     ERRFUN_ARM = args.errfun_arm
+    R_BIN_FOR_ARMS[0] = args.rscript or "Rscript"
     if ERRFUN_ARM is not None:
         # Fail on a bad arm before any filtering happens, and fail here rather
         # than inside a worker where the message would be buried in a log.
