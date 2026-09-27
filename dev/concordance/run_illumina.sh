@@ -109,7 +109,29 @@ ERRFUN_ARGS="${ERRFUN_ARGS:-}"
 # shellcheck disable=SC2206
 errfun_extra=($ERRFUN_ARGS)
 
+# VERBOSE=1: per-step progress to stderr, and per-step stderr TEED to
+# $OUT/logs/<step>.log. Mirrors run_pacbio.sh. A pooled run can sit in
+# dada-pooled for hours printing nothing, which is indistinguishable from a
+# hang; the per-step split is what lets a slow step be attributed to a step
+# rather than read out of one interleaved stream.
+# METRICS=1 additionally writes <step>.metrics.json for the denoising steps --
+# the thing to attach when a run is slow, since it splits screen from align.
+VERBOSE="${VERBOSE:-}"
+verbose_arg=()
+[ -n "$VERBOSE" ] && verbose_arg=(--verbose)
+METRICS="${METRICS:-}"
+
 mkdir -p "$OUT"/{filtered,dada_fwd,dada_rev,control_persample}
+
+LOG_DIR="$OUT/logs"
+mkdir -p "$LOG_DIR"
+# run <step-name> <cmd...> -- tee stderr to the step's log, preserving the
+# command's exit status rather than tee's.
+run_step() {
+  local name="$1"; shift
+  set -o pipefail
+  "$@" 2> >(tee "$LOG_DIR/${name}.log" >&2)
+}
 
 fwds=("$DATA"/*F.fastq.gz)
 if [ ! -e "${fwds[0]}" ]; then
@@ -162,22 +184,22 @@ if [ -n "$ERR_DIR" ]; then
   cp "$ERR_DIR/errR.json" "$OUT/errR.json"
 else
 echo "==> learn-errors (fwd, rev)"
-"$BIN" learn-errors "${filtFs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
-    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${learn_screen_arg[@]+"${learn_screen_arg[@]}"} -o "$OUT/errF.json"
-"$BIN" learn-errors "${filtRs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
-    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${learn_screen_arg[@]+"${learn_screen_arg[@]}"} -o "$OUT/errR.json"
+run_step learn-errors.fwd "$BIN" learn-errors "${filtFs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
+    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${learn_screen_arg[@]+"${learn_screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/errF.json"
+run_step learn-errors.rev "$BIN" learn-errors "${filtRs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
+    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${learn_screen_arg[@]+"${learn_screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/errR.json"
 fi
 
 if [ "$POOL" = "pseudo" ]; then
   # Pseudo-pooling. NOTE: dada-pseudo takes -o for its output DIRECTORY, whereas
   # `dada` uses --output-dir (-o there means a single-sample output FILE).
   echo "==> dada-pseudo (fwd, rev)"
-  "$BIN" dada-pseudo "${filtFs[@]}" --error-model "$OUT/errF.json" \
+  run_step dada-pseudo.fwd "$BIN" dada-pseudo "${filtFs[@]}" --error-model "$OUT/errF.json" \
       -o "$OUT/dada_fwd" --priors-out "$OUT/priors_fwd.fasta" \
-      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
-  "$BIN" dada-pseudo "${filtRs[@]}" --error-model "$OUT/errR.json" \
+      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+  run_step dada-pseudo.rev "$BIN" dada-pseudo "${filtRs[@]}" --error-model "$OUT/errR.json" \
       -o "$OUT/dada_rev" --priors-out "$OUT/priors_rev.fasta" \
-      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
+      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
 
   # Positive control: did the priors actually CHANGE anything?
   #
@@ -189,7 +211,7 @@ if [ "$POOL" = "pseudo" ]; then
   # an actual per-sample run rather than trusting a prior count. Costs one extra
   # dada pass on a small fixture.
   echo "==> positive control: per-sample run for comparison"
-  "$BIN" dada "${filtFs[@]}" --error-model "$OUT/errF.json" \
+  run_step dada.fwd "$BIN" dada "${filtFs[@]}" --error-model "$OUT/errF.json" \
       --output-dir "$OUT/control_persample" --threads "$THREADS" \
       ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} > /dev/null
   python3 - "$OUT/dada_fwd" "$OUT/control_persample" <<'PYCTL'
@@ -224,19 +246,19 @@ elif [ "$POOL" = "true" ]; then
   # MEMORY: pooling holds every sample's uniques at once. Budget accordingly --
   # docs/findings has pooled peaks in the tens of GB for diverse soil runs.
   echo "==> dada-pooled (fwd, rev; full pooling)"
-  "$BIN" dada-pooled "${filtFs[@]}" --error-model "$OUT/errF.json" \
+  run_step dada-pooled.fwd "$BIN" dada-pooled "${filtFs[@]}" --error-model "$OUT/errF.json" \
       -o "$OUT/dada_fwd" --threads "$THREADS" \
-      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
-  "$BIN" dada-pooled "${filtRs[@]}" --error-model "$OUT/errR.json" \
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+  run_step dada-pooled.rev "$BIN" dada-pooled "${filtRs[@]}" --error-model "$OUT/errR.json" \
       -o "$OUT/dada_rev" --threads "$THREADS" \
-      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
 else
   # Per-sample denoising (pool=FALSE analog) — matches R dada() default.
   echo "==> dada (fwd, rev; per-sample)"
-  "$BIN" dada "${filtFs[@]}" --error-model "$OUT/errF.json" \
-      --output-dir "$OUT/dada_fwd" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
-  "$BIN" dada "${filtRs[@]}" --error-model "$OUT/errR.json" \
-      --output-dir "$OUT/dada_rev" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"}
+  run_step dada.fwd "$BIN" dada "${filtFs[@]}" --error-model "$OUT/errF.json" \
+      --output-dir "$OUT/dada_fwd" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+  run_step dada.rev "$BIN" dada "${filtRs[@]}" --error-model "$OUT/errR.json" \
+      --output-dir "$OUT/dada_rev" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
 fi
 
 echo "==> merge-pairs"
@@ -255,16 +277,16 @@ done
 for fr in "${filtRs[@]}"; do
   dadaRs+=("$OUT/dada_rev/$(basename "$fr" .fastq.gz).json")
 done
-"$BIN" merge-pairs \
+run_step merge-pairs "$BIN" merge-pairs \
     --fwd-dada "${dadaFs[@]}" --rev-dada "${dadaRs[@]}" \
     --fwd-fastq "${filtFs[@]}" --rev-fastq "${filtRs[@]}" \
     --threads "$THREADS" -o "$OUT/merged.json"
 
 echo "==> make-sequence-table"
-"$BIN" make-sequence-table "$OUT/merged.json" -o "$OUT/seqtab.json"
+run_step make-sequence-table "$BIN" make-sequence-table "$OUT/merged.json" -o "$OUT/seqtab.json"
 
 echo "==> remove-bimera-denovo"
-"$BIN" remove-bimera-denovo "$OUT/seqtab.json" --method consensus \
-    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} -o "$OUT/seqtab.nochim.json"
+run_step remove-bimera-denovo "$BIN" remove-bimera-denovo "$OUT/seqtab.json" --method consensus \
+    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/seqtab.nochim.json"
 
 echo "==> done: $OUT/seqtab.nochim.json"
