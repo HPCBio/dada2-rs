@@ -110,7 +110,7 @@ RS_VERBOSE_SUBCMDS = {
 # two surfaces disagree by ~1e-3 absolute at low-Q edges, worth ~1 read/sample on
 # a 362-sample run. None = leave the binary's default, so a normal run is
 # unchanged.
-LOESS_PRESET = None
+LOESS_SURFACE = None
 
 
 def loess_extra():
@@ -120,7 +120,93 @@ def loess_extra():
     passed through unchanged, so `--loess-surface direct` selects the old
     behaviour; the deprecated `--loess-preset` spelling still works in the
     binary but warns."""
-    return ["--loess-surface", LOESS_PRESET] if LOESS_PRESET else []
+    return ["--loess-surface", LOESS_SURFACE] if LOESS_SURFACE else []
+
+
+# ---------------------------------------------------------------------------
+# Error-model arms (#205)
+# ---------------------------------------------------------------------------
+# The errfun used to be hardcoded -- `loess` on the Illumina path, `pacbio` on
+# the PacBio path -- so the harness could time a pipeline but never compare two
+# error models on the SAME reads. That is the one thing #120, #96 and #98 all
+# need, and none of `binned-qual` or `noqual` is exercised by any benchmark or
+# concordance run today.
+#
+# An arm is a string. Built-in forms, implemented here:
+#
+#   loess                errfun by name
+#   loess:direct         built-in plus a LOESS surface (interpolate|direct)
+#   binned-qual:2,11,25,37   built-in plus its anchor list
+#   noqual               ...
+#   pacbio               ...
+#
+# Still to come: `external:<cmd>`, `model:<path.json>`, `r-model`.
+#
+# PLATFORM-AGNOSTIC BY CONSTRUCTION: `arm_learn_args` returns the flags for a
+# `learn-errors` invocation and both platform paths call it, so a sweep works
+# on HiFi as written. The default arm per platform preserves today's behaviour
+# exactly (`loess` for Illumina, `pacbio` for PacBio), so an ordinary run is
+# unchanged.
+
+BUILTIN_ERRFUNS = {"loess", "noqual", "binned-qual", "pacbio"}
+LOESS_SURFACES = {"direct", "interpolate"}
+
+
+def parse_errfun_arm(arm, platform):
+    """Parse an arm string into (label, [learn-errors flags]).
+
+    Raises ValueError with an actionable message -- a benchmark that silently
+    ignores a misspelled arm reports timings for the wrong thing, and the arm
+    is not recorded anywhere the reader would notice.
+    """
+    if arm is None:
+        arm = "pacbio" if platform == "pacbio" else "loess"
+    name, _, param = arm.partition(":")
+    if name not in BUILTIN_ERRFUNS:
+        raise ValueError(
+            f"unknown errfun arm {arm!r}: expected one of "
+            f"{', '.join(sorted(BUILTIN_ERRFUNS))}, optionally with a ':' "
+            f"parameter (e.g. loess:direct, binned-qual:2,11,25,37). "
+            f"external:/model:/r-model arms are not implemented yet."
+        )
+    flags = ["--errfun", name]
+    if name == "loess":
+        if param:
+            if param not in LOESS_SURFACES:
+                raise ValueError(
+                    f"arm {arm!r}: loess takes a surface "
+                    f"({'|'.join(sorted(LOESS_SURFACES))}), got {param!r}. "
+                    f"The old preset names are gone -- `r-dada2` is now "
+                    f"`interpolate`, which is also the default (#205)."
+                )
+            flags += ["--loess-surface", param]
+    elif name == "binned-qual":
+        if not param:
+            raise ValueError(
+                f"arm {arm!r}: binned-qual needs its anchors, e.g. "
+                f"binned-qual:2,11,25,37. `dada2-rs summary --report` detects "
+                f"a run's bins."
+            )
+        flags += ["--binned-quals", param]
+    elif param:
+        raise ValueError(f"arm {arm!r}: {name} takes no ':' parameter")
+    return arm, flags
+
+
+# Set from --errfun-arm in main(), rebound per arm by errfun_sweep().
+ERRFUN_ARM = None
+
+
+def arm_learn_args(args, platform):
+    """learn-errors flags for the configured arm, replacing the old hardcoded
+    `--errfun`. `--loess-surface` from the standalone flag still applies when
+    the arm does not set one itself."""
+    _label, flags = parse_errfun_arm(ERRFUN_ARM, platform)
+    # --loess-surface is only read by the loess-based errfuns; passing it to
+    # noqual/binned-qual would be inert noise in the logged command line.
+    if flags[1] in ("loess", "pacbio") and "--loess-surface" not in flags:
+        flags = flags + loess_extra()
+    return flags
 
 
 def maybe_verbose(cmd):
@@ -430,6 +516,14 @@ def rust_dada_step(args, bin_, step, filts, names, errmodel, ddir, outdir, resul
 
 def prepare_illumina(args, bin_, outdir, results):
     """Filter + learn errors. Returns the inputs the denoise step needs."""
+    shared = filter_illumina(args, bin_, outdir, results)
+    return {**shared, **learn_illumina(args, bin_, shared["filtFs"],
+                                       shared["filtRs"], outdir, results)}
+
+
+def filter_illumina(args, bin_, outdir, results):
+    """The filter half of prepare_illumina, split out so an errfun sweep can
+    share ONE set of filtered reads across arms (#205)."""
     filt = outdir / "filtered"
     filt.mkdir(parents=True, exist_ok=True)
     fwd = sorted(f for f in glob.glob(str(Path(args.input) / f"*{args.fwd_pattern}*"))
@@ -455,24 +549,31 @@ def prepare_illumina(args, bin_, outdir, results):
                       "--max-ee", *ee, "--trunc-q", str(args.trunc_q),
                       "--compress"], outdir / f"filter_{name}.log"))
     run_phase_concurrent("filter", jobs, results, args.threads)
+    return {"filtFs": filtFs, "filtRs": filtRs, "names": names}
 
+
+def learn_illumina(args, bin_, filtFs, filtRs, outdir, results):
+    """The learn-errors half of prepare_illumina, split out so an errfun sweep
+    can re-learn on filtered reads it did not re-produce (#205)."""
     errF = outdir / "errors_fwd.json"; errR = outdir / "errors_rev.json"
-    run_step("learn_fwd", [bin_, "learn-errors", *map(str, filtFs),
-             "--nbases", str(int(args.nbases)), "--errfun", "loess",
-             *learn_kdist_extra(), *loess_extra(),
-             "--threads", str(args.threads), "-o", errF],
-             outdir / "learn_fwd.log", results)
-    run_step("learn_rev", [bin_, "learn-errors", *map(str, filtRs),
-             "--nbases", str(int(args.nbases)), "--errfun", "loess",
-             *learn_kdist_extra(), *loess_extra(),
-             "--threads", str(args.threads), "-o", errR],
-             outdir / "learn_rev.log", results)
-    return {"filtFs": filtFs, "filtRs": filtRs, "names": names,
-            "errF": errF, "errR": errR}
+    for step, filts, out in (("learn_fwd", filtFs, errF),
+                             ("learn_rev", filtRs, errR)):
+        run_step(step, [bin_, "learn-errors", *map(str, filts),
+                 "--nbases", str(int(args.nbases)),
+                 *arm_learn_args(args, "illumina"), *learn_kdist_extra(),
+                 "--threads", str(args.threads), "-o", out],
+                 outdir / f"{step}.log", results)
+    return {"errF": errF, "errR": errR}
 
 
 def rust_illumina(args, bin_, outdir, results):
-    prep = prepare_illumina(args, bin_, outdir, results)
+    denoise_to_table_illumina(
+        args, bin_, prepare_illumina(args, bin_, outdir, results), outdir, results)
+
+
+def denoise_to_table_illumina(args, bin_, prep, outdir, results):
+    """Everything after prepare: denoise, merge, table, chimera removal.
+    Split out so an errfun sweep can run this tail per arm (#205)."""
     filtFs, filtRs, names = prep["filtFs"], prep["filtRs"], prep["names"]
 
     ddF = outdir / "dada_fwd"; ddR = outdir / "dada_rev"
@@ -512,6 +613,12 @@ def pacbio_dada_extra(args):
 
 def prepare_pacbio(args, bin_, outdir, results):
     """Remove-primers (+orient+filter) + learn errors. Returns denoise inputs."""
+    shared = filter_pacbio(args, bin_, outdir, results)
+    return {**shared, **learn_pacbio(args, bin_, shared["filts"], outdir, results)}
+
+
+def filter_pacbio(args, bin_, outdir, results):
+    """The remove-primers half of prepare_pacbio; see filter_illumina."""
     filt = outdir / "filtered"
     filt.mkdir(parents=True, exist_ok=True)
     reads = sorted(f for f in glob.glob(str(Path(args.input) / "*"))
@@ -537,7 +644,11 @@ def prepare_pacbio(args, bin_, outdir, results):
                       "-o", outdir / f"primers_{name}.json"],
                      outdir / f"primers_{name}.log"))
     run_phase_concurrent("remove_primers", jobs, results, args.threads)
+    return {"filts": filts, "names": names}
 
+
+def learn_pacbio(args, bin_, filts, outdir, results):
+    """The learn-errors half of prepare_pacbio; see learn_illumina."""
     err = outdir / "errors_pacbio.json"
     # Learn with the SAME alignment params used for denoising (band, homo-gap-p,
     # kmer) so the error model matches the dada step — if --homo-gap is set but
@@ -545,18 +656,24 @@ def prepare_pacbio(args, bin_, outdir, results):
     # and dada2-rs would warn. When --homo-gap is unset, both learn and dada
     # fall back to --gap-p, staying consistent.
     learn_cmd = [bin_, "learn-errors", *map(str, filts),
-                 "--nbases", str(int(args.nbases)), "--errfun", "pacbio",
+                 "--nbases", str(int(args.nbases)),
+                 *arm_learn_args(args, "pacbio"),
                  "--band", str(args.band), "--kmer-size", str(args.kmer_size),
                  *learn_kdist_extra(),
                  "--threads", str(args.threads), "-o", err]
     if args.homo_gap is not None:
         learn_cmd += ["--homo-gap-p", str(args.homo_gap)]
     run_step("learn", learn_cmd, outdir / "learn.log", results)
-    return {"filts": filts, "names": names, "err": err}
+    return {"err": err}
 
 
 def rust_pacbio(args, bin_, outdir, results):
-    prep = prepare_pacbio(args, bin_, outdir, results)
+    denoise_to_table_pacbio(
+        args, bin_, prepare_pacbio(args, bin_, outdir, results), outdir, results)
+
+
+def denoise_to_table_pacbio(args, bin_, prep, outdir, results):
+    """See denoise_to_table_illumina."""
     dd = outdir / "dada"; dd.mkdir(exist_ok=True)
     rust_dada_step(args, bin_, "dada", prep["filts"], prep["names"], prep["err"],
                    dd, outdir, results, extra=pacbio_dada_extra(args))
@@ -685,6 +802,102 @@ def sample_jobs_sweep(args, bin_, outdir):
           f"threads/job) at {best['wall_s']:.1f}s, {fmt_rss(best['maxrss_kb'])} peak")
     print("  (peak_rss is the max single denoise process; more jobs = more "
           "concurrent working sets = higher peak)")
+    print(f"  Wrote {csv_path}")
+
+
+def errfun_sweep(args, bin_, outdir):
+    """Run the pipeline once per ERROR MODEL on ONE shared set of filtered
+    reads, reporting cost and ASV-table concordance against the first arm
+    (#205).
+
+    Filtering happens exactly once. Every arm then re-learns on those same
+    files and runs the same denoise tail, so a difference between arms is the
+    error model and nothing else -- the point of the exercise. That is why this
+    does not reuse `_run_full_pipeline`, which re-filters per arm: filtering is
+    deterministic, so re-running it would give the same reads, but it would
+    also dominate the wall time being compared.
+
+    The first arm is the reference. `--errfun-sweep loess,noqual` therefore
+    reads as "how far does noqual move the table off stock loess", and
+    `loess:interpolate,loess:direct` as the surface question from #205.
+
+    The reported wall_s covers learn + denoise + merge + table + chimera, NOT
+    the shared filter -- an arm is not responsible for a cost it did not pay.
+    """
+    global ERRFUN_ARM
+    arms = [a.strip() for a in args.errfun_sweep.split(",") if a.strip()]
+    if len(arms) < 2:
+        sys.exit("--errfun-sweep needs at least two comma-separated arms")
+    # Parse them ALL before running anything: a typo in the last arm should not
+    # surface an hour into the sweep.
+    for a in arms:
+        parse_errfun_arm(a, args.platform)
+
+    prep_dir = outdir / "prep"
+    prep_dir.mkdir(parents=True, exist_ok=True)
+    print(f"=== filter once at {args.threads} threads (shared by all arms) ===",
+          flush=True)
+    shared = (filter_illumina if args.platform == "illumina"
+              else filter_pacbio)(args, bin_, prep_dir, [])
+
+    rows = []
+    for arm in arms:
+        print(f"\n=== arm {arm} ===", flush=True)
+        ERRFUN_ARM = arm
+        adir = outdir / re.sub(r"[^A-Za-z0-9._-]", "_", arm)
+        adir.mkdir(parents=True, exist_ok=True)
+        res = []
+        if args.platform == "illumina":
+            prep = {**shared, **learn_illumina(args, bin_, shared["filtFs"],
+                                               shared["filtRs"], adir, res)}
+            denoise_to_table_illumina(args, bin_, prep, adir, res)
+        else:
+            prep = {**shared, **learn_pacbio(args, bin_, shared["filts"],
+                                             adir, res)}
+            denoise_to_table_pacbio(args, bin_, prep, adir, res)
+        rows_c = collapse(res)
+        rows.append({
+            "arm": arm,
+            "wall_s": sum(r["wall_s"] for r in rows_c),
+            "cpu_s": sum(r.get("cpu_s", 0.0) for r in rows_c),
+            "maxrss_kb": max((r["maxrss_kb"] for r in rows_c), default=0),
+            "learn_s": sum(r["wall_s"] for r in rows_c
+                           if r["step"].startswith("learn")),
+            "table": load_table(adir / "seqtab_nochim.json"),
+        })
+
+    ref = rows[0]
+    print("\n" + "=" * 86)
+    print(f"ERRFUN SWEEP — {args.platform}, {args.pool}; "
+          f"concordance vs first arm ({ref['arm']})")
+    print("=" * 86)
+    print(f"  {'arm':>22}{'wall_s':>9}{'learn_s':>9}{'cores':>7}{'peak':>10}"
+          f"{'asvs':>7}{'jaccard':>9}{'counts=':>9}{'ident':>7}")
+    csv_path = outdir / "sweep_errfun.csv"
+    with open(csv_path, "w") as cf:
+        cf.write("arm,wall_s,learn_s,cpu_s,cores,maxrss_kb,n_asv,"
+                 "jaccard_vs_ref,exact_count_frac,identical\n")
+        for r in rows:
+            jac, exact, ident = table_equiv(ref["table"], r["table"])
+            n_asv = len(r["table"]) if r["table"] is not None else None
+            co = r["cpu_s"] / r["wall_s"] if r["wall_s"] > 0 else 0.0
+            def f(x, w, spec=".4f"):
+                return f"{'n/a':>{w}}" if x is None else f"{x:>{w}{spec}}"
+            print(f"  {r['arm']:>22}{r['wall_s']:>9.1f}{r['learn_s']:>9.1f}"
+                  f"{co:>7.1f}{fmt_rss(r['maxrss_kb']):>10}"
+                  f"{(n_asv if n_asv is not None else 'n/a'):>7}"
+                  f"{f(jac, 9)}{f(exact, 9)}"
+                  f"{('yes' if ident else 'no') if ident is not None else 'n/a':>7}")
+            cf.write(f"{r['arm']},{r['wall_s']:.2f},{r['learn_s']:.2f},"
+                     f"{r['cpu_s']:.2f},{co:.2f},{r['maxrss_kb']:.0f},"
+                     f"{'' if n_asv is None else n_asv},"
+                     f"{'' if jac is None else f'{jac:.6f}'},"
+                     f"{'' if exact is None else f'{exact:.6f}'},"
+                     f"{'' if ident is None else int(ident)}\n")
+    print("\n  jaccard  = ASV sequence-set overlap with the reference arm")
+    print("  counts=  = fraction of SHARED ASVs whose per-sample counts match")
+    print("  wall_s excludes the shared filter step; learn_s is the part of it")
+    print("          that is the error model itself")
     print(f"  Wrote {csv_path}")
 
 
@@ -1024,6 +1237,17 @@ def main():
                         "once, then run the denoise step at each --sample-jobs value to find "
                         "the best samples-in-flight (min wall_s; watch cpu_s climb when "
                         "sub-pools get too small). e.g. --sample-jobs-sweep 1,2,3,4,6,8")
+    p.add_argument("--errfun-arm", default=None, metavar="ARM",
+                   help="error model to benchmark, replacing the per-platform "
+                        "default (loess on illumina, pacbio on pacbio). One of "
+                        "loess[:direct|:interpolate], noqual, "
+                        "binned-qual:Q,Q,..., pacbio.")
+    p.add_argument("--errfun-sweep", default=None, metavar="ARM,ARM,...",
+                   help="dada2-rs-only error-model study: FILTER ONCE, then "
+                        "learn + denoise + table + chimera per arm on those "
+                        "same reads, reporting cost and ASV concordance "
+                        "against the first arm. Arm syntax as --errfun-arm. "
+                        "e.g. --errfun-sweep loess:interpolate,loess:direct")
     p.add_argument("--dada2rs", help="path to dada2-rs binary (REQUIRED; e.g. "
                    "target/release/dada2-rs or target/release-native/dada2-rs)")
     p.add_argument("--rscript", help="path to Rscript (default: Rscript on PATH)")
@@ -1123,13 +1347,27 @@ def main():
     args = p.parse_args()
 
     global VERBOSE, ALIGN_BACKEND, WFA_MAX_EDITS, INFER_KDIST, LEARN_KDIST
-    global LOESS_PRESET
+    global LOESS_SURFACE, ERRFUN_ARM
     VERBOSE = args.verbose
     ALIGN_BACKEND = args.align_backend
     WFA_MAX_EDITS = args.wfa_max_edits
     INFER_KDIST = args.kdist_cutoff
     LEARN_KDIST = args.learn_kdist_cutoff
-    LOESS_PRESET = args.loess_preset
+    LOESS_SURFACE = args.loess_surface
+    ERRFUN_ARM = args.errfun_arm
+    if ERRFUN_ARM is not None:
+        # Fail on a bad arm before any filtering happens, and fail here rather
+        # than inside a worker where the message would be buried in a log.
+        try:
+            parse_errfun_arm(ERRFUN_ARM, args.platform)
+        except ValueError as e:
+            raise SystemExit(f"--errfun-arm: {e}")
+    if args.errfun_arm and args.errfun_sweep:
+        raise SystemExit("--errfun-arm and --errfun-sweep are mutually exclusive")
+    if args.errfun_sweep and args.run_r:
+        # The R arm learns with loessErrfun and has no equivalent knob, so an R
+        # column would silently be the same model in every row.
+        raise SystemExit("--errfun-sweep is dada2-rs only; drop --run-r")
     numa_init(args.numa, args.threads)
     if args.reestimate_err_between_rounds and args.pool != "pseudo":
         p_err = "--reestimate-err-between-rounds applies to --pool pseudo only"
@@ -1153,6 +1391,14 @@ def main():
               flush=True)
         capture_version(bin_, outdir)
         thread_sweep(args, bin_, outdir)
+        return
+
+    if args.errfun_sweep:
+        bin_ = find_binary(args.dada2rs)
+        print(f"=== errfun sweep: dada2-rs ({args.platform}, {args.pool}) — {bin_} ===",
+              flush=True)
+        capture_version(bin_, outdir)
+        errfun_sweep(args, bin_, outdir)
         return
 
     if args.sample_jobs_sweep:
