@@ -14,44 +14,53 @@
 #   Rscript plot_quality_profile.R [--aggregate] [--out=plot.pdf] \
 #                                  [--width=8] [--height=5] \
 #                                  summary1.json [summary2.json ...]
+#   Rscript plot_quality_profile.R --help
 #
 # Defaults to writing quality_profile.pdf in the current directory.
+#
+# Dependencies: jsonlite, ggplot2, optparse
 
 suppressPackageStartupMessages({
   library(jsonlite)
   library(ggplot2)
+  library(optparse)
 })
 
 # ---- Argument parsing ---------------------------------------------------
 
-args <- commandArgs(trailingOnly = TRUE)
-if (length(args) == 0) {
-  stop("usage: plot_quality_profile.R [--aggregate] [--out=FILE] [--width=N] [--height=N] summary.json [...]")
+opt_list <- list(
+  make_option("--aggregate", action = "store_true", default = FALSE,
+              help = "Pool all inputs into one panel instead of one per file"),
+  make_option("--out", type = "character", default = "quality_profile.pdf",
+              metavar = "FILE", help = "Output path [default %default]"),
+  make_option("--width", type = "double", default = 8, metavar = "N",
+              help = "Figure width in inches [default %default]"),
+  make_option("--height", type = "double", default = 5, metavar = "N",
+              help = "Figure height in inches [default %default]")
+)
+
+parser <- OptionParser(
+  usage = "usage: %prog [options] summary1.json [summary2.json ...]",
+  option_list = opt_list,
+  description = paste0(
+    "\nPlot per-cycle quality from `dada2-rs summary` JSON, in the style of\n",
+    "DADA2's plotQualityProfile().\n")
+)
+argv <- parse_args(parser, positional_arguments = c(1, Inf))
+opt  <- argv$options
+
+# optparse warns on a non-numeric double but passes the string through.
+for (flag in c("width", "height")) {
+  v <- suppressWarnings(as.numeric(opt[[flag]]))
+  if (is.na(v) || v <= 0) stop(sprintf("--%s must be a positive number", flag))
+  opt[[flag]] <- v
 }
 
-aggregate <- FALSE
-out_file <- "quality_profile.pdf"
-width <- 8
-height <- 5
-files <- character(0)
-
-for (a in args) {
-  if (identical(a, "--aggregate")) {
-    aggregate <- TRUE
-  } else if (startsWith(a, "--out=")) {
-    out_file <- sub("^--out=", "", a)
-  } else if (startsWith(a, "--width=")) {
-    width <- as.numeric(sub("^--width=", "", a))
-  } else if (startsWith(a, "--height=")) {
-    height <- as.numeric(sub("^--height=", "", a))
-  } else if (startsWith(a, "--")) {
-    stop(sprintf("unknown option: %s", a))
-  } else {
-    files <- c(files, a)
-  }
-}
-
-if (length(files) == 0) stop("at least one summary JSON file is required")
+aggregate <- opt$aggregate
+out_file  <- opt$out
+width     <- opt$width
+height    <- opt$height
+files     <- argv$args
 
 # ---- Load summaries -----------------------------------------------------
 

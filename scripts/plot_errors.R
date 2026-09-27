@@ -115,7 +115,14 @@ if (!opt$size_trans %in% c("log10", "sqrt", "identity")) {
   stop("--size-trans must be one of: log10, sqrt, identity")
 }
 
-min_mass <- opt$min_mass
+# optparse warns on a non-numeric double but passes the string through.
+for (flag in c("width", "height")) {
+  v <- suppressWarnings(as.numeric(opt[[flag]]))
+  if (is.na(v) || v <= 0) stop(sprintf("--%s must be a positive number", flag))
+  opt[[flag]] <- v
+}
+
+min_mass <- suppressWarnings(as.numeric(opt$min_mass))
 if (is.na(min_mass) || min_mass < 0 || min_mass >= 1) {
   stop("--min-mass must be in [0, 1)")
 }
