@@ -80,8 +80,10 @@ batch, `cpu_s` = sum across children, `peak_rss` = max of any single child.
 | `--r-mode {split,single,both}` | how to run R (see §1.5) |
 | `--no-run-rust` | skip the dada2-rs pipeline |
 | `--nbases N` | bases to subsample for error learning |
+| `--errfun-arm ARM` | error model to run, replacing the per-platform default (§2.3) |
 | `--thread-sweep N,N,...` | thread-scaling study (§2.1) |
 | `--sample-jobs-sweep N,N,...` | samples-in-flight study (§2.2) |
+| `--errfun-sweep ARM,ARM,...` | error-model study (§2.3) |
 
 Platform-specific filter/denoise knobs: `--trunc-len`, `--max-ee`, `--trunc-q`,
 `--max-n` (Illumina); `--min-len`, `--max-len`, `--band`, `--homo-gap`,
@@ -166,10 +168,12 @@ end-to-end wall + overall RSS), and rust-only runs simply omit them.
 
 ---
 
-## 2. Scaling studies (dada2-rs only; skip R)
+## 2. Sweeps (dada2-rs only; skip R)
 
-Both sweeps **prepare inputs once** (filter + learn) and then re-run **only the
-denoise step** at each setting — isolating the scaling behavior of the inference.
+The two **scaling** sweeps (§2.1, §2.2) prepare inputs once (filter + learn)
+and then re-run **only the denoise step** at each setting — isolating the
+scaling behavior of the inference. The **error-model** sweep (§2.3) varies the
+thing that has to be re-learned, so it shares only the filter.
 
 ### 2.1 Thread sweep — `--thread-sweep 1,2,4,8,16,24`
 
@@ -198,6 +202,58 @@ How to read it:
 
 The default `--sample-jobs = round(threads/4)` came from this sweep (the
 wall-time curve plateaus around ~4 threads/sample).
+
+### 2.3 Error-model sweep — `--errfun-sweep`
+
+Runs the pipeline once per **error model** on **one shared set of filtered
+reads**, so a difference between arms is the error model and nothing else.
+Filtering happens once; each arm then re-learns on those files and runs the
+same denoise → merge → table → chimera tail. Unlike §2.1/§2.2 this is not a
+denoise-only sweep, because the error model changes what denoising is handed.
+
+An **arm** is a string:
+
+| Arm | Meaning |
+|---|---|
+| `loess` | the default LOESS errfun, binary's default surface |
+| `loess:interpolate` / `loess:direct` | LOESS pinned to a surface |
+| `binned-qual:2,11,25,37` | piecewise-linear over those anchors (see [Binned quality scores](findings/binned-quality.md)) |
+| `noqual` | quality-independent |
+| `pacbio` | the PacBio errfun |
+
+The same syntax selects a single model with `--errfun-arm`, which replaces the
+hardcoded per-platform default (`loess` on Illumina, `pacbio` on PacBio).
+Without either flag nothing changes.
+
+```bash
+python3 dev/benchmark/bench_pooled.py illumina /data/MiSeqSOP \
+    --dada2rs target/release-native/dada2-rs --threads 24 --pool false \
+    --errfun-sweep loess:interpolate,loess:direct,noqual
+```
+
+The **first arm is the reference**; concordance columns are measured against
+it, so the arm order is the question being asked. Output
+(`sweep_errfun.csv`): `arm, wall_s, learn_s, cpu_s, cores, maxrss_kb, n_asv,
+jaccard_vs_ref, exact_count_frac, identical`.
+
+- **`jaccard_vs_ref`** — ASV sequence-set overlap. Moves when a model changes
+  *which* variants are called.
+- **`exact_count_frac`** — fraction of *shared* ASVs whose full per-sample
+  count vector matches. Moves when a model changes *abundances* without
+  changing the ASV set — the [NovaSeq binned-errfun
+  finding](findings/binned-quality.md) is exactly this shape, and reading only
+  `n_asv` would have missed it.
+- **`wall_s`** excludes the shared filter step; **`learn_s`** is the part of it
+  that is the error model itself.
+
+The reference arm is compared against itself, so its row is always
+`1.0000 / 1.0000 / yes`. That is the harness's own null: if a second arm also
+reports `yes`, the two models genuinely agree, not that the comparison is
+broken.
+
+`--errfun-sweep` is dada2-rs only — R's `learnErrors` has no equivalent knob,
+so an R column would be the same model in every row. Passing `--run-r` with it
+is an error rather than a silently constant column.
 
 ---
 
