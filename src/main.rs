@@ -1573,6 +1573,60 @@ fn run() -> io::Result<()> {
                 ));
             }
 
+            // ---- Order the pool by descending abundance (#219) ----
+            // R's `combineDereps2` ends with `ord <- order(derepCounts,
+            // decreasing=TRUE)`; the per-sample path in `derep.rs` already
+            // does the same, with a lexical tie-break, for the reason spelled
+            // out there: the DADA2 loop ASSUMES this ordering. `b_bud`'s scan
+            // is `for r in 1..` with the comment "r=0 is the center", and that
+            // is only true because cluster 0 holds every raw in derep order,
+            // so the most abundant lands at index 0 and `assign_center` then
+            // picks it. Neither R nor we move the centre into place -- the
+            // invariant is inherited from the input ordering.
+            //
+            // This merge built the pool in first-seen order, so the invariant
+            // did not hold and whatever occupied index 0 was PERMANENTLY
+            // unbuddable. On the pinned 95-sample PacBio run that was a
+            // 66,937-read organism: cluster 0's centre sat at position 10020,
+            // position 0 held that raw, and it appeared in none of the 2,818
+            // divisions. R calls it as its own ASV with 106,853 reads.
+            //
+            // Ordering also decides saturated births. 880 of 2,490 pooled
+            // MiSeq births resolve at pA = 0.00e0, where the tie-break is
+            // reads then position -- so matching R's order matters beyond the
+            // index-0 slot.
+            //
+            // The lexical tie-break mirrors `derep.rs`: R's uniques are built
+            // in lexical order and `order(decreasing=TRUE)` is stable, so
+            // equal-abundance uniques keep it.
+            {
+                let mut perm: Vec<usize> = (0..raw_inputs.len()).collect();
+                perm.sort_by(|&a, &b| {
+                    raw_inputs[b]
+                        .abundance
+                        .cmp(&raw_inputs[a].abundance)
+                        .then_with(|| raw_inputs[a].seq.cmp(&raw_inputs[b].seq))
+                });
+                let mut old_to_new = vec![0usize; perm.len()];
+                for (new_idx, &old_idx) in perm.iter().enumerate() {
+                    old_to_new[old_idx] = new_idx;
+                }
+                let mut slots: Vec<Option<dada::RawInput>> =
+                    raw_inputs.into_iter().map(Some).collect();
+                raw_inputs = perm
+                    .iter()
+                    .map(|&old_idx| slots[old_idx].take().expect("permutation is a bijection"))
+                    .collect();
+                // Every per-sample map indexes the merged pool, so it has to
+                // follow the permutation or the split-back silently attributes
+                // reads to the wrong sequence.
+                for local in local_to_merged.iter_mut() {
+                    for mu in local.iter_mut() {
+                        *mu = old_to_new[*mu];
+                    }
+                }
+            }
+
             // ---- Mark prior sequences ----
             if let Some(ref prior_path) = prior {
                 let prior_seqs: HashSet<String> = read_fasta_records(prior_path)

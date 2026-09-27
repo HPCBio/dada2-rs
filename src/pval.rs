@@ -263,12 +263,119 @@ pub fn b_p_update(
     st
 }
 
+/// At loop termination, report any raw whose cached `p` disagrees with what
+/// `get_pA` returns for its *own current* comparison. A stale `p` is invisible
+/// to [`report_missed_bud`]: the incremental cache and the full serial scan
+/// both read `raw.p`, so they agree with each other while both being wrong.
+///
+/// Deliberately compares against ANY value rather than only 1.0. The earlier
+/// narrow form stayed silent on two production runs, and the narrowness was
+/// the reason -- a `p` stranded at some intermediate value is just as
+/// unbuddable as one stranded at 1.0, and far less obvious.
+///
+/// Issue #219: a 66,937-read raw at hamming 311 whose lambda underflowed to
+/// zero. `get_pA` maps that to 0.0, which would make it the global minimum in
+/// round one, yet it appears in none of 2,818 divisions. Only reachable at
+/// k=5 -- at k=7 the screen rejects the pair (21.5% divergent, and k=7's
+/// closest rejection on this data is 10.49%), so no comparison exists and the
+/// state is consistent for an uninteresting reason.
+///
+/// O(members) once at termination. Release-safe, non-fatal.
+/// Returns `(count, worst_reads)`.
+pub fn report_stale_p(b: &B, detect_singletons: bool, verbose: bool) -> (usize, u32) {
+    let mut worst: Vec<(u32, usize, usize, f64, f64, u32, f64)> = Vec::new();
+    for ci in 0..b.clusters.len() {
+        let bi_reads = b.clusters[ci].reads;
+        for &raw_idx in &b.clusters[ci].raws {
+            let r = &b.raws[raw_idx];
+            let want = get_pA_counted(
+                r.reads,
+                r.prior,
+                r.comp.lambda,
+                r.comp.hamming,
+                bi_reads,
+                detect_singletons,
+                None,
+            );
+            // Exact comparison: both sides come from the same function on the
+            // same inputs, so any difference is staleness, not rounding.
+            if r.p != want {
+                worst.push((
+                    r.reads,
+                    raw_idx,
+                    ci,
+                    r.p,
+                    want,
+                    r.comp.hamming,
+                    r.comp.lambda,
+                ));
+            }
+        }
+    }
+    if worst.is_empty() {
+        return (0, 0);
+    }
+    worst.sort_unstable_by_key(|t| std::cmp::Reverse(t.0));
+    if verbose {
+        eprintln!(
+            "[dada] WARNING: {} raw(s) whose cached p disagrees with their own comparison \
+             (issue #219)",
+            worst.len()
+        );
+        for (rd, raw_idx, ci, got, want, ham, lam) in worst.iter().take(5) {
+            eprintln!(
+                "[dada]   raw {raw_idx} in cluster {ci}: {rd} reads, hamming {ham}, \
+                 lambda {lam:.3e} -- cached p {got:.3e}, get_pA says {want:.3e}"
+            );
+        }
+    }
+    (worst.len(), worst[0].0)
+}
+
+/// At loop termination, cross-check the incremental `bud_min` cache against a
+/// full serial scan. If the scan finds a candidate the cache did not offer,
+/// the loop stopped early and every raw behind that candidate is unreachable.
+///
+/// `b_bud_incremental` already asserts this equivalence -- but only under
+/// `#[cfg(debug_assertions)]`, so it has never run on a production workload.
+/// A 547k-unique pooled PacBio run cannot be done in a debug build, which is
+/// precisely where a stale cache would matter (issue #219: a 66,937-read
+/// sequence at hamming 311 with an underflowed lambda, whose `get_pA` value is
+/// 0.0, never appears among 2,818 divisions).
+///
+/// O(raws) once at termination -- free there, prohibitive per round.
+/// Non-fatal: it reports, it does not abort a long run.
+pub fn report_missed_bud(
+    b: &B,
+    min_fold: f64,
+    min_hamming: u32,
+    min_abund: u32,
+    verbose: bool,
+) -> Option<(usize, f64, u32)> {
+    let (mini, min_p, min_reads, _, _, _) = b_bud_scan_select(b, min_fold, min_hamming, min_abund);
+    let nraw = b.raws.len() as f64;
+    let p_a = min_p * nraw;
+    if p_a >= b.omega_a {
+        return None; // the scan agrees: nothing left to bud
+    }
+    let (ci, _, raw_idx) = mini?;
+    if verbose {
+        let r = &b.raws[raw_idx];
+        eprintln!(
+            "[dada] WARNING: bud loop stopped while a full scan still finds a candidate \
+             (issue #219): raw {raw_idx} in cluster {ci}, {} reads, hamming {}, lambda {:.3e}, \
+             p {:.3e}, pA {:.3e} < omega_a {:.3e}",
+            r.reads, r.comp.hamming, r.comp.lambda, min_p, p_a, b.omega_a
+        );
+    }
+    Some((raw_idx, min_p, min_reads))
+}
+
 /// Non-mutating serial equivalent of `b_bud`'s candidate selection: scans every
 /// non-position-0 raw across all clusters and returns the abundance and prior
 /// minima it would pick, as `(mini, min_p, min_reads, mini_prior, min_p_prior,
 /// min_reads_prior)` where each `mini*` is `Option<(ci, r, raw_idx)>`. Used only
 /// by `b_bud`'s debug cross-check against the incremental cache (issue #85).
-#[cfg(debug_assertions)]
 #[allow(clippy::type_complexity)]
 pub fn b_bud_scan_select(
     b: &B,
@@ -350,9 +457,29 @@ pub fn calc_pA(reads: u32, e_reads: f64, prior: bool) -> f64 {
     // direct upper-tail Poisson series in log space:
     //   P(X >= k | λ) = e^{-λ} λ^k/k! * Σ_{j>=0} λ^j / ∏_{i=1..j}(k+i)
     // which is dominated by the leading e^{-λ} λ^k/k! for small λ.
+    // Zero expected reads. R evaluates `ppois(reads-1, 0, lower.tail=FALSE)`,
+    // which is P(X > reads-1 | lambda = 0) = 0 for every reads >= 1 -- verified
+    // against R directly. We returned 1.0 here, the opposite end of the range,
+    // and that inversion is not cosmetic: the post-loop omega_c pass
+    // (`dada.rs`) sets `correct = p >= omega_c`, so 1.0 CORRECTS the raw into
+    // its cluster where R's 0.0 leaves it unplaced.
+    //
+    // On the pinned 95-sample pooled PacBio run that folded a 66,937-read
+    // sequence -- hamming 311 from the centre, lambda underflowed to exactly
+    // zero -- into cluster 0, while R left those reads out entirely. Same
+    // mechanism as issue #204, where we place every read and R leaves
+    // ~1.6-1.9% unplaced.
+    //
+    // Only `e_reads == 0` is reachable: lambda and reads are both
+    // non-negative. A non-finite e_reads would be a bug upstream, and R would
+    // return NaN there rather than a probability, so it is not special-cased
+    // into a silent answer.
+    if e_reads <= 0.0 {
+        return 0.0;
+    }
     let pois = match Poisson::new(e_reads) {
         Ok(p) => p,
-        Err(_) => return 1.0, // degenerate: e_reads <= 0
+        Err(_) => return 0.0, // unreachable given the guard above
     };
     let mut pval = pois.sf((reads - 1) as u64);
     if pval == 0.0 && e_reads > 0.0 {
@@ -550,4 +677,176 @@ fn get_pA_counted(
     bump!(full_calc);
     let e_reads = lambda * bi_reads as f64;
     calc_pA(reads, e_reads, prior || detect_singletons)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::containers::{B, Comparison, Raw};
+
+    /// Build a two-raw pool: an abundant centre and an abundant, very divergent
+    /// member. Mirrors the shape that stranded a 66,937-read PacBio sequence
+    /// (issue #219).
+    fn pool_with_divergent_member() -> B {
+        let a = b"ACGTACGTAGCTAGCTAAGGCCTTAGCTAGCTACGTACGTTTGACTGACAGCTTAAGGCCA".to_vec();
+        let mut c = a.clone();
+        for i in (0..c.len()).step_by(3) {
+            c[i] = if c[i] == b'A' { b'T' } else { b'A' };
+        }
+        let raws = vec![
+            Raw::new(a, None, 200_000, false),
+            Raw::new(c, None, 66_937, false),
+        ];
+        let mut b = B::new(raws, 1e-40, 1e-4, false);
+        b.clusters[0].center = Some(0);
+        b
+    }
+
+    /// A non-singleton whose lambda underflows to exactly zero must get
+    /// `p = 0.0` -- maximally significant, so `b_bud` can promote it. Returning
+    /// 1.0 makes it permanently unbuddable, which is what stranded a
+    /// 66,937-read / hamming-311 sequence inside cluster 0 on the 95-sample
+    /// PacBio run while R called it as its own ASV with 106,853 reads.
+    ///
+    /// The bug is invisible on singletons: the singleton branch returns 1.0
+    /// anyway, and 1,741 of the 1,742 raws in that class on the real run were
+    /// singletons.
+    #[test]
+    fn zero_lambda_non_singleton_is_maximally_significant() {
+        let mut b = pool_with_divergent_member();
+        // The state the trace recorded: real alignment, underflowed lambda.
+        b.raws[1].comp = Comparison {
+            i: 0,
+            index: 1,
+            lambda: 0.0,
+            hamming: 311,
+        };
+        b.clusters[0].update_e = true;
+        super::b_p_update(&mut b, false, false, 1.0, 1, 1);
+        assert_eq!(
+            b.raws[1].p, 0.0,
+            "a zero-lambda non-singleton must be maximally significant, not p=1.0"
+        );
+    }
+}
+
+#[cfg(test)]
+mod diag_tests {
+    /// Zero expected reads must be MAXIMALLY significant, matching R's
+    /// `ppois(reads-1, 0, lower.tail=FALSE) == 0` (checked against R itself).
+    /// We returned 1.0, which flipped the post-loop omega_c verdict from
+    /// "leave unplaced" to "correct into this cluster" and folded a
+    /// 66,937-read PacBio sequence into a cluster 311 mismatches away
+    /// (#219, and the mechanism behind #204).
+    #[test]
+    fn calc_pa_with_zero_e_reads_is_zero_like_r() {
+        for reads in [1u32, 2, 66_937] {
+            for prior in [true, false] {
+                assert_eq!(
+                    super::calc_pA(reads, 0.0, prior),
+                    0.0,
+                    "reads={reads} prior={prior}"
+                );
+            }
+        }
+    }
+
+    /// The guard must not disturb ordinary values.
+    #[test]
+    fn calc_pa_unchanged_for_positive_e_reads() {
+        let p = super::calc_pA(5, 2.0, true);
+        assert!(p > 0.0 && p < 1.0, "expected a real probability, got {p}");
+    }
+
+    use crate::containers::{B, Comparison, Raw};
+
+    /// The diagnostic must actually fire on the state it was written for --
+    /// a null from an instrument is worth nothing until the instrument is
+    /// shown capable of returning something else. This reproduces the #219
+    /// raw: 66,937 reads, hamming 311, lambda underflowed to 0, cached p 1.0.
+    /// The stale-p check must fire on a value that is NOT 1.0 -- that
+    /// narrowness is why the earlier diagnostic stayed silent on two
+    /// production runs. Here the raw's comp implies 0.0 and its cached p sits
+    /// at an intermediate value, which is just as unbuddable and far less
+    /// obvious.
+    #[test]
+    fn report_stale_p_fires_on_a_non_unit_stale_value() {
+        let a = b"ACGTACGTAGCTAGCTAAGGCCTTAGCTAGCTACGTACGTTTGACTGACAGCTTAAGGCCA".to_vec();
+        let z = b"TTTTTTTTTTGGGGGGGGGGCCCCCCCCCCAAAAAAAAAATTTTTTTTTTGGGGGGGGGGCC".to_vec();
+        let raws = vec![
+            Raw::new(a, None, 200_000, false),
+            Raw::new(z, None, 66_937, false),
+        ];
+        let mut b = B::new(raws, 1e-40, 1e-4, false);
+        b.clusters[0].center = Some(0);
+        b.raws[0].p = 1.0; // centre, as get_pA forces it
+        b.raws[1].comp = Comparison {
+            i: 0,
+            index: 1,
+            lambda: 0.0,
+            hamming: 311,
+        };
+        b.raws[1].p = 3.7e-12; // stale: get_pA on this comp gives 0.0
+        let (n, reads) = super::report_stale_p(&b, false, false);
+        assert_eq!(n, 1, "a stale intermediate p must be caught");
+        assert_eq!(reads, 66_937);
+    }
+
+    /// ... and must stay quiet when every cached p matches its comparison.
+    #[test]
+    fn report_stale_p_quiet_when_consistent() {
+        let a = b"ACGTACGTAGCTAGCTAAGGCCTTAGCTAGCTACGTACGTTTGACTGACAGCTTAAGGCCA".to_vec();
+        let z = b"TTTTTTTTTTGGGGGGGGGGCCCCCCCCCCAAAAAAAAAATTTTTTTTTTGGGGGGGGGGCC".to_vec();
+        let raws = vec![
+            Raw::new(a, None, 200_000, false),
+            Raw::new(z, None, 66_937, false),
+        ];
+        let mut b = B::new(raws, 1e-40, 1e-4, false);
+        b.clusters[0].center = Some(0);
+        b.clusters[0].update_e = true;
+        super::b_p_update(&mut b, false, false, 1.0, 1, 1);
+        assert_eq!(super::report_stale_p(&b, false, false).0, 0);
+    }
+
+    /// The cross-check must fire when the cache would miss a candidate. Built
+    /// by hand: a raw whose `p` makes it a valid bud target, with the
+    /// per-cluster `bud_min` cache left empty as a stale cache would leave it.
+    #[test]
+    fn report_missed_bud_fires_when_the_cache_is_stale() {
+        let a = b"ACGTACGTAGCTAGCTAAGGCCTTAGCTAGCTACGTACGTTTGACTGACAGCTTAAGGCCA".to_vec();
+        let z = b"TTTTTTTTTTGGGGGGGGGGCCCCCCCCCCAAAAAAAAAATTTTTTTTTTGGGGGGGGGGCC".to_vec();
+        let raws = vec![
+            Raw::new(a, None, 200_000, false),
+            Raw::new(z, None, 66_937, false),
+        ];
+        let mut b = B::new(raws, 1e-40, 1e-4, false);
+        b.clusters[0].center = Some(0);
+        b.raws[1].comp = Comparison {
+            i: 0,
+            index: 1,
+            lambda: 0.0,
+            hamming: 311,
+        };
+        b.raws[1].p = 0.0; // what get_pA gives for lambda == 0
+        // The scan seeds its minimum from cluster 0's centre, which get_pA
+        // forces to 1.0 via the `hamming == 0` branch. Without this the seed
+        // is Raw::new's initial 0.0 and nothing can beat it.
+        b.raws[0].p = 1.0;
+        b.clusters[0].bud_min = None; // the stale cache: offers nothing
+        let hit = super::report_missed_bud(&b, 1.0, 1, 1, false);
+        assert_eq!(
+            hit.map(|h| h.0),
+            Some(1),
+            "the full scan must still find raw 1"
+        );
+    }
+
+    /// ... and must stay quiet when there is genuinely nothing to bud.
+    #[test]
+    fn report_missed_bud_quiet_when_nothing_qualifies() {
+        let a = b"ACGTACGTAGCTAGCTAAGGCCTTAGCTAGCTACGTACGTTTGACTGACAGCTTAAGGCCA".to_vec();
+        let raws = vec![Raw::new(a, None, 200_000, false)];
+        let mut b = B::new(raws, 1e-40, 1e-4, false);
+        b.clusters[0].center = Some(0);
+        assert!(super::report_missed_bud(&b, 1.0, 1, 1, false).is_none());
+    }
 }
