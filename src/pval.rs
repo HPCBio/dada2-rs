@@ -263,6 +263,62 @@ pub fn b_p_update(
     st
 }
 
+/// Report raws the bud loop *cannot* promote but arguably should: a
+/// non-singleton whose cached `p` is 1.0 while its stored comparison implies
+/// `get_pA` would return something significant. A `p` of 1.0 can never win
+/// `b_bud`'s minimum, so such a raw is inert however abundant or divergent.
+///
+/// This is issue #219: a 66,937-read raw at hamming 311 with `lambda == 0`
+/// held `p = 1.0` where `get_pA` returns 0.0, and stayed buried in cluster 0
+/// while R called it as its own ASV with 106,853 reads. 1,742 of 1,742 raws in
+/// that class were stale, but 1,741 were singletons whose correct answer is
+/// also 1.0 -- so only the single non-singleton was ever visible.
+///
+/// Run ONCE at loop termination rather than per round: it is O(members), which
+/// is free once and prohibitive 2,810 times. Release-safe and non-fatal by
+/// design -- the point is to surface the class on a real run, not to abort one.
+///
+/// Returns `(count, stranded_reads)`.
+pub fn report_unbuddable(b: &B, detect_singletons: bool, verbose: bool) -> (usize, u64) {
+    let mut n = 0usize;
+    let mut reads = 0u64;
+    let mut worst: Vec<(u32, usize, u32, f64)> = Vec::new();
+    for ci in 0..b.clusters.len() {
+        let bi_reads = b.clusters[ci].reads;
+        for &raw_idx in &b.clusters[ci].raws {
+            let r = &b.raws[raw_idx];
+            if r.reads <= 1 || r.p != 1.0 {
+                continue;
+            }
+            let want = get_pA_counted(
+                r.reads,
+                r.prior,
+                r.comp.lambda,
+                r.comp.hamming,
+                bi_reads,
+                detect_singletons,
+                None,
+            );
+            if want < 1.0 {
+                n += 1;
+                reads += u64::from(r.reads);
+                worst.push((r.reads, ci, r.comp.hamming, r.comp.lambda));
+            }
+        }
+    }
+    if n > 0 && verbose {
+        worst.sort_unstable_by_key(|t| std::cmp::Reverse(t.0));
+        eprintln!(
+            "[dada] WARNING: {n} non-singleton raw(s) holding p=1.0 that their stored \
+             comparison contradicts, stranding {reads} read(s) (issue #219)"
+        );
+        for (rd, ci, ham, lam) in worst.iter().take(5) {
+            eprintln!("[dada]   {rd} reads in cluster {ci}, hamming {ham}, lambda {lam:.3e}");
+        }
+    }
+    (n, reads)
+}
+
 /// Non-mutating serial equivalent of `b_bud`'s candidate selection: scans every
 /// non-position-0 raw across all clusters and returns the abundance and prior
 /// minima it would pick, as `(mini, min_p, min_reads, mini_prior, min_p_prior,
@@ -550,4 +606,54 @@ fn get_pA_counted(
     bump!(full_calc);
     let e_reads = lambda * bi_reads as f64;
     calc_pA(reads, e_reads, prior || detect_singletons)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::containers::{B, Comparison, Raw};
+
+    /// Build a two-raw pool: an abundant centre and an abundant, very divergent
+    /// member. Mirrors the shape that stranded a 66,937-read PacBio sequence
+    /// (issue #219).
+    fn pool_with_divergent_member() -> B {
+        let a = b"ACGTACGTAGCTAGCTAAGGCCTTAGCTAGCTACGTACGTTTGACTGACAGCTTAAGGCCA".to_vec();
+        let mut c = a.clone();
+        for i in (0..c.len()).step_by(3) {
+            c[i] = if c[i] == b'A' { b'T' } else { b'A' };
+        }
+        let raws = vec![
+            Raw::new(a, None, 200_000, false),
+            Raw::new(c, None, 66_937, false),
+        ];
+        let mut b = B::new(raws, 1e-40, 1e-4, false);
+        b.clusters[0].center = Some(0);
+        b
+    }
+
+    /// A non-singleton whose lambda underflows to exactly zero must get
+    /// `p = 0.0` -- maximally significant, so `b_bud` can promote it. Returning
+    /// 1.0 makes it permanently unbuddable, which is what stranded a
+    /// 66,937-read / hamming-311 sequence inside cluster 0 on the 95-sample
+    /// PacBio run while R called it as its own ASV with 106,853 reads.
+    ///
+    /// The bug is invisible on singletons: the singleton branch returns 1.0
+    /// anyway, and 1,741 of the 1,742 raws in that class on the real run were
+    /// singletons.
+    #[test]
+    fn zero_lambda_non_singleton_is_maximally_significant() {
+        let mut b = pool_with_divergent_member();
+        // The state the trace recorded: real alignment, underflowed lambda.
+        b.raws[1].comp = Comparison {
+            i: 0,
+            index: 1,
+            lambda: 0.0,
+            hamming: 311,
+        };
+        b.clusters[0].update_e = true;
+        super::b_p_update(&mut b, false, false, 1.0, 1, 1);
+        assert_eq!(
+            b.raws[1].p, 0.0,
+            "a zero-lambda non-singleton must be maximally significant, not p=1.0"
+        );
+    }
 }
