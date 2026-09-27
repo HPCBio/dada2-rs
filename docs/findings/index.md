@@ -42,6 +42,14 @@ reader benefit. Three homes, and only three:
   dada k-mer-distance cutoffs can be set independently; the dada-stage speedup is
   safe to take, while pushing the same cutoff into learn-errors perturbs the error
   model and churns real-abundance ASVs.
+- [OMEGA_A is well calibrated on PacBio HiFi](omega-a-calibration.md) — the
+  platform-blind `1e-40` default is **not** too conservative for HiFi. Two
+  independent truth-set arms on 96-sample pooled MSA-1003 agree and fail in
+  opposite directions: of 9 unrecovered alleles the single threshold-rescuable
+  one needs a ~25-order relaxation, and all 263 false positives sit ~100 orders
+  *below* `omega_a` (median `p_a` 1e-140) — a chimera tail, not marginal calls.
+  Closes the question the kdist page parked, and redirects the 4–76 read churn
+  band to a different mechanism. `OMEGA_C` was parked alongside and is still open.
 - [`--nbases` and error-model convergence](learn-errors-nbases-convergence.md) —
   **the `1e8` default is inside the noise floor of which samples you drew.** On a
   full MiSeq run, five models fitted at the *same* budget with different sample
@@ -77,6 +85,19 @@ reader benefit. Three homes, and only three:
   re-fit on every axis (+3,118 reads recovered, 709 fewer ASVs, 72× fewer ASVs
   unexplained by priors); R emulation stays opt-in, and confirming R's actual
   behaviour is still the open gate.
+- [What R parity can and cannot tell you](r-parity-floor-and-ceiling.md) — agreement
+  with R has **a floor and a ceiling**, and a parity number quoted without both
+  invites opposite mistakes. The floor: on a 95-sample pooled HiFi run **1,596 of
+  2,818 divisions had `pA = 0.00e0`**, so the ranking statistic carries no
+  information and the decision falls to reads, then to *position in the member
+  list* — an input-ordering artifact neither implementation chose. We match R
+  exactly pre-chimera and differ by 21 reads in 2.39M, with mirrored exclusive
+  sets: a coin flip, not a defect, and not reducible. The ceiling: pseudo-pooling,
+  where R's actual behaviour is unintended and we follow the intent instead. Also
+  the distinction that matters — a *systematic* ordering difference is a bug (one
+  was, and cost 2,450 reads), the tie-break sensitivity underneath it is a floor.
+  And the warning that our bit-identical `trans` was produced by the one code path
+  the bug could not reach.
 - [**Binned quality scores**](binned-quality.md) — a series, because the answer is
   **dataset-dependent** and we cannot yet predict which datasets are sensitive:
     - [PacBio (SequelIIe & Revio)](binned-quality-error-model.md) — binning never

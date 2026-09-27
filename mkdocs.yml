@@ -102,6 +102,7 @@ nav:
   - Findings:
     - findings/index.md
     - KDIST cutoff decoupling: findings/kdist-cutoff-decoupling.md
+    - OMEGA_A calibration on HiFi: findings/omega-a-calibration.md
     - K-mer screen size: findings/kmer-size-screening.md
     - Minimizers as the screen (experimental): findings/minimizer-screening.md
     - learn-errors --nbases convergence: findings/learn-errors-nbases-convergence.md
@@ -120,6 +121,7 @@ nav:
     - Measuring on a NUMA node: findings/measuring-on-numa.md
     - Thread scaling & memory placement: findings/thread-scaling-and-placement.md
     - Pseudo-pooling priors vs error model: findings/pseudo-pooling-priors-vs-error-model.md
+    - What R parity can and cannot tell you: findings/r-parity-floor-and-ceiling.md
     - Binned quality scores:
       - findings/binned-quality.md
       - PacBio (SequelIIe & Revio): findings/binned-quality-error-model.md

@@ -1,0 +1,158 @@
+# What R parity can and cannot tell you
+
+**Verdict:** agreement with R DADA2 is our sharpest fidelity instrument, and it
+has **a floor and a ceiling**. Below the floor, differences are coin flips that
+two R releases would also produce — chasing them is chasing noise. Above the
+ceiling sit places where R's *actual* behaviour is not its *intended* behaviour,
+and we deliberately follow the intent instead. A parity number quoted without
+both bounds invites two opposite mistakes: treating an irreducible tie-break as
+a bug, and treating a deliberate divergence as a regression.
+
+Concretely, on a 95-sample pooled PacBio HiFi run we match R **exactly** at
+pre-chimera (2791 = 2791) and sit **21 reads apart in 2,385,908** — and that
+remainder is not reducible, because **1,596 of 2,818 divisions in that run
+decide on a tie-break rather than on a statistic**.
+
+## The floor: saturated births make ordering the comparator
+
+DADA2 spawns a new cluster from the member with the smallest abundance p-value.
+In `get_pA`, a raw whose expected-read count is small enough returns a p-value
+that **underflows to exactly `0.00e0`**. When it does, the statistic that is
+supposed to rank candidates carries no information at all, and `b_bud`'s
+tie-break takes over: lowest p, then **most reads**, then **lowest position in
+the cluster's member list**.
+
+On the pinned 95-sample PacBio run, **1,596 of 2,818 divisions (57%)** were
+decided in that regime. At the abundances involved — 7 to 76 reads — the
+reads term ties too, so the decision falls through to position, which is an
+artifact of input ordering that neither we nor R DADA2 ever chose deliberately.
+
+### What that costs, measured
+
+After [issue 219](https://github.com/HPCBio/dada2-rs/issues/219) fixed the one
+*systematic* ordering difference (see below), the residual against R is:
+
+| | dada2-rs | R DADA2 |
+|---|---|---|
+| pre-chimera ASVs | **2791** | **2791** |
+| post-chimera ASVs | 2045 | 2046 |
+| reads placed | 2,385,887 | 2,385,908 |
+
+21 reads in 2.39M, 0.0009%. The pre-chimera exclusive sets **mirror each
+other** — 10 ASVs on each side, abundances 7–76 on both, with 9/12/13/17/21/24/76
+appearing in *each* list, and read totals agreeing to 1 in 2,414,418. They are
+the same organisms resolved to a different base: one Cx5 homopolymer indel, one
+substitution, one hamming-5 pair.
+
+That is the signature of a coin flip, not of a defect. Chimera removal was
+separately confirmed exactly equivalent on these tables by cross-feeding both
+directions — 2046 = 2046 on R's input, 2045 = 2045 on ours, zero differences —
+so even the post-chimera gap is input-driven rather than an implementation
+difference.
+
+### Why this matters for how parity is read
+
+**A parity claim is only as fine-grained as this floor.** On a saturated pooled
+run, "we differ from R by 7 ASVs" and "we agree with R" are the same statement.
+Two DADA2 releases, or the same release on reordered input, would produce
+differences of the same kind and magnitude.
+
+It also bears on how much weight exact R equivalence can carry as a
+*correctness* criterion. Where the tie-break decides, R's answer is not more
+correct than ours — it is the answer that R's input ordering happened to
+produce. Fidelity here means reproducing R's *procedure*, including its
+arbitrary parts, not discovering a truth R has and we lack.
+
+### The part that was a real bug
+
+None of the above excuses a *systematic* ordering difference, and there was one.
+`b_bud` scans candidates with `for r in 1..` under the comment `r=0 is the
+center` — R has the identical loop and comment (`cluster.cpp:284`). Neither
+implementation ever *moves* the centre to position 0; the invariant is inherited
+from the input, because R's `combineDereps2` ends with
+`order(derepCounts, decreasing = TRUE)`.
+
+Our per-sample derep does the same (with a lexical tie-break, since issue #4).
+**Our pooled merge did not** — it built the pool in first-seen order. On this
+run, cluster 0's centre sat at position 10,020 while position 0 held a
+66,937-read organism that was therefore permanently unbuddable, absent from all
+2,818 divisions, while R called it with 106,853 reads. Exactly 1 of 2,810
+clusters had the invariant broken, and it was cluster 0.
+
+Fixing it moved us from +2,450 reads and 2,810 pre-chimera ASVs to −21 reads and
+an exact 2,791. **The distinction is the whole point of this page:** a
+systematic ordering difference is a bug and must be fixed; the residual
+tie-break sensitivity underneath it is a floor and must be recognised.
+
+!!! note "Why it hid for so long"
+    `learn-errors` never touches the pooled merge — it runs per-sample, as R's
+    `learnErrors` does — so every error model was built through the correctly
+    sorted per-sample derep. Our `trans` matrices came out bit-identical to R
+    (0/656 cells) on the very runs containing this bug. **Our strongest
+    fidelity evidence was produced by the one path the bug could not reach.**
+    A parity result is evidence about the code path that produced it, and
+    nothing else.
+
+## The ceiling: where we follow the intent, not the behaviour
+
+Parity is a means, not the goal. Where R's implemented behaviour diverges from
+what it is meant to do, matching it would propagate a defect.
+
+The worked case is **pseudo-pooling**. R's `dada(pool="pseudo")` re-fits the
+error model between its two rounds — confirmed by direct observation of R's own
+`dada_uniques`, and at the table level. Per DADA2's author that re-fit is **not
+intended**: re-estimating rates *within* a `dada()` call is `selfConsist`
+behaviour, but carrying that model out of pseudo-pooling's first step into its
+second is not, and the caller's error model is meant to hold across both.
+
+So our `dada-pseudo` keeps the supplied model for both rounds. Emulating R is
+available behind `--reestimate-err-between-rounds` and is **not** the default,
+because it is measurably worse on the 362-sample MiSeq benchmark on every axis
+we can measure (3,118 fewer reads recovered, 709 more ASVs, 72× more ASVs prior
+flagging cannot account for). Full account:
+[Pseudo-pooling: priors, not a re-fitted error model](pseudo-pooling-priors-vs-error-model.md).
+
+**Both behaviours are pinned in CI**, each against an R reference built the same
+way, so neither the default nor the emulation can drift unnoticed. That is the
+pattern to follow whenever we depart from R: do not merely document the
+divergence, pin both sides of it.
+
+## What this dictates
+
+- **Quote parity with its floor.** On pooled runs, report the share of divisions
+  at `pA = 0.00e0` alongside any ASV difference. Without it, a reader cannot
+  tell a defect from a coin flip. The verbose `Division ... pA=` lines are the
+  source; a trace's `members[].pval` is the post-hoc `omega_c` value and is
+  **not** the loop's `pA`.
+- **Judge residual differences by shape, not count.** Mirrored exclusive sets at
+  matched abundances, with read totals agreeing to ~1 in 2.4M, are a tie-break.
+  A one-sided difference, or one concentrated at high abundance, is not.
+- **Do not tune toward the floor.** Any change justified by moving a handful of
+  saturated-regime ASVs closer to R is unfalsifiable at that resolution. Require
+  an effect that clears the floor, or a mechanism.
+- **Systematic ordering differences are bugs.** The invariant `r=0 is the
+  center` is inherited from input ordering and maintained by no code in either
+  implementation. Any new path that builds a `raws` vector — a new pooling mode,
+  a new merge — must sort descending by abundance with a deterministic
+  tie-break, and should be tested for it.
+- **A parity result is evidence only about the path that produced it.**
+  Bit-identical `trans` said nothing about `dada-pooled`, because the two do not
+  share the code in question.
+- **Where R's behaviour is unintended, follow the intent and pin both.** Document
+  the divergence, ship the emulation as opt-in, and give each an R reference in
+  CI.
+
+## Provenance
+
+- [Issue 219](https://github.com/HPCBio/dada2-rs/issues/219) — pooled merge not
+  abundance-sorted; the measurements above
+- [Issue 204](https://github.com/HPCBio/dada2-rs/issues/204) — `calc_pA`
+  returned 1.0 where R's `ppois(reads-1, 0, lower.tail = FALSE)` gives 0.0 at
+  zero expected reads, fixed in the same arc
+- [Issue 157](https://github.com/HPCBio/dada2-rs/issues/157) — the open
+  experiment on member-list ordering, whose prior this result inverts
+- [Issue 100](https://github.com/HPCBio/dada2-rs/issues/100) — the pseudo-pooling
+  re-fit
+- [LOESS error-model correctness](loess-error-model-correctness.md) — the other
+  half of the fidelity story: where parity *is* achievable, it is achievable to
+  ~1e-15

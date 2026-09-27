@@ -215,12 +215,27 @@ disagreements — the chimera filter shaves the edge but does not explain the re
 Confirm the pattern holds on binned-quality platforms (i100 / NovaSeq /
 PacBio Revio), where the error-model sensitivity to the cutoff could differ again.
 
-**Open question — platform-appropriate OMEGA_A/OMEGA_C.** On PacBio the churn
-introduced by a cutoff change concentrates in the low-abundance band (≈4–76 reads),
-i.e. right at the OMEGA_A abundance-p-value borderline. The abundance/error
-thresholds (`OMEGA_A`, `OMEGA_C`) are fixed at `1e-40` and platform-blind, inherited
-from DADA2's Illumina-calibrated defaults; HiFi's error structure is very different.
-Whether they should differ for HiFi is a real question, but it is **not answerable
-from concordance-vs-reference A/Bs** — those measure whether an ASV moved, not
-whether it was correct. It requires a PacBio mock-community truth set (the same
-resource that gates the raise-k question). Scoped and parked until that exists.
+**Answered — OMEGA_A is not the mechanism.** On PacBio the churn introduced by a
+cutoff change concentrates in the low-abundance band (≈4–76 reads), i.e. right at
+the `OMEGA_A` abundance-p-value borderline, and the obvious reading was that
+DADA2's platform-blind `1e-40` — inherited from an Illumina calibration — is
+mis-set for HiFi.
+
+That reading is now refuted. The question was correctly parked as **not
+answerable from concordance-vs-reference A/Bs**, which measure whether an ASV
+moved rather than whether it was correct; the ATCC MSA-1003 HiFi truth set and
+`reference-eval` since made it answerable, and **both arms agree `OMEGA_A` is
+well calibrated** — the misses sit ~25 orders from the threshold and the false
+positives clear it by ~100. Full account:
+[OMEGA_A is well calibrated on PacBio HiFi](omega-a-calibration.md).
+
+So the 4–76 read churn band is real but `OMEGA_A` does not explain it, and
+tuning the threshold is not the lever. Note the probe addressed `OMEGA_A` only —
+`OMEGA_C` was parked alongside it and remains open.
+
+**Still open — the binned-quality platforms.** Everything on this page comes from
+conventional-quality Illumina and PacBio HiFi. Whether the same decoupling
+pattern holds where Phred scores are collapsed to a handful of levels (MiSeq
+i100, NovaSeq/NextSeq, PacBio Revio) has not been tested, and the
+[binned-quality series](binned-quality.md) is the reason not to assume it
+transfers.
