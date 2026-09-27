@@ -172,13 +172,14 @@ model. Three arms, same filtered reads, same everything else:
 
 | arm | ASVs vs R | abundances differing | read delta |
 |---|---|---:|---:|
-| default (`--loess-preset default`, direct surface) | 232, none unique either way | 6 / 232 | −4 |
-| **`--loess-preset r-dada2`** (R's interpolate surface) | 232 | **0** | **0** |
+| `--loess-surface direct` | 232, none unique either way | 6 / 232 | −4 |
+| **default** (`--loess-surface interpolate`, R's surface) | 232 | **0** | **0** |
 | R's own error model, via [`learnerrors_to_dada2rs.R`](../scripts/pipeline-helpers.md#learnerrors_to_dada2rsr) | 232 | **0** | **0** |
 
-So **`--loess-preset r-dada2` reproduces R's chimera-filtered table exactly on
-this dataset** — every ASV, every count — and handing our pipeline R's own
-fitted model does no better.
+So **the default reproduces R's chimera-filtered table exactly on this
+dataset** — every ASV, every count — and handing our pipeline R's own fitted
+model does no better. (`interpolate` became the default in #205; these runs
+predate that, when it had to be selected explicitly.)
 
 !!! note "Exact here, not exact everywhere"
     Reaching zero on this dataset is a best case. Earlier work on other data
@@ -200,12 +201,12 @@ trigger subsampling, [which reads get drawn becomes its own
 term](../findings/learn-errors-nbases-convergence.md).
 
 The background is [the LOESS
-page](../findings/loess-error-model-correctness.md): our native LOESS matches R's
-`loess(surface = "direct")` to machine precision, while R DADA2 takes R's
-default `surface = "interpolate"`.
+page](../findings/loess-error-model-correctness.md): our native LOESS now
+matches R's `loess()` to double-precision round-off on *both* surfaces, and the
+default is the one R DADA2 actually uses.
 
 !!! tip "You probably do not need any of this"
-    The default settings are the recommended ones. `--loess-preset r-dada2`, the
+    The default settings are the recommended ones. The
     [external errfun route](external-error-models.md) and the R-model converter
     exist for **fidelity to a specific R run** — reproducing a published table,
     or diffing against an R pipeline during a migration. They are not a

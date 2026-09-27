@@ -63,14 +63,18 @@ only.
 **`--errfun`** (default `loess`) — one of `loess`, `noqual`, `binned-qual`,
 `pacbio`, `external`.
 
-`loess` vs R DADA2: the native Rust LOESS is algorithmically equivalent to R's
-`loess(surface = "direct")` — bit-exact to machine precision on real data,
-validated against `examples/external_errfun/loess_reference_direct.R`. R
-DADA2's `loessErrfun`, however, calls `loess(...)` with R's default
-`surface = "interpolate"`, which fits the local polynomial at kd-tree vertices
-and interpolates between them. The two surfaces disagree by ~1e-3 absolute /
-~4% relative at low-Q edges; the downstream impact on inference is minimal
-(~1 read per sample on a 362-sample benchmark).
+`loess` vs R DADA2: the native Rust LOESS now matches R's `loess()` to
+double-precision round-off on **both** surfaces — ~1e-14 or better in every
+regime `dev/loess-oracle` tests, including the sparse-quality case
+(issues #213, #215, #217). Since #205 the default surface is `interpolate`,
+which is what R's `loessErrfun` uses, so a stock `learn-errors` run now agrees
+with R's error model without any extra flags.
+
+Use `--loess-surface direct` for the historical behaviour. Direct is equally
+exact against `loess(surface = "direct")` — but R DADA2 never calls that, so
+it differs from R by the whole direct-vs-interpolate gap: on a 95-sample
+pooled PacBio run that was the largest remaining term in the error model
+(median 1.088e-03 between surfaces, versus 2.599e-04 for the k-mer screen).
 
 For bit-for-bit parity with R's `loessErrfun`:
 
@@ -130,19 +134,26 @@ result.
 
 ### LOESS knobs
 
-**`--loess-preset`** (default `default`) — resolves a bundle of related knobs
-(`--loess-surface`, `--loess-cell`, `--loess-max-rate`, `--loess-min-rate`).
-Any of those flags passed explicitly overrides the preset for that knob.
+**`--loess-surface`** (default `interpolate`) — `interpolate` or `direct`.
+`interpolate` fits the local polynomial at kd-tree vertices and blends between
+them with cubic Hermite, which is what R's `loess()` does by default and
+therefore what `loessErrfun` produces. `direct` evaluates the polynomial at
+every query point.
 
-| Preset | Surface | Cell | Max rate | Min rate |
-|---|---|---|---|---|
-| `default` | `direct` | — | 0.25 | 1e-7 |
-| `r-dada2` | `interpolate` | 0.2 | 0.25 | 1e-7 |
+**`--loess-cell`** (default 0.2) — maximum fraction of observations per
+kd-tree cell, R's `loess.control(cell=)`. Interpolate surface only.
 
-`r-dada2` mirrors R DADA2's `loessErrfun`: R's default `loess()` surface plus
-the same `[1e-7, 0.25]` clamp R applies after the fit
-(`errorModels.R:53-56`). Both presets clamp to the same range; they differ only
-in the fitting surface.
+**`--loess-max-rate`** (default 0.25) / **`--loess-min-rate`** (default 1e-7) —
+the clamp applied to fitted off-diagonal rates, matching R's post-fit step
+(`errorModels.R:53-56`). Unaffected by the surface.
+
+!!! note "`--loess-preset` is deprecated"
+    It was a bundle over the four knobs above, with `default` selecting
+    `direct` and `r-dada2` selecting `interpolate`. Since #205 `interpolate`
+    is the default, so `--loess-preset r-dada2` is redundant and
+    `--loess-preset default` is a confusing name for the non-default surface.
+    The flag still works and maps to `--loess-surface`, but warns. Use
+    `--loess-surface direct` in place of `--loess-preset default`.
 
 **`--loess-surface`** — `direct` evaluates the local polynomial at every query
 point (matches R `loess(surface = "direct")`). `interpolate` builds a 1-D

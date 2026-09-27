@@ -121,10 +121,23 @@ pub struct LoessConfig {
 }
 
 impl Default for LoessConfig {
-    /// The dada2-rs default: direct surface + R-style `[1e-7, 0.25]` clamp.
+    /// The default: `interpolate` + R-style `[1e-7, 0.25]` clamp -- the same
+    /// surface R's `loess()` uses, and therefore what `loessErrfun` produces.
+    ///
+    /// This was `Direct` until #205. Direct is exact against
+    /// `loess(surface = "direct")`, but R DADA2 never calls that, so the old
+    /// default differed from R by the whole direct-vs-interpolate gap: on
+    /// PacBio that was the largest remaining term in the error model (median
+    /// 1.088e-03 between surfaces, against 2.599e-04 for the k-mer screen),
+    /// and on MiSeq it cost -1,699 reads against interpolate's +14. Costs
+    /// nothing at ASV level on either platform, and fits ~9 kd-tree vertices
+    /// where Direct fits every query point.
+    ///
+    /// `noqual_errfun` also takes a `LoessConfig`, but only for `clamp()` --
+    /// it never calls `loess()`, so the surface is irrelevant there.
     fn default() -> Self {
         Self {
-            surface: LoessSurface::Direct,
+            surface: LoessSurface::Interpolate { cell: 0.2 },
             max_error_rate: DEFAULT_MAX_ERROR_RATE,
             min_error_rate: DEFAULT_MIN_ERROR_RATE,
         }

@@ -747,6 +747,12 @@ fn dada_extends_error_model_for_out_of_range_quality() {
     let seq = "ACGTACGTACGTACGTACGTACGTACGTACGT";
 
     // Learn a model from reads capped at Phred 30 ('?'), so err_ncol covers Q0..Q30.
+    // Every read carries the same Q, so exactly ONE quality column is populated
+    // -- and `interpolate`, the default surface since #205, cannot fit that:
+    // its kd-tree has no room to place a vertex away from the lone data point,
+    // so the tricube zeroes it and the fit fails (loudly, suggesting
+    // `--errfun binned-qual`). `direct` needs only one point. The subject here
+    // is quality EXTENSION, not the surface, so pin the setup.
     let learn_fq = dir.join("learn.fastq");
     let mut fq = String::new();
     for i in 0..40 {
@@ -759,6 +765,8 @@ fn dada_extends_error_model_for_out_of_range_quality() {
         learn_fq.to_str().unwrap(),
         "--errfun",
         "loess",
+        "--loess-surface",
+        "direct",
         "--threads",
         "1",
         "-o",

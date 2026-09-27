@@ -1394,12 +1394,12 @@ pub enum Commands {
         #[arg(long, help_heading = H_ERRMODEL)]
         errfun_cmd: Option<String>,
 
-        /// LOESS knob bundle; `r-dada2` mirrors R's `loessErrfun`
-        #[arg(long, default_value = "default", help_heading = H_ERRMODEL,
+        /// DEPRECATED: use --loess-surface
+        #[arg(long, help_heading = H_ERRMODEL, hide = true,
               value_parser = ["default", "r-dada2"])]
-        loess_preset: String,
+        loess_preset: Option<String>,
 
-        /// LOESS fitting surface (overrides the preset)
+        /// LOESS fitting surface [default: interpolate, as R's loess() uses]
         #[arg(long, value_parser = ["direct", "interpolate"], help_heading = H_ERRMODEL)]
         loess_surface: Option<String>,
 
@@ -1595,12 +1595,12 @@ pub enum Commands {
         #[arg(long, help_heading = H_ERRMODEL)]
         errfun_cmd: Option<String>,
 
-        /// LOESS knob bundle; `r-dada2` mirrors R's `loessErrfun`
-        #[arg(long, default_value = "default", help_heading = H_ERRMODEL,
+        /// DEPRECATED: use --loess-surface
+        #[arg(long, help_heading = H_ERRMODEL, hide = true,
               value_parser = ["default", "r-dada2"])]
-        loess_preset: String,
+        loess_preset: Option<String>,
 
-        /// LOESS fitting surface (overrides the preset)
+        /// LOESS fitting surface [default: interpolate, as R's loess() uses]
         #[arg(long, value_parser = ["direct", "interpolate"], help_heading = H_ERRMODEL)]
         loess_surface: Option<String>,
 

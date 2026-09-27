@@ -55,16 +55,44 @@ const WFA_MAX_EDITS_DEFAULT: i32 = 50;
 /// `--loess-surface`, `--loess-cell`, `--loess-max-rate`, and `--loess-min-rate`
 /// each override the preset's value for that knob if supplied.  `--loess-cell`
 /// is ignored unless the resolved surface is `Interpolate`.
+/// Resolve the LOESS knobs from the CLI.
+///
+/// `--loess-preset` is deprecated (#205). It survives as an alias because it
+/// appears in shipped docs, the concordance runners' `ERRFUN_ARGS`, and users'
+/// scripts -- silently ignoring it would look exactly like the preset having
+/// no effect, which is a failure mode this project has already paid for. It
+/// warns on use, and `--loess-surface` wins if both are given.
 fn resolve_loess_config(
-    preset: &str,
+    preset: Option<&str>,
     surface: Option<&str>,
     cell: Option<f64>,
     max_rate: Option<f64>,
     min_rate: Option<f64>,
 ) -> LoessConfig {
     let base = match preset {
-        "r-dada2" => LoessConfig::r_dada2(),
-        _ => LoessConfig::default(),
+        Some(p) => {
+            let mapped = if p == "r-dada2" {
+                "interpolate"
+            } else {
+                "direct"
+            };
+            eprintln!(
+                "[learn-errors] WARNING: --loess-preset is deprecated; use \
+                 --loess-surface {mapped}. `interpolate` is now the default \
+                 (it is the surface R's loess() uses), so \
+                 `--loess-preset r-dada2` is redundant."
+            );
+            match p {
+                "r-dada2" => LoessConfig::r_dada2(),
+                // The old `default` preset selected Direct; preserve that
+                // meaning for anyone who passed it explicitly.
+                _ => LoessConfig {
+                    surface: LoessSurface::Direct,
+                    ..LoessConfig::default()
+                },
+            }
+        }
+        None => LoessConfig::default(),
     };
     let surface = match surface {
         Some("interpolate") => {
@@ -3424,7 +3452,7 @@ fn run() -> io::Result<()> {
             let greedy = greedy.unwrap_or(true);
             let use_quals = use_quals.unwrap_or(true);
             let loess_config = resolve_loess_config(
-                &loess_preset,
+                loess_preset.as_deref(),
                 loess_surface.as_deref(),
                 loess_cell,
                 loess_max_rate,
@@ -4120,7 +4148,7 @@ fn run() -> io::Result<()> {
             let greedy = greedy.unwrap_or(true);
             let use_quals = use_quals.unwrap_or(true);
             let loess_config = resolve_loess_config(
-                &loess_preset,
+                loess_preset.as_deref(),
                 loess_surface.as_deref(),
                 loess_cell,
                 loess_max_rate,

@@ -863,18 +863,23 @@ mod tests {
         }
     }
 
+    /// The default surface is `interpolate` as of #205 -- the surface R's
+    /// `loess()` uses, so a stock run matches `loessErrfun` without flags.
+    /// `r_dada2()` is retained for the deprecated `--loess-preset` alias and
+    /// is now identical to the default.
     #[test]
-    fn loess_config_default_and_r_dada2_presets() {
+    fn loess_config_default_is_r_s_interpolate_surface() {
         let d = LoessConfig::default();
-        assert!(matches!(d.surface, LoessSurface::Direct));
+        assert!(matches!(d.surface, LoessSurface::Interpolate { cell }
+                         if (cell - 0.2).abs() < 1e-12));
         assert_eq!(d.max_error_rate, DEFAULT_MAX_ERROR_RATE);
         assert_eq!(d.min_error_rate, DEFAULT_MIN_ERROR_RATE);
 
         let r = LoessConfig::r_dada2();
         assert!(matches!(r.surface, LoessSurface::Interpolate { cell }
                          if (cell - 0.2).abs() < 1e-12));
-        // Both presets clamp to [1e-7, 0.25] — R DADA2's loessErrfun does too
-        // (errorModels.R:53-56).  The presets differ only in the surface.
+        // Both clamp to [1e-7, 0.25] — R DADA2's loessErrfun does too
+        // (errorModels.R:53-56); the surface was the only difference.
         assert_eq!(r.max_error_rate, DEFAULT_MAX_ERROR_RATE);
         assert_eq!(r.min_error_rate, DEFAULT_MIN_ERROR_RATE);
 
@@ -939,7 +944,14 @@ mod tests {
             }
         }
 
-        let err = loess_errfun(&trans, &qs, &LoessConfig::default())
+        // Pinned to `direct`: this exercises the degenerate single-column fit,
+        // and the kd-tree path has nothing to partition there. The default
+        // surface changed in #205; the behaviour under test did not.
+        let cfg = LoessConfig {
+            surface: LoessSurface::Direct,
+            ..LoessConfig::default()
+        };
+        let err = loess_errfun(&trans, &qs, &cfg)
             .expect("a single populated column should still fit a constant");
 
         // Off-diagonals: (10 + 1) / 10_030 across all Q, flat.

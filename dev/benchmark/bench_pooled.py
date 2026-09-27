@@ -103,7 +103,7 @@ RS_VERBOSE_SUBCMDS = {
 }
 
 
-# Set from --loess-preset in main(). Threaded into the learn-errors steps so the
+# Set from --loess-surface in main(). Threaded into the learn-errors steps so the
 # error model can be fitted the way R DADA2's loessErrfun does (R's default
 # `surface = "interpolate"`) instead of our `direct` default. Needed whenever the
 # run is compared against R at a resolution finer than a few hundred reads: the
@@ -114,8 +114,13 @@ LOESS_PRESET = None
 
 
 def loess_extra():
-    """`--loess-preset` for the learn-errors step, or nothing."""
-    return ["--loess-preset", LOESS_PRESET] if LOESS_PRESET else []
+    """`--loess-surface` for the learn-errors step, or nothing.
+
+    #205 renamed the knob and flipped the default to `interpolate`. Values are
+    passed through unchanged, so `--loess-surface direct` selects the old
+    behaviour; the deprecated `--loess-preset` spelling still works in the
+    binary but warns."""
+    return ["--loess-surface", LOESS_PRESET] if LOESS_PRESET else []
 
 
 def maybe_verbose(cmd):
@@ -1022,8 +1027,8 @@ def main():
     p.add_argument("--dada2rs", help="path to dada2-rs binary (REQUIRED; e.g. "
                    "target/release/dada2-rs or target/release-native/dada2-rs)")
     p.add_argument("--rscript", help="path to Rscript (default: Rscript on PATH)")
-    p.add_argument("--loess-preset",
-                   help="pass --loess-preset to learn-errors (e.g. r-dada2, which "
+    p.add_argument("--loess-surface",
+                   help="pass --loess-surface to learn-errors (direct|interpolate; "
                         "uses R's interpolate loess surface). Set this when comparing "
                         "against R at fine resolution: our 'direct' default differs "
                         "from R's loessErrfun by ~1 read/sample on a 362-sample run.")
