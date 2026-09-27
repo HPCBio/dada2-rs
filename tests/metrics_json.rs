@@ -249,6 +249,13 @@ fn minimizer_index_decision_is_recorded() {
     assert!(idx["forced"].is_null());
     assert_eq!(doc["runs"][0]["run"]["screen_backend"], "minimizer");
 
+    // Union equality with the index is a unit test in `minimizers`; here the
+    // union is read from the index, so comparing them would prove nothing.
+    let occ = &doc["runs"][0]["screen_occupancy"]["minimizer"];
+    assert!(occ["density"].as_f64().unwrap() > 0.0);
+    assert!(occ["mean_sharing"].as_f64().unwrap() > 1.0);
+    assert!(doc["runs"][0]["screen_occupancy"].get("kmer").is_none());
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -330,6 +337,149 @@ fn verbose_carries_run_shape_not_attribution_tables() {
         err.contains("--metrics-json"),
         "--verbose should point at --metrics-json for the attribution"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Pull the number that follows `after` on the first line containing `line`.
+fn prose_num(stderr: &str, line: &str, after: &str) -> f64 {
+    let l = stderr
+        .lines()
+        .find(|l| l.contains(line))
+        .unwrap_or_else(|| panic!("no `{line}` line in --verbose"));
+    let at = l
+        .find(after)
+        .unwrap_or_else(|| panic!("no `{after}` in `{l}`"));
+    let num: String = l[at + after.len()..]
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    num.parse()
+        .unwrap_or_else(|_| panic!("no number after `{after}` in `{l}`"))
+}
+
+/// Prose rounds to `digits` decimals; the JSON must agree to within that.
+fn assert_rounds_to(prose: f64, json: f64, digits: i32) {
+    let half = 0.5 * 10f64.powi(-digits) + 1e-9;
+    assert!((prose - json).abs() <= half, "prose {prose} vs json {json}");
+}
+
+/// The prose-only measurements of #178 have JSON homes carrying the same
+/// numbers. Checked field by field: a topic-level check is what nearly lost
+/// `shuf_comps_scanned` in #162.
+#[test]
+fn prose_only_measurements_have_json_homes() {
+    let dir = tmpdir("homes");
+    let errs = learn_errors(&dir);
+    let metrics = dir.join("homes.metrics.json");
+    let res = Command::new(BIN)
+        .args([
+            "dada-pooled",
+            "--threads",
+            "2",
+            "--verbose",
+            "--error-model",
+        ])
+        .arg(&errs)
+        .arg("--output-dir")
+        .arg(dir.join("out"))
+        .arg("--metrics-json")
+        .arg(&metrics)
+        .arg(fixture("sam1F.fastq.gz"))
+        .arg(fixture("sam2F.fastq.gz"))
+        .output()
+        .expect("dada-pooled");
+    assert!(res.status.success());
+    let err = String::from_utf8_lossy(&res.stderr);
+    let doc: Value = serde_json::from_slice(&std::fs::read(&metrics).unwrap()).unwrap();
+    let f = |v: &Value| v.as_f64().unwrap_or_else(|| panic!("missing field: {v}"));
+
+    let occ = &doc["runs"][0]["screen_occupancy"]["kmer"];
+    for (line, after, field, digits) in [
+        ("kmer8 fill", "mean", "mean_distinct_kmers", 0),
+        ("kmer8 fill", "/", "mean_positional", 0),
+        ("kmer8 fill", "(", "positional_pct", 1),
+        ("kmer8 fill", "max),", "dense_pct", 1),
+        ("kmer8 pooled diversity", ":", "union", 0),
+        ("kmer8 pooled diversity", "(", "union_pct", 1),
+        ("kmer8 pooled diversity", "sharing", "mean_sharing", 0),
+    ] {
+        assert_rounds_to(prose_num(&err, line, after), f(&occ[field]), digits);
+    }
+    assert!(
+        doc["runs"][0]["screen_occupancy"]
+            .get("minimizer")
+            .is_none()
+    );
+
+    // Prose truncates kB / 1024 to an integer MB.
+    let rss = &doc["pipeline"]["peak_rss_mb"];
+    for (line, field) in [
+        ("peak RSS after derep+merge", "after_derep_merge"),
+        ("peak RSS after merge", "after_merge"),
+        ("peak RSS after dada", "after_dada"),
+    ] {
+        assert_eq!(
+            prose_num(&err, line, ":"),
+            f(&rss[field]).floor(),
+            "{field}"
+        );
+    }
+
+    let d = &doc["pipeline"]["derep_detail"];
+    assert_eq!(d["input_kind"], "fastq");
+    assert_eq!(d["samples"], 2);
+    assert!(d["bytes"].as_u64().unwrap() > 0);
+    // FASTQ is one pass: there is no read / parse split to report.
+    assert!(d.get("read").is_none() && d.get("parse").is_none());
+    let s = &d["per_sample"];
+    assert_rounds_to(
+        prose_num(&err, "per-sample", "median"),
+        f(&s["median"]) * 1e3,
+        0,
+    );
+    assert!(f(&s["min"]) <= f(&s["median"]) && f(&s["median"]) <= f(&s["max"]));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// JSON derep inputs carry the read vs parse split #133 turned on.
+#[test]
+fn derep_detail_splits_read_and_parse_for_json_inputs() {
+    let dir = tmpdir("derep_json");
+    let errs = learn_errors(&dir);
+    let mut inputs = Vec::new();
+    for s in ["sam1F", "sam2F"] {
+        let out = dir.join(format!("{s}.derep.json"));
+        let res = Command::new(BIN)
+            .arg("derep")
+            .arg("-o")
+            .arg(&out)
+            .arg(fixture(&format!("{s}.fastq.gz")))
+            .output()
+            .expect("derep");
+        assert!(res.status.success());
+        inputs.push(out);
+    }
+    let metrics = dir.join("m.json");
+    let res = Command::new(BIN)
+        .args(["dada-pooled", "--threads", "2", "--error-model"])
+        .arg(&errs)
+        .arg("--output-dir")
+        .arg(dir.join("out"))
+        .arg("--metrics-json")
+        .arg(&metrics)
+        .args(&inputs)
+        .output()
+        .expect("dada-pooled");
+    assert!(res.status.success());
+    let doc: Value = serde_json::from_slice(&std::fs::read(&metrics).unwrap()).unwrap();
+    let d = &doc["pipeline"]["derep_detail"];
+    assert_eq!(d["input_kind"], "json");
+    assert!(d["read"].as_f64().unwrap() >= 0.0);
+    assert!(d["parse"].as_f64().unwrap() > 0.0);
+    assert!(d["mb_per_s"].as_f64().unwrap() > 0.0);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

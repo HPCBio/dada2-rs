@@ -36,8 +36,9 @@ import os
 import re
 import sys
 
-# Prose topic -> the JSON path that must carry it (checked against runs[0]).
-# `None` means "deliberately not migrated": it stays in --verbose as run shape
+# Prose topic -> the JSON path that must carry it, checked against every
+# runs[] entry. A leading `/` roots the path at the document instead, for the
+# pooled pipeline fields that sit outside runs[]. `None` means "deliberately not migrated": it stays in --verbose as run shape
 # or a warning, per the tiering decided on #162.
 TOPICS = {
     # --- migrated: these must exist in JSON before the prose can go ---
@@ -56,19 +57,25 @@ TOPICS = {
     "move pruning (#132)": "move_pruning",
     "#87 carry (#139)": "carry_87",
     "#87 projection (#139)": "carry_87",
+    "minimizer sketch": "screen_occupancy.minimizer.density",
+    "minimizer pooled diversity": "screen_occupancy.minimizer.mean_sharing",
+    "kmer8 fill": "screen_occupancy.kmer.positional_pct",
+    "kmer8 pooled diversity": "screen_occupancy.kmer.mean_sharing",
+    "derep split": "/pipeline.derep_detail.per_sample.median",
+    "peak RSS": "/pipeline.peak_rss_mb.after_dada",
     # --- deliberately staying in --verbose (run shape / warnings) ---
     "cpu allocation": None,
     "alignment backend": None,
     "tuning gates": None,
     "resident Raw footprint": "footprint",
     "minimizer index": "index",
-    "minimizer sketch": None,
-    "minimizer pooled diversity": None,
-    "kmer8 fill": None,
-    "kmer8 pooled diversity": None,
     "warning": None,
     "wrote": None,
 }
+
+
+def where(path):
+    return path[1:] if path.startswith("/") else f"runs[].{path}"
 
 
 def dig(obj, path):
@@ -250,7 +257,10 @@ def check_one(lines, doc, label):
         if path is None:
             staying.append(topic)
             continue
-        present = sum(1 for r in runs if dig(r, path)[1] is not None)
+        if path.startswith("/"):
+            present = int(dig(doc, path[1:])[1] is not None) * len(runs)
+        else:
+            present = sum(1 for r in runs if dig(r, path)[1] is not None)
         if present == len(runs):
             carried.append((topic, path))
         elif present == 0:
@@ -260,7 +270,7 @@ def check_one(lines, doc, label):
 
     print(f"CARRIED BY JSON ({len(carried)}) -- prose may be removed")
     for topic, path in carried:
-        print(f"    {topic:36s} -> runs[].{path}")
+        print(f"    {topic:36s} -> {where(path)}")
     print()
     print(f"STAYING IN --verbose ({len(staying)}) -- run shape and warnings")
     for topic in staying:
@@ -270,13 +280,13 @@ def check_one(lines, doc, label):
     if partial:
         print(f"*** PARTIAL ({len(partial)}) -- present in SOME runs only")
         for topic, path, n, tot in partial:
-            print(f"    {topic:36s} -> runs[].{path}  ({n}/{tot} runs)")
+            print(f"    {topic:36s} -> {where(path)}  ({n}/{tot} runs)")
         print()
 
     if missing:
         print(f"*** NOT CARRIED ({len(missing)}) -- removing these lines WOULD LOSE DATA")
         for topic, path in missing:
-            print(f"    {topic:36s} -- expected runs[].{path}")
+            print(f"    {topic:36s} -- expected {where(path)}")
         print()
         print("Add these to the schema before stripping the prose, or record an")
         print("explicit decision that the quantity is not worth keeping.")

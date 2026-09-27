@@ -288,6 +288,53 @@ pub struct FootprintMetrics {
     pub screen_repr: String,
 }
 
+/// How full the comparison screen is (#43, #178): per-raw fill and pooled
+/// diversity. Each half is present only for the screen the run built; an
+/// audit run builds both.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ScreenOccupancy {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kmer: Option<KmerOccupancy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimizer: Option<MinimizerOccupancy>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct KmerOccupancy {
+    pub k: usize,
+    pub mean_distinct_kmers: f64,
+    /// Mean `len - k + 1`, the most distinct k-mers a raw can have.
+    pub mean_positional: f64,
+    /// Σ distinct / Σ positional. Low flags low-complexity sequence.
+    pub positional_pct: f64,
+    /// Σ distinct / (nraw × 4^k).
+    pub dense_pct: f64,
+    /// Distinct k-mers across the pool.
+    pub union: u64,
+    pub union_pct: f64,
+    /// Σ positional / union. High = tight homologous amplicon.
+    pub mean_sharing: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MinimizerOccupancy {
+    pub k: usize,
+    pub w: usize,
+    /// Mean multiset size (Σ counts) per raw.
+    pub mean_entries: f64,
+    /// Σ entries / Σ (len - k + 1).
+    pub density: f64,
+    /// What winnowing predicts for `density`: 2 / (w + 1).
+    pub winnowing_density: f64,
+    /// Raws with an empty sketch, which bypass the screen.
+    pub unsketchable: u64,
+    /// Distinct minimizers across the pool.
+    pub union: u64,
+    /// Σ entries / union. Not `index.mean_posting`, which counts each
+    /// (raw, minimizer) incidence once rather than with multiplicity.
+    pub mean_sharing: f64,
+}
+
 /// The minimizer index choice, which is **measured on the first clusters, not
 /// predicted**, and reverses between workloads. Recorded because a run that
 /// declines the index otherwise shows an unexplained `setup` near zero.
@@ -325,6 +372,52 @@ pub struct PipelineTimes {
     pub dada: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derep_detail: Option<DerepDetail>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peak_rss_mb: Option<PeakRss>,
+}
+
+/// Where the pooled derep/load front spends its time (#133). The read vs parse
+/// split is what separates a filesystem problem from a format one.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DerepDetail {
+    /// `json`, `fastq`, or `mixed`. FASTQ is one streaming pass, so its whole
+    /// cost is `build` and it has no `read` / `parse`.
+    pub input_kind: String,
+    pub samples: usize,
+    /// Uncompressed bytes for JSON, on-disk bytes for FASTQ.
+    pub bytes: u64,
+    /// I/O + gunzip; JSON inputs only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read: Option<f64>,
+    /// serde deserialization; JSON inputs only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parse: Option<f64>,
+    /// Sort + convert (JSON), or the whole dereplication (FASTQ).
+    pub build: f64,
+    /// `bytes / read` for JSON, `bytes / build` for FASTQ; `null` when mixed,
+    /// where neither denominator covers all the bytes.
+    pub mb_per_s: Option<f64>,
+    pub per_sample: SpreadSecs,
+}
+
+/// Per-sample straggler spread. `median` is the upper median, as in the prose.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SpreadSecs {
+    pub min: f64,
+    pub median: f64,
+    pub max: f64,
+}
+
+/// Process high-water RSS at the pooled phase boundaries. Monotonic, so the
+/// phase after which it jumps owns the memory. Distinct from `footprint`, which
+/// is Raw-resident bytes only.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PeakRss {
+    pub after_derep_merge: f64,
+    pub after_merge: f64,
+    pub after_dada: f64,
 }
 
 /// Everything `run_dada` measured about one invocation.
@@ -341,6 +434,8 @@ pub struct RunMetrics {
     pub p_update: PUpdateMetrics,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub footprint: Option<FootprintMetrics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen_occupancy: Option<ScreenOccupancy>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index: Option<IndexDecision>,
 }
@@ -378,7 +473,12 @@ pub struct LabelledRun {
 
 impl PipelineTimes {
     fn is_empty(&self) -> bool {
-        self.derep.is_none() && self.merge.is_none() && self.dada.is_none() && self.output.is_none()
+        self.derep.is_none()
+            && self.merge.is_none()
+            && self.dada.is_none()
+            && self.output.is_none()
+            && self.derep_detail.is_none()
+            && self.peak_rss_mb.is_none()
     }
 }
 
@@ -581,6 +681,7 @@ impl RawCounters {
                 ..self.pupd.clone()
             },
             footprint: self.footprint.clone(),
+            screen_occupancy: None,
             index: None,
         }
     }

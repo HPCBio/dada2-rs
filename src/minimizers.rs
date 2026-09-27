@@ -720,6 +720,17 @@ pub fn matched_pass_cutoff(kmer_d: &[f64], mini_d: &[f64], kmer_cutoff: f64) -> 
     }
 }
 
+/// Distinct minimizers across a set of sketches — [`MinimizerIndex::n_keys`]
+/// without building the postings.
+pub fn pool_distinct<'a>(sketches: impl Iterator<Item = &'a MinimizerSketch>) -> usize {
+    let mut union: std::collections::HashSet<u64, IdentityBuildHasher> =
+        std::collections::HashSet::with_hasher(IdentityBuildHasher);
+    for s in sketches {
+        union.extend(s.hashes());
+    }
+    union.len()
+}
+
 impl MinimizerIndex {
     /// Build over the sketches of every raw, in `Raw::index` order.
     ///
@@ -1000,6 +1011,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `--metrics-json` takes the pooled union from the index when it exists
+    /// and from `pool_distinct` otherwise; the two must be the same set size.
+    #[test]
+    fn pool_distinct_matches_index_keys() {
+        // Overlapping seeds so the pool shares minimizers across raws.
+        let sketches: Vec<Option<MinimizerSketch>> = (0..64u64)
+            .map(|s| Some(sketch(&make_seq(180, s % 16), MINIMIZER_K, MINIMIZER_W)))
+            .collect();
+        let index = MinimizerIndex::build(&sketches);
+        let distinct = pool_distinct(sketches.iter().flatten());
+        let entries: usize = sketches.iter().flatten().map(|s| s.len()).sum();
+        assert!(distinct < entries, "fixture shares no minimizers");
+        assert_eq!(distinct, index.n_keys());
     }
 
     /// The screen must fail OPEN on absent or empty sketches, on both paths.
