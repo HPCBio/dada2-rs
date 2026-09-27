@@ -406,9 +406,29 @@ pub fn calc_pA(reads: u32, e_reads: f64, prior: bool) -> f64 {
     // direct upper-tail Poisson series in log space:
     //   P(X >= k | λ) = e^{-λ} λ^k/k! * Σ_{j>=0} λ^j / ∏_{i=1..j}(k+i)
     // which is dominated by the leading e^{-λ} λ^k/k! for small λ.
+    // Zero expected reads. R evaluates `ppois(reads-1, 0, lower.tail=FALSE)`,
+    // which is P(X > reads-1 | lambda = 0) = 0 for every reads >= 1 -- verified
+    // against R directly. We returned 1.0 here, the opposite end of the range,
+    // and that inversion is not cosmetic: the post-loop omega_c pass
+    // (`dada.rs`) sets `correct = p >= omega_c`, so 1.0 CORRECTS the raw into
+    // its cluster where R's 0.0 leaves it unplaced.
+    //
+    // On the pinned 95-sample pooled PacBio run that folded a 66,937-read
+    // sequence -- hamming 311 from the centre, lambda underflowed to exactly
+    // zero -- into cluster 0, while R left those reads out entirely. Same
+    // mechanism as issue #204, where we place every read and R leaves
+    // ~1.6-1.9% unplaced.
+    //
+    // Only `e_reads == 0` is reachable: lambda and reads are both
+    // non-negative. A non-finite e_reads would be a bug upstream, and R would
+    // return NaN there rather than a probability, so it is not special-cased
+    // into a silent answer.
+    if e_reads <= 0.0 {
+        return 0.0;
+    }
     let pois = match Poisson::new(e_reads) {
         Ok(p) => p,
-        Err(_) => return 1.0, // degenerate: e_reads <= 0
+        Err(_) => return 0.0, // unreachable given the guard above
     };
     let mut pval = pois.sf((reads - 1) as u64);
     if pval == 0.0 && e_reads > 0.0 {
@@ -655,5 +675,62 @@ mod tests {
             b.raws[1].p, 0.0,
             "a zero-lambda non-singleton must be maximally significant, not p=1.0"
         );
+    }
+}
+
+#[cfg(test)]
+mod diag_tests {
+    /// Zero expected reads must be MAXIMALLY significant, matching R's
+    /// `ppois(reads-1, 0, lower.tail=FALSE) == 0` (checked against R itself).
+    /// We returned 1.0, which flipped the post-loop omega_c verdict from
+    /// "leave unplaced" to "correct into this cluster" and folded a
+    /// 66,937-read PacBio sequence into a cluster 311 mismatches away
+    /// (#219, and the mechanism behind #204).
+    #[test]
+    fn calc_pa_with_zero_e_reads_is_zero_like_r() {
+        for reads in [1u32, 2, 66_937] {
+            for prior in [true, false] {
+                assert_eq!(
+                    super::calc_pA(reads, 0.0, prior),
+                    0.0,
+                    "reads={reads} prior={prior}"
+                );
+            }
+        }
+    }
+
+    /// The guard must not disturb ordinary values.
+    #[test]
+    fn calc_pa_unchanged_for_positive_e_reads() {
+        let p = super::calc_pA(5, 2.0, true);
+        assert!(p > 0.0 && p < 1.0, "expected a real probability, got {p}");
+    }
+
+    use crate::containers::{B, Comparison, Raw};
+
+    /// The diagnostic must actually fire on the state it was written for --
+    /// a null from an instrument is worth nothing until the instrument is
+    /// shown capable of returning something else. This reproduces the #219
+    /// raw: 66,937 reads, hamming 311, lambda underflowed to 0, cached p 1.0.
+    #[test]
+    fn report_unbuddable_fires_on_the_219_state() {
+        let a = b"ACGTACGTAGCTAGCTAAGGCCTTAGCTAGCTACGTACGTTTGACTGACAGCTTAAGGCCA".to_vec();
+        let z = b"TTTTTTTTTTGGGGGGGGGGCCCCCCCCCCAAAAAAAAAATTTTTTTTTTGGGGGGGGGGCC".to_vec();
+        let raws = vec![
+            Raw::new(a, None, 200_000, false),
+            Raw::new(z, None, 66_937, false),
+        ];
+        let mut b = B::new(raws, 1e-40, 1e-4, false);
+        b.clusters[0].center = Some(0);
+        b.raws[1].comp = Comparison {
+            i: 0,
+            index: 1,
+            lambda: 0.0,
+            hamming: 311,
+        };
+        b.raws[1].p = 1.0;
+        let (n, reads) = super::report_unbuddable(&b, false, false);
+        assert_eq!(n, 1, "the diagnostic must detect the stranded raw");
+        assert_eq!(reads, 66_937);
     }
 }
