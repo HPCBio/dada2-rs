@@ -24,6 +24,7 @@ table plus a CSV.
 | `bench_pooled.py` | Orchestrator (Python). Runs dada2-rs and/or R, captures timing/RSS/CPU, writes `summary.csv`. |
 | `run_dada2_pooled.R` | R reference pipeline as **one process** (fair end-to-end wall + one overall RSS). |
 | `bench_step.R` | R reference pipeline as **one process per step** (gives per-step RSS). |
+| `learn_errors_r.R` | Fits one error model with R's `learnErrors()` on already-filtered reads — the `r-model` arm (§2.3). |
 
 ### 1.1 Function-vs-function design
 
@@ -211,24 +212,60 @@ Filtering happens once; each arm then re-learns on those files and runs the
 same denoise → merge → table → chimera tail. Unlike §2.1/§2.2 this is not a
 denoise-only sweep, because the error model changes what denoising is handed.
 
-An **arm** is a string:
+An **arm** names one error model. Not every error model is something we fit,
+so there are three kinds:
 
-| Arm | Meaning |
-|---|---|
-| `loess` | the default LOESS errfun, binary's default surface |
-| `loess:interpolate` / `loess:direct` | LOESS pinned to a surface |
-| `binned-qual:2,11,25,37` | piecewise-linear over those anchors (see [Binned quality scores](findings/binned-quality.md)) |
-| `noqual` | quality-independent |
-| `pacbio` | the PacBio errfun |
+| Arm | Kind | Meaning |
+|---|---|---|
+| `loess` | learn | the default LOESS errfun, binary's default surface |
+| `loess:interpolate` / `loess:direct` | learn | LOESS pinned to a surface |
+| `binned-qual:2,11,25,37` | learn | piecewise-linear over those anchors (see [Binned quality scores](findings/binned-quality.md)) |
+| `noqual` | learn | quality-independent |
+| `pacbio` | learn | the PacBio errfun |
+| `external:<command>` | learn | `--errfun external --errfun-cmd <command>` (see [Using an external error model](walkthroughs/external-error-models.md)) |
+| `model:<json>` | model | a **pre-fitted** model, used as-is; nothing is learned. Illumina needs two, `model:<fwd>:<rev>` |
+| `r-model` | r-model | R DADA2's `learnErrors()` fits it, on our shared filtered reads |
 
 The same syntax selects a single model with `--errfun-arm`, which replaces the
 hardcoded per-platform default (`loess` on Illumina, `pacbio` on PacBio).
 Without either flag nothing changes.
 
+Any arm may carry a **display label**, `label=spec`, which is what the results
+table and the arm's output directory use:
+
+```
+rs-loess=loess:interpolate
+r-ref=external:Rscript examples/external_errfun/loess_reference.R
+```
+
+`external:` and `model:` arms get a shortened default label
+(`external:loess_reference.R`), with the full spec kept in the CSV's `spec`
+column. Two arms that shorten to the same label are rejected — label them.
+
+Caveats worth knowing before building a sweep string:
+
+- **Commas separate arms**, so an `external:` command containing one needs a
+  wrapper script. `--errfun-arm` does not split, so a comma is fine there.
+- **`external:` runs your script once per self-consistency iteration**, so a
+  slow script is paid for repeatedly — that arm's `learn_s` is not comparable
+  to a built-in's on equal terms.
+- **`r-model` needs `Rscript` with dada2 and jsonlite.** It is the only arm
+  that needs R; if `Rscript` is missing the *arm* is rejected by name before
+  anything runs, so the rest of the sweep is still runnable by dropping it.
+  Point `--rscript` at a specific binary if it is not on `PATH`.
+- **`model:` records no learn step**, because nothing was fitted — its
+  `learn_s` is `0.0` and its `wall_s` is denoising onward. That is the honest
+  number, not a missing measurement.
+
 ```bash
 python3 dev/benchmark/bench_pooled.py illumina /data/MiSeqSOP \
     --dada2rs target/release-native/dada2-rs --threads 24 --pool false \
     --errfun-sweep loess:interpolate,loess:direct,noqual
+
+# ours vs R's own model vs R's loessErrfun run as an external script
+python3 dev/benchmark/bench_pooled.py illumina /data/MiSeqSOP \
+    --dada2rs target/release-native/dada2-rs --threads 24 --pool false \
+    --errfun-sweep "loess:interpolate,r-model,r-ext=external:Rscript examples/external_errfun/loess_reference.R"
 ```
 
 The **first arm is the reference**; concordance columns are measured against
@@ -253,7 +290,17 @@ broken.
 
 `--errfun-sweep` is dada2-rs only — R's `learnErrors` has no equivalent knob,
 so an R column would be the same model in every row. Passing `--run-r` with it
-is an error rather than a silently constant column.
+is an error rather than a silently constant column. To put R's error model in
+the comparison, use the `r-model` arm, which is R's `learnErrors()` fitted on
+the same filtered reads as every other arm.
+
+On the 20-sample MiSeq SOP set, `loess:interpolate`, `r-model` and R's
+`loessErrfun` run as an `external:` script all produce the **same 232 ASVs
+with identical per-sample counts**, and the `r-model` and native error
+matrices agree to 1e-15 — the end-to-end form of the
+[R parity ledger](findings/loess-error-model-correctness.md). That is a
+meaningful null only because the same harness separates `loess:direct` (3.4%
+of count vectors move) and `noqual` (an ASV lost, half the counts move).
 
 ---
 
