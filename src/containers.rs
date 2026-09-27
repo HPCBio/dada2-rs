@@ -11,6 +11,12 @@ const INIT_CLUSTERS_CAPACITY: usize = 50;
 
 /// Brief summary of a comparison between a cluster center and a Raw.
 /// Equivalent to the C++ `Comparison` struct.
+///
+/// HAZARD (#219): `hamming == 0` is not a neutral default. `get_pA` reads it as
+/// "cluster centre (or exact match): always valid" and returns p = 1.0, which
+/// no `b_bud` minimum can beat -- so a raw carrying a default or
+/// no-alignment comparison is permanently unbuddable. Never substitute 0 for
+/// "no alignment"; the sentinel for that is `u32::MAX`.
 #[derive(Debug, Clone, Default)]
 pub struct Comparison {
     pub i: u32,
