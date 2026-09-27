@@ -263,60 +263,43 @@ pub fn b_p_update(
     st
 }
 
-/// Report raws the bud loop *cannot* promote but arguably should: a
-/// non-singleton whose cached `p` is 1.0 while its stored comparison implies
-/// `get_pA` would return something significant. A `p` of 1.0 can never win
-/// `b_bud`'s minimum, so such a raw is inert however abundant or divergent.
+/// At loop termination, cross-check the incremental `bud_min` cache against a
+/// full serial scan. If the scan finds a candidate the cache did not offer,
+/// the loop stopped early and every raw behind that candidate is unreachable.
 ///
-/// This is issue #219: a 66,937-read raw at hamming 311 with `lambda == 0`
-/// held `p = 1.0` where `get_pA` returns 0.0, and stayed buried in cluster 0
-/// while R called it as its own ASV with 106,853 reads. 1,742 of 1,742 raws in
-/// that class were stale, but 1,741 were singletons whose correct answer is
-/// also 1.0 -- so only the single non-singleton was ever visible.
+/// `b_bud_incremental` already asserts this equivalence -- but only under
+/// `#[cfg(debug_assertions)]`, so it has never run on a production workload.
+/// A 547k-unique pooled PacBio run cannot be done in a debug build, which is
+/// precisely where a stale cache would matter (issue #219: a 66,937-read
+/// sequence at hamming 311 with an underflowed lambda, whose `get_pA` value is
+/// 0.0, never appears among 2,818 divisions).
 ///
-/// Run ONCE at loop termination rather than per round: it is O(members), which
-/// is free once and prohibitive 2,810 times. Release-safe and non-fatal by
-/// design -- the point is to surface the class on a real run, not to abort one.
-///
-/// Returns `(count, stranded_reads)`.
-pub fn report_unbuddable(b: &B, detect_singletons: bool, verbose: bool) -> (usize, u64) {
-    let mut n = 0usize;
-    let mut reads = 0u64;
-    let mut worst: Vec<(u32, usize, u32, f64)> = Vec::new();
-    for ci in 0..b.clusters.len() {
-        let bi_reads = b.clusters[ci].reads;
-        for &raw_idx in &b.clusters[ci].raws {
-            let r = &b.raws[raw_idx];
-            if r.reads <= 1 || r.p != 1.0 {
-                continue;
-            }
-            let want = get_pA_counted(
-                r.reads,
-                r.prior,
-                r.comp.lambda,
-                r.comp.hamming,
-                bi_reads,
-                detect_singletons,
-                None,
-            );
-            if want < 1.0 {
-                n += 1;
-                reads += u64::from(r.reads);
-                worst.push((r.reads, ci, r.comp.hamming, r.comp.lambda));
-            }
-        }
+/// O(raws) once at termination -- free there, prohibitive per round.
+/// Non-fatal: it reports, it does not abort a long run.
+pub fn report_missed_bud(
+    b: &B,
+    min_fold: f64,
+    min_hamming: u32,
+    min_abund: u32,
+    verbose: bool,
+) -> Option<(usize, f64, u32)> {
+    let (mini, min_p, min_reads, _, _, _) = b_bud_scan_select(b, min_fold, min_hamming, min_abund);
+    let nraw = b.raws.len() as f64;
+    let p_a = min_p * nraw;
+    if p_a >= b.omega_a {
+        return None; // the scan agrees: nothing left to bud
     }
-    if n > 0 && verbose {
-        worst.sort_unstable_by_key(|t| std::cmp::Reverse(t.0));
+    let (ci, _, raw_idx) = mini?;
+    if verbose {
+        let r = &b.raws[raw_idx];
         eprintln!(
-            "[dada] WARNING: {n} non-singleton raw(s) holding p=1.0 that their stored \
-             comparison contradicts, stranding {reads} read(s) (issue #219)"
+            "[dada] WARNING: bud loop stopped while a full scan still finds a candidate \
+             (issue #219): raw {raw_idx} in cluster {ci}, {} reads, hamming {}, lambda {:.3e}, \
+             p {:.3e}, pA {:.3e} < omega_a {:.3e}",
+            r.reads, r.comp.hamming, r.comp.lambda, min_p, p_a, b.omega_a
         );
-        for (rd, ci, ham, lam) in worst.iter().take(5) {
-            eprintln!("[dada]   {rd} reads in cluster {ci}, hamming {ham}, lambda {lam:.3e}");
-        }
     }
-    (n, reads)
+    Some((raw_idx, min_p, min_reads))
 }
 
 /// Non-mutating serial equivalent of `b_bud`'s candidate selection: scans every
@@ -324,7 +307,6 @@ pub fn report_unbuddable(b: &B, detect_singletons: bool, verbose: bool) -> (usiz
 /// minima it would pick, as `(mini, min_p, min_reads, mini_prior, min_p_prior,
 /// min_reads_prior)` where each `mini*` is `Option<(ci, r, raw_idx)>`. Used only
 /// by `b_bud`'s debug cross-check against the incremental cache (issue #85).
-#[cfg(debug_assertions)]
 #[allow(clippy::type_complexity)]
 pub fn b_bud_scan_select(
     b: &B,
@@ -712,8 +694,11 @@ mod diag_tests {
     /// a null from an instrument is worth nothing until the instrument is
     /// shown capable of returning something else. This reproduces the #219
     /// raw: 66,937 reads, hamming 311, lambda underflowed to 0, cached p 1.0.
+    /// The cross-check must fire when the cache would miss a candidate. Built
+    /// by hand: a raw whose `p` makes it a valid bud target, with the
+    /// per-cluster `bud_min` cache left empty as a stale cache would leave it.
     #[test]
-    fn report_unbuddable_fires_on_the_219_state() {
+    fn report_missed_bud_fires_when_the_cache_is_stale() {
         let a = b"ACGTACGTAGCTAGCTAAGGCCTTAGCTAGCTACGTACGTTTGACTGACAGCTTAAGGCCA".to_vec();
         let z = b"TTTTTTTTTTGGGGGGGGGGCCCCCCCCCCAAAAAAAAAATTTTTTTTTTGGGGGGGGGGCC".to_vec();
         let raws = vec![
@@ -728,9 +713,27 @@ mod diag_tests {
             lambda: 0.0,
             hamming: 311,
         };
-        b.raws[1].p = 1.0;
-        let (n, reads) = super::report_unbuddable(&b, false, false);
-        assert_eq!(n, 1, "the diagnostic must detect the stranded raw");
-        assert_eq!(reads, 66_937);
+        b.raws[1].p = 0.0; // what get_pA gives for lambda == 0
+        // The scan seeds its minimum from cluster 0's centre, which get_pA
+        // forces to 1.0 via the `hamming == 0` branch. Without this the seed
+        // is Raw::new's initial 0.0 and nothing can beat it.
+        b.raws[0].p = 1.0;
+        b.clusters[0].bud_min = None; // the stale cache: offers nothing
+        let hit = super::report_missed_bud(&b, 1.0, 1, 1, false);
+        assert_eq!(
+            hit.map(|h| h.0),
+            Some(1),
+            "the full scan must still find raw 1"
+        );
+    }
+
+    /// ... and must stay quiet when there is genuinely nothing to bud.
+    #[test]
+    fn report_missed_bud_quiet_when_nothing_qualifies() {
+        let a = b"ACGTACGTAGCTAGCTAAGGCCTTAGCTAGCTACGTACGTTTGACTGACAGCTTAAGGCCA".to_vec();
+        let raws = vec![Raw::new(a, None, 200_000, false)];
+        let mut b = B::new(raws, 1e-40, 1e-4, false);
+        b.clusters[0].center = Some(0);
+        assert!(super::report_missed_bud(&b, 1.0, 1, 1, false).is_none());
     }
 }
