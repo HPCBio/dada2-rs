@@ -71,7 +71,7 @@ from there or copy them out. See
 | Script | Needs |
 |---|---|
 | all four plotting scripts | `jsonlite`, `ggplot2`, `optparse` |
-| `learnerrors_to_dada2rs.R` | `jsonlite` |
+| `learnerrors_to_dada2rs.R` | `jsonlite`, `optparse` |
 | `track_reads.py` | Python 3, standard library only |
 | `examples/import_mia.R` | `mia`, `SummarizedExperiment` (Bioconductor) |
 

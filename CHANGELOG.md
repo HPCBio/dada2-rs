@@ -63,6 +63,8 @@ minor versions may carry breaking changes).
   `--help`, accept `--out FILE` as well as `--out=FILE`, and reject a
   non-numeric `--width`/`--height`, which previously wrote a default-sized PDF.
   Existing flags and output are unchanged; `optparse` is now needed by all four.
+  `learnerrors_to_dada2rs.R` also uses it now, for `--help` and a usage error on
+  the wrong number of arguments; its two positionals are unchanged.
 
 ### Deprecated
 - `--loess-preset` on `learn-errors` and `errors-from-sample`. It bundled
