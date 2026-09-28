@@ -5369,7 +5369,8 @@ struct DerepLoadCost {
     /// Sorting + conversion to `Derep` (JSON), or the whole streaming
     /// dereplication (FASTQ, where the stages cannot be separated).
     build: std::time::Duration,
-    /// Uncompressed bytes read, for a throughput figure.
+    /// Bytes loaded, for a throughput figure: uncompressed for JSON, on-disk
+    /// (so compressed, for `.gz`) for FASTQ, which is streamed through the decoder.
     bytes: u64,
     /// Per-sample totals, for the straggler spread.
     per_sample: Vec<std::time::Duration>,
@@ -5556,8 +5557,13 @@ impl DerepLoadCost {
         sorted.sort_unstable();
         let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
 
+        let bytes_kind = match (self.any_fastq, self.n_json > 0) {
+            (false, _) => "uncompressed",
+            (true, false) => "on disk",
+            (true, true) => "JSON uncompressed + FASTQ on disk",
+        };
         let mut out = format!(
-            "[dada-pooled] derep split (of {secs:.2}s over {n} sample(s), {mb:.0} MB uncompressed):\n"
+            "[dada-pooled] derep split (of {secs:.2}s over {n} sample(s), {mb:.0} MB {bytes_kind}):\n"
         );
         if !self.any_fastq {
             out.push_str(&format!(
