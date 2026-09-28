@@ -27,9 +27,10 @@ two cost wildly different amounts.
 
 **`phases` is free** and safe to leave on for production runs. It carries the
 phase wall times, the store-loop counters, the `screened` / `aligned`
-denominators, the resident footprint and the minimizer index decision. All of
-these are either a handful of `Instant::now()` calls per bud round, or counters
-that the store loop already folds in.
+denominators, the resident footprint, screen occupancy, the minimizer index
+decision and, for `dada-pooled`, the derep load split and peak RSS. All of these
+are a handful of `Instant::now()` calls per bud round, one pass over the raws,
+or counters that the store loop already folds in.
 
 **`attribution` is not free.** It adds 2–4 `Instant::now()` calls to *every
 comparison*, and comparisons reach 1.4e10 on a diverse pool. It buys `busy`, the
@@ -65,6 +66,7 @@ level.
       "compare": { "total": 640.2, "attribution": { "...": null }, "screened": 0, "aligned": 0 },
       "shuffle": { "build": 12.1, "reconcile": 31.8, "move_pass": 2.2, "...": null },
       "footprint": { "nraw": 2400000, "screen_repr": "dense", "...": null },
+      "screen_occupancy": { "kmer": { "k": 5, "positional_pct": 87.5, "mean_sharing": 416, "...": null } },
       "index":   { "use_index": true, "...": null }
     }
   ]
@@ -79,6 +81,24 @@ One entry in `runs` per `run_dada` invocation:
   single run, not separate runs.
 - **`dada-pseudo`** — one per sample for round 2, tagged `"round": 2`. Round 1
   is not collected.
+
+`pipeline` is present only for the fields the subcommand has. `dada-pooled`
+also carries:
+
+- **`derep_detail`** — the load front's `read` (I/O + gunzip), `parse` (serde)
+  and `build` time, `mb_per_s`, and the per-sample `min` / `median` / `max`.
+  `input_kind` is `json`, `fastq` or `mixed`. FASTQ is a single streaming pass,
+  so it has no `read` / `parse`, and its `bytes` are on-disk rather than
+  uncompressed. The read vs parse split is how #133 found the front
+  format-bound rather than I/O-bound.
+- **`peak_rss_mb`** — process high-water RSS after derep+merge, after merge and
+  after dada. It is monotonic, so the phase after which it jumps owns the
+  memory. This is whole-process; `footprint` is Raw-resident bytes only.
+
+`runs[].screen_occupancy` has a `kmer` or `minimizer` half for whichever screen
+the run built (both under `--screen-audit`): per-raw fill against the
+positional maximum, and the pooled union and mean sharing (#43). Minimizer
+`mean_sharing` counts sketch multiplicity, so it is not `index.mean_posting`.
 
 `schema_version` bumps only when a field changes meaning or disappears; new
 fields are added without a bump, so a consumer that ignores unknown keys keeps
@@ -95,6 +115,9 @@ jq '.runs[0].compare.split' run_metrics.json    # needs --metrics-attribution
 
 # did the minimizer index get built, and was the probe right?
 jq '.runs[0].index | {use_index, hindsight_disagrees}' run_metrics.json
+
+# is the pooled load front I/O- or format-bound, and which phase set the RSS peak?
+jq '.pipeline | {derep_detail, peak_rss_mb}' run_metrics.json
 
 # slowest sample in a per-sample run
 jq -r '.runs | sort_by(-.phases.compare)[0] | "\(.sample) \(.phases.compare)s"' run_metrics.json

@@ -1541,13 +1541,15 @@ fn run() -> io::Result<()> {
             // total loop time minus folding ≈ the serial derep/load front.
             let t_merge = t_merge_acc;
             let t_derep = t_derep.elapsed().saturating_sub(t_merge);
+            // One getrusage each, so read regardless of verbosity.
+            let rss_after_derep_merge = misc::peak_rss_kb();
             if verbose {
                 if let Some(split) = derep_cost.report(t_derep) {
                     eprintln!("{split}");
                 }
                 eprintln!(
                     "[dada-pooled] peak RSS after derep+merge: {} MB",
-                    misc::peak_rss_kb() / 1024
+                    rss_after_derep_merge / 1024
                 );
             }
             drop(seq_to_merged); // only used inside the merge loop; dead now
@@ -1714,10 +1716,11 @@ fn run() -> io::Result<()> {
             run_params.n_prior = raw_inputs.iter().filter(|r| r.prior).count();
 
             // ---- Run DADA once on the merged table ----
+            let rss_after_merge = misc::peak_rss_kb();
             if verbose {
                 eprintln!(
                     "[dada-pooled] peak RSS after merge: {} MB",
-                    misc::peak_rss_kb() / 1024
+                    rss_after_merge / 1024
                 );
             }
             let t_dada = std::time::Instant::now();
@@ -1726,10 +1729,11 @@ fn run() -> io::Result<()> {
                 .map_err(io::Error::other)?;
             let t_dada = t_dada.elapsed();
             let pooled_metrics = result.metrics.take();
+            let rss_after_dada = misc::peak_rss_kb();
             if verbose {
                 eprintln!(
                     "[dada-pooled] peak RSS after dada: {} MB",
-                    misc::peak_rss_kb() / 1024
+                    rss_after_dada / 1024
                 );
             }
 
@@ -1938,6 +1942,14 @@ fn run() -> io::Result<()> {
                 doc.pipeline.merge = Some(t_merge.as_secs_f64());
                 doc.pipeline.dada = Some(t_dada.as_secs_f64());
                 doc.pipeline.output = Some(t_output.as_secs_f64());
+                doc.pipeline.derep_detail = derep_cost.detail();
+                // `peak_rss_kb` returns 0 when getrusage fails; absent, not zero.
+                let rss = [rss_after_derep_merge, rss_after_merge, rss_after_dada];
+                doc.pipeline.peak_rss_mb = rss.iter().all(|&kb| kb > 0).then(|| metrics::PeakRss {
+                    after_derep_merge: rss[0] as f64 / 1024.0,
+                    after_merge: rss[1] as f64 / 1024.0,
+                    after_dada: rss[2] as f64 / 1024.0,
+                });
                 // One invocation: pooled denoises the merged table once, so the
                 // per-sample outputs are slices of a single run, not runs.
                 doc.push("__pooled__", None, m);
@@ -5363,6 +5375,8 @@ struct DerepLoadCost {
     per_sample: Vec<std::time::Duration>,
     /// True if any input was FASTQ, whose `build` is not comparable to JSON's.
     any_fastq: bool,
+    /// Inputs that were JSON, to tell an all-FASTQ run from a mixed one.
+    n_json: usize,
 }
 
 fn load_derep_for_dada(
@@ -5419,6 +5433,7 @@ fn load_derep_for_dada_inner(
         cost.read += jc.read;
         cost.parse += jc.parse;
         cost.bytes += jc.bytes;
+        cost.n_json += 1;
         let t_build = std::time::Instant::now();
         let sample_name = parsed.sample;
         let mut entries = parsed.uniques;
@@ -5484,6 +5499,38 @@ fn load_derep_for_dada_inner(
 }
 
 impl DerepLoadCost {
+    /// `--metrics-json` form of [`Self::report`]. `None` when nothing was loaded.
+    fn detail(&self) -> Option<metrics::DerepDetail> {
+        let n = self.per_sample.len();
+        if n == 0 {
+            return None;
+        }
+        let mut sorted = self.per_sample.clone();
+        sorted.sort_unstable();
+        let mb = self.bytes as f64 / 1_048_576.0;
+        let rate = |d: std::time::Duration| (d.as_secs_f64() > 0.0).then(|| mb / d.as_secs_f64());
+        let (input_kind, mb_per_s) = match (self.any_fastq, self.n_json > 0) {
+            (false, _) => ("json", rate(self.read)),
+            (true, false) => ("fastq", rate(self.build)),
+            (true, true) => ("mixed", None),
+        };
+        let json = (self.n_json > 0).then_some(());
+        Some(metrics::DerepDetail {
+            input_kind: input_kind.to_string(),
+            samples: n,
+            bytes: self.bytes,
+            read: json.map(|_| self.read.as_secs_f64()),
+            parse: json.map(|_| self.parse.as_secs_f64()),
+            build: self.build.as_secs_f64(),
+            mb_per_s,
+            per_sample: metrics::SpreadSecs {
+                min: sorted[0].as_secs_f64(),
+                median: sorted[n / 2].as_secs_f64(),
+                max: sorted[n - 1].as_secs_f64(),
+            },
+        })
+    }
+
     /// `--verbose` report, mirroring `compare split`. Returns `None` when
     /// nothing was loaded.
     ///

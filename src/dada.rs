@@ -525,93 +525,8 @@ pub fn dada_uniques_cached(
                     },
                 );
 
-                // K-mer complexity / diversity diagnostics (#43). Two signals:
-                //  - per-Raw FILL = distinct k-mers / positional max (len-k+1).
-                //    ~100% for high-complexity amplicon reads; a low value flags
-                //    low-complexity/repetitive sequence content.
-                //  - pooled DIVERSITY = union of distinct k-mers across all
-                //    uniques vs the 4^k space, plus mean sharing (Σ positional /
-                //    union). High sharing = tight homologous amplicon; low
-                //    sharing + high occupancy flags diverse/contaminated or
-                //    over-amplified data (inflated PCR error/chimera k-mers, not
-                //    biological diversity). Cost: one 4^k-bit presence bitmap
-                //    (≤8 KB through k8) + a single pass over the screens.
-                if nr > 0 && raws.iter().any(|r| r.minimizers.is_some()) {
-                    // The minimizer counterpart of the kmer8 fill/diversity
-                    // block below. Two signals worth watching:
-                    //  - DENSITY = sketch entries / (len - k + 1). Winnowing
-                    //    predicts ~2/(w+1); well above that means the sketch is
-                    //    not compressing (short reads, or low-complexity content
-                    //    defeating the window), which costs memory without
-                    //    buying specificity.
-                    //  - POOLED SHARING = Σ per-raw entries / distinct
-                    //    minimizers across the pool. High sharing means the
-                    //    sketch is landing on conserved regions and the screen
-                    //    will be permissive; near-1 means every raw is picking
-                    //    its own minimizers and the screen will be aggressive.
-                    let mut entries_sum = 0usize;
-                    let mut positional_sum = 0usize;
-                    let mut union: std::collections::HashSet<u64> =
-                        std::collections::HashSet::new();
-                    let mut unusable = 0usize;
-                    let mw = params.align.minimizer_w;
-                    let mk = params.align.minimizer_k;
-                    for r in &raws {
-                        if let Some(m) = &r.minimizers {
-                            entries_sum += m.total() as usize;
-                            positional_sum += r.len().saturating_sub(mk - 1);
-                            union.extend(m.hashes());
-                            if m.is_empty() {
-                                unusable += 1;
-                            }
-                        }
-                    }
-                    let density = entries_sum as f64 / positional_sum.max(1) as f64;
-                    eprintln!(
-                        "[dada] minimizer sketch: mean {:.0} entries/raw, density {:.3} \
-                         (winnowing predicts {:.3} at w={mw}), {unusable} raws unsketchable \
-                         (screen bypassed)",
-                        entries_sum as f64 / nr as f64,
-                        density,
-                        2.0 / (mw as f64 + 1.0),
-                    );
-                    eprintln!(
-                        "[dada] minimizer pooled diversity: {} distinct minimizers, \
-                         mean sharing {:.1}× across {nr} uniques",
-                        union.len(),
-                        entries_sum as f64 / union.len().max(1) as f64,
-                    );
-                }
-
-                if nr > 0 && raws.iter().any(|r| r.kmer8.is_some()) {
-                    let nk = crate::kmers::n_kmers(k);
-                    let mut bitmap = vec![0u64; nk.div_ceil(64)];
-                    let mut distinct_sum = 0usize; // Σ per-raw distinct k-mers
-                    let mut positional_sum = 0usize; // Σ (len - k + 1)
-                    for r in &raws {
-                        if let Some(screen) = &r.kmer8 {
-                            distinct_sum += screen.distinct_kmers();
-                            positional_sum += r.len().saturating_sub(k - 1);
-                            screen.for_each_present_index(|idx| {
-                                bitmap[idx >> 6] |= 1u64 << (idx & 63);
-                            });
-                        }
-                    }
-                    let union: usize = bitmap.iter().map(|w| w.count_ones() as usize).sum();
-                    let fill_pct = 100.0 * distinct_sum as f64 / positional_sum.max(1) as f64;
-                    let dense_pct = 100.0 * distinct_sum as f64 / (nr as f64 * nk as f64);
-                    eprintln!(
-                        "[dada] kmer8 fill: mean {:.0} / {:.0} distinct k-mers/raw \
-                         ({fill_pct:.1}% of positional max), {dense_pct:.1}% of dense 4^k [k={k}]",
-                        distinct_sum as f64 / nr as f64,
-                        positional_sum as f64 / nr as f64,
-                    );
-                    eprintln!(
-                        "[dada] kmer8 pooled diversity: {union} distinct k-mers \
-                         ({:.1}% of 4^k space), mean sharing {:.0}× across {nr} uniques",
-                        100.0 * union as f64 / nk as f64,
-                        positional_sum as f64 / union.max(1) as f64,
-                    );
+                if let Some(occ) = screen_occupancy(&raws, params, None) {
+                    print_screen_occupancy(&occ, nr);
                 }
             }
             raws
@@ -876,6 +791,113 @@ struct ProgressMark {
     pupdate: Duration,
     screened: u64,
     aligned: u64,
+}
+
+/// Screen fill and pooled diversity (#43), shared by `--verbose` and
+/// `--metrics-json` so the two cannot disagree. `None` when no raw carries a
+/// screen.
+///
+/// k-mer: low per-raw fill flags low-complexity sequence; high sharing is a
+/// tight homologous amplicon, while low sharing with high occupancy flags
+/// diverse, contaminated or over-amplified data. Minimizer: density well above
+/// winnowing's 2/(w+1) means the sketch is not compressing; sharing near 1
+/// means each raw picks its own minimizers and the screen is aggressive.
+///
+/// `known_union` is the minimizer index's key count when it was built, which
+/// is the same set and saves a pass over every hash.
+fn screen_occupancy(
+    raws: &[Raw],
+    params: &DadaParams,
+    known_union: Option<usize>,
+) -> Option<crate::metrics::ScreenOccupancy> {
+    let nr = raws.len();
+    if nr == 0 {
+        return None;
+    }
+    let mut occ = crate::metrics::ScreenOccupancy::default();
+
+    if raws.iter().any(|r| r.minimizers.is_some()) {
+        let (mk, mw) = (params.align.minimizer_k, params.align.minimizer_w);
+        let (mut entries_sum, mut positional_sum, mut unusable) = (0usize, 0usize, 0u64);
+        for r in raws {
+            if let Some(m) = &r.minimizers {
+                entries_sum += m.total() as usize;
+                positional_sum += r.len().saturating_sub(mk - 1);
+                unusable += m.is_empty() as u64;
+            }
+        }
+        let union = known_union.unwrap_or_else(|| {
+            minimizers::pool_distinct(raws.iter().filter_map(|r| r.minimizers.as_ref()))
+        });
+        occ.minimizer = Some(crate::metrics::MinimizerOccupancy {
+            k: mk,
+            w: mw,
+            mean_entries: entries_sum as f64 / nr as f64,
+            density: entries_sum as f64 / positional_sum.max(1) as f64,
+            winnowing_density: 2.0 / (mw as f64 + 1.0),
+            unsketchable: unusable,
+            union: union as u64,
+            mean_sharing: entries_sum as f64 / union.max(1) as f64,
+        });
+    }
+
+    if raws.iter().any(|r| r.kmer8.is_some()) {
+        let k = params.align.kmer_size;
+        let nk = crate::kmers::n_kmers(k);
+        // One 4^k-bit presence bitmap: at most 8 KB through k8.
+        let mut bitmap = vec![0u64; nk.div_ceil(64)];
+        let (mut distinct_sum, mut positional_sum) = (0usize, 0usize);
+        for r in raws {
+            if let Some(screen) = &r.kmer8 {
+                distinct_sum += screen.distinct_kmers();
+                positional_sum += r.len().saturating_sub(k - 1);
+                screen.for_each_present_index(|idx| {
+                    bitmap[idx >> 6] |= 1u64 << (idx & 63);
+                });
+            }
+        }
+        let union: usize = bitmap.iter().map(|w| w.count_ones() as usize).sum();
+        occ.kmer = Some(crate::metrics::KmerOccupancy {
+            k,
+            mean_distinct_kmers: distinct_sum as f64 / nr as f64,
+            mean_positional: positional_sum as f64 / nr as f64,
+            positional_pct: 100.0 * distinct_sum as f64 / positional_sum.max(1) as f64,
+            dense_pct: 100.0 * distinct_sum as f64 / (nr as f64 * nk as f64),
+            union: union as u64,
+            union_pct: 100.0 * union as f64 / nk as f64,
+            mean_sharing: positional_sum as f64 / union.max(1) as f64,
+        });
+    }
+
+    (occ.kmer.is_some() || occ.minimizer.is_some()).then_some(occ)
+}
+
+fn print_screen_occupancy(occ: &crate::metrics::ScreenOccupancy, nr: usize) {
+    if let Some(m) = &occ.minimizer {
+        eprintln!(
+            "[dada] minimizer sketch: mean {:.0} entries/raw, density {:.3} \
+             (winnowing predicts {:.3} at w={}), {} raws unsketchable \
+             (screen bypassed)",
+            m.mean_entries, m.density, m.winnowing_density, m.w, m.unsketchable,
+        );
+        eprintln!(
+            "[dada] minimizer pooled diversity: {} distinct minimizers, \
+             mean sharing {:.1}× across {nr} uniques",
+            m.union, m.mean_sharing,
+        );
+    }
+    if let Some(m) = &occ.kmer {
+        eprintln!(
+            "[dada] kmer8 fill: mean {:.0} / {:.0} distinct k-mers/raw \
+             ({:.1}% of positional max), {:.1}% of dense 4^k [k={}]",
+            m.mean_distinct_kmers, m.mean_positional, m.positional_pct, m.dense_pct, m.k,
+        );
+        eprintln!(
+            "[dada] kmer8 pooled diversity: {} distinct k-mers \
+             ({:.1}% of 4^k space), mean sharing {:.0}× across {nr} uniques",
+            m.union, m.union_pct, m.mean_sharing,
+        );
+    }
 }
 
 pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
@@ -1524,6 +1546,11 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         };
 
         let mut m: RunMetrics = counters.finish(shape, nthreads, params.measure);
+        let known_union = bb
+            .minimizer_index_decision
+            .map(|d| d.distinct)
+            .or_else(|| bb.minimizer_index.as_ref().map(|i| i.n_keys()));
+        m.screen_occupancy = screen_occupancy(&bb.raws, params, known_union);
         m.index = bb.minimizer_index_decision.map(|d| {
             crate::metrics::IndexDecision {
                 use_index: d.use_index,
