@@ -376,6 +376,20 @@ pub struct PipelineTimes {
     pub derep_detail: Option<DerepDetail>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peak_rss_mb: Option<PeakRss>,
+    /// One entry per input sample, in input order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inputs: Option<Vec<DerepInput>>,
+}
+
+/// One pooled input after dereplication. Pooled has a single `runs[]` entry
+/// for many samples, so per-sample counts live here instead.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DerepInput {
+    pub sample: String,
+    pub reads: u64,
+    pub uniques: usize,
+    /// This sample's share of `derep_detail`: its load + dereplication time.
+    pub load_seconds: f64,
 }
 
 /// Where the pooled derep/load front spends its time (#133). The read vs parse
@@ -479,6 +493,7 @@ impl PipelineTimes {
             && self.output.is_none()
             && self.derep_detail.is_none()
             && self.peak_rss_mb.is_none()
+            && self.inputs.is_none()
     }
 }
 
