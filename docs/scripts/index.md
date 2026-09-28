@@ -70,8 +70,7 @@ from there or copy them out. See
 
 | Script | Needs |
 |---|---|
-| all four plotting scripts | `jsonlite`, `ggplot2` |
-| `plot_errors.R` | also `optparse` |
+| all four plotting scripts | `jsonlite`, `ggplot2`, `optparse` |
 | `learnerrors_to_dada2rs.R` | `jsonlite` |
 | `track_reads.py` | Python 3, standard library only |
 | `examples/import_mia.R` | `mia`, `SummarizedExperiment` (Bioconductor) |
@@ -87,7 +86,12 @@ or `learn-errors` JSON files and write a PDF.
 
 ```bash
 Rscript scripts/<script>.R [--out=plot.pdf] [--width=8] [--height=5] input.json ...
+Rscript scripts/<script>.R --help
 ```
+
+All four parse their flags with `optparse`, so each answers `--help` with its
+full option list, accepts `--out FILE` as well as `--out=FILE`, and exits
+non-zero on an unknown flag or a non-numeric size.
 
 `--aggregate` (on `plot_quality_profile.R` and `plot_complexity.R`) pools every
 input into a single panel instead of faceting per file — the equivalent of

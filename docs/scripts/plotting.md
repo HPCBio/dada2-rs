@@ -1,7 +1,7 @@
 # Plotting scripts
 
 Four R scripts that render dada2-rs JSON into the figures DADA2 users know.
-All take one or more JSON files and write a PDF; see
+All take one or more JSON files and write a PDF, and all answer `--help`; see
 [conventions](index.md#conventions) for the shared flags.
 
 ## `plot_quality_profile.R`

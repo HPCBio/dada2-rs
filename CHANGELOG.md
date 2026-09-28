@@ -58,6 +58,11 @@ minor versions may carry breaking changes).
   makes a run unrepeatable, and varying the seed gives the same spread while
   staying reproducible. This follows `kdist-calibrate`, which already seeds by
   default; R DADA2 cannot do this at all (benjjneb/dada2#1115).
+- `plot_quality_profile.R`, `plot_complexity.R` and `plot_expected_error.R` now
+  parse flags with `optparse`, like `plot_errors.R` (#198). All four answer
+  `--help`, accept `--out FILE` as well as `--out=FILE`, and reject a
+  non-numeric `--width`/`--height`, which previously wrote a default-sized PDF.
+  Existing flags and output are unchanged; `optparse` is now needed by all four.
 
 ### Deprecated
 - `--loess-preset` on `learn-errors` and `errors-from-sample`. It bundled

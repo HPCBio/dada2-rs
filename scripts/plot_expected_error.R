@@ -16,43 +16,52 @@
 #   Rscript plot_expected_error.R [--out=plot.pdf] [--linear] \
 #                                 [--width=8] [--height=5] \
 #                                 summary1.json [summary2.json ...]
+#   Rscript plot_expected_error.R --help
 #
 # Defaults to writing expected_error.pdf with a log10 y-axis (use --linear for a
 # linear y-axis). Each input must have been produced with `--expected-error`.
+#
+# Dependencies: jsonlite, ggplot2, optparse
 
 suppressPackageStartupMessages({
   library(jsonlite)
   library(ggplot2)
+  library(optparse)
 })
 
-args <- commandArgs(trailingOnly = TRUE)
-if (length(args) == 0) {
-  stop("usage: plot_expected_error.R [--out=FILE] [--linear] [--width=N] [--height=N] summary.json [...]")
+opt_list <- list(
+  make_option("--out", type = "character", default = "expected_error.pdf",
+              metavar = "FILE", help = "Output path [default %default]"),
+  make_option("--linear", action = "store_true", default = FALSE,
+              help = "Use a linear y-axis instead of log10"),
+  make_option("--width", type = "double", default = 8, metavar = "N",
+              help = "Figure width in inches [default %default]"),
+  make_option("--height", type = "double", default = 5, metavar = "N",
+              help = "Figure height in inches [default %default]")
+)
+
+parser <- OptionParser(
+  usage = "usage: %prog [options] summary1.json [summary2.json ...]",
+  option_list = opt_list,
+  description = paste0(
+    "\nPlot per-position cumulative expected error from\n",
+    "`dada2-rs summary --expected-error` JSON.\n")
+)
+argv <- parse_args(parser, positional_arguments = c(1, Inf))
+opt  <- argv$options
+
+# optparse warns on a non-numeric double but passes the string through.
+for (flag in c("width", "height")) {
+  v <- suppressWarnings(as.numeric(opt[[flag]]))
+  if (is.na(v) || v <= 0) stop(sprintf("--%s must be a positive number", flag))
+  opt[[flag]] <- v
 }
 
-out_file <- "expected_error.pdf"
-log_y <- TRUE
-width <- 8
-height <- 5
-files <- character(0)
-
-for (a in args) {
-  if (identical(a, "--linear")) {
-    log_y <- FALSE
-  } else if (startsWith(a, "--out=")) {
-    out_file <- sub("^--out=", "", a)
-  } else if (startsWith(a, "--width=")) {
-    width <- as.numeric(sub("^--width=", "", a))
-  } else if (startsWith(a, "--height=")) {
-    height <- as.numeric(sub("^--height=", "", a))
-  } else if (startsWith(a, "--")) {
-    stop(sprintf("unknown option: %s", a))
-  } else {
-    files <- c(files, a)
-  }
-}
-
-if (length(files) == 0) stop("at least one summary JSON file is required")
+out_file <- opt$out
+log_y    <- !opt$linear
+width    <- opt$width
+height   <- opt$height
+files    <- argv$args
 
 read_ee <- function(path) {
   doc <- fromJSON(path, simplifyVector = TRUE, simplifyDataFrame = FALSE)
