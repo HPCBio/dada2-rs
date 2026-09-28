@@ -60,10 +60,84 @@ pub struct Cli {
     pub command: Option<Commands>,
 }
 
+/// Top-level `--help` groups, in display order (issue #83). clap 4 has no
+/// subcommand groups, so [`command`] renders this list itself. Every visible
+/// subcommand must appear exactly once; a test enforces it.
+const COMMAND_GROUPS: &[(&str, &[&str])] = &[
+    (
+        "Workflow",
+        &[
+            "remove-primers",
+            "filter-and-trim",
+            "derep",
+            "learn-errors",
+            "dada",
+            "dada-pooled",
+            "dada-pseudo",
+            "merge-pairs",
+            "make-sequence-table",
+            "remove-bimera-denovo",
+            "assign-taxonomy",
+            "assign-species",
+        ],
+    ),
+    ("Quality control", &["summary", "summary-merge"]),
+    (
+        "Export",
+        &["seq-table-to-tsv", "seq-table-to-fasta", "tax-to-tsv"],
+    ),
+    (
+        "Diagnostics",
+        &[
+            "sample",
+            "errors-from-sample",
+            "chimera-diagnostics",
+            "kdist-calibrate",
+            "reference-eval",
+        ],
+    ),
+];
+
+/// The top-level command with its subcommands listed under [`COMMAND_GROUPS`].
+/// Parse and print help through this, not `Cli::command()`.
+pub fn command() -> clap::Command {
+    use clap::CommandFactory;
+
+    let cmd = Cli::command();
+    let styles = cmd.get_styles();
+    let (header, literal) = (styles.get_header(), styles.get_literal());
+    let width = COMMAND_GROUPS
+        .iter()
+        .flat_map(|(_, names)| names.iter().map(|n| n.len()))
+        .max()
+        .unwrap_or(0);
+
+    let mut groups = String::new();
+    for (title, names) in COMMAND_GROUPS {
+        groups.push_str(&format!("{header}{title}:{header:#}\n"));
+        for name in *names {
+            let about = cmd
+                .find_subcommand(name)
+                .and_then(|s| s.get_about())
+                .map(|a| a.to_string())
+                .unwrap_or_default();
+            groups.push_str(&format!("  {literal}{name:width$}{literal:#}  {about}\n"));
+        }
+        groups.push('\n');
+    }
+
+    let template = format!(
+        "{{before-help}}{{about-with-newline}}\n{{usage-heading}} {{usage}}\n\n\
+         {groups}{header}Options:{header:#}\n{{options}}{{after-help}}"
+    );
+    cmd.help_template(template)
+        .after_help("Run `dada2-rs help <COMMAND>` for a subcommand's flags.")
+}
+
 #[derive(Subcommand)]
 pub enum Commands {
     /// Compute per-position quality metrics from a FASTQ file
-    #[command(display_order = 1, after_help = docs_link!("summary"))]
+    #[command(after_help = docs_link!("summary"))]
     Summary {
         /// Input FASTQ file (uncompressed or gzipped)
         #[arg(help_heading = H_INPUT)]
@@ -147,7 +221,7 @@ pub enum Commands {
     },
 
     /// Dereplicate sequences from a FASTQ file
-    #[command(display_order = 4, after_help = docs_link!("derep"))]
+    #[command(after_help = docs_link!("derep"))]
     Derep {
         /// Input FASTQ file (uncompressed or gzipped)
         #[arg(help_heading = H_INPUT)]
@@ -183,7 +257,7 @@ pub enum Commands {
     },
 
     /// Denoise one or more samples independently (R DADA2 `pool=FALSE`)
-    #[command(display_order = 8, after_help = docs_link!("dada"))]
+    #[command(after_help = docs_link!("dada"))]
     Dada {
         /// Input FASTQ or derep/sample JSON files; >1 input requires --output-dir
         #[arg(required = true, help_heading = H_INPUT)]
@@ -367,7 +441,7 @@ pub enum Commands {
     },
 
     /// Denoise multiple samples with full pooling (R DADA2 `pool=TRUE`)
-    #[command(display_order = 9, after_help = docs_link!("dada-pooled"))]
+    #[command(after_help = docs_link!("dada-pooled"))]
     DadaPooled {
         /// Input FASTQ or derep/sample JSON files, one per sample
         #[arg(required = true, help_heading = H_INPUT)]
@@ -543,7 +617,7 @@ pub enum Commands {
     },
 
     /// Denoise multiple samples with pseudo-pooling (R DADA2 `pool="pseudo"`)
-    #[command(display_order = 10, after_help = docs_link!("dada-pseudo"))]
+    #[command(after_help = docs_link!("dada-pseudo"))]
     DadaPseudo {
         /// Input FASTQ or derep/sample JSON files, one per sample
         #[arg(required = true, help_heading = H_INPUT)]
@@ -723,7 +797,7 @@ pub enum Commands {
     },
 
     /// Merge denoised forward and reverse reads into full-length amplicons
-    #[command(display_order = 11, after_help = docs_link!("merge-pairs"))]
+    #[command(after_help = docs_link!("merge-pairs"))]
     MergePairs {
         /// Forward dada JSON files
         #[arg(long, required = true, num_args = 1.., help_heading = H_INPUT)]
@@ -799,7 +873,7 @@ pub enum Commands {
     },
 
     /// Remove primer sequences from a FASTQ file
-    #[command(display_order = 2, after_help = docs_link!("remove-primers"))]
+    #[command(after_help = docs_link!("remove-primers"))]
     RemovePrimers {
         /// Input FASTQ file (uncompressed or gzipped)
         #[arg(help_heading = H_INPUT)]
@@ -915,7 +989,7 @@ pub enum Commands {
     },
 
     /// Filter and trim a single sample's FASTQ reads
-    #[command(display_order = 3, after_help = docs_link!("filter-and-trim"))]
+    #[command(after_help = docs_link!("filter-and-trim"))]
     FilterAndTrim {
         /// Forward (R1) input FASTQ file
         #[arg(long, required = true, help_heading = H_INPUT)]
@@ -1007,7 +1081,7 @@ pub enum Commands {
     },
 
     /// Build a sample-by-sequence feature table
-    #[command(display_order = 12, after_help = docs_link!("make-sequence-table"))]
+    #[command(after_help = docs_link!("make-sequence-table"))]
     MakeSequenceTable {
         /// JSON files from `dada` (one per sample) or `merge-pairs` (multi-sample)
         #[arg(required = true, help_heading = H_INPUT)]
@@ -1045,7 +1119,7 @@ pub enum Commands {
     },
 
     /// Remove bimeric sequences from a sequence table
-    #[command(display_order = 13, after_help = docs_link!("remove-bimera-denovo"))]
+    #[command(after_help = docs_link!("remove-bimera-denovo"))]
     RemoveBimeraDenovo {
         /// Sequence table JSON produced by `make-sequence-table`
         #[arg(help_heading = H_INPUT)]
@@ -1122,7 +1196,7 @@ pub enum Commands {
     },
 
     /// Screen a sequence table for higher-order chimeras (trimeras)
-    #[command(display_order = 14, after_help = docs_link!("chimera-diagnostics"))]
+    #[command(after_help = docs_link!("chimera-diagnostics"))]
     ChimeraDiagnostics {
         /// Sequence table JSON from `make-sequence-table` or `remove-bimera-denovo`
         #[arg(help_heading = H_INPUT)]
@@ -1186,7 +1260,7 @@ pub enum Commands {
     },
 
     /// Convert a sequence table JSON to a tab-delimited count table
-    #[command(display_order = 16, after_help = docs_link!("seq-table-to-tsv"))]
+    #[command(after_help = docs_link!("seq-table-to-tsv"))]
     SeqTableToTsv {
         /// Sequence table JSON from `make-sequence-table` or `remove-bimera-denovo`
         #[arg(help_heading = H_INPUT)]
@@ -1206,7 +1280,7 @@ pub enum Commands {
     },
 
     /// Assign taxonomy to sequences using a Naive Bayes k-mer classifier
-    #[command(display_order = 14, after_help = docs_link!("assign-taxonomy"))]
+    #[command(after_help = docs_link!("assign-taxonomy"))]
     AssignTaxonomy {
         /// Query sequences: FASTA (.fa/.fa.gz/.fasta) or sequence-table JSON
         #[arg(help_heading = H_INPUT)]
@@ -1259,7 +1333,7 @@ pub enum Commands {
     },
 
     /// Fill in the Species column of an assign-taxonomy JSON by exact match
-    #[command(display_order = 15, after_help = docs_link!("assign-species"))]
+    #[command(after_help = docs_link!("assign-species"))]
     AssignSpecies {
         /// Taxonomy JSON produced by `assign-taxonomy`
         #[arg(help_heading = H_INPUT)]
@@ -1291,7 +1365,7 @@ pub enum Commands {
     },
 
     /// Convert an assign-taxonomy or assign-species JSON to a TSV table
-    #[command(display_order = 18, after_help = docs_link!("tax-to-tsv"))]
+    #[command(after_help = docs_link!("tax-to-tsv"))]
     TaxToTsv {
         /// JSON file produced by `assign-taxonomy` or `assign-species`
         #[arg(help_heading = H_INPUT)]
@@ -1307,7 +1381,7 @@ pub enum Commands {
     },
 
     /// Convert a make-sequence-table JSON file to FASTA
-    #[command(display_order = 17, after_help = docs_link!("seq-table-to-fasta"))]
+    #[command(after_help = docs_link!("seq-table-to-fasta"))]
     SeqTableToFasta {
         /// JSON file produced by the `make-sequence-table` subcommand
         #[arg(help_heading = H_INPUT)]
@@ -1327,7 +1401,7 @@ pub enum Commands {
     },
 
     /// Dereplicate and subsample FASTQ files, writing one JSON file per sample
-    #[command(display_order = 5, after_help = docs_link!("sample"))]
+    #[command(after_help = docs_link!("sample"))]
     Sample {
         /// FASTQ files (.fastq, .fastq.gz, .fq, .fq.gz) to process
         #[arg(required = true, help_heading = H_INPUT)]
@@ -1371,7 +1445,7 @@ pub enum Commands {
     },
 
     /// Learn an error model from pre-computed sample JSON files
-    #[command(display_order = 7, after_help = docs_link!("errors-from-sample"))]
+    #[command(after_help = docs_link!("errors-from-sample"))]
     ErrorsFromSample {
         /// Sample or derep JSON files (`.json` / `.json.gz`)
         #[arg(required = true, help_heading = H_INPUT)]
@@ -1550,7 +1624,6 @@ pub enum Commands {
 
     /// Learn an error model from FASTQ or derep/sample JSON files
     #[command(
-        display_order = 6,
         after_help = concat!(
             "CAVEAT: --nbases accumulates whole samples, so one deep sample can fill\n\
              the budget and the model may reflect only a few samples' diversity.\n\n",
@@ -1908,4 +1981,37 @@ pub enum Commands {
         #[arg(long, help_heading = H_OUTPUT)]
         compact: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// A subcommand missing from `COMMAND_GROUPS` would vanish from `--help`.
+    #[test]
+    fn every_subcommand_is_grouped_once() {
+        // A debug build of the full command overflows the 2 MB test-thread stack.
+        std::thread::Builder::new()
+            .stack_size(16 << 20)
+            .spawn(check_grouping)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn check_grouping() {
+        let mut grouped: Vec<&str> = COMMAND_GROUPS
+            .iter()
+            .flat_map(|(_, names)| names.iter().copied())
+            .collect();
+        grouped.sort_unstable();
+        let mut actual: Vec<String> = Cli::command()
+            .get_subcommands()
+            .filter(|s| !s.is_hide_set() && s.get_name() != "help")
+            .map(|s| s.get_name().to_string())
+            .collect();
+        actual.sort_unstable();
+        assert_eq!(grouped, actual);
+    }
 }
