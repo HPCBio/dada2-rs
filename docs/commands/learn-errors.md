@@ -138,14 +138,18 @@ result.
 `interpolate` fits the local polynomial at kd-tree vertices and blends between
 them with cubic Hermite, which is what R's `loess()` does by default and
 therefore what `loessErrfun` produces. `direct` evaluates the polynomial at
-every query point.
+every query point. Applies to `--errfun loess` and `--errfun pacbio` only.
+What is and is not ported from R's `loess()` is listed in [LOESS: what is
+ported from R](../findings/loess-r-coverage.md).
 
 **`--loess-cell`** (default 0.2) — maximum fraction of observations per
 kd-tree cell, R's `loess.control(cell=)`. Interpolate surface only.
 
 **`--loess-max-rate`** (default 0.25) / **`--loess-min-rate`** (default 1e-7) —
 the clamp applied to fitted off-diagonal rates, matching R's post-fit step
-(`errorModels.R:53-56`). Unaffected by the surface.
+(`errorModels.R:53-56`). Unaffected by the surface. Apply to `loess`, `pacbio`,
+`noqual` and `binned-qual`; ignored by `external`. Set to `1.0` / `0.0` to
+disable.
 
 !!! note "`--loess-preset` is deprecated"
     It was a bundle over the four knobs above, with `default` selecting
@@ -154,21 +158,6 @@ the clamp applied to fitted off-diagonal rates, matching R's post-fit step
     `--loess-preset default` is a confusing name for the non-default surface.
     The flag still works and maps to `--loess-surface`, but warns. Use
     `--loess-surface direct` in place of `--loess-preset default`.
-
-**`--loess-surface`** — `direct` evaluates the local polynomial at every query
-point (matches R `loess(surface = "direct")`). `interpolate` builds a 1-D
-kd-tree partition, fits at each vertex, and blends with cubic Hermite at
-queries (matches R's default `loess()`). Applies to `--errfun loess` and
-`--errfun pacbio` only; ignored by `noqual`, `binned-qual` and `external`.
-
-**`--loess-cell`** — maximum fraction of observations allowed per kd-tree cell
-before it is subdivided. Only used with `--loess-surface interpolate`. Mirrors
-R's `loess.control(cell = ...)`; R's default is 0.2.
-
-**`--loess-max-rate`** / **`--loess-min-rate`** — upper and lower clamps applied
-to off-diagonal error rates after fitting. Apply to `loess`, `pacbio`, `noqual`
-and `binned-qual`; ignored by `external`. Both presets default to 0.25 and 1e-7,
-matching R DADA2. Set to `1.0` / `0.0` respectively to disable.
 
 **`--max-consist`** (default 10) — maximum self-consistency iterations, R's
 `MAX_CONSIST`.

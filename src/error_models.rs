@@ -89,8 +89,8 @@ fn expand_err_matrix(off_diag: &[f64], nq: usize) -> Vec<f64> {
 /// `tot`) with `span = 0.75` and `degree = 2`, then converts predictions back
 /// with `10^pred`.  Predictions are extrapolated flat outside the data range.
 /// Off-diagonal rates are clamped to `[config.min_error_rate, config.max_error_rate]`
-/// (the `default` preset uses `[1e-7, 0.25]`; the `r-dada2` preset uses `[0, 1]`).
-/// Diagonal entries are filled as `1 − sum(off-diagonals)` regardless of preset.
+/// (default `[1e-7, 0.25]`, as R's errorModels.R:53-56).
+/// Diagonal entries are filled as `1 − sum(off-diagonals)`.
 ///
 /// # Arguments
 /// - `trans`: flat 16 × `nq` row-major matrix of transition counts

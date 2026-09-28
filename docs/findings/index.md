@@ -119,6 +119,13 @@ reader benefit. Three homes, and only three:
       primers behind heterogeneity spacers inflated the table 3–4× and *reversed
       the direction* of the effect, with no warning anywhere in the pipeline.
       The checks that catch it, for any dataset you did not prepare yourself.
+- [LOESS: what is ported from R, and what is not](loess-r-coverage.md) — the
+  coverage ledger. **Everything `loessErrfun` exercises is ported and matches
+  R's `stats::loess` to round-off** (≤ 2e-14, dense and sparse grids); with the
+  training set pinned, `learn-errors` is bit-exact against R, 0/656 transition
+  cells. Unported pieces cannot reach a DADA2 error model, and we differ
+  deliberately in two degenerate few-anchor corners where R's own answer is
+  uninformative.
 - [The LOESS error model: fidelity, and a silent floor](loess-error-model-correctness.md)
   — **the error model is an amplifier**, which is why a smoother gets chased to
   machine precision: the first round of fidelity fixes moved F3D0 from 194
