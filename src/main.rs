@@ -1495,10 +1495,18 @@ fn run() -> io::Result<()> {
             // full `derep` drop at the end of its loop iteration (issue #39/#41).
             let mut sample_unique_counts: Vec<Vec<u32>> = Vec::with_capacity(n_samples);
 
+            // (reads, uniques) per input, for `pipeline.inputs`. The unnamed
+            // `[derep]` line is suppressed here: this is its named home.
+            let mut input_counts: Vec<(u64, usize)> = Vec::with_capacity(n_samples);
+
             for i in 0..n_samples {
                 let (derep, name) =
-                    load_derep_for_dada(&input[i], phred_offset, &pool, verbose, &mut derep_cost)?;
+                    load_derep_for_dada(&input[i], phred_offset, &pool, false, &mut derep_cost)?;
                 json_samples[i] = name;
+                input_counts.push((
+                    derep.uniques.iter().map(|(_, c)| c).sum(),
+                    derep.uniques.len(),
+                ));
 
                 let t_m = std::time::Instant::now();
                 let mut local_map: Vec<usize> = Vec::with_capacity(derep.uniques.len());
@@ -1943,6 +1951,19 @@ fn run() -> io::Result<()> {
                 doc.pipeline.dada = Some(t_dada.as_secs_f64());
                 doc.pipeline.output = Some(t_output.as_secs_f64());
                 doc.pipeline.derep_detail = derep_cost.detail();
+                doc.pipeline.inputs = Some(
+                    sample_names
+                        .iter()
+                        .zip(&input_counts)
+                        .zip(&derep_cost.per_sample)
+                        .map(|((name, &(reads, uniques)), t)| metrics::DerepInput {
+                            sample: name.clone(),
+                            reads,
+                            uniques,
+                            load_seconds: t.as_secs_f64(),
+                        })
+                        .collect(),
+                );
                 // `peak_rss_kb` returns 0 when getrusage fails; absent, not zero.
                 let rss = [rss_after_derep_merge, rss_after_merge, rss_after_dada];
                 doc.pipeline.peak_rss_mb = rss.iter().all(|&kb| kb > 0).then(|| metrics::PeakRss {

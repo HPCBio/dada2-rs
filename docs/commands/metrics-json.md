@@ -94,6 +94,10 @@ also carries:
 - **`peak_rss_mb`** — process high-water RSS after derep+merge, after merge and
   after dada. It is monotonic, so the phase after which it jumps owns the
   memory. This is whole-process; `footprint` is Raw-resident bytes only.
+- **`inputs`** — one `{sample, reads, uniques, load_seconds}` per input, in
+  input order. Pooled has a single `runs[]` entry for many samples, so this is
+  where the per-sample derep counts live. `--verbose` no longer prints the
+  unnamed `[derep] N raw -> N unique` lines on this path.
 
 `runs[].screen_occupancy` has a `kmer` or `minimizer` half for whichever screen
 the run built (both under `--screen-audit`): per-raw fill against the
@@ -118,6 +122,9 @@ jq '.runs[0].index | {use_index, hindsight_disagrees}' run_metrics.json
 
 # is the pooled load front I/O- or format-bound, and which phase set the RSS peak?
 jq '.pipeline | {derep_detail, peak_rss_mb}' run_metrics.json
+
+# per-sample derep counts and the slowest-loading input of a pooled run
+jq -r '.pipeline.inputs | sort_by(-.load_seconds)[] | "\(.sample) \(.reads) \(.uniques)"' run_metrics.json
 
 # slowest sample in a per-sample run
 jq -r '.runs | sort_by(-.phases.compare)[0] | "\(.sample) \(.phases.compare)s"' run_metrics.json

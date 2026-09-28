@@ -441,6 +441,27 @@ fn prose_only_measurements_have_json_homes() {
     );
     assert!(f(&s["min"]) <= f(&s["median"]) && f(&s["median"]) <= f(&s["max"]));
 
+    // Per-sample derep counts moved here from the unnamed `[derep]` lines.
+    assert!(
+        !err.contains("[derep]"),
+        "pooled still prints unnamed [derep] lines"
+    );
+    let inputs = doc["pipeline"]["inputs"]
+        .as_array()
+        .expect("pipeline.inputs");
+    let names: Vec<&str> = inputs
+        .iter()
+        .map(|i| i["sample"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["sam1F", "sam2F"]);
+    let reads: u64 = inputs.iter().map(|i| i["reads"].as_u64().unwrap()).sum();
+    assert_eq!(reads as f64, prose_num(&err, "merged unique(s),", ","));
+    for i in inputs {
+        assert!(i["uniques"].as_u64().unwrap() > 0);
+        assert!(i["uniques"].as_u64() <= i["reads"].as_u64());
+        assert!(f(&i["load_seconds"]) > 0.0);
+    }
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -480,6 +501,13 @@ fn derep_detail_splits_read_and_parse_for_json_inputs() {
     assert!(d["read"].as_f64().unwrap() >= 0.0);
     assert!(d["parse"].as_f64().unwrap() > 0.0);
     assert!(d["mb_per_s"].as_f64().unwrap() > 0.0);
+
+    // JSON inputs never printed a `[derep]` line; their counts exist only here.
+    let inputs = doc["pipeline"]["inputs"]
+        .as_array()
+        .expect("pipeline.inputs");
+    assert_eq!(inputs.len(), 2);
+    assert!(inputs.iter().all(|i| i["reads"].as_u64().unwrap() > 0));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
