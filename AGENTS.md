@@ -86,6 +86,9 @@ prose lives on ReadTheDocs, under `docs/commands/<subcommand>.md`.
 - **Point at the docs.** Every subcommand carries
   `after_help = docs_link!("<page>")`. Add the page in the same change, and add
   it to the `nav:` block in `mkdocs.yml`.
+- **Group every subcommand.** The top-level `--help` lists subcommands under
+  `COMMAND_GROUPS` in `src/cli.rs` (Workflow, Quality control, Export,
+  Diagnostics). Add a new subcommand there; a test fails if you do not.
 - **Link the companions.** Before a docs page is done, check `scripts/` and
   `examples/` for a file that serves the same subcommand, and name the R
   function it mirrors. Three pages were missing one: `learnerrors_to_dada2rs.R`

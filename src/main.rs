@@ -6,7 +6,6 @@ use std::{
     process::ExitCode,
 };
 
-use clap::Parser;
 use flate2::read::MultiGzDecoder;
 use rand::seq::SliceRandom as _;
 use rayon::prelude::*;
@@ -19,7 +18,7 @@ use dada2_rs::{
     reference_eval, remove_bimera, remove_primers, sequence_table, summary, taxonomy,
 };
 
-use clap::CommandFactory;
+use clap::FromArgMatches;
 use cli::{Cli, Commands};
 use containers::BirthType;
 use derep::dereplicate;
@@ -259,7 +258,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> io::Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::from_arg_matches(&cli::command().get_matches()).unwrap_or_else(|e| e.exit());
 
     // Before anything else, and irrespective of `--verbose`: a `DADA2RS_*`
     // variable that is set but not recognised means the run is not the one that
@@ -275,7 +274,7 @@ fn run() -> io::Result<()> {
         None => {
             eprintln!("dada2-rs {DADA2_RS_VERSION}");
             eprintln!();
-            Cli::command().print_help()?;
+            cli::command().print_help()?;
             return Ok(());
         }
     };
