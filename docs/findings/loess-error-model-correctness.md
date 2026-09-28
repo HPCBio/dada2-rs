@@ -26,6 +26,14 @@ Along the way, three claims had to be withdrawn, and all three were the
 instrument's fault rather than the thing being measured. That pattern is the
 third result on this page.
 
+!!! note "Current state"
+    This page is the history. Since it was written, [#213](https://github.com/HPCBio/dada2-rs/pull/213)
+    and [#217](https://github.com/HPCBio/dada2-rs/pull/217) made **both**
+    surfaces match R to double-precision round-off, including the sparse
+    regime, and [#205](https://github.com/HPCBio/dada2-rs/issues/205) made
+    `interpolate` the default. What is and is not ported from R today is in
+    [LOESS: what is ported from R, and what is not](loess-r-coverage.md).
+
 ## Why fidelity here is not pedantry
 
 Error rates feed `pval.rs` pointwise, so a shifted rate moves abundance
@@ -109,7 +117,8 @@ No unexplained divergence remained — all of it was the kd-tree surface R
 defaults to. So `ehg124`/`ehg128` were ported (kd-tree partition subdividing at
 the *median data point*, plus cubic Hermite blending) and exposed through
 `LoessConfig` and `--loess-surface`: `direct` keeps the historical direct
-surface, `r-dada2` mirrors R DADA2's interpolate surface.
+surface, `r-dada2` mirrors R DADA2's interpolate surface. (The presets have
+since been replaced by `--loess-surface`; see #205.)
 
 On the 362-sample data the two presets produce **visibly different error models
 and an identical set of ASVs** — which is the most reassuring possible outcome
@@ -154,7 +163,8 @@ calls `loess()` without naming a surface and so inherits R's default,
 is an approximation adopted for speed. On the integer-Q grid every data point is
 already a vertex, so direct evaluation is arguably the *more* faithful
 evaluation of the same fit, and the deviation is R's approximation rather than
-ours. We implement both and default to `direct`.
+ours. We implement both. The default was `direct` until #205 and is now
+`interpolate`, because that is what R DADA2 actually runs.
 
 **Whether it matters is a different question, and the intuition is wrong.** The
 natural guess is that a small error-rate shift only moves borderline calls near
@@ -328,8 +338,8 @@ raw fit residual.
 - **Their interpolation surface is not R's `ehg128`.** It matches to machine
   epsilon across the interior (q=15–36) and diverges at the boundary vertices by
   up to 0.24 log10, about 1.7× in rate. Ours is ~200× closer there — **and the
-  interpolate surface is what the `r-dada2` preset uses**, so on the path we care
-  about most, ours wins.
+  interpolate surface is R DADA2's, and now our default**, so on the path we
+  care about most, ours wins.
 
 In short: their better arm is one we do not use, and the worse arm is the one we
 do. The rest of the decision is unglamorous and decisive — perf is irrelevant at
@@ -388,6 +398,13 @@ Our kd-tree vertex partition has very little to work with at 4–6 anchors. No
 product impact today — nothing ships a sparse-input interpolate path, and R
 itself is unreliable in this regime — but it is a real gap on the `r-dada2`
 surface and it belongs in any serious binned-quality work.
+
+**Closed since by [#217](https://github.com/HPCBio/dada2-rs/pull/217).** Two
+guards stopped our kd-tree subdividing when few columns were populated, and R's
+leaf test turned out to be geometric rather than index-based. With R's rules
+ported, every anchors-only case from 3 to 8 columns matches R to ≤ 8e-15 on
+both surfaces: level with `loess-rs`'s direct arm, and far closer than its
+interpolate arm.
 
 ## Still open: robustness, weighting and the boundary
 
@@ -455,9 +472,9 @@ set identity, not on how the curves look.**
 - **Pin the input set before comparing error models.** Otherwise the fit and the
   sample draw move together, and the residual cannot be attributed.
 - **`--loess-surface` is the fidelity knob**, and the two surfaces differ in
-  exactly one thing: the fitting surface. `default` is direct, `r-dada2` is R's
-  interpolate. On 362 samples they give different error models and the same
-  ASVs.
+  exactly one thing: the fitting surface. `interpolate` is R's and the default;
+  `direct` is the historical surface. On 362 samples they give different error
+  models and the same ASVs.
 - **Do not tune the smoother on curve shape.** Every arm in #96 changes rates in
   the high-count region; the only acceptable score is ASV-level churn.
 - One user-facing note worth carrying upstream: R's `Error rates could not be

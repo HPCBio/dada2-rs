@@ -68,6 +68,12 @@ wrong, not us. See the decision recorded on #95.
 
 ## Findings (F3D0 MiSeqSOP, `loess-rs` 0.9.0, 2026-07)
 
+> **Superseded for the `ours_*` arms.** These tables predate #213 and #217.
+> Since then both `ours_*` arms match R to ≤ 2e-14 on the dense grid and
+> ≤ 8e-15 on every anchors-only case. Current numbers are in
+> [`docs/findings/loess-r-coverage.md`](../../docs/findings/loess-r-coverage.md).
+> The `loess-rs` rows still stand.
+
 Full 40-column grid, 28 populated, 12 transitions — `|log10(rate/rate_R)|`:
 
 | arm | vs R | median | p95 | max | >2x |
