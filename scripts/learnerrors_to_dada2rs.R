@@ -6,6 +6,7 @@
 #
 # Usage:
 #   Rscript scripts/learnerrors_to_dada2rs.R <input.rds> <output.json>
+#   Rscript scripts/learnerrors_to_dada2rs.R --help
 #
 # The input RDS may contain either:
 #   (a) the list returned by learnErrors() — $err_out is used; or
@@ -14,13 +15,21 @@
 # The output JSON sets both `err_in` and `err_out` to the same matrix, so
 # the value of dada2-rs's --use-err-in flag has no effect on downstream
 # inference.  Row order must be A2A,A2C,A2G,A2T,C2A,...,T2T.
+#
+# Dependencies: jsonlite, optparse
 
-suppressPackageStartupMessages(library(jsonlite))
+suppressPackageStartupMessages({
+  library(jsonlite)
+  library(optparse)
+})
 
-args <- commandArgs(trailingOnly = TRUE)
-if (length(args) != 2L) {
-  stop("Usage: Rscript learnerrors_to_dada2rs.R <input.rds> <output.json>")
-}
+parser <- OptionParser(
+  usage = "usage: %prog <input.rds> <output.json>",
+  description = paste0(
+    "\nConvert an R DADA2 learnErrors() result (or a bare 16-row error\n",
+    "matrix) saved as .rds into a dada2-rs --error-model JSON.\n")
+)
+args     <- parse_args(parser, positional_arguments = 2)$args
 in_path  <- args[[1]]
 out_path <- args[[2]]
 

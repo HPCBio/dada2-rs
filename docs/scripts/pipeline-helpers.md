@@ -14,6 +14,7 @@ because nothing about the model is re-derived.
 # In R:  saveRDS(errF, "errF.rds")   # the learnErrors() result
 
 Rscript scripts/learnerrors_to_dada2rs.R errF.rds errF.json
+Rscript scripts/learnerrors_to_dada2rs.R --help
 dada2-rs dada sample.derep.json.gz --error-model errF.json -o sample.dada.json
 ```
 
