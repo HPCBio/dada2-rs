@@ -54,7 +54,27 @@ struct SampleMergeResult {
 
 struct SampleCounts {
     name: String,
-    counts: HashMap<String, u64>,
+    /// In input order, so first-seen column order is defined by the input
+    /// rather than by `HashMap` iteration (#240).
+    counts: Vec<(String, u64)>,
+}
+
+/// Collapse `(sequence, count)` pairs into first-seen order, summing duplicates
+/// as R's `getUniques` does. Two forward/reverse pairs can merge to the same
+/// sequence; collecting into a map would keep only the last count (#240).
+fn collapse_counts(pairs: impl IntoIterator<Item = (String, u64)>) -> Vec<(String, u64)> {
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut out: Vec<(String, u64)> = Vec::new();
+    for (seq, n) in pairs {
+        match index.get(&seq) {
+            Some(&i) => out[i].1 += n,
+            None => {
+                index.insert(seq.clone(), out.len());
+                out.push((seq, n));
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -95,11 +115,7 @@ fn parse_file(path: &Path, sample_name: Option<&str>) -> io::Result<Vec<SampleCo
                 .map(str::to_owned)
                 .or(out.sample)
                 .unwrap_or_else(|| file_stem(path));
-            let counts = out
-                .asvs
-                .into_iter()
-                .map(|a| (a.sequence, a.abundance))
-                .collect();
+            let counts = collapse_counts(out.asvs.into_iter().map(|a| (a.sequence, a.abundance)));
             Ok(vec![SampleCounts { name, counts }])
         }
         "merge-pairs" => {
@@ -114,12 +130,12 @@ fn parse_file(path: &Path, sample_name: Option<&str>) -> io::Result<Vec<SampleCo
                 .into_iter()
                 .map(|r| SampleCounts {
                     name: r.sample,
-                    counts: r
-                        .merged
-                        .into_iter()
-                        .filter(|m| m.accept && !m.sequence.is_empty())
-                        .map(|m| (m.sequence, m.abundance))
-                        .collect(),
+                    counts: collapse_counts(
+                        r.merged
+                            .into_iter()
+                            .filter(|m| m.accept && !m.sequence.is_empty())
+                            .map(|m| (m.sequence, m.abundance)),
+                    ),
                 })
                 .collect())
         }
@@ -175,7 +191,74 @@ mod parse_tests {
         let got = parse_file(&path, None).expect("gzipped dada output should parse");
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].name, "F3D0");
-        assert_eq!(got[0].counts.get("ACGTACGT"), Some(&7));
+        assert_eq!(got[0].counts, vec![("ACGTACGT".to_owned(), 7)]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two forward/reverse pairs can merge to one sequence. R's `getUniques`
+    /// sums them; collecting into a map kept only the last count (#240).
+    #[test]
+    fn merged_duplicates_are_summed_in_first_seen_order() {
+        let dir = std::env::temp_dir().join(format!("dada2rs_seqtab_dup_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("merged.json");
+        std::fs::write(
+            &path,
+            r#"{"dada2_rs_command":"merge-pairs","samples":[{"sample":"s1","merged":[
+                {"sequence":"CCCC","abundance":5,"accept":true},
+                {"sequence":"AAAA","abundance":3,"accept":true},
+                {"sequence":"CCCC","abundance":2,"accept":true},
+                {"sequence":"GGGG","abundance":9,"accept":false}]}]}"#,
+        )
+        .unwrap();
+
+        let got = parse_file(&path, None).unwrap();
+        assert_eq!(
+            got[0].counts,
+            vec![("CCCC".to_owned(), 7), ("AAAA".to_owned(), 3)]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod column_order_tests {
+    use super::{HashAlgo, OrderBy, make_sequence_table};
+
+    /// Fifty sequences with equal totals: column order is entirely the
+    /// tie-break, which must be first-seen as in R's `makeSequenceTable`
+    /// (`unique()` then a stable `order()`), not `HashMap` order (#240).
+    #[test]
+    fn tied_totals_keep_first_seen_order() {
+        let dir = std::env::temp_dir().join(format!("dada2rs_seqtab_ties_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let seqs: Vec<String> = (0..50u32)
+            .map(|i| {
+                (0..8)
+                    .map(|b| ['A', 'C', 'G', 'T'][((i >> (2 * b)) & 3) as usize])
+                    .collect()
+            })
+            .collect();
+        let asvs: Vec<String> = seqs
+            .iter()
+            .map(|s| format!(r#"{{"sequence":"{s}","abundance":4}}"#))
+            .collect();
+        let path = dir.join("s1.json");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"dada2_rs_command":"dada","sample":"s1","asvs":[{}]}}"#,
+                asvs.join(",")
+            ),
+        )
+        .unwrap();
+
+        for order in [OrderBy::Abundance, OrderBy::NSamples, OrderBy::None] {
+            let t = make_sequence_table(&[path.as_path()], None, order, HashAlgo::Md5).unwrap();
+            assert_eq!(t.sequences, seqs);
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -261,7 +344,7 @@ pub fn make_sequence_table(
     let mut seq_index: HashMap<String, usize> = HashMap::new();
     let mut sequences: Vec<String> = Vec::new();
     for s in &all_samples {
-        for seq in s.counts.keys() {
+        for (seq, _) in &s.counts {
             if !seq_index.contains_key(seq) {
                 seq_index.insert(seq.clone(), sequences.len());
                 sequences.push(seq.clone());
@@ -275,7 +358,7 @@ pub fn make_sequence_table(
     // Build the count matrix (samples × sequences).
     let mut counts: Vec<Vec<u64>> = vec![vec![0u64; nseq]; nsamp];
     for (i, s) in all_samples.iter().enumerate() {
-        for (seq, &cnt) in &s.counts {
+        for (seq, cnt) in &s.counts {
             let j = seq_index[seq];
             counts[i][j] += cnt;
         }

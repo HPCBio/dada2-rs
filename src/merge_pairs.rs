@@ -358,6 +358,40 @@ fn check_sample_ids(
     Ok(())
 }
 
+/// `((fwd_asv, rev_asv), reads)`.
+type PairCount = ((usize, usize), u64);
+
+/// Count reads per `(fwd_asv, rev_asv)` pair, skipping reads unassigned in
+/// either direction. Returns the pairs in first-occurrence order over reads,
+/// as R's `unique(pairdf)` does, so abundance ties sort in R's order rather
+/// than `HashMap` order (#240), plus the number of reads counted.
+fn count_pairs(
+    fwd_reads: &[usize],
+    rev_reads: &[usize],
+    fwd_map: &[Option<usize>],
+    rev_map: &[Option<usize>],
+) -> (Vec<PairCount>, u64) {
+    let mut index: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut pairs: Vec<PairCount> = Vec::new();
+    let mut total: u64 = 0;
+    for (&fu, &ru) in fwd_reads.iter().zip(rev_reads) {
+        // fwd_map[fu] is the ASV index for the fu-th forward unique (None = unassigned).
+        let (Some(fa), Some(ra)) = (
+            fwd_map.get(fu).copied().flatten(),
+            rev_map.get(ru).copied().flatten(),
+        ) else {
+            continue;
+        };
+        let k = *index.entry((fa, ra)).or_insert_with(|| {
+            pairs.push(((fa, ra), 0));
+            pairs.len() - 1
+        });
+        pairs[k].1 += 1;
+        total += 1;
+    }
+    (pairs, total)
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -515,26 +549,7 @@ pub fn merge_sample(
     }
 
     // ---- Count (fwd_asv, rev_asv) pairs ----
-    let mut pair_counts: HashMap<(usize, usize), u64> = HashMap::new();
-    let mut total_pairs: u64 = 0;
-
-    for i in 0..n_reads {
-        let fu = fwd_derep.map[i];
-        let ru = rev_derep.map[i];
-
-        // fwd_map[fu] is the ASV index for the fu-th forward unique (None = unassigned).
-        let fa = match fwd_map.get(fu).and_then(|x| *x) {
-            Some(a) => a,
-            None => continue,
-        };
-        let ra = match rev_map.get(ru).and_then(|x| *x) {
-            Some(a) => a,
-            None => continue,
-        };
-
-        *pair_counts.entry((fa, ra)).or_insert(0) += 1;
-        total_pairs += 1;
-    }
+    let (pair_counts, total_pairs) = count_pairs(&fwd_derep.map, &rev_derep.map, fwd_map, rev_map);
 
     // ---- Attempt merge for each distinct pair ----
     let mut merged: Vec<MergedPair> = Vec::with_capacity(pair_counts.len());
@@ -652,8 +667,9 @@ pub fn merge_sample(
         });
     }
 
-    // Sort by abundance descending for readability.
-    merged.sort_unstable_by_key(|a| std::cmp::Reverse(a.abundance));
+    // Abundance descending. Stable, like R's `order()`, so ties keep
+    // first-occurrence order (#240).
+    merged.sort_by_key(|a| std::cmp::Reverse(a.abundance));
 
     let num_merged = merged.iter().filter(|m| m.accept).count();
 
@@ -664,4 +680,37 @@ pub fn merge_sample(
         num_merged,
         merged,
     })
+}
+
+#[cfg(test)]
+mod count_pairs_tests {
+    use super::count_pairs;
+
+    /// Fifty pairs of one read each: every abundance ties, so the order is
+    /// entirely the tie-break. It must be first occurrence over reads, as R's
+    /// `unique(pairdf)` gives; `HashMap` order would match by chance with
+    /// negligible probability (#240).
+    #[test]
+    fn tied_pairs_keep_first_occurrence_order() {
+        let n = 50;
+        // Read i pairs forward unique i with reverse unique n-1-i.
+        let fwd: Vec<usize> = (0..n).collect();
+        let rev: Vec<usize> = (0..n).rev().collect();
+        let map: Vec<Option<usize>> = (0..n).map(Some).collect();
+        let (pairs, total) = count_pairs(&fwd, &rev, &map, &map);
+        let want: Vec<((usize, usize), u64)> = (0..n).map(|i| ((i, n - 1 - i), 1)).collect();
+        assert_eq!(pairs, want);
+        assert_eq!(total, n as u64);
+    }
+
+    #[test]
+    fn repeats_accumulate_and_unassigned_reads_are_skipped() {
+        let fwd = [0, 1, 0, 2, 0];
+        let rev = [0, 1, 0, 0, 1];
+        let fmap = [Some(0), Some(1), None];
+        let rmap = [Some(0), Some(1)];
+        let (pairs, total) = count_pairs(&fwd, &rev, &fmap, &rmap);
+        assert_eq!(pairs, vec![((0, 0), 2), ((1, 1), 1), ((0, 1), 1)]);
+        assert_eq!(total, 4);
+    }
 }
