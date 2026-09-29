@@ -112,22 +112,29 @@ sat off position 0 and the raw there could never bud
 
 It needs a count tie at the top of a derep, so pooled runs are immune in practice
 (the 362-sample MiSeq pool's top two are 251,498 and 211,477 reads). Per sample
-it fired on **4 of 724** MiSeq inputs, and in two it misassigned real reads:
+it fired on **4 of 724** MiSeq inputs (three samples), and it **removed real
+reads from the final table**:
 
-| input | tied top | before | after | R DADA2 |
+| sample | tied top | merged reads, before | after | R DADA2 |
 |---|---|---|---|---|
-| M3D147 reverse | 176 = 176 | 393 + a 59-read 1-mismatch variant | 214 + 240 | 214 + 235 |
-| M2D19 reverse | 2 = 2 | one 44-read ASV | 18 + 26, 19 mismatches apart | 16 + 17 |
-| M3D149 F and R | 1 = 1 | named after the last read | named after the first | first |
+| M3D147 | 176 = 176 (reverse) | 1,875 (70 ASVs) | 2,109 (71) | 2,109 (71) |
+| M2D19 | 2 = 2 (reverse) | 0 (no pairs merge) | 7 (1) | 7 (1) |
+| M3D149 | 1 = 1 (both) | 0 | 1 (1) | 1 (1) |
 
-In M3D147 the position-0 raw's 176 reads were credited to the other tied centre,
-and its organism was reported as a variant one mismatch away. R was run with the
-same error model, so only the tie-break differs; its counts run slightly low
-because it leaves reads unassigned where we do not
-([issue 204](https://github.com/HPCBio/dada2-rs/issues/204)).
+After the fix our merged table matches R's exactly, **73 of 73 (sample, ASV)
+cells**. R ran the same chain (`dada`, `mergePairs`, `makeSequenceTable`) with
+the same error models, so only the tie-break differs.
+
+The loss happens at denoising. The unbuddable position-0 raw is its own
+organism, so it fails `OMEGA_C` against the other tied centre and its reads are
+left unassigned; in M3D147 that dropped a 234-read organism, 11% of the sample's
+merged reads. (Before [issue 204](https://github.com/HPCBio/dada2-rs/issues/204)
+the same reads were instead counted toward the wrong ASV.)
 
 No fixture or benchmark sample had tied top counts, so no parity comparison
-could see this. `dev/top_ties.py` finds the inputs where it applies.
+could see this. `dev/top_ties.py` finds the inputs where it applies. None of the
+three samples was in that run's `learn-errors` training set, which filled its
+`--nbases` budget from earlier files, so its error models were unaffected.
 
 ## The ceiling: where we follow the intent, not the behaviour
 
