@@ -150,8 +150,13 @@ pub struct RawInput {
 pub struct ClusterSummary {
     /// Integer-encoded representative (center) sequence.
     pub sequence: Vec<u8>,
-    /// Total reads assigned to this cluster.
+    /// Reads of every member (`Bi::reads`), the quantity `lambda` scales in the
+    /// abundance p-value. Not the reported abundance: see `abundance`.
     pub reads: u32,
+    /// Reads of the members with `correct == true`, i.e. those `map` assigns
+    /// here. R's `clustering$abundance` (`b_make_clustering_df`, error.cpp:57);
+    /// the reported ASV abundance (#204).
+    pub abundance: u32,
     /// Indices (into the input `RawInput` slice) of member Raws.
     pub members: Vec<usize>,
     /// Hamming distance to the cluster center for each entry in `members`
@@ -598,9 +603,15 @@ pub fn dada_uniques_cached(
                 member_lambdas.push(b.raws[raw_idx].comp.lambda);
                 member_pvals.push(b.raws[raw_idx].p);
             }
+            let abundance = members
+                .iter()
+                .filter(|&&ri| b.raws[ri].correct)
+                .map(|&ri| b.raws[ri].reads)
+                .sum();
             ClusterSummary {
                 sequence: bi.seq.clone(),
                 reads: bi.reads,
+                abundance,
                 members,
                 member_hammings,
                 member_lambdas,

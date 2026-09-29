@@ -1069,3 +1069,95 @@ fn dada_failed_uniques_matches_map_nulls() {
         assert!(cols[2].parse::<u32>().unwrap() >= 1, "reads >= 1");
     }
 }
+
+/// Per-ASV sums of derep counts over a dada output's `map`, plus the number of
+/// uniques the map leaves unassigned.
+fn mapped_abundance(dada_json: &Path, derep_json: &Path) -> (Vec<i64>, usize) {
+    let d: serde_json::Value = serde_json::from_slice(&std::fs::read(dada_json).unwrap()).unwrap();
+    let u: serde_json::Value = serde_json::from_slice(&std::fs::read(derep_json).unwrap()).unwrap();
+    let map = d["map"].as_array().expect("dada output has a map");
+    let uniques = u["uniques"].as_array().unwrap();
+    assert_eq!(
+        map.len(),
+        uniques.len(),
+        "map must cover every derep unique"
+    );
+    let mut sums = vec![0i64; d["asvs"].as_array().unwrap().len()];
+    let mut unmapped = 0;
+    for (m, un) in map.iter().zip(uniques) {
+        match m.as_u64() {
+            Some(a) => sums[a as usize] += un["count"].as_i64().unwrap(),
+            None => unmapped += 1,
+        }
+    }
+    (sums, unmapped)
+}
+
+/// An ASV's reported abundance counts only the reads `map` assigns to it, as
+/// R's `clustering$abundance` does (`b_make_clustering_df` sums correct raws
+/// only). Reporting every member's reads overstated it by the reads that fail
+/// `OMEGA_C` (#204). Checked for `dada` and `dada-pseudo`; the test requires an
+/// unassigned unique, since without one both rules agree.
+#[test]
+fn asv_abundance_counts_only_mapped_reads() {
+    let dir = scratch("mapped_abund");
+    let err = shared_err_model();
+    let (s1, s2) = (fixture("sam1F.fastq.gz"), fixture("sam2F.fastq.gz"));
+    let mut unmapped_total = 0;
+
+    let per = dir.join("per");
+    std::fs::create_dir_all(&per).unwrap();
+    let pseudo = dir.join("pseudo");
+    run(&[
+        "dada-pseudo",
+        s1.to_str().unwrap(),
+        s2.to_str().unwrap(),
+        "--error-model",
+        err.to_str().unwrap(),
+        "--output-dir",
+        pseudo.to_str().unwrap(),
+        "--threads",
+        "1",
+    ]);
+    for (fq, name) in [(&s1, "sam1F"), (&s2, "sam2F")] {
+        let derep = dir.join(format!("{name}.derep.json"));
+        run(&["derep", fq.to_str().unwrap(), "-o", derep.to_str().unwrap()]);
+        let dada = per.join(format!("{name}.json"));
+        run(&[
+            "dada",
+            fq.to_str().unwrap(),
+            "--error-model",
+            err.to_str().unwrap(),
+            "--threads",
+            "1",
+            "-o",
+            dada.to_str().unwrap(),
+        ]);
+        for out in [dada, pseudo.join(format!("{name}.json"))] {
+            let (sums, unmapped) = mapped_abundance(&out, &derep);
+            let reported: Vec<i64> = asv_set_ordered(&out);
+            assert_eq!(
+                reported,
+                sums,
+                "{}: abundance != reads mapped to it",
+                out.display()
+            );
+            unmapped_total += unmapped;
+        }
+    }
+    assert!(
+        unmapped_total > 0,
+        "no unassigned uniques in the fixtures, so this test cannot distinguish the two rules"
+    );
+}
+
+/// ASV abundances in output order.
+fn asv_set_ordered(path: &Path) -> Vec<i64> {
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    v["asvs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["abundance"].as_i64().unwrap())
+        .collect()
+}
