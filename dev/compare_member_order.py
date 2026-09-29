@@ -115,6 +115,54 @@ def hamming(a, b):
     return sum(x != y for x, y in zip(a, b)) if len(a) == len(b) else None
 
 
+K = 10
+
+
+def kmers(seq):
+    return {seq[i:i + K] for i in range(len(seq) - K + 1)}
+
+
+def edit_end_free(a, b, band=12):
+    """Banded unit-cost edit distance, free trailing overhang on either side.
+
+    The free end matters for fixed-length reads: after an indel, one read runs
+    on past the other's end. Hamming turns a single indel into dozens of
+    mismatches (an AAC repeat unit scored 38); this scores it 3.
+    """
+    n, m = len(a), len(b)
+    big = n + m
+    prev = [j if j <= band else big for j in range(m + 1)]
+    best = prev[m]
+    for i in range(1, n + 1):
+        cur = [big] * (m + 1)
+        if i <= band:
+            cur[0] = i
+        for j in range(max(1, i - band), min(m, i + band) + 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] != b[j - 1]))
+        best = min(best, cur[m])
+        prev = cur
+    return min(best, min(prev))
+
+
+class EditIndex:
+    """Nearest edit distance to a pool, via a k-mer prefilter."""
+
+    def __init__(self, pool, top=5):
+        self.top = top
+        self.index = {}
+        for s in pool:
+            for k in kmers(s):
+                self.index.setdefault(k, []).append(s)
+
+    def nearest(self, seq):
+        shared = {}
+        for k in kmers(seq):
+            for s in self.index.get(k, ()):
+                shared[s] = shared.get(s, 0) + 1
+        cands = sorted(shared, key=shared.get, reverse=True)[: self.top]
+        return min((edit_end_free(seq, c) for c in cands if c != seq), default=None)
+
+
 def nearest(seq, pool):
     """Smallest equal-length Hamming distance from seq to any sequence in pool."""
     ds = [h for p in pool if (h := hamming(seq, p)) is not None]
@@ -126,6 +174,8 @@ def compare(a, b):
     only_a, only_b = set(a) - set(b), set(b) - set(a)
     moved = sum(abs(a.get(s, 0) - b.get(s, 0)) for s in set(a) | set(b)) // 2
     near = [nearest(s, set(a)) for s in only_b]
+    idx = EditIndex(set(a)) if only_b else None
+    near_edit = [idx.nearest(s) for s in only_b]
     return {
         "n_a": len(a), "n_b": len(b),
         "only_a": len(only_a), "only_b": len(only_b),
@@ -136,6 +186,7 @@ def compare(a, b):
         "only_b_max_abund": max((b[s] for s in only_b), default=0),
         "only_b_h1": sum(1 for h in near if h == 1),
         "only_b_h_le2": sum(1 for h in near if h is not None and h <= 2),
+        "only_b_e_le3": sum(1 for e in near_edit if e is not None and e <= 3),
     }
 
 
@@ -164,23 +215,28 @@ def main():
 
     print(f"baseline {name}: {len(base)} ASVs, {sum(base.values())} reads\n")
     print(f"{'arm':12} {'ASVs':>5} {'churn':>6} {'-base':>6} {'+arm':>5} "
-          f"{'reads moved':>18} {'max lost':>9} {'max new':>8} {'new H1':>7} {'new H<=2':>8}")
+          f"{'reads moved':>18} {'max lost':>9} {'max new':>8} {'new H1':>7} {'new H<=2':>8} {'new E<=3':>8}")
     for arm, t in arms.items():
         c = compare(base, t)
         print(f"{arm:12} {c['n_b']:5} {c['churn']:6} {c['only_a']:6} {c['only_b']:5} "
               f"{c['reads_moved']:9} ({100 * c['reads_moved'] / c['reads_total']:.3f}%) "
               f"{c['only_a_max_abund']:9} {c['only_b_max_abund']:8} "
-              f"{c['only_b_h1']:7} {c['only_b_h_le2']:8}")
+              f"{c['only_b_h1']:7} {c['only_b_h_le2']:8} {c['only_b_e_le3']:8}")
 
     # Which ASVs churn, by id, so the same flip across arms is visible.
-    print("\nchurned ASVs (- lost from baseline, + new in arm; abundance; nearest H to the other side):")
+    print("\nchurned ASVs (- lost from baseline, + new in arm; abundance; nearest to the other side")
+    print("  as H = Hamming, equal length only, and E = edit distance with a free end):")
+    base_idx = EditIndex(set(base))
     for arm, t in arms.items():
-        rows = [("-", s, base[s], nearest(s, set(t))) for s in set(base) - set(t)]
-        rows += [("+", s, t[s], nearest(s, set(base))) for s in set(t) - set(base)]
-        if rows:
-            desc = ", ".join(f"{sign}{short_id(s)}:{n} (H{h})" for sign, s, n, h in
-                             sorted(rows, key=lambda r: -r[2]))
-            print(f"  {arm:12} {desc}")
+        lost, new = set(base) - set(t), set(t) - set(base)
+        if not (lost or new):
+            continue
+        arm_idx = EditIndex(set(t))
+        rows = [("-", s, base[s], nearest(s, set(t)), arm_idx.nearest(s)) for s in lost]
+        rows += [("+", s, t[s], nearest(s, set(base)), base_idx.nearest(s)) for s in new]
+        desc = ", ".join(f"{sign}{short_id(s)}:{n} (H{h} E{e})" for sign, s, n, h, e in
+                         sorted(rows, key=lambda r: -r[2]))
+        print(f"  {arm:12} {desc}")
 
     command = next(iter(tags[base_dir]))
     b0 = births(base_dir, command)
