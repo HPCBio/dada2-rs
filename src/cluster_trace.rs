@@ -151,7 +151,7 @@ pub fn write_trace(
         id
     };
 
-    let total_reads: u32 = result.clusters.iter().map(|c| c.reads).sum();
+    let total_reads: u32 = result.clusters.iter().map(|c| c.abundance).sum();
 
     let mut cluster_jsons: Vec<ClusterJson> = Vec::with_capacity(result.clusters.len());
     for (ci, c) in result.clusters.iter().enumerate() {
@@ -191,7 +191,7 @@ pub fn write_trace(
         cluster_jsons.push(ClusterJson {
             id: ci,
             center_seq_id,
-            abundance: c.reads,
+            abundance: c.abundance,
             n_members: c.members.len(),
             birth_type: birth_label(&c.birth_type),
             birth_from: c.birth_from,

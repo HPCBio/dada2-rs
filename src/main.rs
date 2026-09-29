@@ -1303,12 +1303,12 @@ fn run() -> io::Result<()> {
                 }
             }
 
-            let total_reads: u32 = result.clusters.iter().map(|c| c.reads).sum();
+            let total_reads: u32 = result.clusters.iter().map(|c| c.abundance).sum();
 
             let asvs: Vec<AsvEntry> = result
                 .clusters
                 .iter()
-                .map(|c| asv_entry_from_cluster(c, c.reads))
+                .map(|c| asv_entry_from_cluster(c, c.abundance))
                 .collect();
 
             let aux_json = result.aux.as_ref().map(|a| {
@@ -1901,7 +1901,7 @@ fn run() -> io::Result<()> {
                 let pooled_asvs: Vec<AsvEntry> = result
                     .clusters
                     .iter()
-                    .map(|c| asv_entry_from_cluster(c, c.reads))
+                    .map(|c| asv_entry_from_cluster(c, c.abundance))
                     .collect();
                 let record = PooledRecord {
                     num_uniques: pooled_uniques.len(),
@@ -5129,7 +5129,7 @@ fn result_to_asvs(result: &dada::DadaResult) -> Vec<(String, u32)> {
                 .iter()
                 .map(|&b| misc::nt_decode(b) as char)
                 .collect();
-            (sequence, c.reads)
+            (sequence, c.abundance)
         })
         .collect()
 }
@@ -5285,11 +5285,11 @@ fn denoise_and_serialize(
         );
     }
 
-    let total_reads: u32 = result.clusters.iter().map(|c| c.reads).sum();
+    let total_reads: u32 = result.clusters.iter().map(|c| c.abundance).sum();
     let asvs: Vec<AsvEntry> = result
         .clusters
         .iter()
-        .map(|c| asv_entry_from_cluster(c, c.reads))
+        .map(|c| asv_entry_from_cluster(c, c.abundance))
         .collect();
 
     let mut run_params = *run_params;
