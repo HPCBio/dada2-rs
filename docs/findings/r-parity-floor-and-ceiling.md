@@ -102,6 +102,33 @@ tie-break sensitivity underneath it is a floor and must be recognised.
     one above — tracked as
     [issue 228](https://github.com/HPCBio/dada2-rs/issues/228).
 
+### A second instance: the centre tie-break
+
+The same invariant broke a second way. `assign_center` makes the most abundant
+raw the centre; when the top two tie, R's strict `>` keeps the **first**
+(`cluster.cpp:378`) and ours kept the **last** (`max_by_key`). The centre then
+sat off position 0 and the raw there could never bud
+([issue 239](https://github.com/HPCBio/dada2-rs/issues/239)).
+
+It needs a count tie at the top of a derep, so pooled runs are immune in practice
+(the 362-sample MiSeq pool's top two are 251,498 and 211,477 reads). Per sample
+it fired on **4 of 724** MiSeq inputs, and in two it misassigned real reads:
+
+| input | tied top | before | after | R DADA2 |
+|---|---|---|---|---|
+| M3D147 reverse | 176 = 176 | 393 + a 59-read 1-mismatch variant | 214 + 240 | 214 + 235 |
+| M2D19 reverse | 2 = 2 | one 44-read ASV | 18 + 26, 19 mismatches apart | 16 + 17 |
+| M3D149 F and R | 1 = 1 | named after the last read | named after the first | first |
+
+In M3D147 the position-0 raw's 176 reads were credited to the other tied centre,
+and its organism was reported as a variant one mismatch away. R was run with the
+same error model, so only the tie-break differs; its counts run slightly low
+because it leaves reads unassigned where we do not
+([issue 204](https://github.com/HPCBio/dada2-rs/issues/204)).
+
+No fixture or benchmark sample had tied top counts, so no parity comparison
+could see this. `dev/top_ties.py` finds the inputs where it applies.
+
 ## The ceiling: where we follow the intent, not the behaviour
 
 Parity is a means, not the goal. Where R's implemented behaviour diverges from
@@ -143,7 +170,8 @@ divergence, pin both sides of it.
   center` is inherited from input ordering and maintained by no code in either
   implementation. Any new path that builds a `raws` vector — a new pooling mode,
   a new merge — must sort descending by abundance with a deterministic
-  tie-break, and should be tested for it.
+  tie-break, and should be tested for it. Whatever picks the centre must take
+  the *first* maximum, or a tie at the top re-breaks it.
 - **A parity result is evidence only about the path that produced it.**
   Bit-identical `trans` said nothing about `dada-pooled`, because the two do not
   share the code in question.
@@ -158,6 +186,8 @@ divergence, pin both sides of it.
 - [Issue 204](https://github.com/HPCBio/dada2-rs/issues/204) — `calc_pA`
   returned 1.0 where R's `ppois(reads-1, 0, lower.tail = FALSE)` gives 0.0 at
   zero expected reads, fixed in the same arc
+- [Issue 239](https://github.com/HPCBio/dada2-rs/issues/239) — the centre
+  tie-break; the per-sample measurements above
 - [Issue 157](https://github.com/HPCBio/dada2-rs/issues/157) — the open
   experiment on member-list ordering, whose prior this result inverts
 - [Issue 100](https://github.com/HPCBio/dada2-rs/issues/100) — the pseudo-pooling

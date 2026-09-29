@@ -535,7 +535,8 @@ impl B {
     }
 
     /// Set the most-abundant Raw as the center of cluster `i` and copy its
-    /// encoded sequence into `Bi.seq`.
+    /// encoded sequence into `Bi.seq`. Ties go to the first, as R's strict `>`
+    /// does; `max_by_key` would take the last (#239).
     /// Equivalent to C++ `bi_assign_center`.
     pub fn assign_center(&mut self, i: usize) {
         let ci: Option<usize> = {
@@ -544,7 +545,10 @@ impl B {
                 .raws
                 .iter()
                 .copied()
-                .max_by_key(|&ri| raws[ri].reads)
+                .fold(None, |best: Option<usize>, ri| match best {
+                    Some(bi) if raws[ri].reads <= raws[bi].reads => Some(bi),
+                    _ => Some(ri),
+                })
         };
         if let Some(ci) = ci {
             self.clusters[i].center = Some(ci);
@@ -584,5 +588,28 @@ mod raw_layout_probe {
         ] {
             println!("  {name:<14} offset {o:>3}  -> 64B line {}", o / 64);
         }
+    }
+}
+
+#[cfg(test)]
+mod assign_center_tests {
+    use super::*;
+
+    /// Tied top abundances must centre on the first, as R's strict `>` does
+    /// (`bi_assign_center`, cluster.cpp). `b_bud` never promotes position 0,
+    /// so a centre elsewhere leaves that raw unbuddable (#239, cf. #219).
+    #[test]
+    fn tied_max_reads_centres_on_first() {
+        let raws = [
+            (vec![0u8, 1, 2, 3], 50u32),
+            (vec![3, 2, 1, 0], 50),
+            (vec![0, 0, 1, 1], 7),
+        ]
+        .into_iter()
+        .map(|(seq, reads)| Raw::new(seq, None, reads, false))
+        .collect();
+        let b = B::new(raws, 1e-40, 1e-4, false);
+        assert_eq!(b.clusters[0].center, Some(0));
+        assert_eq!(b.clusters[0].seq, b.raws[0].seq);
     }
 }
