@@ -29,14 +29,27 @@ ERR="${2:?missing err.json}"
 OUT="${3:?missing out-dir}"
 shift 3
 [ "$#" -gt 0 ] || { echo "no inputs" >&2; exit 2; }
+MODE_SRC=$([ -n "${MODE+x}" ] && echo "set" || echo "NOT SET, defaulted")
 MODE="${MODE:-pooled}"
 ARMS="${ARMS:-insertion sorted shuffle:1 shuffle:2 shuffle:3 shuffle:4 shuffle:5}"
 THREADS="${THREADS:-8}"
 read -r -a extra <<< "${EXTRA:-}"
 
+# MODE must reach this script's environment (export it, or prefix the command).
+# A plain shell variable in a job script does not, and the default is pooled:
+# three "modes" once ran as three identical pooled runs this way.
+echo "==> MODE=$MODE ($MODE_SRC)"
+
 for arm in $ARMS; do
   o="$OUT/${arm/:/_}"
   mkdir -p "$o"
+  # Refuse to mix modes in one directory: every mode names its per-sample files
+  # <sample>.json, so a second mode would silently overwrite the first.
+  if [ -f "$o/.mode" ] && [ "$(cat "$o/.mode")" != "$MODE" ]; then
+    echo "ERROR: $o holds MODE=$(cat "$o/.mode") output; refusing to write MODE=$MODE there" >&2
+    exit 1
+  fi
+  echo "$MODE" > "$o/.mode"
   echo "==> $arm ($MODE, $# input(s))"
   export DADA2RS_MEMBER_ORDER="$arm"
   case "$MODE" in

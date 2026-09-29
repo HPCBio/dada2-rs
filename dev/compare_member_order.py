@@ -24,6 +24,17 @@ import statistics
 import sys
 
 
+def commands(arm_dir):
+    """The set of dada2_rs_command tags among arm_dir's per-sample JSONs."""
+    tags = set()
+    for f in os.listdir(arm_dir):
+        if f.endswith(".json") and not f.startswith("_"):
+            tag = json.load(open(os.path.join(arm_dir, f))).get("dada2_rs_command")
+            if tag:
+                tags.add(tag)
+    return tags
+
+
 def load(arm_dir):
     """seq -> total abundance over all per-sample JSONs in arm_dir."""
     tot = {}
@@ -76,6 +87,14 @@ def compare(a, b):
 
 def main():
     base_dir, arm_dirs = sys.argv[1], sys.argv[2:]
+    # Every arm must come from the same command, or the comparison is between
+    # modes, not member orders (three "modes" once all ran pooled, unnoticed).
+    tags = {d: commands(d) for d in [base_dir, *arm_dirs]}
+    if any(len(t) != 1 for t in tags.values()) or len(set().union(*tags.values())) != 1:
+        for d, t in tags.items():
+            print(f"  {d}: {sorted(t)}", file=sys.stderr)
+        sys.exit("ERROR: arms were not all produced by one command; refusing to compare")
+    print(f"command: {next(iter(tags[base_dir]))}")
     base = load(base_dir)
     arms = {os.path.basename(d.rstrip("/")): load(d) for d in arm_dirs}
     name = os.path.basename(base_dir.rstrip("/"))
