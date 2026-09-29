@@ -17,8 +17,10 @@ run's leading [derep] line). dada-pseudo is skipped: its round-1 progress lines
 carry no sample tag, so with concurrent samples they cannot be attributed.
 
 Usage:
-  compare_member_order.py <baseline-dir> <arm-dir> [<arm-dir> ...]
-Arm names are the directory basenames.
+  compare_member_order.py <baseline-dir> <arm-dir> [<arm-dir> ...] [--id HASH ...]
+Arm names are the directory basenames. --id (repeatable) takes a short id as
+printed in the churned-ASV list, or any prefix of it, and prints that ASV's
+sequence and its per-sample abundance in every arm.
 """
 import hashlib
 import itertools
@@ -38,6 +40,36 @@ def commands(arm_dir):
             if tag:
                 tags.add(tag)
     return tags
+
+
+def load_per_sample(arm_dir):
+    """sample file -> {seq: abundance} for each per-sample JSON in arm_dir."""
+    out = {}
+    for f in sorted(os.listdir(arm_dir)):
+        if not f.endswith(".json") or f.startswith("_"):
+            continue
+        d = json.load(open(os.path.join(arm_dir, f)))
+        if "asvs" in d:
+            out[f[: -len(".json")]] = {a["sequence"].upper(): a["abundance"] for a in d["asvs"]}
+    return out
+
+
+def show_ids(ids, dirs, names):
+    """Per-sample abundance of the ASVs whose short id starts with each of ids."""
+    per = {n: load_per_sample(d) for n, d in zip(names, dirs)}
+    seqs = {s for arm in per.values() for smp in arm.values() for s in smp}
+    for want in ids:
+        hits = sorted(s for s in seqs if short_id(s).startswith(want))
+        if not hits:
+            print(f"\n--id {want}: no ASV with that id in any arm")
+            continue
+        for seq in hits:
+            print(f"\n--id {want} = {short_id(seq)}  length {len(seq)}\n{seq}")
+            samples = sorted({smp for arm in per.values() for smp, t in arm.items() if seq in t})
+            print(f"  {'sample':32} " + " ".join(f"{n:>10}" for n in names))
+            for smp in samples:
+                row = " ".join(f"{per[n].get(smp, {}).get(seq, 0):>10}" for n in names)
+                print(f"  {smp:32} {row}")
 
 
 def load(arm_dir):
@@ -108,7 +140,16 @@ def compare(a, b):
 
 
 def main():
-    base_dir, arm_dirs = sys.argv[1], sys.argv[2:]
+    argv, ids = sys.argv[1:], []
+    while "--id" in argv:
+        i = argv.index("--id")
+        if i + 1 >= len(argv):
+            sys.exit("--id needs a value")
+        ids.append(argv[i + 1].lower())
+        del argv[i:i + 2]
+    if len(argv) < 2:
+        sys.exit(__doc__)
+    base_dir, arm_dirs = argv[0], argv[1:]
     # Every arm must come from the same command, or the comparison is between
     # modes, not member orders (three "modes" once all ran pooled, unnoticed).
     tags = {d: commands(d) for d in [base_dir, *arm_dirs]}
@@ -158,6 +199,9 @@ def main():
             order_diff = sum(x != y for x, y in zip(b0, b))
             print(f"  {arm:12} partitions with a different birth set {set_diff}, "
                   f"with the same set in a different order {order_diff - set_diff}")
+
+    if ids:
+        show_ids(ids, [base_dir, *arm_dirs], [name, *arms])
 
     shuffles = [a for a in arms if a.startswith("shuffle")]
     if len(shuffles) >= 2:
