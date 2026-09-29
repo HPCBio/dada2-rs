@@ -63,6 +63,8 @@ for arm in $ARMS; do
       : > "$o/log.txt"
       for f in "$@"; do
         s=$(basename "$f"); s=${s%.fastq.gz}; s=${s%.fastq}
+        # Lets compare_member_order.py split births by sample.
+        echo "### sample $s" >> "$o/log.txt"
         "$BIN" dada "$f" --error-model "$ERR" -o "$o/$s.json" \
           --threads "$THREADS" --verbose ${extra[@]+"${extra[@]}"} 2>> "$o/log.txt"
       done ;;
