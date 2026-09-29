@@ -97,7 +97,9 @@ member gets `p = calc_pA(reads, lambda × cluster_reads)` and
 !!! important "This is where `OMEGA_C` acts"
     It decides whether a unique's reads are *attributed* to its cluster — not
     which clusters exist. Cluster creation is governed by `OMEGA_A` /
-    `OMEGA_P`, back in step E.
+    `OMEGA_P`, back in step E. An ASV's reported abundance counts only its
+    attributed reads, as R's `clustering$abundance` does
+    ([issue 204](https://github.com/HPCBio/dada2-rs/issues/204)).
 
 ### 5. Build the read → cluster map
 
