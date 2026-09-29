@@ -42,6 +42,7 @@ use std::collections::BTreeSet;
 /// Anything matching those prefixes and *not* listed here is reported as
 /// unrecognised, so this list is load-bearing rather than documentation.
 const KNOWN: &[&str] = &[
+    "DADA2RS_MEMBER_ORDER",
     "DADA2RS_SHUFFLE_NO_CARRY",
     "DADA2RS_SHUFFLE_NO_PRUNE",
     "DADA2RS_RECONCILE_VERIFY",
@@ -206,6 +207,24 @@ pub fn warn_timing_invalidating() -> usize {
     warnings
 }
 
+/// Warn when a gate that changes *results* is active (#157).
+///
+/// Stronger than [`warn_timing_invalidating`]: output from such a run is not
+/// R-equivalent, so it must never be mistaken for a normal run. Printed
+/// regardless of `--verbose`. Returns the number of warnings.
+pub fn warn_result_changing() -> usize {
+    let arm = crate::member_order::member_order();
+    if arm == crate::member_order::MemberOrder::Insertion {
+        return 0;
+    }
+    eprintln!(
+        "[dada] WARNING: DADA2RS_MEMBER_ORDER={} is an experimental arm that \
+         CHANGES RESULTS.\n[dada]          Output is not R-equivalent (#157).",
+        arm.label()
+    );
+    1
+}
+
 /// One resolved gate, for the `--verbose` summary.
 struct Resolved {
     label: &'static str,
@@ -270,6 +289,12 @@ pub fn report() -> Vec<String> {
                 pf.to_string()
             },
             default: pf == crate::pval::PUPDATE_PREFETCH_DEFAULT,
+        },
+        Resolved {
+            label: "member order",
+            value: crate::member_order::member_order().label(),
+            default: crate::member_order::member_order()
+                == crate::member_order::MemberOrder::Insertion,
         },
         Resolved {
             label: "par grain",

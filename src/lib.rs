@@ -23,6 +23,7 @@ pub mod kdist_calibrate;
 pub mod kmers;
 pub mod learn_errors;
 pub mod loess;
+pub mod member_order;
 pub mod merge_pairs;
 pub mod metrics;
 pub mod minimizers;

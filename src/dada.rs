@@ -1054,6 +1054,10 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     let t = Instant::now();
     index_add_cluster(&mut cand_index, &bb, 0);
     t_index_add += t.elapsed();
+    // #157: experimental member order; a no-op unless DADA2RS_MEMBER_ORDER is set.
+    let mut member_orderer =
+        crate::member_order::MemberOrderer::new(crate::member_order::member_order());
+    member_orderer.apply(&mut bb);
     let t = Instant::now();
     b_p_update(
         &mut bb,
@@ -1218,6 +1222,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             eprintln!("Warning: Reached maximum ({MAX_SHUFFLE}) shuffles.");
         }
 
+        member_orderer.apply(&mut bb);
         let t = Instant::now();
         let repriced = b_p_update(
             &mut bb,
