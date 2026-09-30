@@ -123,6 +123,7 @@ nav:
     - Thread scaling & memory placement: findings/thread-scaling-and-placement.md
     - Pseudo-pooling priors vs error model: findings/pseudo-pooling-priors-vs-error-model.md
     - What R parity can and cannot tell you: findings/r-parity-floor-and-ceiling.md
+    - Primer trimming makes length variants: findings/primer-trimming-length-variants.md
     - Binned quality scores:
       - findings/binned-quality.md
       - PacBio (SequelIIe & Revio): findings/binned-quality-error-model.md
