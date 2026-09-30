@@ -15,12 +15,21 @@ set -euo pipefail
 BIN=${1:?binary}; ERR=${2:?err.json}; FQ=${3:?fastq}; A=${4:?armA}; B=${5:?armB}
 S1=${6:?seq1}; S2=${7:?seq2}; OUT=${8:-trace_pair_out}
 mkdir -p "$OUT"
+[ -f "$FQ" ] || { echo "ERROR: no such FASTQ: $FQ" >&2; exit 1; }
 
-env -u DADA2RS_MEMBER_ORDER "$BIN" derep "$FQ" -o "$OUT/derep.json" 2>/dev/null
+# Each step's stderr goes to a log, shown if the step fails: silencing it once
+# turned a missing input into a run that printed one header and stopped.
+step() {
+  local log=$1; shift
+  if ! "$@" 2> "$log"; then
+    echo "ERROR: step failed: $*" >&2; tail -n 20 "$log" >&2; exit 1
+  fi
+}
+step "$OUT/derep.log" env -u DADA2RS_MEMBER_ORDER "$BIN" derep "$FQ" -o "$OUT/derep.json"
 for arm in "$A" "$B"; do
   tag=${arm/:/_}
-  DADA2RS_MEMBER_ORDER="$arm" "$BIN" dada "$FQ" --error-model "$ERR" --threads 1 \
-    --cluster-trace "$OUT/$tag.trace.json" -o "$OUT/$tag.json" 2>/dev/null
+  step "$OUT/$tag.log" env DADA2RS_MEMBER_ORDER="$arm" "$BIN" dada "$FQ" --error-model "$ERR" \
+    --threads 1 --cluster-trace "$OUT/$tag.trace.json" -o "$OUT/$tag.json"
 done
 
 python3 - "$OUT" "$A" "$B" "$S1" "$S2" <<'EOF'
