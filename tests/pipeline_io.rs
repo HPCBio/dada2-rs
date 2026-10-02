@@ -6,7 +6,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{fixture, run, scratch, shared_err_model};
+use common::{err_model, fixture, run, scratch};
 
 /// Dereplication orders uniques by abundance descending, ties broken lexically
 /// by sequence — matching R `derepFastq` (its `qtables2` builds uniques in
@@ -72,7 +72,7 @@ fn derep_orders_by_abundance_then_lexical() {
 #[test]
 fn dada_from_fastq_matches_dada_from_derep_json() {
     let dir = scratch("derep_equiv");
-    let err = shared_err_model();
+    let err = err_model();
     let s1 = fixture("sam1F.fastq.gz");
 
     // dada directly from FASTQ
@@ -127,7 +127,7 @@ fn dada_from_fastq_matches_dada_from_derep_json() {
 #[test]
 fn dada_failed_uniques_matches_map_nulls() {
     let dir = scratch("failed_uniques");
-    let err = shared_err_model();
+    let err = err_model();
     let s1 = fixture("sam1F.fastq.gz");
 
     let out_json = dir.join("d.json");
@@ -173,7 +173,7 @@ fn dada_failed_uniques_matches_map_nulls() {
 #[test]
 fn dada_pseudo_output_feeds_downstream_steps() {
     let dir = scratch("pseudo_downstream");
-    let err = shared_err_model();
+    let err = err_model();
     let f1 = fixture("sam1F.fastq.gz");
     let f2 = fixture("sam2F.fastq.gz");
     let r1 = fixture("sam1R.fastq.gz");
@@ -232,7 +232,7 @@ fn dada_pseudo_output_feeds_downstream_steps() {
 #[test]
 fn merge_pairs_rescue_unmerged_concatenates() {
     let dir = scratch("merge_rescue");
-    let err = shared_err_model();
+    let err = err_model();
     let f1 = fixture("sam1F.fastq.gz");
     let r1 = fixture("sam1R.fastq.gz");
 

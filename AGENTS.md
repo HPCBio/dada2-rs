@@ -39,7 +39,9 @@ git config core.hooksPath .githooks
 | `src/remove_bimera.rs` | Chimera detection and removal |
 | `src/sequence_table.rs` | Sample × ASV count table construction |
 | `scripts/` | Helper scripts: `track_reads.py`, `plot_quality_profile.R` |
-| `testdata/` | Small FASTQ fixtures for regression tests |
+| `tests/` | CLI integration tests, one binary per area; shared helpers in `tests/common/mod.rs` |
+| `tests/fixtures/` | FASTQ fixtures and the committed error models learned from them |
+| `testdata/` | phiX reference genome |
 | `build.rs` | Computes `DADA2_RS_VERSION_FULL` (semver + git SHA on non-tag builds) |
 
 ## JSON output conventions
@@ -187,7 +189,8 @@ it. Cite the issue instead (issue #167).
 ## Testing guidance
 
 - The external-process tests in `error_models::tests` create temp directories using a global `AtomicU64` counter (not timestamps) to guarantee uniqueness across parallel test threads. Follow the same pattern when writing tests that involve temp files.
-- When adding a new subcommand or changing output shape, add or update the corresponding integration test in `src/main.rs` or the relevant module's `#[cfg(test)]` block.
+- When adding a new subcommand or changing output shape, add or update the integration test in the `tests/` file for that area, or the relevant module's `#[cfg(test)]` block. Use `tests/common/mod.rs` rather than copying helpers into a new file.
+- Integration tests load the committed error model (`common::err_model()`) instead of running `learn-errors`. A change that alters `learn-errors` output fails `tests/err_fixtures.rs`; regenerate with `DADA2RS_BLESS=1 cargo test --test err_fixtures` and commit the new fixtures with the change.
 - Run `cargo test` with the default parallelism; tests must not share mutable global state.
 
 ## Docker

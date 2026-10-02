@@ -4,7 +4,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{fixture, run, scratch, shared_err_model};
+use common::{err_model, fixture, run, scratch};
 
 /// dada-pseudo denoises samples with bounded across-sample concurrency
 /// (`--sample-jobs`). Per-sample `dada_uniques` is deterministic and round-1
@@ -13,7 +13,7 @@ use common::{fixture, run, scratch, shared_err_model};
 #[test]
 fn dada_pseudo_is_deterministic_across_sample_jobs() {
     let dir = scratch("pseudo_jobs");
-    let err = shared_err_model();
+    let err = err_model();
     let s1 = fixture("sam1F.fastq.gz");
     let s2 = fixture("sam2F.fastq.gz");
 
@@ -52,7 +52,7 @@ fn dada_pseudo_is_deterministic_across_sample_jobs() {
 #[test]
 fn dada_pooled_is_deterministic_across_threads() {
     let dir = scratch("pooled_det");
-    let err = shared_err_model();
+    let err = err_model();
     let s1 = fixture("sam1F.fastq.gz");
     let s2 = fixture("sam2F.fastq.gz");
 
@@ -87,7 +87,7 @@ fn dada_pooled_is_deterministic_across_threads() {
 #[test]
 fn merge_pairs_is_deterministic_across_threads() {
     let dir = scratch("merge_det");
-    let err = shared_err_model();
+    let err = err_model();
     let f1 = fixture("sam1F.fastq.gz");
     let f2 = fixture("sam2F.fastq.gz");
     let r1 = fixture("sam1R.fastq.gz");

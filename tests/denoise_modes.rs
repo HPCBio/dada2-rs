@@ -9,12 +9,12 @@ mod common;
 
 use std::path::Path;
 
-use common::{asv_set, fasta_seqs, fixture, run, scratch, shared_err_model};
+use common::{asv_set, err_model, fasta_seqs, fixture, run, scratch};
 
 #[test]
 fn dada_pseudo_matches_manual_recipe() {
     let dir = scratch("pseudo");
-    let err = shared_err_model();
+    let err = err_model();
     let s1 = fixture("sam1F.fastq.gz");
     let s2 = fixture("sam2F.fastq.gz");
 
@@ -121,7 +121,7 @@ fn dada_pseudo_matches_manual_recipe() {
 #[test]
 fn dada_pseudo_reestimate_err_is_opt_in_and_recorded() {
     let dir = scratch("pseudo_reestimate");
-    let err = shared_err_model();
+    let err = err_model();
     let s1 = fixture("sam1F.fastq.gz");
     let s2 = fixture("sam2F.fastq.gz");
 
@@ -182,7 +182,7 @@ fn dada_pseudo_reestimate_err_is_opt_in_and_recorded() {
 #[test]
 fn dada_pseudo_streaming_matches_cached() {
     let dir = scratch("pseudo_lowmem");
-    let err = shared_err_model();
+    let err = err_model();
     let s1 = fixture("sam1F.fastq.gz");
     let s2 = fixture("sam2F.fastq.gz");
 
@@ -221,7 +221,7 @@ fn dada_pseudo_streaming_matches_cached() {
 #[test]
 fn dada_multi_input_matches_per_file_runs() {
     let dir = scratch("multi");
-    let err = shared_err_model();
+    let err = err_model();
     let s1 = fixture("sam1F.fastq.gz");
     let s2 = fixture("sam2F.fastq.gz");
 
@@ -296,7 +296,7 @@ fn mapped_abundance(dada_json: &Path, derep_json: &Path) -> (Vec<i64>, usize) {
 #[test]
 fn asv_abundance_counts_only_mapped_reads() {
     let dir = scratch("mapped_abund");
-    let err = shared_err_model();
+    let err = err_model();
     let (s1, s2) = (fixture("sam1F.fastq.gz"), fixture("sam2F.fastq.gz"));
     let mut unmapped_total = 0;
 

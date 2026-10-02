@@ -6,7 +6,7 @@ mod common;
 use std::path::Path;
 use std::process::Command;
 
-use common::{BIN, fixture, param_i64, run, run_expect_err, scratch, shared_err_model};
+use common::{BIN, err_model, fixture, param_i64, run, run_expect_err, scratch};
 
 #[test]
 fn dada_input_output_guards() {
@@ -16,7 +16,7 @@ fn dada_input_output_guards() {
     // No error model needed: these must fail during argument validation,
     // before any denoising. We point --error-model at a path that exists so
     // the guard (not a missing-file error) is what trips.
-    let err = shared_err_model();
+    let err = err_model();
 
     // >1 input with -o is rejected.
     let e = run_expect_err(&[
@@ -52,7 +52,7 @@ fn dada_input_output_guards() {
 #[test]
 fn dada_rejects_non_acgt_with_a_clear_error() {
     let dir = scratch("non_acgt");
-    let err = shared_err_model();
+    let err = err_model();
     let read = |id: &str, seq: &str| format!("@{id}\n{seq}\n+\n{}\n", "I".repeat(seq.len()));
 
     // One clean unique plus one carrying an N, both long enough to clear the
@@ -195,7 +195,7 @@ fn dada_extends_error_model_for_out_of_range_quality() {
 #[test]
 fn cli_errors_use_the_documented_format() {
     let dir = scratch("err_format");
-    let err = shared_err_model();
+    let err = err_model();
     let missing = dir.join("does_not_exist.json");
 
     let e = run_expect_err(&[
@@ -231,7 +231,7 @@ fn cli_errors_use_the_documented_format() {
 #[test]
 fn dada_homo_gap_defaults_to_gap_penalty() {
     let dir = scratch("gap_penalty");
-    let err = shared_err_model();
+    let err = err_model();
     let s1 = fixture("sam1F.fastq.gz");
 
     let run_dada = |out: &Path, extra: &[&str]| {

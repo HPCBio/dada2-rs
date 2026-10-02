@@ -9,11 +9,11 @@ mod common;
 use std::path::Path;
 use std::process::Command;
 
-use common::{BIN, fixture, learn_errors};
+use common::{BIN, err_model, fixture};
 
 /// Run `dada-pooled` on the two committed fixtures into `out`, with `env` set.
 fn pooled(out: &Path, threads: &str, env: &[(&str, &str)]) {
-    let errs = learn_errors(out, threads);
+    let errs = err_model();
     let res = Command::new(BIN)
         .args(["dada-pooled", "--threads", threads, "--error-model"])
         .arg(&errs)
