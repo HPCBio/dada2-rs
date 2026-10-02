@@ -119,6 +119,12 @@ reader benefit. Three homes, and only three:
       primers behind heterogeneity spacers inflated the table 3–4× and *reversed
       the direction* of the effect, with no warning anywhere in the pipeline.
       The checks that catch it, for any dataset you did not prepare yourself.
+- [Primer trimming makes length variants](primer-trimming-length-variants.md)
+  — primers at several positions in fixed-length reads leave each molecule at
+  several lengths (same start, ends 1–4 nt apart). DADA2 cannot split them, so
+  the reported sequence's length is a tie-break; on pooled ITS2 these were every
+  large order-dependent flip (up to 692 reads). Equalise with `cutadapt -l`, not
+  `--trunc-len`. Merged tables usually hide it.
 - [LOESS: what is ported from R, and what is not](loess-r-coverage.md) — the
   coverage ledger. **Everything `loessErrfun` exercises is ported and matches
   R's `stats::loess` to round-off** (≤ 2e-14, dense and sparse grids); with the

@@ -134,10 +134,15 @@ somewhere different.
 Two structural differences from the 16S arm are worth recording, because they
 change what the correct handling is:
 
-- **The offsets are constant**, not spread — R1 at 0 with no pad, R2 at 4 behind
-  a fixed `GATA` linker (97.1%). A fixed `--trim-left` *would* work here. The
-  spacer problem is a property of a prep, not of a platform, so it must be
-  measured per dataset rather than assumed either way.
+- **The offsets are dominant, not constant** — R1 mostly at 0 with no pad, R2
+  mostly at 4 behind a `GATA` linker (97.1%). An earlier version of this page
+  called them constant, which was wrong: after trimming, ~6% of R1 reads sit at
+  offsets −1, +3 and +4, and on fixed-length reads that minority becomes
+  **3′ length variants** of the same molecules. See [Primer trimming makes
+  length variants](primer-trimming-length-variants.md). A fixed `--trim-left`
+  would still be wrong for the minority. The spacer problem is a property of a
+  prep, not of a platform, so it must be measured per dataset rather than
+  assumed either way.
 - **ITS length varies by hundreds of nt across taxa**, which makes fixed-length
   truncation a *taxonomic* filter: any `--trunc-len` systematically deletes
   every fungus whose amplicon exceeds it. The same asymmetry cuts the other way
