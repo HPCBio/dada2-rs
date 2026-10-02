@@ -8,7 +8,6 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::OnceLock;
 
 use common::{BIN, fixture, scratch};
 
@@ -22,30 +21,10 @@ fn run(arm: Option<&str>, args: &[&str]) -> Output {
     cmd.output().unwrap()
 }
 
-/// Error model learned once, with the gate unset.
+/// Error model learned from sam1F alone, with the gate unset (committed;
+/// `err_fixtures.rs` keeps it current).
 fn err_model() -> PathBuf {
-    static ERR: OnceLock<PathBuf> = OnceLock::new();
-    ERR.get_or_init(|| {
-        let err = scratch("member_order_err").join("err.json");
-        let out = run(
-            None,
-            &[
-                "learn-errors",
-                fixture("sam1F.fastq.gz").to_str().unwrap(),
-                "--threads",
-                "1",
-                "-o",
-                err.to_str().unwrap(),
-            ],
-        );
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        err
-    })
-    .clone()
+    fixture("errs_sam1F.json")
 }
 
 fn dada(arm: Option<&str>, out: &Path) -> Output {

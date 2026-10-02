@@ -20,7 +20,7 @@ mod common;
 use std::path::Path;
 use std::process::Command;
 
-use common::{BIN, fixture, learn_errors, scratch};
+use common::{BIN, err_model, fixture, scratch};
 
 /// Returns stderr from a verbose denoise.
 fn denoise_stderr(dir: &Path, errs: &Path, jobs: &str, pooled: bool) -> String {
@@ -55,7 +55,7 @@ fn denoise_stderr(dir: &Path, errs: &Path, jobs: &str, pooled: bool) -> String {
 #[test]
 fn every_record_is_a_complete_line() {
     let dir = scratch("complete");
-    let errs = learn_errors(&dir, "2");
+    let errs = err_model();
 
     for (jobs, pooled) in [("1", false), ("2", false), ("1", true)] {
         let err = denoise_stderr(&dir, &errs, jobs, pooled);
@@ -93,7 +93,7 @@ fn every_record_is_a_complete_line() {
 #[test]
 fn untagged_when_one_run_is_in_flight() {
     let dir = scratch("untagged");
-    let errs = learn_errors(&dir, "2");
+    let errs = err_model();
 
     for (jobs, pooled) in [("1", false), ("1", true)] {
         let err = denoise_stderr(&dir, &errs, jobs, pooled);
@@ -112,7 +112,7 @@ fn untagged_when_one_run_is_in_flight() {
 #[test]
 fn tagged_when_samples_run_concurrently() {
     let dir = scratch("tagged");
-    let errs = learn_errors(&dir, "2");
+    let errs = err_model();
     let err = denoise_stderr(&dir, &errs, "2", false);
 
     let records: Vec<&str> = err.lines().filter(|l| l.contains("New Cluster")).collect();

@@ -7,7 +7,6 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
 
 pub const BIN: &str = env!("CARGO_BIN_EXE_dada2-rs");
 
@@ -56,48 +55,11 @@ pub fn run_expect_err(args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// Learn a default error model from both forward fixtures into `dir/errs.json`.
-pub fn learn_errors(dir: &Path, threads: &str) -> PathBuf {
-    let errs = dir.join("errs.json");
-    let out = Command::new(BIN)
-        .args(["learn-errors", "--threads", threads, "-o"])
-        .arg(&errs)
-        .arg(fixture("sam1F.fastq.gz"))
-        .arg(fixture("sam2F.fastq.gz"))
-        .output()
-        .expect("learn-errors");
-    assert!(
-        out.status.success(),
-        "learn-errors failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    errs
-}
-
-/// A loess error model learned once from the two committed forward fixtures and
-/// shared across all tests in this binary (learning is the slow step, so doing
-/// it once keeps CI fast). `OnceLock::get_or_init` runs the closure exactly
-/// once even though tests execute on parallel threads.
-pub fn shared_err_model() -> PathBuf {
-    static ERR: OnceLock<PathBuf> = OnceLock::new();
-    ERR.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("dada2rs_shared_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let err = dir.join("err.json");
-        run(&[
-            "learn-errors",
-            fixture("sam1F.fastq.gz").to_str().unwrap(),
-            fixture("sam2F.fastq.gz").to_str().unwrap(),
-            "--errfun",
-            "loess",
-            "--threads",
-            "1",
-            "-o",
-            err.to_str().unwrap(),
-        ]);
-        err
-    })
-    .clone()
+/// The error model learned from both forward fixtures, committed so tests do not
+/// each spend ~30 s (debug build) learning it; `err_fixtures.rs` checks it is
+/// still current.
+pub fn err_model() -> PathBuf {
+    fixture("errs.json")
 }
 
 /// An integer field from a dada output JSON's `params` block.
@@ -148,13 +110,13 @@ pub fn normalized(path: &Path) -> String {
     }
 }
 
-/// Sorted names of the JSON outputs in `dir`, excluding the error model.
+/// Sorted names of the JSON outputs in `dir`.
 pub fn json_outputs(dir: &Path) -> Vec<String> {
     let mut names: Vec<_> = std::fs::read_dir(dir)
         .expect("read output dir")
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| (n.ends_with(".json") || n.ends_with(".json.gz")) && n != "errs.json")
+        .filter(|n| n.ends_with(".json") || n.ends_with(".json.gz"))
         .collect();
     names.sort();
     names

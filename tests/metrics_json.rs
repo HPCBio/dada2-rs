@@ -23,7 +23,7 @@ use std::process::Command;
 
 use serde_json::Value;
 
-use common::{BIN, fixture, json_outputs, learn_errors, normalized, scratch};
+use common::{BIN, err_model, fixture, json_outputs, normalized, scratch};
 
 /// Run `dada-pooled` over both fixtures, returning the parsed metrics document.
 fn run_pooled(dir: &Path, errs: &Path, out_sub: &str, extra: &[&str]) -> Value {
@@ -60,7 +60,7 @@ fn outputs_digest(dir: &Path) -> String {
 #[test]
 fn measurement_does_not_change_results() {
     let dir = scratch("neutral");
-    let errs = learn_errors(&dir, "2");
+    let errs = err_model();
 
     // Baseline with no metrics flags at all.
     let plain = dir.join("plain");
@@ -97,7 +97,7 @@ fn measurement_does_not_change_results() {
 #[test]
 fn cheap_level_omits_attribution_but_keeps_the_free_counters() {
     let dir = scratch("levels");
-    let errs = learn_errors(&dir, "2");
+    let errs = err_model();
 
     let cheap = run_pooled(&dir, &errs, "cheap", &[]);
     assert_eq!(cheap["measure_level"], "phases");
@@ -139,7 +139,7 @@ fn cheap_level_omits_attribution_but_keeps_the_free_counters() {
 #[test]
 fn optimisation_projections_are_populated() {
     let dir = scratch("projections");
-    let errs = learn_errors(&dir, "2");
+    let errs = err_model();
     let doc = run_pooled(&dir, &errs, "proj", &["--metrics-attribution"]);
     let r = &doc["runs"][0];
 
@@ -188,7 +188,7 @@ fn optimisation_projections_are_populated() {
 #[test]
 fn minimizer_index_decision_is_recorded() {
     let dir = scratch("index");
-    let errs = learn_errors(&dir, "2");
+    let errs = err_model();
     let doc = run_pooled(
         &dir,
         &errs,
@@ -239,7 +239,7 @@ fn attribution_requires_metrics_json() {
 #[test]
 fn verbose_carries_run_shape_not_attribution_tables() {
     let dir = scratch("quiet");
-    let errs = learn_errors(&dir, "2");
+    let errs = err_model();
 
     let out = Command::new(BIN)
         .args(["dada-pooled", "--threads", "2", "--error-model"])
@@ -325,7 +325,7 @@ fn assert_rounds_to(prose: f64, json: f64, digits: i32) {
 #[test]
 fn prose_only_measurements_have_json_homes() {
     let dir = scratch("homes");
-    let errs = learn_errors(&dir, "2");
+    let errs = err_model();
     let metrics = dir.join("homes.metrics.json");
     let res = Command::new(BIN)
         .args([
@@ -423,7 +423,7 @@ fn prose_only_measurements_have_json_homes() {
 #[test]
 fn derep_detail_splits_read_and_parse_for_json_inputs() {
     let dir = scratch("derep_json");
-    let errs = learn_errors(&dir, "2");
+    let errs = err_model();
     let mut inputs = Vec::new();
     for s in ["sam1F", "sam2F"] {
         let out = dir.join(format!("{s}.derep.json"));
