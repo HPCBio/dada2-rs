@@ -4,24 +4,13 @@
 //! full scan is live on every bud round. A reorder that left the positional bud
 //! cache stale would panic there.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::OnceLock;
 
-const BIN: &str = env!("CARGO_BIN_EXE_dada2-rs");
-
-fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name)
-}
-
-fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("dada2rs_{}_{}", tag, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
+use common::{BIN, fixture, scratch};
 
 /// Run the binary with `DADA2RS_MEMBER_ORDER` set to `arm` (unset if `None`).
 fn run(arm: Option<&str>, args: &[&str]) -> Output {
