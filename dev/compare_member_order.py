@@ -141,7 +141,9 @@ def edit_end_free(a, b, band=12):
             cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] != b[j - 1]))
         best = min(best, cur[m])
         prev = cur
-    return min(best, min(prev))
+    d = min(best, min(prev))
+    # Outside the band the DP is only an upper bound; report it as "> band".
+    return d if d <= band else band + 1
 
 
 class EditIndex:
@@ -234,7 +236,8 @@ def main():
         arm_idx = EditIndex(set(t))
         rows = [("-", s, base[s], nearest(s, set(t)), arm_idx.nearest(s)) for s in lost]
         rows += [("+", s, t[s], nearest(s, set(base)), base_idx.nearest(s)) for s in new]
-        desc = ", ".join(f"{sign}{short_id(s)}:{n} (H{h} E{e})" for sign, s, n, h, e in
+        fmt_e = lambda e: "E>12" if e is not None and e > 12 else f"E{e}"
+        desc = ", ".join(f"{sign}{short_id(s)}:{n} (H{h} {fmt_e(e)})" for sign, s, n, h, e in
                          sorted(rows, key=lambda r: -r[2]))
         print(f"  {arm:12} {desc}")
 
