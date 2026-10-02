@@ -13,15 +13,19 @@ Thank you for your interest in contributing! This project is an experimental Rus
 git clone https://github.com/HPCBio/dada2-rs
 cd dada2-rs
 cargo build --release
-cargo test
+cargo test --profile test-opt   # or `just test`
 ```
+
+Tests run on the `test-opt` profile: release optimisation with debug assertions
+on. Plain `cargo test` works but is ~15× slower, and `--release` skips the
+debug-assertion cross-checks some tests depend on.
 
 ## How to contribute
 
 1. **Open an issue first** for any non-trivial change so we can discuss the approach before you invest time implementing it.
 2. Fork the repository and create a branch from `main`.
 3. Make your changes, keeping commits focused and the commit messages descriptive.
-4. Run `cargo test` and `cargo clippy` before submitting.
+4. Run `just check` (or `cargo test --profile test-opt` and `cargo clippy --all-targets -- -D warnings`) before submitting.
 5. Open a pull request against `main` with a clear description of what changed and why.
 
 ## Experimental WFA backend (developer builds)
@@ -33,7 +37,7 @@ Build and test it from a source checkout with:
 
 ```bash
 cargo build --features wfa
-cargo test  --features wfa
+cargo test  --features wfa --profile test-opt
 ```
 
 The default (feature-off) build is Needleman-Wunsch only and must keep compiling

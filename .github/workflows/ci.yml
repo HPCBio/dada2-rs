@@ -37,11 +37,18 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      # Kept although the tests build their own: a few paths are cfg-gated on
+      # debug_assertions, so this is the only check that the shipped profile
+      # compiles.
       - name: Build
         run: cargo build --release
 
+      # test-opt is release plus debug assertions, so the cluster.rs
+      # cross-checks run here; --release turned them off.
       - name: Run tests
-        run: cargo test --release
+        run: cargo test --profile test-opt
+        env:
+          CARGO_INCREMENTAL: 0
 
   lint:
     name: Lint

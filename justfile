@@ -9,6 +9,7 @@
 #   just build-native                   native-CPU build (non-portable, fastest)
 #   PREFIX=/opt/dada2 just install      binary + helper scripts onto PATH
 #   just check                          fmt-check + clippy + tests
+#   just test --test cli_contract       one test area (args pass to cargo test)
 #
 # Note the env-var form for overrides (PREFIX=... DESTDIR=...): it works
 # identically for both `just` and `make`, unlike make's `make install PREFIX=...`
@@ -74,8 +75,9 @@ fmt-check:
 clippy:
     cargo clippy --all-targets -- -D warnings
 
-test:
-    cargo test
+# tests on the test-opt profile; extra args pass through (just test --test cli_contract)
+test *args:
+    cargo test --profile test-opt {{args}}
 
 # live-reload mkdocs site
 docs-serve:

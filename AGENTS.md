@@ -12,7 +12,8 @@ The R source lives at `https://github.com/benjjneb/dada2` (key files: `R/dada.R`
 
 ```bash
 cargo build --release          # binary → target/release/dada2-rs
-cargo test                     # all unit + integration tests
+just test                      # all unit + integration tests (~10 s; test-opt profile)
+just test --test cli_contract  # one test area; any cargo test args pass through
 cargo clippy --all-targets -- -D warnings   # must be clean before committing
 cargo fmt --all -- --check     # must be clean before committing
 ```
@@ -190,8 +191,10 @@ it. Cite the issue instead (issue #167).
 
 - The external-process tests in `error_models::tests` create temp directories using a global `AtomicU64` counter (not timestamps) to guarantee uniqueness across parallel test threads. Follow the same pattern when writing tests that involve temp files.
 - When adding a new subcommand or changing output shape, add or update the integration test in the `tests/` file for that area, or the relevant module's `#[cfg(test)]` block. Use `tests/common/mod.rs` rather than copying helpers into a new file.
-- Integration tests load the committed error model (`common::err_model()`) instead of running `learn-errors`. A change that alters `learn-errors` output fails `tests/err_fixtures.rs`; regenerate with `DADA2RS_BLESS=1 cargo test --test err_fixtures` and commit the new fixtures with the change.
-- Run `cargo test` with the default parallelism; tests must not share mutable global state.
+- Integration tests load the committed error model (`common::err_model()`) instead of running `learn-errors`. A change that alters `learn-errors` output fails `tests/err_fixtures.rs`; regenerate with `DADA2RS_BLESS=1 just test --test err_fixtures` and commit the new fixtures with the change.
+- Run tests on the `test-opt` profile (`just test`, or `cargo test --profile test-opt`), as CI does. Plain `cargo test` is correct but ~15× slower, because the integration tests run the real binary unoptimised. Do not use `--release` for tests: it disables the `debug_assert` cross-checks in `cluster.rs` that several tests rely on.
+- While iterating, run the area you touched (`just test --test shuffle_equivalence`, or a name filter such as `just test pseudo`); run the full suite before opening a PR.
+- Run tests with the default parallelism; tests must not share mutable global state.
 
 ## Docker
 
