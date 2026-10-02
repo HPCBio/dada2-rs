@@ -370,60 +370,8 @@ pub fn dada_uniques_cached(
     }
 
     // ---- Extend the error model if the data has higher quality than it covers ----
-    // Mirrors R DADA2 (`dada.R:302-312`), which repeats the last column up to the
-    // maximum observed quality rather than failing: a model learned on one run,
-    // or on a `--nbases` subsample that missed the top quality bin, would
-    // otherwise abort on data R processes fine. Without this the index runs off
-    // the end of `err_mat` inside `compute_lambda` (issue #102).
-    //
-    // Two deliberate departures from R:
-    //  - the warning is NOT verbose-gated. R extends silently by default;
-    //    extrapolated error rates shift low-abundance calls, so a run that does
-    //    it should say so.
-    //  - `qmax` uses `round`, matching what our own indexing does
-    //    (`Raw::from_qual_sums`) and what `learn_errors::detect_nq` sizes the
-    //    matrix with. R uses `ceiling` (`dada.R:290`), but adopting that here
-    //    would fire on the STANDARD workflow: a mean of 39.4 rounds to 39, so
-    //    detect_nq produces nq=40, while ceiling gives qmax=40 >= 40 and would
-    //    extend a matrix that already covers the data. The trigger has to match
-    //    the index that can actually overflow.
-    let extended_err: Option<(Vec<f64>, usize)> = if has_quals && params.err_ncol > 0 {
-        let qmax = inputs
-            .iter()
-            .filter_map(|inp| {
-                let q = inp.quals.as_ref()?;
-                let c = inp.abundance.max(1) as f64;
-                q.iter().map(|&s| (s as f64 / c).round() as usize).max()
-            })
-            .max()
-            .unwrap_or(0);
-        if qmax >= params.err_ncol {
-            let old_ncol = params.err_ncol;
-            let new_ncol = qmax + 1;
-            let mut ext = vec![0.0f64; 16 * new_ncol];
-            for t in 0..16 {
-                let row = &params.err_mat[t * old_ncol..(t + 1) * old_ncol];
-                ext[t * new_ncol..t * new_ncol + old_ncol].copy_from_slice(row);
-                // Repeat the last learned column across the new ones.
-                let last = row[old_ncol - 1];
-                for q in old_ncol..new_ncol {
-                    ext[t * new_ncol + q] = last;
-                }
-            }
-            eprintln!(
-                "dada2-rs: warning: input has quality up to Q{qmax} but the error \
-                 model covers Q0-Q{}. Extending the model by repeating its last \
-                 column (Q{}) for Q{}-Q{qmax}. Rates for the extended columns are \
-                 extrapolated, not learned; re-run learn-errors on this data to \
-                 avoid it.",
-                old_ncol - 1,
-                old_ncol - 1,
-                old_ncol,
-            );
-            Some((ext, new_ncol))
-        } else {
-            None
-        }
+    let extended_err = if has_quals && params.err_ncol > 0 {
+        extend_err_for_quals(inputs, &params.err_mat, params.err_ncol)
     } else {
         None
     };
@@ -653,6 +601,67 @@ pub fn dada_uniques_cached(
 
     // Reclaim Raws for the caller to pass back on the next iteration.
     Ok((result, std::mem::take(&mut b.raws)))
+}
+
+/// The error matrix widened to cover the inputs' highest quality, or `None`
+/// when it already does.
+///
+/// Mirrors R DADA2 (`dada.R:302-312`), which repeats the last column up to the
+/// maximum observed quality rather than failing: a model learned on one run,
+/// or on a `--nbases` subsample that missed the top quality bin, would
+/// otherwise abort on data R processes fine. Without this the index runs off
+/// the end of `err_mat` inside `compute_lambda` (issue #102).
+///
+/// Two deliberate departures from R:
+///  - the warning is NOT verbose-gated. R extends silently by default;
+///    extrapolated error rates shift low-abundance calls, so a run that does
+///    it should say so.
+///  - `qmax` uses `round`, matching what our own indexing does
+///    (`Raw::from_qual_sums`) and what `learn_errors::detect_nq` sizes the
+///    matrix with. R uses `ceiling` (`dada.R:290`), but adopting that here
+///    would fire on the STANDARD workflow: a mean of 39.4 rounds to 39, so
+///    detect_nq produces nq=40, while ceiling gives qmax=40 >= 40 and would
+///    extend a matrix that already covers the data. The trigger has to match
+///    the index that can actually overflow.
+fn extend_err_for_quals(
+    inputs: &[RawInput],
+    err_mat: &[f64],
+    err_ncol: usize,
+) -> Option<(Vec<f64>, usize)> {
+    let qmax = inputs
+        .iter()
+        .filter_map(|inp| {
+            let q = inp.quals.as_ref()?;
+            let c = inp.abundance.max(1) as f64;
+            q.iter().map(|&s| (s as f64 / c).round() as usize).max()
+        })
+        .max()
+        .unwrap_or(0);
+    if qmax < err_ncol {
+        return None;
+    }
+    let new_ncol = qmax + 1;
+    let mut ext = vec![0.0f64; 16 * new_ncol];
+    for t in 0..16 {
+        let row = &err_mat[t * err_ncol..(t + 1) * err_ncol];
+        ext[t * new_ncol..t * new_ncol + err_ncol].copy_from_slice(row);
+        // Repeat the last learned column across the new ones.
+        let last = row[err_ncol - 1];
+        for q in err_ncol..new_ncol {
+            ext[t * new_ncol + q] = last;
+        }
+    }
+    eprintln!(
+        "dada2-rs: warning: input has quality up to Q{qmax} but the error \
+         model covers Q0-Q{}. Extending the model by repeating its last \
+         column (Q{}) for Q{}-Q{qmax}. Rates for the extended columns are \
+         extrapolated, not learned; re-run learn-errors on this data to \
+         avoid it.",
+        err_ncol - 1,
+        err_ncol - 1,
+        err_ncol,
+    );
+    Some((ext, new_ncol))
 }
 
 // ---------------------------------------------------------------------------
@@ -1590,4 +1599,339 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     }
 
     bb
+}
+
+#[cfg(test)]
+mod tests {
+    //! Contracts of `dada_uniques` on hand-built inputs (#250). These pin our
+    //! own behaviour; fidelity to R is the concordance guardrail's job (#35).
+
+    use super::*;
+    use crate::nwalign::AlignBackend;
+
+    /// R defaults, no quality scores, single-threaded. `err_mat` is 16 × `ncol`.
+    fn params(err_mat: Vec<f64>, err_ncol: usize) -> DadaParams {
+        DadaParams {
+            align: AlignParams {
+                backend: AlignBackend::Nw,
+                wfa_max_edits: 0,
+                match_score: 5,
+                mismatch: -4,
+                gap_p: -8,
+                homo_gap_p: -8,
+                use_kmers: true,
+                kdist_cutoff: 0.42,
+                screen_backend: ScreenBackend::Kmer,
+                minimizer_k: crate::minimizers::MINIMIZER_K,
+                minimizer_w: crate::minimizers::MINIMIZER_W,
+                screen_audit: false,
+                kmer_size: crate::kmers::KMER_SIZE,
+                band: 16,
+                vectorized: true,
+                gapless: true,
+            },
+            err_mat,
+            err_ncol,
+            omega_a: 1e-40,
+            omega_p: 1e-4,
+            omega_c: 0.0,
+            detect_singletons: false,
+            max_clust: 0,
+            min_fold: 1.0,
+            min_hamming: 1,
+            min_abund: 1,
+            use_quals: false,
+            final_consensus: false,
+            multithread: false,
+            verbose: false,
+            progress_tag: None,
+            measure: MeasureLevel::Off,
+            greedy: true,
+            aux_outputs: false,
+        }
+    }
+
+    /// One quality column: every substitution has probability `e`.
+    fn uniform_err(e: f64) -> Vec<f64> {
+        (0..16)
+            .map(|t| if t / 4 == t % 4 { 1.0 - 3.0 * e } else { e })
+            .collect()
+    }
+
+    fn default_params() -> DadaParams {
+        params(uniform_err(0.001), 1)
+    }
+
+    /// A deterministic pseudo-random sequence, so k-mer screens see realistic
+    /// complexity rather than a repeat.
+    fn seq(seed: u64, len: usize) -> String {
+        let mut s = seed;
+        (0..len)
+            .map(|_| {
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                b"ACGT"[(s >> 33) as usize % 4] as char
+            })
+            .collect()
+    }
+
+    /// `base` with a substitution at each of `positions`.
+    fn mutate(base: &str, positions: &[usize]) -> String {
+        let mut b = base.as_bytes().to_vec();
+        for &p in positions {
+            b[p] = match b[p] {
+                b'A' => b'C',
+                b'C' => b'G',
+                b'G' => b'T',
+                _ => b'A',
+            };
+        }
+        String::from_utf8(b).unwrap()
+    }
+
+    fn input(seq: &str, abundance: u32) -> RawInput {
+        RawInput {
+            seq: seq.to_string(),
+            abundance,
+            prior: false,
+            quals: None,
+        }
+    }
+
+    fn encoded(seq: &str) -> Vec<u8> {
+        seq.bytes().map(nt_encode).collect()
+    }
+
+    /// Index of the cluster whose centre is `seq`.
+    fn cluster_of(r: &DadaResult, seq: &str) -> usize {
+        let e = encoded(seq);
+        r.clusters
+            .iter()
+            .position(|c| c.sequence == e)
+            .unwrap_or_else(|| panic!("no cluster centred on {seq}"))
+    }
+
+    fn err_of(inputs: &[RawInput], p: &DadaParams) -> String {
+        match dada_uniques(inputs, p) {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        }
+    }
+
+    // ---- 1. Input validation ----
+
+    #[test]
+    fn rejects_each_invalid_input_with_its_own_message() {
+        let ok = seq(1, 60);
+        let p = default_params();
+
+        assert!(err_of(&[], &p).contains("Zero input sequences"));
+        assert!(err_of(&[input(&"A".repeat(SEQLEN), 1)], &p).contains("exceed the maximum"));
+        assert!(
+            err_of(&[input(&ok, 2), input("ACGTA", 1)], &p)
+                .contains("longer than the k-mer size (5)")
+        );
+
+        let mut bad_k = default_params();
+        bad_k.align.kmer_size = KMER_SIZE_MAX + 1;
+        assert!(err_of(&[input(&ok, 1)], &bad_k).contains("kmer_size 9 out of supported range"));
+
+        let mut bad_mk = default_params();
+        bad_mk.align.screen_backend = ScreenBackend::Minimizer;
+        bad_mk.align.minimizer_k = MINIMIZER_K_MAX + 1;
+        assert!(
+            err_of(&[input(&ok, 1)], &bad_mk).contains("minimizer_k 32 out of supported range")
+        );
+
+        let with_n = mutate(&ok, &[]).replacen('A', "N", 1);
+        let off = with_n.find('N').unwrap();
+        assert!(
+            err_of(&[input(&with_n, 1)], &p)
+                .contains(&format!("non-ACGT base 'N' at position {off}"))
+        );
+
+        let short_mat = params(vec![0.0; 15], 1);
+        assert!(err_of(&[input(&ok, 1)], &short_mat).contains("Error matrix length 15"));
+
+        let mut bad_q = input(&ok, 1);
+        bad_q.quals = Some(vec![30; ok.len() - 1]);
+        assert!(err_of(&[bad_q], &p).contains("quality length 59 does not match"));
+    }
+
+    /// `U` folds to `T` and case is ignored, so neither is an error, and both
+    /// spellings denoise to the same sequence as the plain one.
+    #[test]
+    fn accepts_lowercase_and_u() {
+        let base = seq(2, 80);
+        let rna = base.to_ascii_lowercase().replace('t', "u");
+        let r = dada_uniques(&[input(&rna, 10)], &default_params()).unwrap();
+        assert_eq!(r.clusters.len(), 1);
+        assert_eq!(r.clusters[0].sequence, encoded(&base));
+    }
+
+    // ---- 2. Error-model extension (#102) ----
+
+    fn with_mean_q(seq: &str, abundance: u32, mean_q_times_10: u32) -> RawInput {
+        // Integer sums: mean = sum / abundance.
+        let sum = mean_q_times_10 * abundance / 10;
+        RawInput {
+            quals: Some(vec![sum; seq.len()]),
+            ..input(seq, abundance)
+        }
+    }
+
+    /// The standard workflow: a mean of Q39.4 against a 40-column model. R's
+    /// `ceiling` would read that as Q40 and extend; our `round` reads Q39 and
+    /// must not, because Q39 is the highest index the model is asked for.
+    #[test]
+    fn a_mean_that_rounds_into_range_does_not_extend() {
+        let s = seq(3, 60);
+        let err = vec![0.01; 16 * 40];
+        assert!(extend_err_for_quals(&[with_mean_q(&s, 10, 394)], &err, 40).is_none());
+        // Control: Q39.6 rounds to Q40, past the last column.
+        assert!(extend_err_for_quals(&[with_mean_q(&s, 10, 396)], &err, 40).is_some());
+    }
+
+    /// Extension keeps every learned column and repeats the last one.
+    #[test]
+    fn extension_repeats_the_last_column() {
+        let ncol = 3;
+        // Row t holds t*10 + q, so every cell is distinct.
+        let err: Vec<f64> = (0..16)
+            .flat_map(|t| (0..ncol).map(move |q| (t * 10 + q) as f64))
+            .collect();
+        let (ext, new_ncol) =
+            extend_err_for_quals(&[with_mean_q(&seq(4, 60), 1, 50)], &err, ncol).unwrap();
+        assert_eq!(new_ncol, 6, "Q5 needs columns 0..=5");
+        for t in 0..16 {
+            let row = &ext[t * new_ncol..(t + 1) * new_ncol];
+            let t = t as f64;
+            assert_eq!(
+                row,
+                [
+                    t * 10.0,
+                    t * 10.0 + 1.0,
+                    t * 10.0 + 2.0,
+                    t * 10.0 + 2.0,
+                    t * 10.0 + 2.0,
+                    t * 10.0 + 2.0
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn inputs_without_quals_never_extend() {
+        let err = vec![0.01; 16];
+        assert!(extend_err_for_quals(&[input(&seq(5, 60), 3)], &err, 1).is_none());
+    }
+
+    // ---- 3-6. Clustering on synthetic pools ----
+
+    /// Two centres 10 substitutions apart, each with one low-abundance
+    /// single-substitution variant.
+    fn two_centre_pool() -> (Vec<RawInput>, [String; 4]) {
+        let a = seq(6, 150);
+        let b = mutate(&a, &[5, 20, 35, 50, 65, 80, 95, 110, 125, 140]);
+        let a1 = mutate(&a, &[12]);
+        let b1 = mutate(&b, &[77]);
+        let inputs = vec![
+            input(&a, 1000),
+            input(&b, 500),
+            input(&a1, 2),
+            input(&b1, 1),
+        ];
+        (inputs, [a, b, a1, b1])
+    }
+
+    #[test]
+    fn two_centres_split_and_their_variants_map_home() {
+        let (inputs, [a, b, ..]) = two_centre_pool();
+        let r = dada_uniques(&inputs, &default_params()).unwrap();
+        assert_eq!(r.clusters.len(), 2, "one cluster per centre");
+        let (ca, cb) = (cluster_of(&r, &a), cluster_of(&r, &b));
+        assert_eq!(r.map, vec![Some(ca), Some(cb), Some(ca), Some(cb)]);
+        assert_eq!(r.clusters[ca].abundance, 1002);
+        assert_eq!(r.clusters[cb].abundance, 501);
+        assert!(matches!(r.clusters[cb].birth_type, BirthType::Abundance));
+    }
+
+    /// learn-errors feeds `dada_uniques_cached` its own `Raw`s back on every
+    /// self-consistency round; reusing them must not change the result.
+    #[test]
+    fn cached_raws_give_the_same_result_as_fresh() {
+        let (inputs, _) = two_centre_pool();
+        let p = default_params();
+        let (fresh, raws) = dada_uniques_cached(&inputs, None, &p).unwrap();
+        let (again, raws) = dada_uniques_cached(&inputs, Some(raws), &p).unwrap();
+        let (third, _) = dada_uniques_cached(&inputs, Some(raws), &p).unwrap();
+        for r in [&again, &third] {
+            assert_eq!(r.map, fresh.map);
+            assert_eq!(
+                r.pvals.iter().map(|p| p.to_bits()).collect::<Vec<_>>(),
+                fresh.pvals.iter().map(|p| p.to_bits()).collect::<Vec<_>>()
+            );
+            assert_eq!(r.clusters.len(), fresh.clusters.len());
+            for (x, y) in r.clusters.iter().zip(&fresh.clusters) {
+                assert_eq!(x.sequence, y.sequence);
+                assert_eq!((x.reads, x.abundance), (y.reads, y.abundance));
+                assert_eq!(x.members, y.members);
+            }
+        }
+    }
+
+    /// One centre and three single-substitution variants with expected
+    /// abundance ~1.3 reads each: none can bud at OMEGA_A, but the 3-read one
+    /// is unlikely enough to fall below a raised OMEGA_C.
+    fn uncorrected_pool() -> Vec<RawInput> {
+        let c = seq(7, 150);
+        vec![
+            input(&c, 2000),
+            input(&mutate(&c, &[30]), 3),
+            input(&mutate(&c, &[60]), 2),
+            input(&mutate(&c, &[90]), 1),
+        ]
+    }
+
+    /// A unique below OMEGA_C maps to `None`, and the ASV's abundance counts
+    /// only the reads `map` assigns to it, while `reads` keeps every member's
+    /// (#204). With OMEGA_C = 0 nothing is unassigned, which shows the first
+    /// arm's `None` comes from the threshold.
+    #[test]
+    fn unassigned_uniques_do_not_count_toward_abundance() {
+        let inputs = uncorrected_pool();
+
+        let r = dada_uniques(&inputs, &default_params()).unwrap();
+        assert_eq!(r.clusters.len(), 1);
+        assert_eq!(r.map, vec![Some(0); 4]);
+        assert_eq!((r.clusters[0].reads, r.clusters[0].abundance), (2006, 2006));
+
+        let mut strict = default_params();
+        strict.omega_c = 0.3;
+        let r = dada_uniques(&inputs, &strict).unwrap();
+        assert_eq!(r.clusters.len(), 1, "omega_c must not create clusters");
+        assert_eq!(r.map, vec![Some(0), None, Some(0), Some(0)]);
+        assert!(r.pvals[1] < 0.3 && r.pvals[2] >= 0.3, "pvals {:?}", r.pvals);
+        assert_eq!((r.clusters[0].reads, r.clusters[0].abundance), (2006, 2003));
+    }
+
+    /// A variant too abundant to be error but nowhere near OMEGA_A: it forms
+    /// its own cluster only when flagged as a prior, and then as a Prior birth.
+    #[test]
+    fn a_prior_buds_at_omega_p_where_a_non_prior_does_not() {
+        let c = seq(8, 150);
+        let v = mutate(&c, &[40]);
+        let mut inputs = vec![input(&c, 2000), input(&v, 10)];
+
+        let r = dada_uniques(&inputs, &default_params()).unwrap();
+        assert_eq!(r.clusters.len(), 1, "not significant at OMEGA_A");
+
+        inputs[1].prior = true;
+        let r = dada_uniques(&inputs, &default_params()).unwrap();
+        assert_eq!(r.clusters.len(), 2);
+        let cv = cluster_of(&r, &v);
+        assert!(matches!(r.clusters[cv].birth_type, BirthType::Prior));
+        assert!(r.clusters[cv].birth_pval < 1e-4);
+    }
 }
