@@ -9,6 +9,7 @@
 #   make build-native                native-CPU build (non-portable, fastest)
 #   make install PREFIX=/opt/dada2   binary + helper scripts onto PATH
 #   make check                       fmt-check + clippy + tests
+#   make test ARGS="--test cli_contract"   one test area
 #
 # Helper R/Python scripts are installed namespaced as `dada2-rs-<name>` (e.g.
 # scripts/plot_errors.R -> dada2-rs-plot-errors) to avoid PATH collisions.
@@ -25,6 +26,7 @@ SCRIPTS = $(wildcard scripts/*.R) $(wildcard scripts/*.py)
         publish-crate check-build-sync help
 
 PUBLISH_ARGS ?=
+ARGS         ?=
 
 all: build
 
@@ -73,8 +75,9 @@ fmt-check:
 clippy:
 	cargo clippy --all-targets -- -D warnings
 
+## test: tests on the test-opt profile; extra args via ARGS (make test ARGS="--test cli_contract")
 test:
-	cargo test
+	cargo test --profile test-opt $(ARGS)
 
 ## docs-serve: live-reload mkdocs site
 docs-serve:

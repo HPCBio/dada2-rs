@@ -72,6 +72,20 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("wfa"))'] 
 [dev-dependencies]
 serde_json = "1"
 
+# Profile for running the test suite (`just test`, CI). The integration tests
+# spawn the real binary on real fixtures, so unoptimised code makes the suite
+# ~15x slower (~170 s vs ~10 s). Debug assertions and overflow checks stay on:
+# the shuffle and bud cross-checks in cluster.rs are `debug_assert`s and run
+# only when they are enabled. Incremental keeps local rebuilds near debug speed;
+# CI sets CARGO_INCREMENTAL=0.
+#
+#   cargo test --profile test-opt
+[profile.test-opt]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
+incremental = true
+
 # Opt-in profile for cluster/in-house builds where you control the CPU.
 # Adds LTO + codegen-units=1 on top of release, and is intended to be paired
 # with `RUSTFLAGS="-C target-cpu=native"` so LLVM uses every ISA extension
