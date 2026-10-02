@@ -90,6 +90,20 @@ set, and prints the post-trim length distribution either way.
 Also set `DISCARD_UNTRIMMED=1` where both primers are reliably present: reads
 with no primer found are otherwise kept whole, primer included.
 
+**The cost for paired-end use.** Equalising shortens most reads: on this data,
+4 nt from R1 (231 to 227) and 2–3 nt from R2 (226–227 to 224). That is overlap
+lost before merging, and on a length-variable amplicon the longest products,
+already near the overlap limit, can stop merging and drop out of the table.
+Since merging usually hides the variants anyway, equalise mainly for
+single-end, per-direction or pooled per-direction analyses, and check merge
+rates before and after if you equalise ahead of merging.
+
+**Check what is left below the cutoff.** A peak that survives equalising (R2
+had 0.4% at 219 nt here) is either a genuine short amplicon, which `-l` should
+leave alone, or another primer-offset class, which means the cutoff is too
+high. If those reads are prefixes of full-length reads from the same sample,
+they are offset variants; lower the cutoff to them.
+
 **`filter-and-trim`.** `--trunc-len` is **not** a substitute. Like R's
 `truncLen`, it discards reads shorter than the cutoff, which on a
 length-variable amplicon such as ITS removes whole taxa. Equalise with
