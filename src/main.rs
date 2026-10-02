@@ -268,6 +268,8 @@ fn run() -> io::Result<()> {
     // Separately: a gate that adds validation work on top of whatever arm is
     // running makes every timing in the log meaningless (#154).
     dada2_rs::gates::warn_timing_invalidating();
+    // And a gate that changes results rather than timings (#157).
+    dada2_rs::gates::warn_result_changing();
 
     let command = match cli.command {
         Some(c) => c,

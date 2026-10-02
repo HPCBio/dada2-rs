@@ -1059,6 +1059,33 @@ valid thing to time.
 Release-only: debug builds turn `DADA2RS_RECONCILE_VERIFY` on by default and are
 never timing runs, so warning there would tag every `cargo test`.
 
+### Gates that change results
+
+`DADA2RS_MEMBER_ORDER` changes **output**, not timing: it reorders cluster member
+lists to measure how much the result depends on tie-breaks that member order
+decides ([#157](https://github.com/HPCBio/dada2-rs/issues/157)). Any
+non-default arm warns, regardless of `--verbose`, and an unrecognised value
+stops the run rather than silently running the default:
+
+```
+[dada] WARNING: DADA2RS_MEMBER_ORDER=shuffle:1 is an experimental arm that CHANGES RESULTS.
+[dada]          Output is not R-equivalent (#157).
+```
+
+| value | member order |
+|---|---|
+| `insertion` (default, or unset) | unchanged; byte-identical to not setting it |
+| `sorted` | ascending raw index (derep order), centre first |
+| `shuffle:<seed>` | seeded random order, centre first |
+
+A cluster is reordered only when its membership changed since the last bud
+round. The gate also acts inside `learn-errors`, so pin the error model: learn
+it once without the gate and pass it to every arm. `dev/run_member_order.sh`
+runs a dataset under all arms and `dev/compare_member_order.py` summarises
+them; [How large the floor is,
+measured](findings/r-parity-floor-and-ceiling.md#how-large-the-floor-is-measured)
+has the results so far.
+
 ### If you add or rename a gate
 
 Add it to `KNOWN` in `src/gates.rs`, or the run will warn about a variable that
