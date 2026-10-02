@@ -50,12 +50,55 @@ directions — 2046 = 2046 on R's input, 2045 = 2045 on ours, zero differences �
 so even the post-chimera gap is input-driven rather than an implementation
 difference.
 
+### How large the floor is, measured
+
+Running the same input under different, deliberate member orders measures the
+floor directly ([issue 157](https://github.com/HPCBio/dada2-rs/issues/157)).
+`DADA2RS_MEMBER_ORDER` selects `insertion` (the default), `sorted` (derep order)
+or `shuffle:<seed>`, with the error model pinned so only order varies; five
+seeds form the null. ASVs that change between arms, per table:
+
+| dataset | mode | ASVs that change | largest | distinct sequences (edit > 12) |
+|---|---|---|---|---|
+| MiSeq SOP, 362 samples | pooled / pseudo / per-sample | 0–3 | 16 reads | one 11-mismatch pair, pooled |
+| PacBio HiFi, 95 samples | pooled | 16–30 | 76 reads | 8% of changes, ≤ 18 reads |
+| | pseudo / per-sample | 28–39 | 26 reads | none |
+| NovaSeq ITS2, 30 samples | pooled | 4–16 | 117 reads | none |
+| | pseudo / per-sample | 19–38 | 97 reads | none |
+
+Read totals barely move: at most 0.11% of reads (PacBio per-sample). The
+changes are **renames**, not organisms gained or lost: an ASV named after a
+1–3-edit variant of its centre (a substitution or a homopolymer indel), at
+unchanged abundance. That is 82–92% of changes per-sample and pseudo; pooled
+runs have more swaps 4–12 edits apart (41% on PacBio, 48% on ITS2 reverse
+reads), still between equally abundant pairs. Typically two members tie at
+`pA = 0` with equal reads, order picks the
+centre, and the other cannot reach `OMEGA_A` against it. On ITS2 the traced
+cases were doubletons, 28 or more orders of magnitude short of the threshold.
+
+The floor grows with read length and diversity, from a handful of ASVs on
+MiSeq V4 to 1–1.6% of the table on full-length PacBio. **The rs-vs-R residual
+on pooled PacBio, about 7 ASVs of the same kinds, sits below the floor of
+16–30**, so it is not evidence of a defect.
+
+`sorted` is a fair stand-in for R's ordering: R and dada2-rs both start from
+derep order and share the same `swap_remove` member updates. It changes 0 ASVs
+on ITS2 per-sample and pseudo, 2–4 pooled, and falls inside the shuffle null on
+PacBio, where large partitions scramble member order in both
+implementations.
+
+Before primer-trimming length variants were removed, pooled ITS2 also flipped
+the names of ASVs of up to 692 reads, each between two length variants of one
+molecule. That part is a prep artifact, not this floor: see [Primer trimming
+makes length variants](primer-trimming-length-variants.md).
+
 ### Why this matters for how parity is read
 
 **A parity claim is only as fine-grained as this floor.** On a saturated pooled
 run, "we differ from R by 7 ASVs" and "we agree with R" are the same statement.
 Two DADA2 releases, or the same release on reordered input, would produce
-differences of the same kind and magnitude.
+differences of the same kind and magnitude, and the table above gives that
+magnitude per platform.
 
 It also bears on how much weight exact R equivalence can carry as a
 *correctness* criterion. Where the tie-break decides, R's answer is not more
@@ -169,7 +212,13 @@ divergence, pin both sides of it.
   **not** the loop's `pA`.
 - **Judge residual differences by shape, not count.** Mirrored exclusive sets at
   matched abundances, with read totals agreeing to ~1 in 2.4M, are a tie-break.
-  A one-sided difference, or one concentrated at high abundance, is not.
+  A one-sided difference, or one concentrated at high abundance, is not. Pairs
+  within a few edits at equal abundance are renames; compare a difference's
+  size against the measured floor for its platform and mode before treating it
+  as a finding.
+- **Remeasure the floor on new data.** `dev/run_member_order.sh` and
+  `dev/compare_member_order.py` run and summarise the arms; the floor depends on
+  amplicon, platform and pooling mode, so these numbers do not transfer.
 - **Do not tune toward the floor.** Any change justified by moving a handful of
   saturated-regime ASVs closer to R is unfalsifiable at that resolution. Require
   an effect that clears the floor, or a mechanism.
@@ -195,8 +244,8 @@ divergence, pin both sides of it.
   zero expected reads, fixed in the same arc
 - [Issue 239](https://github.com/HPCBio/dada2-rs/issues/239) — the centre
   tie-break; the per-sample measurements above
-- [Issue 157](https://github.com/HPCBio/dada2-rs/issues/157) — the open
-  experiment on member-list ordering, whose prior this result inverts
+- [Issue 157](https://github.com/HPCBio/dada2-rs/issues/157) — the member-order
+  experiment that measured the floor above
 - [Issue 100](https://github.com/HPCBio/dada2-rs/issues/100) — the pseudo-pooling
   re-fit
 - [LOESS error-model correctness](loess-error-model-correctness.md) — the other
