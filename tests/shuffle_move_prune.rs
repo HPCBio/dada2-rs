@@ -16,52 +16,16 @@
 //! binary — which also removes the failure mode where an A/B is built from the
 //! wrong checkout and silently measures the same code twice.
 
-use std::path::{Path, PathBuf};
+mod common;
+
+use std::path::Path;
 use std::process::Command;
 
-const BIN: &str = env!("CARGO_BIN_EXE_dada2-rs");
+use common::{BIN, assert_same_outputs, fixture, learn_errors, scratch};
 
-fn manifest_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn fixture(name: &str) -> PathBuf {
-    manifest_dir().join("tests/fixtures").join(name)
-}
-
-/// Strip the version tag, which embeds the git hash and so differs between any
-/// two builds without meaning the results differ.
-fn normalized(path: &Path) -> String {
-    let raw = dada2_rs::misc::read_all_maybe_gz(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let text = String::from_utf8_lossy(&raw).into_owned();
-    let re_start = text.find("\"dada2_rs_version\"");
-    match re_start {
-        Some(i) => {
-            let rest = &text[i..];
-            let end = rest.find(',').map(|j| i + j).unwrap_or(text.len());
-            format!("{}{}", &text[..i], &text[end..])
-        }
-        None => text,
-    }
-}
-
-/// Run `dada-pooled` on the two committed fixtures, returning the output dir.
+/// Run `dada-pooled` on the two committed fixtures into `out`.
 fn run_pooled(out: &Path, prune: bool, threads: &str) {
-    let errs = out.join("errs.json");
-    let learn = Command::new(BIN)
-        .args(["learn-errors", "--threads", threads, "-o"])
-        .arg(&errs)
-        .arg(fixture("sam1F.fastq.gz"))
-        .arg(fixture("sam2F.fastq.gz"))
-        .output()
-        .expect("learn-errors");
-    assert!(
-        learn.status.success(),
-        "learn-errors failed: {}",
-        String::from_utf8_lossy(&learn.stderr)
-    );
-
+    let errs = learn_errors(out, threads);
     let mut cmd = Command::new(BIN);
     cmd.args(["dada-pooled", "--threads", threads, "--error-model"])
         .arg(&errs)
@@ -80,38 +44,17 @@ fn run_pooled(out: &Path, prune: bool, threads: &str) {
     );
 }
 
-fn assert_same_outputs(a: &Path, b: &Path, label: &str) {
-    let mut names: Vec<_> = std::fs::read_dir(a)
-        .expect("read output dir")
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.ends_with(".json") || n.ends_with(".json.gz"))
-        .collect();
-    names.sort();
-    assert!(!names.is_empty(), "{label}: no outputs produced");
-    for n in &names {
-        if n == "errs.json" {
-            continue;
-        }
-        assert_eq!(
-            normalized(&a.join(n)),
-            normalized(&b.join(n)),
-            "{label}: {n} differs between pruned and unpruned move pass"
-        );
-    }
-}
-
 /// The pruned and unpruned move passes must produce identical output.
 #[test]
 fn dirty_cluster_prune_matches_full_scan() {
-    let tmp = std::env::temp_dir().join(format!("d2rs_prune_{}", std::process::id()));
+    let tmp = scratch("prune");
     let (pruned, full) = (tmp.join("pruned"), tmp.join("full"));
     std::fs::create_dir_all(&pruned).unwrap();
     std::fs::create_dir_all(&full).unwrap();
 
     run_pooled(&pruned, true, "1");
     run_pooled(&full, false, "1");
-    assert_same_outputs(&pruned, &full, "single-threaded");
+    assert_same_outputs(&pruned, &full, "pruned vs full move pass, single-threaded");
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -121,14 +64,14 @@ fn dirty_cluster_prune_matches_full_scan() {
 /// against a different (still deterministic) input ordering.
 #[test]
 fn dirty_cluster_prune_matches_full_scan_threaded() {
-    let tmp = std::env::temp_dir().join(format!("d2rs_prune_mt_{}", std::process::id()));
+    let tmp = scratch("prune_mt");
     let (pruned, full) = (tmp.join("pruned"), tmp.join("full"));
     std::fs::create_dir_all(&pruned).unwrap();
     std::fs::create_dir_all(&full).unwrap();
 
     run_pooled(&pruned, true, "4");
     run_pooled(&full, false, "4");
-    assert_same_outputs(&pruned, &full, "4 threads");
+    assert_same_outputs(&pruned, &full, "pruned vs full move pass, 4 threads");
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

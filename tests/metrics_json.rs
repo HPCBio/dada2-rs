@@ -16,41 +16,14 @@
 //!    them — which is exactly how a schema field ends up permanently zero
 //!    without anyone noticing. The pooled fixtures do exercise them.
 
-use std::path::{Path, PathBuf};
+mod common;
+
+use std::path::Path;
 use std::process::Command;
 
 use serde_json::Value;
 
-const BIN: &str = env!("CARGO_BIN_EXE_dada2-rs");
-
-fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name)
-}
-
-fn tmpdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("d2rs_metrics_{tag}_{}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
-
-fn learn_errors(dir: &Path) -> PathBuf {
-    let errs = dir.join("errs.json");
-    let out = Command::new(BIN)
-        .args(["learn-errors", "--threads", "2", "-o"])
-        .arg(&errs)
-        .arg(fixture("sam1F.fastq.gz"))
-        .arg(fixture("sam2F.fastq.gz"))
-        .output()
-        .expect("learn-errors");
-    assert!(
-        out.status.success(),
-        "learn-errors failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    errs
-}
+use common::{BIN, fixture, json_outputs, learn_errors, normalized, scratch};
 
 /// Run `dada-pooled` over both fixtures, returning the parsed metrics document.
 fn run_pooled(dir: &Path, errs: &Path, out_sub: &str, extra: &[&str]) -> Value {
@@ -78,35 +51,16 @@ fn run_pooled(dir: &Path, errs: &Path, out_sub: &str, extra: &[&str]) -> Value {
 /// Concatenated per-sample outputs, with the version tag (git hash) stripped so
 /// two builds compare equal.
 fn outputs_digest(dir: &Path) -> String {
-    let mut names: Vec<_> = std::fs::read_dir(dir)
-        .expect("read output dir")
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.ends_with(".json") || n.ends_with(".json.gz"))
-        .collect();
-    names.sort();
+    let names = json_outputs(dir);
     assert!(!names.is_empty(), "no outputs produced");
-    let mut all = String::new();
-    for n in &names {
-        let raw = dada2_rs::misc::read_all_maybe_gz(&dir.join(n)).expect("read output");
-        let text = String::from_utf8_lossy(&raw).into_owned();
-        let stripped = match text.find("\"dada2_rs_version\"") {
-            Some(i) => {
-                let end = text[i..].find(',').map(|j| i + j).unwrap_or(text.len());
-                format!("{}{}", &text[..i], &text[end..])
-            }
-            None => text,
-        };
-        all.push_str(&stripped);
-    }
-    all
+    names.iter().map(|n| normalized(&dir.join(n))).collect()
 }
 
 /// Measuring must not perturb inference, at either level.
 #[test]
 fn measurement_does_not_change_results() {
-    let dir = tmpdir("neutral");
-    let errs = learn_errors(&dir);
+    let dir = scratch("neutral");
+    let errs = learn_errors(&dir, "2");
 
     // Baseline with no metrics flags at all.
     let plain = dir.join("plain");
@@ -142,8 +96,8 @@ fn measurement_does_not_change_results() {
 /// The cheap level must omit what it did not measure, and keep what it did.
 #[test]
 fn cheap_level_omits_attribution_but_keeps_the_free_counters() {
-    let dir = tmpdir("levels");
-    let errs = learn_errors(&dir);
+    let dir = scratch("levels");
+    let errs = learn_errors(&dir, "2");
 
     let cheap = run_pooled(&dir, &errs, "cheap", &[]);
     assert_eq!(cheap["measure_level"], "phases");
@@ -184,8 +138,8 @@ fn cheap_level_omits_attribution_but_keeps_the_free_counters() {
 /// real bud rounds, which a single-sample smoke test does not provide.
 #[test]
 fn optimisation_projections_are_populated() {
-    let dir = tmpdir("projections");
-    let errs = learn_errors(&dir);
+    let dir = scratch("projections");
+    let errs = learn_errors(&dir, "2");
     let doc = run_pooled(&dir, &errs, "proj", &["--metrics-attribution"]);
     let r = &doc["runs"][0];
 
@@ -233,8 +187,8 @@ fn optimisation_projections_are_populated() {
 /// that declines the index is not mistaken for one that never probed.
 #[test]
 fn minimizer_index_decision_is_recorded() {
-    let dir = tmpdir("index");
-    let errs = learn_errors(&dir);
+    let dir = scratch("index");
+    let errs = learn_errors(&dir, "2");
     let doc = run_pooled(
         &dir,
         &errs,
@@ -284,8 +238,8 @@ fn attribution_requires_metrics_json() {
 /// would also re-create the collision surface #172 closed.
 #[test]
 fn verbose_carries_run_shape_not_attribution_tables() {
-    let dir = tmpdir("quiet");
-    let errs = learn_errors(&dir);
+    let dir = scratch("quiet");
+    let errs = learn_errors(&dir, "2");
 
     let out = Command::new(BIN)
         .args(["dada-pooled", "--threads", "2", "--error-model"])
@@ -370,8 +324,8 @@ fn assert_rounds_to(prose: f64, json: f64, digits: i32) {
 /// `shuf_comps_scanned` in #162.
 #[test]
 fn prose_only_measurements_have_json_homes() {
-    let dir = tmpdir("homes");
-    let errs = learn_errors(&dir);
+    let dir = scratch("homes");
+    let errs = learn_errors(&dir, "2");
     let metrics = dir.join("homes.metrics.json");
     let res = Command::new(BIN)
         .args([
@@ -468,8 +422,8 @@ fn prose_only_measurements_have_json_homes() {
 /// JSON derep inputs carry the read vs parse split #133 turned on.
 #[test]
 fn derep_detail_splits_read_and_parse_for_json_inputs() {
-    let dir = tmpdir("derep_json");
-    let errs = learn_errors(&dir);
+    let dir = scratch("derep_json");
+    let errs = learn_errors(&dir, "2");
     let mut inputs = Vec::new();
     for s in ["sam1F", "sam2F"] {
         let out = dir.join(format!("{s}.derep.json"));

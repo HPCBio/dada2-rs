@@ -11,114 +11,14 @@
 //!
 //! Everything runs with `--threads 1` for determinism.
 
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+mod common;
+
+use std::path::Path;
 use std::process::Command;
-use std::sync::OnceLock;
 
-const BIN: &str = env!("CARGO_BIN_EXE_dada2-rs");
-
-fn manifest_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn fixture(name: &str) -> PathBuf {
-    // Fixtures live under tests/ (tracked); the repo's /data dir is gitignored
-    // and so is absent on CI.
-    manifest_dir().join("tests/fixtures").join(name)
-}
-
-/// Per-test scratch dir under the target tmp area; cleaned and recreated.
-fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("dada2rs_{}_{}", tag, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-/// Run the binary; panic with stderr on a non-zero exit.
-fn run(args: &[&str]) {
-    let out = Command::new(BIN)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to spawn {BIN}: {e}"));
-    assert!(
-        out.status.success(),
-        "command failed: dada2-rs {}\n--- stderr ---\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&out.stderr),
-    );
-}
-
-/// Run the binary expecting failure; return stderr.
-fn run_expect_err(args: &[&str]) -> String {
-    let out = Command::new(BIN).args(args).output().unwrap();
-    assert!(
-        !out.status.success(),
-        "expected failure but command succeeded: dada2-rs {}",
-        args.join(" "),
-    );
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
-
-/// An integer field from a dada output JSON's `params` block.
-fn param_i64(path: &Path, key: &str) -> i64 {
-    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    v["params"][key]
-        .as_i64()
-        .unwrap_or_else(|| panic!("no integer params.{key} in {}", path.display()))
-}
-
-/// Sorted set of (sequence, abundance) from a `dada`/`dada-pseudo` output JSON.
-fn asv_set(path: &Path) -> BTreeSet<(String, i64)> {
-    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    v["asvs"]
-        .as_array()
-        .unwrap_or_else(|| panic!("no asvs array in {}", path.display()))
-        .iter()
-        .map(|a| {
-            (
-                a["sequence"].as_str().unwrap().to_ascii_uppercase(),
-                a["abundance"].as_i64().unwrap(),
-            )
-        })
-        .collect()
-}
-
-/// Set of (uppercased) sequences in a FASTA file.
-fn fasta_seqs(path: &Path) -> BTreeSet<String> {
-    let text = std::fs::read_to_string(path).unwrap();
-    text.lines()
-        .filter(|l| !l.starts_with('>') && !l.trim().is_empty())
-        .map(|l| l.trim().to_ascii_uppercase())
-        .collect()
-}
-
-/// A loess error model learned once from the two committed forward fixtures and
-/// shared across all tests in this binary (learning is the slow step, so doing
-/// it once keeps CI fast). `OnceLock::get_or_init` runs the closure exactly
-/// once even though tests execute on parallel threads.
-fn shared_err_model() -> PathBuf {
-    static ERR: OnceLock<PathBuf> = OnceLock::new();
-    ERR.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("dada2rs_shared_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let err = dir.join("err.json");
-        run(&[
-            "learn-errors",
-            fixture("sam1F.fastq.gz").to_str().unwrap(),
-            fixture("sam2F.fastq.gz").to_str().unwrap(),
-            "--errfun",
-            "loess",
-            "--threads",
-            "1",
-            "-o",
-            err.to_str().unwrap(),
-        ]);
-        err
-    })
-    .clone()
-}
+use common::{
+    BIN, asv_set, fasta_seqs, fixture, param_i64, run, run_expect_err, scratch, shared_err_model,
+};
 
 #[test]
 fn dada_pseudo_matches_manual_recipe() {

@@ -15,35 +15,12 @@
 //!   is in flight, and is tagged only when samples run concurrently, which is
 //!   the only case where the line would otherwise be unattributable.
 
-use std::path::{Path, PathBuf};
+mod common;
+
+use std::path::Path;
 use std::process::Command;
 
-const BIN: &str = env!("CARGO_BIN_EXE_dada2-rs");
-
-fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name)
-}
-
-fn tmpdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("d2rs_budprog_{tag}_{}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
-
-fn learn_errors(dir: &Path) -> PathBuf {
-    let errs = dir.join("errs.json");
-    let out = Command::new(BIN)
-        .args(["learn-errors", "--threads", "2", "-o"])
-        .arg(&errs)
-        .arg(fixture("sam1F.fastq.gz"))
-        .arg(fixture("sam2F.fastq.gz"))
-        .output()
-        .expect("learn-errors");
-    assert!(out.status.success(), "learn-errors failed");
-    errs
-}
+use common::{BIN, fixture, learn_errors, scratch};
 
 /// Returns stderr from a verbose denoise.
 fn denoise_stderr(dir: &Path, errs: &Path, jobs: &str, pooled: bool) -> String {
@@ -77,8 +54,8 @@ fn denoise_stderr(dir: &Path, errs: &Path, jobs: &str, pooled: bool) -> String {
 /// exactly what let another sample's message be glued on and filtered away.
 #[test]
 fn every_record_is_a_complete_line() {
-    let dir = tmpdir("complete");
-    let errs = learn_errors(&dir);
+    let dir = scratch("complete");
+    let errs = learn_errors(&dir, "2");
 
     for (jobs, pooled) in [("1", false), ("2", false), ("1", true)] {
         let err = denoise_stderr(&dir, &errs, jobs, pooled);
@@ -115,8 +92,8 @@ fn every_record_is_a_complete_line() {
 /// single `run_dada` has nothing to disambiguate.
 #[test]
 fn untagged_when_one_run_is_in_flight() {
-    let dir = tmpdir("untagged");
-    let errs = learn_errors(&dir);
+    let dir = scratch("untagged");
+    let errs = learn_errors(&dir, "2");
 
     for (jobs, pooled) in [("1", false), ("1", true)] {
         let err = denoise_stderr(&dir, &errs, jobs, pooled);
@@ -134,8 +111,8 @@ fn untagged_when_one_run_is_in_flight() {
 /// produced it — otherwise `New Cluster C5:` is unattributable.
 #[test]
 fn tagged_when_samples_run_concurrently() {
-    let dir = tmpdir("tagged");
-    let errs = learn_errors(&dir);
+    let dir = scratch("tagged");
+    let errs = learn_errors(&dir, "2");
     let err = denoise_stderr(&dir, &errs, "2", false);
 
     let records: Vec<&str> = err.lines().filter(|l| l.contains("New Cluster")).collect();
