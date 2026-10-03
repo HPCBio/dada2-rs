@@ -174,6 +174,161 @@ fn build_learned_err_params(
     }
 }
 
+/// Build the errfun and DADA parameters `learn-errors` and `errors-from-sample`
+/// share. `dada`-side resolution, which can inherit from an error model, is
+/// [`resolve_dada_params`].
+fn resolve_learn_params(
+    fit: &cli::ErrModelFitArgs,
+    denoise: cli::LearnDenoiseArgs,
+    experimental: cli::ExperimentalArgs,
+    threads: usize,
+    verbose: bool,
+) -> io::Result<(ErrFun, AlignParams, dada::DadaParams)> {
+    let cli::LearnDenoiseArgs {
+        omega_a,
+        omega_c,
+        omega_p,
+        min_fold,
+        min_hamming,
+        min_abund,
+        detect_singletons,
+        max_clust,
+        greedy,
+        use_quals,
+        band,
+        gap_p,
+        homo_gap_p,
+        match_score,
+        mismatch,
+        align_backend,
+        kdist_cutoff,
+        kmer_size,
+        no_kmer_screen,
+    } = denoise;
+    let cli::ExperimentalArgs {
+        screen_backend,
+        minimizer_k,
+        minimizer_w,
+        screen_audit,
+        wfa_max_edits,
+    } = experimental;
+    // R's HOMOPOLYMER_GAP_PENALTY = NULL tracks GAP_PENALTY. R also
+    // normalizes a positive penalty to negative before comparing them
+    // (dada.R:223-227), so `--homo-gap-p 1` means the same as `-1`.
+    let gap_p = gap_p.unwrap_or(-8);
+    let gap_p = if gap_p > 0 { -gap_p } else { gap_p };
+    let homo_gap_p = homo_gap_p.unwrap_or(gap_p);
+    let homo_gap_p = if homo_gap_p > 0 {
+        -homo_gap_p
+    } else {
+        homo_gap_p
+    };
+    note_homopolymer_gapping(verbose, gap_p, homo_gap_p);
+    let greedy = greedy.unwrap_or(true);
+    let use_quals = use_quals.unwrap_or(true);
+    let loess_config = resolve_loess_config(
+        fit.loess_preset.as_deref(),
+        fit.loess_surface.as_deref(),
+        fit.loess_cell,
+        fit.loess_max_rate,
+        fit.loess_min_rate,
+    );
+    let err_fun = match fit.errfun.as_str() {
+        "loess" => ErrFun::Loess {
+            config: loess_config,
+        },
+        "noqual" => ErrFun::Noqual {
+            pseudocount: fit.pseudocount,
+            config: loess_config,
+        },
+        "binned-qual" => {
+            let bins = fit.binned_quals.clone().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "--binned-quals is required when --errfun binned-qual is used",
+                )
+            })?;
+            ErrFun::BinnedQual {
+                bins,
+                config: loess_config,
+            }
+        }
+        "pacbio" => ErrFun::PacBio {
+            config: loess_config,
+        },
+        "external" => {
+            let command = fit.errfun_cmd.clone().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "--errfun-cmd is required when --errfun external is used",
+                )
+            })?;
+            if command.trim().is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "--errfun-cmd cannot be empty",
+                ));
+            }
+            ErrFun::External { command }
+        }
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Unknown errfun '{other}'; expected one of: loess, noqual, binned-qual, pacbio, external"
+                ),
+            ));
+        }
+    };
+
+    let align_params = AlignParams {
+        backend: align_backend.unwrap_or_default(),
+        wfa_max_edits: wfa_max_edits.unwrap_or(WFA_MAX_EDITS_DEFAULT),
+        match_score,
+        mismatch,
+        gap_p,
+        homo_gap_p,
+        use_kmers: !no_kmer_screen,
+        kdist_cutoff,
+        kmer_size,
+        screen_backend: screen_backend.unwrap_or_default(),
+        minimizer_k: minimizer_k.unwrap_or(minimizers::MINIMIZER_K),
+        minimizer_w: minimizer_w.unwrap_or(minimizers::MINIMIZER_W),
+        screen_audit,
+        band,
+        vectorized: true,
+        gapless: true,
+    };
+
+    let dada_params = dada::DadaParams::new(
+        align_params,
+        Vec::new(),
+        0,
+        dada::DenoiseOpts {
+            omega_a,
+            omega_c,
+            omega_p,
+            detect_singletons,
+            max_clust,
+            min_fold,
+            min_hamming,
+            min_abund,
+            use_quals,
+            greedy,
+        },
+        threads,
+        verbose,
+        // learn-errors has no --metrics-json yet; keep
+        // --verbose's measurements exactly as they were.
+        if verbose {
+            MeasureLevel::Attribution
+        } else {
+            MeasureLevel::Off
+        },
+    );
+    Ok((err_fun, align_params, dada_params))
+}
+
 /// `screen_backend` is omitted from output when it is the default, so a k-mer run's
 /// JSON is unchanged from before the backend existed.
 fn is_default_screen(b: &ScreenBackend) -> bool {
@@ -806,30 +961,8 @@ fn run() -> io::Result<()> {
             phred_offset,
             threads,
             sample_jobs,
-            omega_a,
-            omega_c,
-            omega_p,
-            min_fold,
-            min_hamming,
-            min_abund,
-            detect_singletons,
-            band,
-            homo_gap_p,
-            gap_p,
-            match_score,
-            mismatch,
-            align_backend,
-            screen_backend,
-            minimizer_k,
-            minimizer_w,
-            screen_audit,
-            wfa_max_edits,
-            max_clust,
-            greedy,
-            use_quals,
-            kdist_cutoff,
-            kmer_size,
-            no_kmer_screen,
+            denoise,
+            experimental,
             aux_outputs,
             cluster_trace,
             trace_no_members,
@@ -918,30 +1051,8 @@ fn run() -> io::Result<()> {
                     false, // pool
                     verbose,
                     resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution),
-                    omega_a,
-                    omega_c,
-                    omega_p,
-                    min_fold,
-                    min_hamming,
-                    min_abund,
-                    detect_singletons,
-                    band,
-                    homo_gap_p,
-                    gap_p,
-                    match_score,
-                    mismatch,
-                    max_clust,
-                    greedy,
-                    use_quals,
-                    kdist_cutoff,
-                    kmer_size,
-                    no_kmer_screen,
-                    align_backend,
-                    wfa_max_edits,
-                    screen_backend,
-                    minimizer_k,
-                    minimizer_w,
-                    screen_audit,
+                    denoise,
+                    experimental,
                 )?;
 
                 // Samples are independent and single-pass (load -> denoise ->
@@ -1135,30 +1246,8 @@ fn run() -> io::Result<()> {
                 false, // pool
                 verbose,
                 resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution),
-                omega_a,
-                omega_c,
-                omega_p,
-                min_fold,
-                min_hamming,
-                min_abund,
-                detect_singletons,
-                band,
-                homo_gap_p,
-                gap_p,
-                match_score,
-                mismatch,
-                max_clust,
-                greedy,
-                use_quals,
-                kdist_cutoff,
-                kmer_size,
-                no_kmer_screen,
-                align_backend,
-                wfa_max_edits,
-                screen_backend,
-                minimizer_k,
-                minimizer_w,
-                screen_audit,
+                denoise,
+                experimental,
             )?;
             let dada_params = resolved.params;
             let run_params = resolved.run;
@@ -1395,30 +1484,8 @@ fn run() -> io::Result<()> {
             output_dir,
             phred_offset,
             threads,
-            omega_a,
-            omega_c,
-            omega_p,
-            min_fold,
-            min_hamming,
-            min_abund,
-            detect_singletons,
-            band,
-            homo_gap_p,
-            gap_p,
-            match_score,
-            mismatch,
-            align_backend,
-            screen_backend,
-            minimizer_k,
-            minimizer_w,
-            screen_audit,
-            wfa_max_edits,
-            max_clust,
-            greedy,
-            use_quals,
-            kdist_cutoff,
-            kmer_size,
-            no_kmer_screen,
+            denoise,
+            experimental,
             failed_uniques: failed_uniques_path,
             pooled_record,
             cluster_trace,
@@ -1694,30 +1761,8 @@ fn run() -> io::Result<()> {
                 true,  // pool
                 verbose,
                 resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution),
-                omega_a,
-                omega_c,
-                omega_p,
-                min_fold,
-                min_hamming,
-                min_abund,
-                detect_singletons,
-                band,
-                homo_gap_p,
-                gap_p,
-                match_score,
-                mismatch,
-                max_clust,
-                greedy,
-                use_quals,
-                kdist_cutoff,
-                kmer_size,
-                no_kmer_screen,
-                align_backend,
-                wfa_max_edits,
-                screen_backend,
-                minimizer_k,
-                minimizer_w,
-                screen_audit,
+                denoise,
+                experimental,
             )?;
             let dada_params = resolved.params;
             let mut run_params = resolved.run;
@@ -2014,30 +2059,8 @@ fn run() -> io::Result<()> {
             threads,
             sample_jobs,
             cache_samples,
-            omega_a,
-            omega_c,
-            omega_p,
-            min_fold,
-            min_hamming,
-            min_abund,
-            detect_singletons,
-            band,
-            homo_gap_p,
-            gap_p,
-            match_score,
-            mismatch,
-            align_backend,
-            screen_backend,
-            minimizer_k,
-            minimizer_w,
-            screen_audit,
-            wfa_max_edits,
-            max_clust,
-            greedy,
-            use_quals,
-            kdist_cutoff,
-            kmer_size,
-            no_kmer_screen,
+            denoise,
+            experimental,
             failed_uniques: failed_uniques_path,
             compact,
             gzip,
@@ -2100,30 +2123,8 @@ fn run() -> io::Result<()> {
                 false, // pool (pseudo is per-sample, not pooled)
                 verbose,
                 resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution),
-                omega_a,
-                omega_c,
-                omega_p,
-                min_fold,
-                min_hamming,
-                min_abund,
-                detect_singletons,
-                band,
-                homo_gap_p,
-                gap_p,
-                match_score,
-                mismatch,
-                max_clust,
-                greedy,
-                use_quals,
-                kdist_cutoff,
-                kmer_size,
-                no_kmer_screen,
-                align_backend,
-                wfa_max_edits,
-                screen_backend,
-                minimizer_k,
-                minimizer_w,
-                screen_audit,
+                denoise,
+                experimental,
             )?;
 
             // ---- Validate the re-estimation request up front ----
@@ -3427,40 +3428,9 @@ fn run() -> io::Result<()> {
 
         Commands::ErrorsFromSample(cli::ErrorsFromSampleArgs {
             input,
-            errfun,
-            pseudocount,
-            binned_quals,
-            errfun_cmd,
-            loess_preset,
-            loess_surface,
-            loess_cell,
-            loess_max_rate,
-            loess_min_rate,
-            max_consist,
-            omega_a,
-            omega_c,
-            omega_p,
-            min_fold,
-            min_hamming,
-            min_abund,
-            detect_singletons,
-            band,
-            homo_gap_p,
-            gap_p,
-            match_score,
-            mismatch,
-            align_backend,
-            screen_backend,
-            minimizer_k,
-            minimizer_w,
-            screen_audit,
-            wfa_max_edits,
-            max_clust,
-            greedy,
-            use_quals,
-            kdist_cutoff,
-            kmer_size,
-            no_kmer_screen,
+            fit,
+            denoise,
+            experimental,
             threads,
             output,
             compact,
@@ -3471,120 +3441,9 @@ fn run() -> io::Result<()> {
             verbose,
         }) => {
             check_input_paths("input", &input)?;
-            // R's HOMOPOLYMER_GAP_PENALTY = NULL tracks GAP_PENALTY. R also
-            // normalizes a positive penalty to negative before comparing them
-            // (dada.R:223-227), so `--homo-gap-p 1` means the same as `-1`.
-            let gap_p = gap_p.unwrap_or(-8);
-            let gap_p = if gap_p > 0 { -gap_p } else { gap_p };
-            let homo_gap_p = homo_gap_p.unwrap_or(gap_p);
-            let homo_gap_p = if homo_gap_p > 0 {
-                -homo_gap_p
-            } else {
-                homo_gap_p
-            };
-            note_homopolymer_gapping(verbose, gap_p, homo_gap_p);
-            let greedy = greedy.unwrap_or(true);
-            let use_quals = use_quals.unwrap_or(true);
-            let loess_config = resolve_loess_config(
-                loess_preset.as_deref(),
-                loess_surface.as_deref(),
-                loess_cell,
-                loess_max_rate,
-                loess_min_rate,
-            );
-            let err_fun = match errfun.as_str() {
-                "loess" => ErrFun::Loess {
-                    config: loess_config,
-                },
-                "noqual" => ErrFun::Noqual {
-                    pseudocount,
-                    config: loess_config,
-                },
-                "binned-qual" => {
-                    let bins = binned_quals.ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "--binned-quals is required when --errfun binned-qual is used",
-                        )
-                    })?;
-                    ErrFun::BinnedQual {
-                        bins,
-                        config: loess_config,
-                    }
-                }
-                "pacbio" => ErrFun::PacBio {
-                    config: loess_config,
-                },
-                "external" => {
-                    let command = errfun_cmd.clone().ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "--errfun-cmd is required when --errfun external is used",
-                        )
-                    })?;
-                    if command.trim().is_empty() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "--errfun-cmd cannot be empty",
-                        ));
-                    }
-                    ErrFun::External { command }
-                }
-                other => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "Unknown errfun '{other}'; expected one of: loess, noqual, binned-qual, pacbio, external"
-                        ),
-                    ));
-                }
-            };
-
-            let align_params = AlignParams {
-                backend: align_backend.unwrap_or_default(),
-                wfa_max_edits: wfa_max_edits.unwrap_or(WFA_MAX_EDITS_DEFAULT),
-                match_score,
-                mismatch,
-                gap_p,
-                homo_gap_p,
-                use_kmers: !no_kmer_screen,
-                kdist_cutoff,
-                kmer_size,
-                screen_backend: screen_backend.unwrap_or_default(),
-                minimizer_k: minimizer_k.unwrap_or(minimizers::MINIMIZER_K),
-                minimizer_w: minimizer_w.unwrap_or(minimizers::MINIMIZER_W),
-                screen_audit,
-                band,
-                vectorized: true,
-                gapless: true,
-            };
-
-            let dada_params = dada::DadaParams::new(
-                align_params,
-                Vec::new(),
-                0,
-                dada::DenoiseOpts {
-                    omega_a,
-                    omega_c,
-                    omega_p,
-                    detect_singletons,
-                    max_clust,
-                    min_fold,
-                    min_hamming,
-                    min_abund,
-                    use_quals,
-                    greedy,
-                },
-                threads,
-                verbose,
-                // learn-errors has no --metrics-json yet; keep
-                // --verbose's measurements exactly as they were.
-                if verbose {
-                    MeasureLevel::Attribution
-                } else {
-                    MeasureLevel::Off
-                },
-            );
+            let (err_fun, align_params, dada_params) =
+                resolve_learn_params(&fit, denoise, experimental, threads, verbose)?;
+            let max_consist = fit.max_consist;
 
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
@@ -4121,40 +3980,9 @@ fn run() -> io::Result<()> {
             randomize,
             seed,
             phred_offset,
-            errfun,
-            pseudocount,
-            binned_quals,
-            errfun_cmd,
-            loess_preset,
-            loess_surface,
-            loess_cell,
-            loess_max_rate,
-            loess_min_rate,
-            max_consist,
-            omega_a,
-            omega_c,
-            omega_p,
-            min_fold,
-            min_hamming,
-            min_abund,
-            detect_singletons,
-            band,
-            homo_gap_p,
-            gap_p,
-            match_score,
-            mismatch,
-            align_backend,
-            screen_backend,
-            minimizer_k,
-            minimizer_w,
-            screen_audit,
-            wfa_max_edits,
-            max_clust,
-            greedy,
-            use_quals,
-            kdist_cutoff,
-            kmer_size,
-            no_kmer_screen,
+            fit,
+            denoise,
+            experimental,
             threads,
             output,
             compact,
@@ -4165,120 +3993,9 @@ fn run() -> io::Result<()> {
             verbose,
         }) => {
             check_input_paths("input", &input)?;
-            // R's HOMOPOLYMER_GAP_PENALTY = NULL tracks GAP_PENALTY. R also
-            // normalizes a positive penalty to negative before comparing them
-            // (dada.R:223-227), so `--homo-gap-p 1` means the same as `-1`.
-            let gap_p = gap_p.unwrap_or(-8);
-            let gap_p = if gap_p > 0 { -gap_p } else { gap_p };
-            let homo_gap_p = homo_gap_p.unwrap_or(gap_p);
-            let homo_gap_p = if homo_gap_p > 0 {
-                -homo_gap_p
-            } else {
-                homo_gap_p
-            };
-            note_homopolymer_gapping(verbose, gap_p, homo_gap_p);
-            let greedy = greedy.unwrap_or(true);
-            let use_quals = use_quals.unwrap_or(true);
-            let loess_config = resolve_loess_config(
-                loess_preset.as_deref(),
-                loess_surface.as_deref(),
-                loess_cell,
-                loess_max_rate,
-                loess_min_rate,
-            );
-            let err_fun = match errfun.as_str() {
-                "loess" => ErrFun::Loess {
-                    config: loess_config,
-                },
-                "noqual" => ErrFun::Noqual {
-                    pseudocount,
-                    config: loess_config,
-                },
-                "binned-qual" => {
-                    let bins = binned_quals.ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "--binned-quals is required when --errfun binned-qual is used",
-                        )
-                    })?;
-                    ErrFun::BinnedQual {
-                        bins,
-                        config: loess_config,
-                    }
-                }
-                "pacbio" => ErrFun::PacBio {
-                    config: loess_config,
-                },
-                "external" => {
-                    let command = errfun_cmd.clone().ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "--errfun-cmd is required when --errfun external is used",
-                        )
-                    })?;
-                    if command.trim().is_empty() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "--errfun-cmd cannot be empty",
-                        ));
-                    }
-                    ErrFun::External { command }
-                }
-                other => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "Unknown errfun '{other}'; expected one of: loess, noqual, binned-qual, pacbio, external"
-                        ),
-                    ));
-                }
-            };
-
-            let align_params = AlignParams {
-                backend: align_backend.unwrap_or_default(),
-                wfa_max_edits: wfa_max_edits.unwrap_or(WFA_MAX_EDITS_DEFAULT),
-                match_score,
-                mismatch,
-                gap_p,
-                homo_gap_p,
-                use_kmers: !no_kmer_screen,
-                kdist_cutoff,
-                kmer_size,
-                screen_backend: screen_backend.unwrap_or_default(),
-                minimizer_k: minimizer_k.unwrap_or(minimizers::MINIMIZER_K),
-                minimizer_w: minimizer_w.unwrap_or(minimizers::MINIMIZER_W),
-                screen_audit,
-                band,
-                vectorized: true,
-                gapless: true,
-            };
-
-            let dada_params = dada::DadaParams::new(
-                align_params,
-                Vec::new(), // overwritten each iteration
-                0,
-                dada::DenoiseOpts {
-                    omega_a,
-                    omega_c,
-                    omega_p,
-                    detect_singletons,
-                    max_clust,
-                    min_fold,
-                    min_hamming,
-                    min_abund,
-                    use_quals,
-                    greedy,
-                },
-                threads,
-                verbose,
-                // learn-errors has no --metrics-json yet; keep
-                // --verbose's measurements exactly as they were.
-                if verbose {
-                    MeasureLevel::Attribution
-                } else {
-                    MeasureLevel::Off
-                },
-            );
+            let (err_fun, align_params, dada_params) =
+                resolve_learn_params(&fit, denoise, experimental, threads, verbose)?;
+            let max_consist = fit.max_consist;
 
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
@@ -4691,31 +4408,37 @@ fn resolve_dada_params(
     pool: bool,
     verbose: bool,
     measure: MeasureLevel,
-    omega_a: Option<f64>,
-    omega_c: Option<f64>,
-    omega_p: Option<f64>,
-    min_fold: Option<f64>,
-    min_hamming: Option<u32>,
-    min_abund: Option<u32>,
-    detect_singletons: Option<bool>,
-    band: Option<i32>,
-    homo_gap_p: Option<i32>,
-    gap_p: Option<i32>,
-    match_score: Option<i32>,
-    mismatch: Option<i32>,
-    max_clust: Option<usize>,
-    greedy: Option<bool>,
-    use_quals: Option<bool>,
-    kdist_cutoff: Option<f64>,
-    kmer_size: Option<usize>,
-    no_kmer_screen: Option<bool>,
-    align_backend: Option<AlignBackend>,
-    wfa_max_edits: Option<i32>,
-    screen_backend: Option<ScreenBackend>,
-    minimizer_k: Option<usize>,
-    minimizer_w: Option<usize>,
-    screen_audit: bool,
+    denoise: cli::DadaDenoiseArgs,
+    experimental: cli::ExperimentalArgs,
 ) -> io::Result<ResolvedDada> {
+    let cli::DadaDenoiseArgs {
+        omega_a,
+        omega_c,
+        omega_p,
+        min_fold,
+        min_hamming,
+        min_abund,
+        detect_singletons,
+        max_clust,
+        greedy,
+        use_quals,
+        band,
+        gap_p,
+        homo_gap_p,
+        match_score,
+        mismatch,
+        align_backend,
+        kdist_cutoff,
+        kmer_size,
+        no_kmer_screen,
+    } = denoise;
+    let cli::ExperimentalArgs {
+        screen_backend,
+        minimizer_k,
+        minimizer_w,
+        screen_audit,
+        wfa_max_edits,
+    } = experimental;
     let em: ErrorModelJson = read_tagged_json(error_model, &["learn-errors", "errors-from-sample"])
         .with_path(error_model)?;
     let nq = em.nq;

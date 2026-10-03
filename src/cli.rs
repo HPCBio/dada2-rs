@@ -231,6 +231,240 @@ pub enum Commands {
     ReferenceEval(ReferenceEvalArgs),
 }
 
+/// Denoising, alignment and screening flags shared by `dada`, `dada-pooled` and
+/// `dada-pseudo`. Every flag is optional: omitted ones resolve from the error
+/// model or the built-in default (`resolve_dada_params`).
+#[derive(Args)]
+pub struct DadaDenoiseArgs {
+    /// Significance threshold for abundance-based cluster splitting (R OMEGA_A)
+    #[arg(long, help_heading = H_DENOISE)]
+    pub omega_a: Option<f64>,
+
+    /// Significance threshold for reads not corrected to any center (R OMEGA_C)
+    #[arg(long, help_heading = H_DENOISE)]
+    pub omega_c: Option<f64>,
+
+    /// Significance threshold for prior-sequence splitting (R OMEGA_P)
+    #[arg(long, help_heading = H_DENOISE)]
+    pub omega_p: Option<f64>,
+
+    /// Minimum fold-enrichment above expected for splitting (R MIN_FOLD)
+    #[arg(long, help_heading = H_DENOISE)]
+    pub min_fold: Option<f64>,
+
+    /// Minimum Hamming distance required for splitting (R MIN_HAMMING)
+    #[arg(long, help_heading = H_DENOISE)]
+    pub min_hamming: Option<u32>,
+
+    /// Minimum read abundance required for splitting (R MIN_ABUNDANCE)
+    #[arg(long, help_heading = H_DENOISE)]
+    pub min_abund: Option<u32>,
+
+    /// Detect singletons as genuine (R DETECT_SINGLETONS) [omit to inherit]
+    #[arg(long, help_heading = H_DENOISE)]
+    pub detect_singletons: Option<bool>,
+
+    /// Maximum number of clusters to infer, 0 = unlimited (R MAX_CLUST)
+    #[arg(long, help_heading = H_DENOISE)]
+    pub max_clust: Option<usize>,
+
+    /// Use greedy clustering (R GREEDY) [omit to inherit]
+    #[arg(long, help_heading = H_DENOISE)]
+    pub greedy: Option<bool>,
+
+    /// Use quality scores in the error model (R USE_QUALS) [omit to inherit]
+    #[arg(long, help_heading = H_DENOISE)]
+    pub use_quals: Option<bool>,
+
+    /// Band radius (R BAND_SIZE): 16 Illumina, 32 PacBio HiFi, -1 unbanded
+    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
+    pub band: Option<i32>,
+
+    /// Gap penalty for the Needleman-Wunsch alignment (R GAP_PENALTY)
+    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
+    pub gap_p: Option<i32>,
+
+    /// Homopolymer-run gap penalty (R HOMOPOLYMER_GAP_PENALTY) [default: --gap-p]
+    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
+    pub homo_gap_p: Option<i32>,
+
+    /// Match score for the Needleman-Wunsch alignment (R MATCH)
+    #[arg(long = "match", allow_hyphen_values = true, help_heading = H_ALIGN)]
+    pub match_score: Option<i32>,
+
+    /// Mismatch score for the Needleman-Wunsch alignment (R MISMATCH)
+    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
+    pub mismatch: Option<i32>,
+
+    /// Pairwise aligner; `wfa2` requires a build with `--features wfa`
+    #[arg(long, value_enum, help_heading = H_ALIGN)]
+    pub align_backend: Option<AlignBackend>,
+
+    /// K-mer distance cutoff for the pre-alignment screen (R KDIST_CUTOFF)
+    #[arg(long, help_heading = H_SCREEN)]
+    pub kdist_cutoff: Option<f64>,
+
+    /// K-mer size for the screen, 3-8 (R KMER_SIZE); use 6-7 on PacBio HiFi
+    #[arg(long, help_heading = H_SCREEN)]
+    pub kmer_size: Option<usize>,
+
+    /// Disable the k-mer screen and align every pair (much slower)
+    #[arg(long, help_heading = H_SCREEN)]
+    pub no_kmer_screen: Option<bool>,
+}
+
+/// Denoising, alignment and screening flags shared by `learn-errors` and
+/// `errors-from-sample`, with R `learnErrors` defaults.
+#[derive(Args)]
+pub struct LearnDenoiseArgs {
+    /// Significance threshold for abundance-based cluster splitting (R OMEGA_A)
+    #[arg(long, default_value = "1e-40", help_heading = H_DENOISE)]
+    pub omega_a: f64,
+
+    /// Threshold for reads not corrected to any center; R learnErrors uses 0
+    #[arg(long, default_value = "0", help_heading = H_DENOISE)]
+    pub omega_c: f64,
+
+    /// Significance threshold for prior-sequence splitting (R OMEGA_P)
+    #[arg(long, default_value = "1e-4", help_heading = H_DENOISE)]
+    pub omega_p: f64,
+
+    /// Minimum fold-enrichment above expected for splitting (R MIN_FOLD)
+    #[arg(long, default_value_t = 1.0, help_heading = H_DENOISE)]
+    pub min_fold: f64,
+
+    /// Minimum Hamming distance required for splitting (R MIN_HAMMING)
+    #[arg(long, default_value_t = 1, help_heading = H_DENOISE)]
+    pub min_hamming: u32,
+
+    /// Minimum read abundance required for splitting (R MIN_ABUNDANCE)
+    #[arg(long, default_value_t = 1, help_heading = H_DENOISE)]
+    pub min_abund: u32,
+
+    /// Detect singletons as genuine (R DETECT_SINGLETONS)
+    #[arg(long, help_heading = H_DENOISE)]
+    pub detect_singletons: bool,
+
+    /// Maximum number of clusters to infer, 0 = unlimited (R MAX_CLUST)
+    #[arg(long, default_value_t = 0, help_heading = H_DENOISE)]
+    pub max_clust: usize,
+
+    /// Use greedy clustering (R GREEDY) [omit for the default, true]
+    #[arg(long, help_heading = H_DENOISE)]
+    pub greedy: Option<bool>,
+
+    /// Use quality scores in the error model (R USE_QUALS) [omit for true]
+    #[arg(long, help_heading = H_DENOISE)]
+    pub use_quals: Option<bool>,
+
+    /// Band radius (R BAND_SIZE): 16 Illumina, 32 PacBio HiFi, -1 unbanded
+    #[arg(long, default_value_t = 16, allow_hyphen_values = true, help_heading = H_ALIGN)]
+    pub band: i32,
+
+    /// Gap penalty for the Needleman-Wunsch alignment (R GAP_PENALTY) [default: -8]
+    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
+    pub gap_p: Option<i32>,
+
+    /// Homopolymer-run gap penalty (R HOMOPOLYMER_GAP_PENALTY) [default: --gap-p]
+    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
+    pub homo_gap_p: Option<i32>,
+
+    /// Match score for the Needleman-Wunsch alignment (R MATCH)
+    #[arg(long = "match", default_value_t = 5, allow_hyphen_values = true, help_heading = H_ALIGN)]
+    pub match_score: i32,
+
+    /// Mismatch score for the Needleman-Wunsch alignment (R MISMATCH)
+    #[arg(long, default_value_t = -4, allow_hyphen_values = true, help_heading = H_ALIGN)]
+    pub mismatch: i32,
+
+    /// Pairwise aligner; `wfa2` requires a build with `--features wfa`
+    #[arg(long, value_enum, help_heading = H_ALIGN)]
+    pub align_backend: Option<AlignBackend>,
+
+    /// K-mer distance cutoff for the pre-alignment screen (R KDIST_CUTOFF)
+    #[arg(long, default_value_t = 0.42, help_heading = H_SCREEN)]
+    pub kdist_cutoff: f64,
+
+    /// K-mer size for the screen, 3-8 (R KMER_SIZE); use 6-7 on PacBio HiFi
+    #[arg(long, default_value_t = 5, help_heading = H_SCREEN)]
+    pub kmer_size: usize,
+
+    /// Disable the k-mer screen and align every pair (much slower)
+    #[arg(long, help_heading = H_SCREEN)]
+    pub no_kmer_screen: bool,
+}
+
+/// Experimental screen and aligner knobs shared by every denoising subcommand.
+#[derive(Args)]
+pub struct ExperimentalArgs {
+    /// EXPERIMENTAL: pre-alignment screen; `minimizer` needs a tuned cutoff
+    #[arg(long, value_enum, help_heading = H_EXP)]
+    pub screen_backend: Option<ScreenBackend>,
+
+    /// EXPERIMENTAL: k-mer size for the minimizer sketch, 5-31 [default: 8]
+    #[arg(long, help_heading = H_EXP)]
+    pub minimizer_k: Option<usize>,
+
+    /// EXPERIMENTAL: minimizer winnowing window in k-mers, 1-64 [default: 5]
+    #[arg(long, help_heading = H_EXP)]
+    pub minimizer_w: Option<usize>,
+
+    /// EXPERIMENTAL: run both screens and report disagreements (much slower)
+    #[arg(long, default_value_t = false, help_heading = H_EXP)]
+    pub screen_audit: bool,
+
+    /// EXPERIMENTAL: WFA edit-budget cap, 0 = unbounded [default: 50]
+    #[arg(long, help_heading = H_EXP)]
+    pub wfa_max_edits: Option<i32>,
+}
+
+/// Error-function and self-consistency flags shared by `learn-errors` and
+/// `errors-from-sample`.
+#[derive(Args)]
+pub struct ErrModelFitArgs {
+    /// Error-model fitting function
+    #[arg(long, default_value = "loess", help_heading = H_ERRMODEL,
+          value_parser = ["loess", "noqual", "binned-qual", "pacbio", "external"])]
+    pub errfun: String,
+
+    /// Pseudocount added to each transition total (--errfun noqual only)
+    #[arg(long, default_value_t = 1.0, help_heading = H_ERRMODEL)]
+    pub pseudocount: f64,
+
+    /// Anchor quality bins, e.g. "0,10,20,30,40" (--errfun binned-qual only)
+    #[arg(long, value_delimiter = ',', help_heading = H_ERRMODEL)]
+    pub binned_quals: Option<Vec<f64>>,
+
+    /// Command to invoke for --errfun external; input/output paths are appended
+    #[arg(long, help_heading = H_ERRMODEL)]
+    pub errfun_cmd: Option<String>,
+
+    /// DEPRECATED: use --loess-surface
+    #[arg(long, help_heading = H_ERRMODEL, hide = true,
+          value_parser = ["default", "r-dada2"])]
+    pub loess_preset: Option<String>,
+
+    /// LOESS fitting surface [default: interpolate, as R's loess() uses]
+    #[arg(long, value_parser = ["direct", "interpolate"], help_heading = H_ERRMODEL)]
+    pub loess_surface: Option<String>,
+
+    /// Max fraction of observations per kd-tree cell (interpolate surface only)
+    #[arg(long, help_heading = H_ERRMODEL)]
+    pub loess_cell: Option<f64>,
+
+    /// Upper clamp on fitted off-diagonal error rates; 1.0 disables
+    #[arg(long, help_heading = H_ERRMODEL)]
+    pub loess_max_rate: Option<f64>,
+
+    /// Lower clamp on fitted off-diagonal error rates; 0.0 disables
+    #[arg(long, help_heading = H_ERRMODEL)]
+    pub loess_min_rate: Option<f64>,
+
+    /// Maximum self-consistency iterations (R MAX_CONSIST)
+    #[arg(long, default_value_t = 10, help_heading = H_ERRMODEL)]
+    pub max_consist: usize,
+}
+
 /// Arguments for [`Commands::Summary`].
 #[derive(Args)]
 pub struct SummaryArgs {
@@ -382,81 +616,8 @@ pub struct DadaArgs {
     #[arg(long, help_heading = H_ERRMODEL)]
     pub inherit_err_params: bool,
 
-    /// Significance threshold for abundance-based cluster splitting (R OMEGA_A)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub omega_a: Option<f64>,
-
-    /// Significance threshold for reads not corrected to any center (R OMEGA_C)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub omega_c: Option<f64>,
-
-    /// Significance threshold for prior-sequence splitting (R OMEGA_P)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub omega_p: Option<f64>,
-
-    /// Minimum fold-enrichment above expected for splitting (R MIN_FOLD)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub min_fold: Option<f64>,
-
-    /// Minimum Hamming distance required for splitting (R MIN_HAMMING)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub min_hamming: Option<u32>,
-
-    /// Minimum read abundance required for splitting (R MIN_ABUNDANCE)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub min_abund: Option<u32>,
-
-    /// Detect singletons as genuine (R DETECT_SINGLETONS) [omit to inherit]
-    #[arg(long, help_heading = H_DENOISE)]
-    pub detect_singletons: Option<bool>,
-
-    /// Maximum number of clusters to infer, 0 = unlimited (R MAX_CLUST)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub max_clust: Option<usize>,
-
-    /// Use greedy clustering (R GREEDY) [omit to inherit]
-    #[arg(long, help_heading = H_DENOISE)]
-    pub greedy: Option<bool>,
-
-    /// Use quality scores in the error model (R USE_QUALS) [omit to inherit]
-    #[arg(long, help_heading = H_DENOISE)]
-    pub use_quals: Option<bool>,
-
-    /// Band radius (R BAND_SIZE): 16 Illumina, 32 PacBio HiFi, -1 unbanded
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub band: Option<i32>,
-
-    /// Gap penalty for the Needleman-Wunsch alignment (R GAP_PENALTY)
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub gap_p: Option<i32>,
-
-    /// Homopolymer-run gap penalty (R HOMOPOLYMER_GAP_PENALTY) [default: --gap-p]
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub homo_gap_p: Option<i32>,
-
-    /// Match score for the Needleman-Wunsch alignment (R MATCH)
-    #[arg(long = "match", allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub match_score: Option<i32>,
-
-    /// Mismatch score for the Needleman-Wunsch alignment (R MISMATCH)
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub mismatch: Option<i32>,
-
-    /// Pairwise aligner; `wfa2` requires a build with `--features wfa`
-    #[arg(long, value_enum, help_heading = H_ALIGN)]
-    pub align_backend: Option<AlignBackend>,
-
-    /// K-mer distance cutoff for the pre-alignment screen (R KDIST_CUTOFF)
-    #[arg(long, help_heading = H_SCREEN)]
-    pub kdist_cutoff: Option<f64>,
-
-    /// K-mer size for the screen, 3-8 (R KMER_SIZE); use 6-7 on PacBio HiFi
-    #[arg(long, help_heading = H_SCREEN)]
-    pub kmer_size: Option<usize>,
-
-    /// Disable the k-mer screen and align every pair (much slower)
-    #[arg(long, help_heading = H_SCREEN)]
-    pub no_kmer_screen: Option<bool>,
+    #[command(flatten)]
+    pub denoise: DadaDenoiseArgs,
 
     /// Number of threads for dereplication and DADA2 comparisons
     #[arg(long, default_value_t = 1, help_heading = H_PERF)]
@@ -514,25 +675,8 @@ pub struct DadaArgs {
     #[arg(long, help_heading = H_DIAG)]
     pub failed_uniques: Option<PathBuf>,
 
-    /// EXPERIMENTAL: pre-alignment screen; `minimizer` needs a tuned cutoff
-    #[arg(long, value_enum, help_heading = H_EXP)]
-    pub screen_backend: Option<ScreenBackend>,
-
-    /// EXPERIMENTAL: k-mer size for the minimizer sketch, 5-31 [default: 8]
-    #[arg(long, help_heading = H_EXP)]
-    pub minimizer_k: Option<usize>,
-
-    /// EXPERIMENTAL: minimizer winnowing window in k-mers, 1-64 [default: 5]
-    #[arg(long, help_heading = H_EXP)]
-    pub minimizer_w: Option<usize>,
-
-    /// EXPERIMENTAL: run both screens and report disagreements (much slower)
-    #[arg(long, default_value_t = false, help_heading = H_EXP)]
-    pub screen_audit: bool,
-
-    /// EXPERIMENTAL: WFA edit-budget cap, 0 = unbounded [default: 50]
-    #[arg(long, help_heading = H_EXP)]
-    pub wfa_max_edits: Option<i32>,
+    #[command(flatten)]
+    pub experimental: ExperimentalArgs,
 }
 
 /// Arguments for [`Commands::DadaPooled`].
@@ -566,81 +710,8 @@ pub struct DadaPooledArgs {
     #[arg(long, help_heading = H_ERRMODEL)]
     pub inherit_err_params: bool,
 
-    /// Significance threshold for abundance-based cluster splitting (R OMEGA_A)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub omega_a: Option<f64>,
-
-    /// Significance threshold for reads not corrected to any center (R OMEGA_C)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub omega_c: Option<f64>,
-
-    /// Significance threshold for prior-sequence splitting (R OMEGA_P)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub omega_p: Option<f64>,
-
-    /// Minimum fold-enrichment above expected for splitting (R MIN_FOLD)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub min_fold: Option<f64>,
-
-    /// Minimum Hamming distance required for splitting (R MIN_HAMMING)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub min_hamming: Option<u32>,
-
-    /// Minimum read abundance required for splitting (R MIN_ABUNDANCE)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub min_abund: Option<u32>,
-
-    /// Detect singletons as genuine (R DETECT_SINGLETONS) [omit to inherit]
-    #[arg(long, help_heading = H_DENOISE)]
-    pub detect_singletons: Option<bool>,
-
-    /// Maximum number of clusters to infer, 0 = unlimited (R MAX_CLUST)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub max_clust: Option<usize>,
-
-    /// Use greedy clustering (R GREEDY) [omit to inherit]
-    #[arg(long, help_heading = H_DENOISE)]
-    pub greedy: Option<bool>,
-
-    /// Use quality scores in the error model (R USE_QUALS) [omit to inherit]
-    #[arg(long, help_heading = H_DENOISE)]
-    pub use_quals: Option<bool>,
-
-    /// Band radius (R BAND_SIZE): 16 Illumina, 32 PacBio HiFi, -1 unbanded
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub band: Option<i32>,
-
-    /// Gap penalty for the Needleman-Wunsch alignment (R GAP_PENALTY)
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub gap_p: Option<i32>,
-
-    /// Homopolymer-run gap penalty (R HOMOPOLYMER_GAP_PENALTY) [default: --gap-p]
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub homo_gap_p: Option<i32>,
-
-    /// Match score for the Needleman-Wunsch alignment (R MATCH)
-    #[arg(long = "match", allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub match_score: Option<i32>,
-
-    /// Mismatch score for the Needleman-Wunsch alignment (R MISMATCH)
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub mismatch: Option<i32>,
-
-    /// Pairwise aligner; `wfa2` requires a build with `--features wfa`
-    #[arg(long, value_enum, help_heading = H_ALIGN)]
-    pub align_backend: Option<AlignBackend>,
-
-    /// K-mer distance cutoff for the pre-alignment screen (R KDIST_CUTOFF)
-    #[arg(long, help_heading = H_SCREEN)]
-    pub kdist_cutoff: Option<f64>,
-
-    /// K-mer size for the screen, 3-8 (R KMER_SIZE); use 6-7 on PacBio HiFi
-    #[arg(long, help_heading = H_SCREEN)]
-    pub kmer_size: Option<usize>,
-
-    /// Disable the k-mer screen and align every pair (much slower)
-    #[arg(long, help_heading = H_SCREEN)]
-    pub no_kmer_screen: Option<bool>,
+    #[command(flatten)]
+    pub denoise: DadaDenoiseArgs,
 
     /// Number of threads for dereplication and DADA2 comparisons
     #[arg(long, default_value_t = 1, help_heading = H_PERF)]
@@ -690,25 +761,8 @@ pub struct DadaPooledArgs {
     #[arg(long, default_value_t = 1, help_heading = H_DIAG)]
     pub trace_min_abund: u32,
 
-    /// EXPERIMENTAL: pre-alignment screen; `minimizer` needs a tuned cutoff
-    #[arg(long, value_enum, help_heading = H_EXP)]
-    pub screen_backend: Option<ScreenBackend>,
-
-    /// EXPERIMENTAL: k-mer size for the minimizer sketch, 5-31 [default: 8]
-    #[arg(long, help_heading = H_EXP)]
-    pub minimizer_k: Option<usize>,
-
-    /// EXPERIMENTAL: minimizer winnowing window in k-mers, 1-64 [default: 5]
-    #[arg(long, help_heading = H_EXP)]
-    pub minimizer_w: Option<usize>,
-
-    /// EXPERIMENTAL: run both screens and report disagreements (much slower)
-    #[arg(long, default_value_t = false, help_heading = H_EXP)]
-    pub screen_audit: bool,
-
-    /// EXPERIMENTAL: WFA edit-budget cap, 0 = unbounded [default: 50]
-    #[arg(long, help_heading = H_EXP)]
-    pub wfa_max_edits: Option<i32>,
+    #[command(flatten)]
+    pub experimental: ExperimentalArgs,
 }
 
 /// Arguments for [`Commands::DadaPseudo`].
@@ -754,81 +808,8 @@ pub struct DadaPseudoArgs {
     #[arg(long, help_heading = H_PSEUDO)]
     pub priors_out: Option<PathBuf>,
 
-    /// Significance threshold for abundance-based cluster splitting (R OMEGA_A)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub omega_a: Option<f64>,
-
-    /// Significance threshold for reads not corrected to any center (R OMEGA_C)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub omega_c: Option<f64>,
-
-    /// Significance threshold for prior-sequence splitting (R OMEGA_P)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub omega_p: Option<f64>,
-
-    /// Minimum fold-enrichment above expected for splitting (R MIN_FOLD)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub min_fold: Option<f64>,
-
-    /// Minimum Hamming distance required for splitting (R MIN_HAMMING)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub min_hamming: Option<u32>,
-
-    /// Minimum read abundance required for splitting (R MIN_ABUNDANCE)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub min_abund: Option<u32>,
-
-    /// Detect singletons as genuine (R DETECT_SINGLETONS) [omit to inherit]
-    #[arg(long, help_heading = H_DENOISE)]
-    pub detect_singletons: Option<bool>,
-
-    /// Maximum number of clusters to infer, 0 = unlimited (R MAX_CLUST)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub max_clust: Option<usize>,
-
-    /// Use greedy clustering (R GREEDY) [omit to inherit]
-    #[arg(long, help_heading = H_DENOISE)]
-    pub greedy: Option<bool>,
-
-    /// Use quality scores in the error model (R USE_QUALS) [omit to inherit]
-    #[arg(long, help_heading = H_DENOISE)]
-    pub use_quals: Option<bool>,
-
-    /// Band radius (R BAND_SIZE): 16 Illumina, 32 PacBio HiFi, -1 unbanded
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub band: Option<i32>,
-
-    /// Gap penalty for the Needleman-Wunsch alignment (R GAP_PENALTY)
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub gap_p: Option<i32>,
-
-    /// Homopolymer-run gap penalty (R HOMOPOLYMER_GAP_PENALTY) [default: --gap-p]
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub homo_gap_p: Option<i32>,
-
-    /// Match score for the Needleman-Wunsch alignment (R MATCH)
-    #[arg(long = "match", allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub match_score: Option<i32>,
-
-    /// Mismatch score for the Needleman-Wunsch alignment (R MISMATCH)
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub mismatch: Option<i32>,
-
-    /// Pairwise aligner; `wfa2` requires a build with `--features wfa`
-    #[arg(long, value_enum, help_heading = H_ALIGN)]
-    pub align_backend: Option<AlignBackend>,
-
-    /// K-mer distance cutoff for the pre-alignment screen (R KDIST_CUTOFF)
-    #[arg(long, help_heading = H_SCREEN)]
-    pub kdist_cutoff: Option<f64>,
-
-    /// K-mer size for the screen, 3-8 (R KMER_SIZE); use 6-7 on PacBio HiFi
-    #[arg(long, help_heading = H_SCREEN)]
-    pub kmer_size: Option<usize>,
-
-    /// Disable the k-mer screen and align every pair (much slower)
-    #[arg(long, help_heading = H_SCREEN)]
-    pub no_kmer_screen: Option<bool>,
+    #[command(flatten)]
+    pub denoise: DadaDenoiseArgs,
 
     /// Number of threads for dereplication and DADA2 comparisons
     #[arg(long, default_value_t = 1, help_heading = H_PERF)]
@@ -870,25 +851,8 @@ pub struct DadaPseudoArgs {
     #[arg(long, help_heading = H_DIAG)]
     pub failed_uniques: Option<PathBuf>,
 
-    /// EXPERIMENTAL: pre-alignment screen; `minimizer` needs a tuned cutoff
-    #[arg(long, value_enum, help_heading = H_EXP)]
-    pub screen_backend: Option<ScreenBackend>,
-
-    /// EXPERIMENTAL: k-mer size for the minimizer sketch, 5-31 [default: 8]
-    #[arg(long, help_heading = H_EXP)]
-    pub minimizer_k: Option<usize>,
-
-    /// EXPERIMENTAL: minimizer winnowing window in k-mers, 1-64 [default: 5]
-    #[arg(long, help_heading = H_EXP)]
-    pub minimizer_w: Option<usize>,
-
-    /// EXPERIMENTAL: run both screens and report disagreements (much slower)
-    #[arg(long, default_value_t = false, help_heading = H_EXP)]
-    pub screen_audit: bool,
-
-    /// EXPERIMENTAL: WFA edit-budget cap, 0 = unbounded [default: 50]
-    #[arg(long, help_heading = H_EXP)]
-    pub wfa_max_edits: Option<i32>,
+    #[command(flatten)]
+    pub experimental: ExperimentalArgs,
 }
 
 /// Arguments for [`Commands::MergePairs`].
@@ -1546,123 +1510,11 @@ pub struct ErrorsFromSampleArgs {
     #[arg(required = true, help_heading = H_INPUT)]
     pub input: Vec<PathBuf>,
 
-    /// Error-model fitting function
-    #[arg(long, default_value = "loess", help_heading = H_ERRMODEL,
-          value_parser = ["loess", "noqual", "binned-qual", "pacbio", "external"])]
-    pub errfun: String,
+    #[command(flatten)]
+    pub fit: ErrModelFitArgs,
 
-    /// Pseudocount added to each transition total (--errfun noqual only)
-    #[arg(long, default_value_t = 1.0, help_heading = H_ERRMODEL)]
-    pub pseudocount: f64,
-
-    /// Anchor quality bins, e.g. "0,10,20,30,40" (--errfun binned-qual only)
-    #[arg(long, value_delimiter = ',', help_heading = H_ERRMODEL)]
-    pub binned_quals: Option<Vec<f64>>,
-
-    /// Command to invoke for --errfun external; input/output paths are appended
-    #[arg(long, help_heading = H_ERRMODEL)]
-    pub errfun_cmd: Option<String>,
-
-    /// DEPRECATED: use --loess-surface
-    #[arg(long, help_heading = H_ERRMODEL, hide = true,
-          value_parser = ["default", "r-dada2"])]
-    pub loess_preset: Option<String>,
-
-    /// LOESS fitting surface [default: interpolate, as R's loess() uses]
-    #[arg(long, value_parser = ["direct", "interpolate"], help_heading = H_ERRMODEL)]
-    pub loess_surface: Option<String>,
-
-    /// Max fraction of observations per kd-tree cell (interpolate surface only)
-    #[arg(long, help_heading = H_ERRMODEL)]
-    pub loess_cell: Option<f64>,
-
-    /// Upper clamp on fitted off-diagonal error rates; 1.0 disables
-    #[arg(long, help_heading = H_ERRMODEL)]
-    pub loess_max_rate: Option<f64>,
-
-    /// Lower clamp on fitted off-diagonal error rates; 0.0 disables
-    #[arg(long, help_heading = H_ERRMODEL)]
-    pub loess_min_rate: Option<f64>,
-
-    /// Maximum self-consistency iterations (R MAX_CONSIST)
-    #[arg(long, default_value_t = 10, help_heading = H_ERRMODEL)]
-    pub max_consist: usize,
-
-    /// Significance threshold for abundance-based cluster splitting (R OMEGA_A)
-    #[arg(long, default_value = "1e-40", help_heading = H_DENOISE)]
-    pub omega_a: f64,
-
-    /// Threshold for reads not corrected to any center; R learnErrors uses 0
-    #[arg(long, default_value = "0", help_heading = H_DENOISE)]
-    pub omega_c: f64,
-
-    /// Significance threshold for prior-sequence splitting (R OMEGA_P)
-    #[arg(long, default_value = "1e-4", help_heading = H_DENOISE)]
-    pub omega_p: f64,
-
-    /// Minimum fold-enrichment above expected for splitting (R MIN_FOLD)
-    #[arg(long, default_value_t = 1.0, help_heading = H_DENOISE)]
-    pub min_fold: f64,
-
-    /// Minimum Hamming distance required for splitting (R MIN_HAMMING)
-    #[arg(long, default_value_t = 1, help_heading = H_DENOISE)]
-    pub min_hamming: u32,
-
-    /// Minimum read abundance required for splitting (R MIN_ABUNDANCE)
-    #[arg(long, default_value_t = 1, help_heading = H_DENOISE)]
-    pub min_abund: u32,
-
-    /// Detect singletons as genuine (R DETECT_SINGLETONS)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub detect_singletons: bool,
-
-    /// Maximum number of clusters to infer, 0 = unlimited (R MAX_CLUST)
-    #[arg(long, default_value_t = 0, help_heading = H_DENOISE)]
-    pub max_clust: usize,
-
-    /// Use greedy clustering (R GREEDY) [omit for the default, true]
-    #[arg(long, help_heading = H_DENOISE)]
-    pub greedy: Option<bool>,
-
-    /// Use quality scores in the error model (R USE_QUALS) [omit for true]
-    #[arg(long, help_heading = H_DENOISE)]
-    pub use_quals: Option<bool>,
-
-    /// Band radius (R BAND_SIZE): 16 Illumina, 32 PacBio HiFi, -1 unbanded
-    #[arg(long, default_value_t = 16, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub band: i32,
-
-    /// Gap penalty for the Needleman-Wunsch alignment (R GAP_PENALTY) [default: -8]
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub gap_p: Option<i32>,
-
-    /// Homopolymer-run gap penalty (R HOMOPOLYMER_GAP_PENALTY) [default: --gap-p]
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub homo_gap_p: Option<i32>,
-
-    /// Match score for the Needleman-Wunsch alignment (R MATCH)
-    #[arg(long = "match", default_value_t = 5, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub match_score: i32,
-
-    /// Mismatch score for the Needleman-Wunsch alignment (R MISMATCH)
-    #[arg(long, default_value_t = -4, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub mismatch: i32,
-
-    /// Pairwise aligner; `wfa2` requires a build with `--features wfa`
-    #[arg(long, value_enum, help_heading = H_ALIGN)]
-    pub align_backend: Option<AlignBackend>,
-
-    /// K-mer distance cutoff for the pre-alignment screen (R KDIST_CUTOFF)
-    #[arg(long, default_value_t = 0.42, help_heading = H_SCREEN)]
-    pub kdist_cutoff: f64,
-
-    /// K-mer size for the screen, 3-8 (R KMER_SIZE); use 6-7 on PacBio HiFi
-    #[arg(long, default_value_t = 5, help_heading = H_SCREEN)]
-    pub kmer_size: usize,
-
-    /// Disable the k-mer screen and align every pair (much slower)
-    #[arg(long, help_heading = H_SCREEN)]
-    pub no_kmer_screen: bool,
+    #[command(flatten)]
+    pub denoise: LearnDenoiseArgs,
 
     /// Number of threads for parallel sample processing
     #[arg(long, default_value_t = 1, help_heading = H_PERF)]
@@ -1696,25 +1548,8 @@ pub struct ErrorsFromSampleArgs {
     #[arg(long, default_value_t = 1, help_heading = H_DIAG)]
     pub trace_min_abund: u32,
 
-    /// EXPERIMENTAL: pre-alignment screen; `minimizer` needs a tuned cutoff
-    #[arg(long, value_enum, help_heading = H_EXP)]
-    pub screen_backend: Option<ScreenBackend>,
-
-    /// EXPERIMENTAL: k-mer size for the minimizer sketch, 5-31 [default: 8]
-    #[arg(long, help_heading = H_EXP)]
-    pub minimizer_k: Option<usize>,
-
-    /// EXPERIMENTAL: minimizer winnowing window in k-mers, 1-64 [default: 5]
-    #[arg(long, help_heading = H_EXP)]
-    pub minimizer_w: Option<usize>,
-
-    /// EXPERIMENTAL: run both screens and report disagreements (much slower)
-    #[arg(long, default_value_t = false, help_heading = H_EXP)]
-    pub screen_audit: bool,
-
-    /// EXPERIMENTAL: WFA edit-budget cap, 0 = unbounded [default: 50]
-    #[arg(long, help_heading = H_EXP)]
-    pub wfa_max_edits: Option<i32>,
+    #[command(flatten)]
+    pub experimental: ExperimentalArgs,
 }
 
 /// Arguments for [`Commands::LearnErrors`].
@@ -1740,123 +1575,11 @@ pub struct LearnErrorsArgs {
     #[arg(long, help_heading = H_ERRMODEL)]
     pub seed: Option<u64>,
 
-    /// Error-model fitting function
-    #[arg(long, default_value = "loess", help_heading = H_ERRMODEL,
-          value_parser = ["loess", "noqual", "binned-qual", "pacbio", "external"])]
-    pub errfun: String,
+    #[command(flatten)]
+    pub fit: ErrModelFitArgs,
 
-    /// Pseudocount added to each transition total (--errfun noqual only)
-    #[arg(long, default_value_t = 1.0, help_heading = H_ERRMODEL)]
-    pub pseudocount: f64,
-
-    /// Anchor quality bins, e.g. "0,10,20,30,40" (--errfun binned-qual only)
-    #[arg(long, value_delimiter = ',', help_heading = H_ERRMODEL)]
-    pub binned_quals: Option<Vec<f64>>,
-
-    /// Command to invoke for --errfun external; input/output paths are appended
-    #[arg(long, help_heading = H_ERRMODEL)]
-    pub errfun_cmd: Option<String>,
-
-    /// DEPRECATED: use --loess-surface
-    #[arg(long, help_heading = H_ERRMODEL, hide = true,
-          value_parser = ["default", "r-dada2"])]
-    pub loess_preset: Option<String>,
-
-    /// LOESS fitting surface [default: interpolate, as R's loess() uses]
-    #[arg(long, value_parser = ["direct", "interpolate"], help_heading = H_ERRMODEL)]
-    pub loess_surface: Option<String>,
-
-    /// Max fraction of observations per kd-tree cell (interpolate surface only)
-    #[arg(long, help_heading = H_ERRMODEL)]
-    pub loess_cell: Option<f64>,
-
-    /// Upper clamp on fitted off-diagonal error rates; 1.0 disables
-    #[arg(long, help_heading = H_ERRMODEL)]
-    pub loess_max_rate: Option<f64>,
-
-    /// Lower clamp on fitted off-diagonal error rates; 0.0 disables
-    #[arg(long, help_heading = H_ERRMODEL)]
-    pub loess_min_rate: Option<f64>,
-
-    /// Maximum self-consistency iterations (R MAX_CONSIST)
-    #[arg(long, default_value_t = 10, help_heading = H_ERRMODEL)]
-    pub max_consist: usize,
-
-    /// Significance threshold for abundance-based cluster splitting (R OMEGA_A)
-    #[arg(long, default_value = "1e-40", help_heading = H_DENOISE)]
-    pub omega_a: f64,
-
-    /// Threshold for reads not corrected to any center; R learnErrors uses 0
-    #[arg(long, default_value = "0", help_heading = H_DENOISE)]
-    pub omega_c: f64,
-
-    /// Significance threshold for prior-sequence splitting (R OMEGA_P)
-    #[arg(long, default_value = "1e-4", help_heading = H_DENOISE)]
-    pub omega_p: f64,
-
-    /// Minimum fold-enrichment above expected for splitting (R MIN_FOLD)
-    #[arg(long, default_value_t = 1.0, help_heading = H_DENOISE)]
-    pub min_fold: f64,
-
-    /// Minimum Hamming distance required for splitting (R MIN_HAMMING)
-    #[arg(long, default_value_t = 1, help_heading = H_DENOISE)]
-    pub min_hamming: u32,
-
-    /// Minimum read abundance required for splitting (R MIN_ABUNDANCE)
-    #[arg(long, default_value_t = 1, help_heading = H_DENOISE)]
-    pub min_abund: u32,
-
-    /// Detect singletons as genuine (R DETECT_SINGLETONS)
-    #[arg(long, help_heading = H_DENOISE)]
-    pub detect_singletons: bool,
-
-    /// Maximum number of clusters to infer, 0 = unlimited (R MAX_CLUST)
-    #[arg(long, default_value_t = 0, help_heading = H_DENOISE)]
-    pub max_clust: usize,
-
-    /// Use greedy clustering (R GREEDY) [omit for the default, true]
-    #[arg(long, help_heading = H_DENOISE)]
-    pub greedy: Option<bool>,
-
-    /// Use quality scores in the error model (R USE_QUALS) [omit for true]
-    #[arg(long, help_heading = H_DENOISE)]
-    pub use_quals: Option<bool>,
-
-    /// Band radius (R BAND_SIZE): 16 Illumina, 32 PacBio HiFi, -1 unbanded
-    #[arg(long, default_value_t = 16, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub band: i32,
-
-    /// Gap penalty for the Needleman-Wunsch alignment (R GAP_PENALTY) [default: -8]
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub gap_p: Option<i32>,
-
-    /// Homopolymer-run gap penalty (R HOMOPOLYMER_GAP_PENALTY) [default: --gap-p]
-    #[arg(long, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub homo_gap_p: Option<i32>,
-
-    /// Match score for the Needleman-Wunsch alignment (R MATCH)
-    #[arg(long = "match", default_value_t = 5, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub match_score: i32,
-
-    /// Mismatch score for the Needleman-Wunsch alignment (R MISMATCH)
-    #[arg(long, default_value_t = -4, allow_hyphen_values = true, help_heading = H_ALIGN)]
-    pub mismatch: i32,
-
-    /// Pairwise aligner; `wfa2` requires a build with `--features wfa`
-    #[arg(long, value_enum, help_heading = H_ALIGN)]
-    pub align_backend: Option<AlignBackend>,
-
-    /// K-mer distance cutoff for the pre-alignment screen (R KDIST_CUTOFF)
-    #[arg(long, default_value_t = 0.42, help_heading = H_SCREEN)]
-    pub kdist_cutoff: f64,
-
-    /// K-mer size for the screen, 3-8 (R KMER_SIZE); use 6-7 on PacBio HiFi
-    #[arg(long, default_value_t = 5, help_heading = H_SCREEN)]
-    pub kmer_size: usize,
-
-    /// Disable the k-mer screen and align every pair (much slower)
-    #[arg(long, help_heading = H_SCREEN)]
-    pub no_kmer_screen: bool,
+    #[command(flatten)]
+    pub denoise: LearnDenoiseArgs,
 
     /// Number of threads for parallel sample processing
     #[arg(long, default_value_t = 1, help_heading = H_PERF)]
@@ -1890,25 +1613,8 @@ pub struct LearnErrorsArgs {
     #[arg(long, default_value_t = 1, help_heading = H_DIAG)]
     pub trace_min_abund: u32,
 
-    /// EXPERIMENTAL: pre-alignment screen; `minimizer` needs a tuned cutoff
-    #[arg(long, value_enum, help_heading = H_EXP)]
-    pub screen_backend: Option<ScreenBackend>,
-
-    /// EXPERIMENTAL: k-mer size for the minimizer sketch, 5-31 [default: 8]
-    #[arg(long, help_heading = H_EXP)]
-    pub minimizer_k: Option<usize>,
-
-    /// EXPERIMENTAL: minimizer winnowing window in k-mers, 1-64 [default: 5]
-    #[arg(long, help_heading = H_EXP)]
-    pub minimizer_w: Option<usize>,
-
-    /// EXPERIMENTAL: run both screens and report disagreements (much slower)
-    #[arg(long, default_value_t = false, help_heading = H_EXP)]
-    pub screen_audit: bool,
-
-    /// EXPERIMENTAL: WFA edit-budget cap, 0 = unbounded [default: 50]
-    #[arg(long, help_heading = H_EXP)]
-    pub wfa_max_edits: Option<i32>,
+    #[command(flatten)]
+    pub experimental: ExperimentalArgs,
 }
 
 /// Arguments for [`Commands::KdistCalibrate`].
