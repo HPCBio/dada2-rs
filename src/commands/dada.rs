@@ -4,6 +4,7 @@ use std::{
     fs::File,
     io,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 use flate2::read::MultiGzDecoder;
@@ -148,12 +149,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
             );
         }
         let collect_failed = failed_uniques_path.is_some();
-        let failed_rows: std::sync::Mutex<Vec<failed_uniques::Row>> =
-            std::sync::Mutex::new(Vec::new());
-        // One entry per sample. Samples finish out of order under
-        // `--sample-jobs`, so this is sorted before it is written.
-        type MetricRun = (String, Option<u8>, metrics::RunMetrics);
-        let metrics_runs: std::sync::Mutex<Vec<MetricRun>> = std::sync::Mutex::new(Vec::new());
+        let sink = SampleSink::new("dada", &output_dir, gzip, verbose, None);
         for_each_sample_concurrent(input.len(), jobs, threads, |i, sub_pool| {
             let path = &input[i];
             let (mut raw_inputs, json_sample) =
@@ -170,7 +166,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
                 }
             }
             let sample = json_sample.unwrap_or_else(|| fastq_stem(path));
-            let (json, failed, run_metrics) = denoise_and_serialize(
+            let out = denoise_and_serialize(
                 "dada",
                 &sample,
                 &file_basename(path),
@@ -184,48 +180,14 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
                 (jobs > 1).then(|| sample.clone()),
                 None,
             )?;
-            if collect_failed {
-                failed_rows.lock().unwrap().extend(failed);
-            }
-            if let Some(m) = run_metrics {
-                metrics_runs.lock().unwrap().push((sample.clone(), None, m));
-            }
-            let out_path = output_dir.join(if gzip {
-                format!("{sample}.json.gz")
-            } else {
-                format!("{sample}.json")
-            });
-            misc::write_maybe_gz(&out_path, json.as_bytes())?;
-            if verbose {
-                eprintln!("[dada] wrote {}", out_path.display());
-            }
-            Ok(())
+            sink.write(&sample, out)
         })?;
-        if let Some(ref fu_path) = failed_uniques_path {
-            let rows = failed_rows.into_inner().unwrap();
-            let n = failed_uniques::write_tsv(fu_path, rows)?;
-            if verbose {
-                eprintln!(
-                    "[dada] wrote {n} failed-unique row(s) to {}",
-                    fu_path.display()
-                );
-            }
-        }
-        if let Some(ref mpath) = metrics_json {
-            let mut runs = metrics_runs.into_inner().unwrap();
-            // Concurrent samples finish out of order; sort so two runs
-            // of the same inputs produce byte-identical documents.
-            runs.sort_by(|a, b| a.0.cmp(&b.0));
-            let mut doc = MetricsDocument::new(t_start.elapsed(), measure_level);
-            doc.pipeline.dada = Some(t_start.elapsed().as_secs_f64());
-            for (sample, round, m) in runs {
-                doc.push(sample, round, m);
-            }
-            write_metrics_json(mpath, &doc)?;
-            if verbose {
-                eprintln!("[dada] wrote run metrics to {}", mpath.display());
-            }
-        }
+        sink.finish(
+            failed_uniques_path.as_deref(),
+            metrics_json.as_deref(),
+            t_start,
+            measure_level,
+        )?;
         return Ok(());
     }
 
@@ -297,22 +259,17 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
     )?;
 
     if let Some(ref fu_path) = failed_uniques_path {
-        let n = failed_uniques::write_tsv(fu_path, failed)?;
-        if verbose {
-            eprintln!(
-                "[dada] wrote {n} failed-unique row(s) to {}",
-                fu_path.display()
-            );
-        }
+        write_failed_uniques("dada", fu_path, failed, verbose)?;
     }
     if let (Some(mpath), Some(m)) = (metrics_json.as_ref(), run_metrics) {
-        let mut doc = MetricsDocument::new(t_start.elapsed(), measure_level);
-        doc.pipeline.dada = Some(t_start.elapsed().as_secs_f64());
-        doc.push(sample, None, m);
-        write_metrics_json(mpath, &doc)?;
-        if verbose {
-            eprintln!("[dada] wrote run metrics to {}", mpath.display());
-        }
+        write_run_metrics(
+            "dada",
+            mpath,
+            vec![(sample, None, m)],
+            t_start,
+            measure_level,
+            verbose,
+        )?;
     }
 
     match output {
@@ -806,13 +763,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
     }
 
     if let Some(ref fu_path) = failed_uniques_path {
-        let n = failed_uniques::write_tsv(fu_path, failed_rows)?;
-        if verbose {
-            eprintln!(
-                "[dada-pooled] wrote {n} failed-unique row(s) to {}",
-                fu_path.display()
-            );
-        }
+        write_failed_uniques("dada-pooled", fu_path, failed_rows, verbose)?;
     }
     let t_output = t_output.elapsed();
     if let (Some(mpath), Some(m)) = (metrics_json.as_ref(), pooled_metrics) {
@@ -899,7 +850,6 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
     let measure_level = resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution);
     check_input_paths("input", &input)?;
     use std::collections::{HashMap, HashSet};
-    use std::sync::Mutex;
 
     // Streaming is the default (faster AND lighter on large runs — the
     // retained all-samples cache is pure overhead); --cache-samples opts
@@ -1197,136 +1147,55 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
         );
     }
     let collect_failed = failed_uniques_path.is_some();
-    let failed_rows: Mutex<Vec<failed_uniques::Row>> = Mutex::new(Vec::new());
     // Round 2 only. Round 1 runs through a different path that does not
     // serialize per-sample output, so its metrics are not collected
     // here; the document says `round: 2` rather than implying it covers
     // both turns.
-    type MetricRun = (String, Option<u8>, metrics::RunMetrics);
-    let metrics_runs: Mutex<Vec<MetricRun>> = Mutex::new(Vec::new());
-    if !low_memory {
-        // Cached: mark priors serially (cheap; scoped so the &mut borrow
-        // is released), then denoise concurrently with shared read access.
-        {
-            let sample_raws = sample_raws_opt.as_mut().unwrap();
-            for (s, sample_name) in sample_names.iter().enumerate() {
-                let n_marked = mark_priors(&mut sample_raws[s], &prior_set);
-                if verbose {
-                    eprintln!(
-                        "[dada-pseudo]   round 2 {sample_name}: {n_marked} of {} unique(s) flagged as prior",
-                        sample_raws[s].len(),
-                    );
-                }
-            }
-        }
-        let sample_raws = sample_raws_opt.as_ref().unwrap();
-        for_each_sample_concurrent(n_samples, jobs, threads, |s, sub_pool| {
-            let sample_name = &sample_names[s];
-            let (json, failed, run_metrics) = denoise_and_serialize(
-                "dada-pseudo",
-                sample_name,
-                &file_basename(&input[s]),
-                &sample_raws[s],
-                &resolved.params,
-                &resolved.run,
-                sub_pool,
-                compact,
-                collect_failed,
-                verbose,
-                (jobs > 1).then(|| sample_name.to_string()),
-                None,
-            )?;
-            if collect_failed {
-                failed_rows.lock().unwrap().extend(failed);
-            }
-            if let Some(m) = run_metrics {
-                metrics_runs
-                    .lock()
-                    .unwrap()
-                    .push((sample_name.to_string(), Some(2), m));
-            }
-            let out_path = output_dir.join(if gzip {
-                format!("{sample_name}.json.gz")
-            } else {
-                format!("{sample_name}.json")
-            });
-            misc::write_maybe_gz(&out_path, json.as_bytes())?;
-            if verbose {
-                eprintln!("[dada-pseudo] wrote {}", out_path.display());
-            }
-            Ok(())
-        })?;
-    } else {
-        // Streaming: re-load each sample, mark priors on the owned copy,
-        // denoise, write. Peak memory stays bounded by `jobs` samples.
-        for_each_sample_concurrent(n_samples, jobs, threads, |s, sub_pool| {
-            let sample_name = &sample_names[s];
-            let (mut raws, _js) = load_sample_raws(&input[s], phred_offset, sub_pool, verbose)?;
-            let n_marked = mark_priors(&mut raws, &prior_set);
-            if verbose {
-                eprintln!(
-                    "[dada-pseudo]   round 2 {sample_name}: {n_marked} of {} unique(s) flagged as prior",
-                    raws.len(),
-                );
-            }
-            let (json, failed, run_metrics) = denoise_and_serialize(
-                "dada-pseudo",
-                sample_name,
-                &file_basename(&input[s]),
-                &raws,
-                &resolved.params,
-                &resolved.run,
-                sub_pool,
-                compact,
-                collect_failed,
-                verbose,
-                (jobs > 1).then(|| sample_name.to_string()),
-                None,
-            )?;
-            if collect_failed {
-                failed_rows.lock().unwrap().extend(failed);
-            }
-            if let Some(m) = run_metrics {
-                metrics_runs
-                    .lock()
-                    .unwrap()
-                    .push((sample_name.to_string(), Some(2), m));
-            }
-            let out_path = output_dir.join(if gzip {
-                format!("{sample_name}.json.gz")
-            } else {
-                format!("{sample_name}.json")
-            });
-            misc::write_maybe_gz(&out_path, json.as_bytes())?;
-            if verbose {
-                eprintln!("[dada-pseudo] wrote {}", out_path.display());
-            }
-            Ok(())
-        })?;
-    }
-    if let Some(ref fu_path) = failed_uniques_path {
-        let rows = failed_rows.into_inner().unwrap();
-        let n = failed_uniques::write_tsv(fu_path, rows)?;
-        if verbose {
-            eprintln!(
-                "[dada-pseudo] wrote {n} failed-unique row(s) to {}",
-                fu_path.display()
-            );
+    let sink = SampleSink::new("dada-pseudo", &output_dir, gzip, verbose, Some(2));
+    // Cached: mark priors serially up front (cheap), then denoise concurrently
+    // with shared read access.
+    if let Some(sample_raws) = sample_raws_opt.as_mut() {
+        for (raws, sample_name) in sample_raws.iter_mut().zip(&sample_names) {
+            mark_round2_priors(raws, &prior_set, sample_name, verbose);
         }
     }
-    if let Some(ref mpath) = metrics_json {
-        let mut runs = metrics_runs.into_inner().unwrap();
-        runs.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut doc = MetricsDocument::new(t_start.elapsed(), measure_level);
-        doc.pipeline.dada = Some(t_start.elapsed().as_secs_f64());
-        for (sample, round, m) in runs {
-            doc.push(sample, round, m);
-        }
-        write_metrics_json(mpath, &doc)?;
-        if verbose {
-            eprintln!("[dada-pseudo] wrote run metrics to {}", mpath.display());
-        }
-    }
+    let cached = sample_raws_opt.as_ref();
+    for_each_sample_concurrent(n_samples, jobs, threads, |s, sub_pool| {
+        let sample_name = &sample_names[s];
+        // Streaming: re-load the sample and mark its priors here, so peak
+        // memory stays bounded by `jobs` samples.
+        let loaded;
+        let raws = match cached {
+            Some(sample_raws) => &sample_raws[s],
+            None => {
+                let (mut raws, _js) = load_sample_raws(&input[s], phred_offset, sub_pool, verbose)?;
+                mark_round2_priors(&mut raws, &prior_set, sample_name, verbose);
+                loaded = raws;
+                &loaded
+            }
+        };
+        let out = denoise_and_serialize(
+            "dada-pseudo",
+            sample_name,
+            &file_basename(&input[s]),
+            raws,
+            &resolved.params,
+            &resolved.run,
+            sub_pool,
+            compact,
+            collect_failed,
+            verbose,
+            (jobs > 1).then(|| sample_name.to_string()),
+            None,
+        )?;
+        sink.write(sample_name, out)
+    })?;
+    sink.finish(
+        failed_uniques_path.as_deref(),
+        metrics_json.as_deref(),
+        t_start,
+        measure_level,
+    )?;
     Ok(())
 }
 
@@ -1842,7 +1711,6 @@ fn for_each_sample_concurrent(
     threads: usize,
     f: impl Fn(usize, &rayon::ThreadPool) -> io::Result<()> + Sync,
 ) -> io::Result<()> {
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let jobs = jobs.clamp(1, n.max(1));
@@ -2060,6 +1928,150 @@ impl From<&dada::DadaAux> for AuxJson {
     }
 }
 
+/// One sample's entry in a `--metrics-json` document: name, round, metrics.
+type MetricRun = (String, Option<u8>, metrics::RunMetrics);
+
+/// What `denoise_and_serialize` returns for one sample.
+type SampleOutput = (
+    String,
+    Vec<failed_uniques::Row>,
+    Option<metrics::RunMetrics>,
+);
+
+/// The outputs of a run that denoises samples independently (`dada` with
+/// several inputs, `dada-pseudo` round 2): one `{sample}.json[.gz]` each,
+/// written as samples finish, then the failed-uniques TSV and the metrics
+/// document for the whole run.
+struct SampleSink<'a> {
+    tag: &'static str,
+    output_dir: &'a Path,
+    gzip: bool,
+    verbose: bool,
+    /// The metrics `round` every sample is recorded under.
+    round: Option<u8>,
+    failed: Mutex<Vec<failed_uniques::Row>>,
+    // Samples finish out of order under `--sample-jobs`, so this is sorted
+    // before it is written.
+    metrics: Mutex<Vec<MetricRun>>,
+}
+
+impl<'a> SampleSink<'a> {
+    fn new(
+        tag: &'static str,
+        output_dir: &'a Path,
+        gzip: bool,
+        verbose: bool,
+        round: Option<u8>,
+    ) -> Self {
+        SampleSink {
+            tag,
+            output_dir,
+            gzip,
+            verbose,
+            round,
+            failed: Mutex::new(Vec::new()),
+            metrics: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Keep one sample's failed rows and metrics, and write its JSON.
+    fn write(&self, sample: &str, (json, failed, run_metrics): SampleOutput) -> io::Result<()> {
+        self.failed.lock().unwrap().extend(failed);
+        if let Some(m) = run_metrics {
+            self.metrics
+                .lock()
+                .unwrap()
+                .push((sample.to_string(), self.round, m));
+        }
+        let out_path = self.output_dir.join(if self.gzip {
+            format!("{sample}.json.gz")
+        } else {
+            format!("{sample}.json")
+        });
+        misc::write_maybe_gz(&out_path, json.as_bytes())?;
+        if self.verbose {
+            eprintln!("[{}] wrote {}", self.tag, out_path.display());
+        }
+        Ok(())
+    }
+
+    /// Write the run-level failed-uniques TSV and metrics document, if asked.
+    fn finish(
+        self,
+        failed_uniques: Option<&Path>,
+        metrics_json: Option<&Path>,
+        t_start: std::time::Instant,
+        measure_level: MeasureLevel,
+    ) -> io::Result<()> {
+        if let Some(path) = failed_uniques {
+            let rows = self.failed.into_inner().unwrap();
+            write_failed_uniques(self.tag, path, rows, self.verbose)?;
+        }
+        if let Some(path) = metrics_json {
+            let mut runs = self.metrics.into_inner().unwrap();
+            // Concurrent samples finish out of order; sort so two runs
+            // of the same inputs produce byte-identical documents.
+            runs.sort_by(|a, b| a.0.cmp(&b.0));
+            write_run_metrics(self.tag, path, runs, t_start, measure_level, self.verbose)?;
+        }
+        Ok(())
+    }
+}
+
+/// Write the `--failed-uniques` TSV (issue #60).
+fn write_failed_uniques(
+    tag: &str,
+    path: &Path,
+    rows: Vec<failed_uniques::Row>,
+    verbose: bool,
+) -> io::Result<()> {
+    let n = failed_uniques::write_tsv(path, rows)?;
+    if verbose {
+        eprintln!(
+            "[{tag}] wrote {n} failed-unique row(s) to {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Write a `--metrics-json` document whose only pipeline phase is `dada`.
+fn write_run_metrics(
+    tag: &str,
+    path: &Path,
+    runs: Vec<MetricRun>,
+    t_start: std::time::Instant,
+    measure_level: MeasureLevel,
+    verbose: bool,
+) -> io::Result<()> {
+    let mut doc = MetricsDocument::new(t_start.elapsed(), measure_level);
+    doc.pipeline.dada = Some(t_start.elapsed().as_secs_f64());
+    for (sample, round, m) in runs {
+        doc.push(sample, round, m);
+    }
+    write_metrics_json(path, &doc)?;
+    if verbose {
+        eprintln!("[{tag}] wrote run metrics to {}", path.display());
+    }
+    Ok(())
+}
+
+/// Flag one sample's round-2 priors for `dada-pseudo`.
+fn mark_round2_priors(
+    raws: &mut [dada::RawInput],
+    prior_set: &std::collections::HashSet<String>,
+    sample_name: &str,
+    verbose: bool,
+) {
+    let n_marked = mark_priors(raws, prior_set);
+    if verbose {
+        eprintln!(
+            "[dada-pseudo]   round 2 {sample_name}: {n_marked} of {} unique(s) flagged as prior",
+            raws.len(),
+        );
+    }
+}
+
 /// A `--cluster-trace` request: where to write it and what to include.
 struct TraceRequest<'a> {
     path: &'a Path,
@@ -2186,11 +2198,7 @@ fn denoise_and_serialize(
     // unattributable; `None` keeps the text byte-identical to R's (#172).
     progress_tag: Option<String>,
     trace: Option<&TraceRequest>,
-) -> io::Result<(
-    String,
-    Vec<failed_uniques::Row>,
-    Option<metrics::RunMetrics>,
-)> {
+) -> io::Result<SampleOutput> {
     // Only clone when a tag is actually needed: the copy carries `err_mat`,
     // and a serial run has nothing to disambiguate anyway.
     let tagged;
