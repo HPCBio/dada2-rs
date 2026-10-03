@@ -91,7 +91,10 @@ BIRTH = re.compile(r"Division \((?:naive|prior)\): Raw (\d+)")
 
 
 def births(arm_dir, command):
-    """Per-partition lists of raw indices in budding order, or None.
+    """Per-partition lists of births in budding order, or None.
+
+    A birth is a raw index, or for dada-pooled with a `_pooled.json` record in
+    the arm directory, the raw's sequence.
 
     dada-pooled: one partition, the whole log. dada: one per sample run.
     dada-pseudo: None (not attributable; see the module docstring).
@@ -101,7 +104,16 @@ def births(arm_dir, command):
         return None
     text = open(p).read()
     if command == "dada-pooled":
-        return [BIRTH.findall(text)]
+        found = BIRTH.findall(text)
+        # Raw indices are positions in the pool, which a different pool order
+        # (DADA2RS_POOL_TIEBREAK, #260) permutes. When the arm kept its
+        # --pooled-record, name each birth by sequence so arms with different
+        # pool orders compare on what budded rather than where it sat.
+        rec = os.path.join(arm_dir, "_pooled.json")
+        if os.path.exists(rec):
+            uniques = json.load(open(rec))["uniques"]
+            found = [uniques[int(i)]["sequence"] for i in found]
+        return [found]
     marker = "### sample " if "### sample " in text else "[derep] "
     parts = text.split(marker)[1:]
     return [BIRTH.findall(part) for part in parts]

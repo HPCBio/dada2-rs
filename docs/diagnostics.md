@@ -1086,6 +1086,22 @@ them; [How large the floor is,
 measured](findings/r-parity-floor-and-ceiling.md#how-large-the-floor-is-measured)
 has the results so far.
 
+`DADA2RS_POOL_TIEBREAK` selects how `dada-pooled` orders equal-abundance uniques
+in the pool ([#260](https://github.com/HPCBio/dada2-rs/issues/260)). Pool order
+matters wherever a birth saturates at `pA = 0` and position decides it:
+
+| value | pooled ties ordered by |
+|---|---|
+| `lexical` (default, or unset) | sequence, as `derepFastq` orders one sample |
+| `first-seen` | first appearance across samples in input order, as R's `combineDereps2` does |
+
+Under `first-seen`, results depend on the order samples are given, so match the
+R run's input order when comparing. The default prints nothing; `first-seen`
+warns like any result-changing arm. `dev/run_pool_tiebreak.sh` runs both arms
+with `--pooled-record`. Given that record, `dev/compare_member_order.py`
+compares births by sequence rather than by pool position, which differs between
+the arms by construction.
+
 ### If you add or rename a gate
 
 Add it to `KNOWN` in `src/gates.rs`, or the run will warn about a variable that
