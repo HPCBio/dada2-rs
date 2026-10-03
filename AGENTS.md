@@ -89,7 +89,7 @@ prose lives on ReadTheDocs, under `docs/commands/<subcommand>.md`.
   fields in that order.
 - **Declare shared flags once.** Denoising flags live in the flattened groups
   in `src/cli.rs`: `DadaDenoiseArgs` (`dada`, `dada-pooled`, `dada-pseudo`),
-  `LearnDenoiseArgs` and `ErrModelFitArgs` (`learn-errors`,
+  `LearnDenoiseArgs`, `ErrModelFitArgs` and `LearnDiagArgs` (`learn-errors`,
   `errors-from-sample`), and `ExperimentalArgs` (all five). Add a flag to its
   group, not to each subcommand. A group is flattened in where its first
   heading falls, so check `--help` ordering after moving one.

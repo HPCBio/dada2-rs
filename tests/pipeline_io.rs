@@ -295,3 +295,37 @@ fn merge_pairs_rescue_unmerged_concatenates() {
         assert!(m["sequence"].as_str().unwrap().contains("NNNNNNNNNN"));
     }
 }
+
+/// A single-input cluster trace carries the output JSON's sample name, so
+/// `--sample-name` reaches it and a `.fastq.gz` input does not leave `.fastq`
+/// behind (#67).
+#[test]
+fn dada_cluster_trace_uses_output_sample_name() {
+    let dir = scratch("trace_label");
+    let err = err_model();
+    let input = fixture("sam1F.fastq.gz");
+    for (tag, name) in [("stem", None), ("named", Some("S1"))] {
+        let out = dir.join(format!("{tag}.json"));
+        let trace = dir.join(format!("{tag}.trace.json"));
+        let mut args = vec![
+            "dada",
+            "--error-model",
+            err.to_str().unwrap(),
+            "--cluster-trace",
+            trace.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            input.to_str().unwrap(),
+        ];
+        if let Some(n) = name {
+            args.extend(["--sample-name", n]);
+        }
+        run(&args);
+        let read = |p: &Path| -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap()
+        };
+        let expected = name.unwrap_or("sam1F");
+        assert_eq!(read(&out)["sample"], expected);
+        assert_eq!(read(&trace)["sample"], expected);
+    }
+}

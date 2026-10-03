@@ -1,6 +1,6 @@
 //! Error models: `learn-errors`, `errors-from-sample`, `kdist-calibrate`.
 
-use std::io;
+use std::{io, path::PathBuf};
 
 use dada2_rs::{
     cli, cluster_trace, dada, error_models, kdist_calibrate, learn_errors, metrics, minimizers,
@@ -32,15 +32,11 @@ pub(crate) fn run_learn_errors(args: cli::LearnErrorsArgs) -> io::Result<()> {
         threads,
         output,
         compact,
-        diag_dir,
-        cluster_trace_dir,
-        trace_no_members,
-        trace_min_abund,
+        diag,
         verbose,
     } = args;
     check_input_paths("input", &input)?;
-    let (err_fun, align_params, dada_params) =
-        resolve_learn_params(&fit, denoise, experimental, threads, verbose)?;
+    let resolved = resolve_learn_params(&fit, denoise, experimental, threads, verbose)?;
     let max_consist = fit.max_consist;
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -57,91 +53,17 @@ pub(crate) fn run_learn_errors(args: cli::LearnErrorsArgs) -> io::Result<()> {
         verbose,
     )?;
 
-    if let Some(ref dir) = diag_dir {
-        std::fs::create_dir_all(dir)?;
-    }
-
-    let params_snapshot =
-        build_learned_err_params(&err_fun, max_consist, &dada_params, &align_params);
-
-    if let Some(ref dir) = cluster_trace_dir {
-        std::fs::create_dir_all(dir)?;
-    }
-    let trace_params = cluster_trace::TraceParams {
-        no_members: trace_no_members,
-        min_abund: trace_min_abund,
-    };
-
-    let result = pool.install(|| {
-        learn_errors(
-            all_inputs,
-            &err_fun,
-            dada_params,
-            max_consist,
-            LearnDiagOptions {
-                verbose,
-                diag_dir: diag_dir.as_deref(),
-                cluster_trace_dir: cluster_trace_dir.as_deref(),
-                trace_params,
-            },
-        )
-    })?;
-
-    // Serialize: represent the three matrices as Vec<Vec<T>> (16 rows × nq cols).
-    #[derive(Serialize)]
-    struct LearnErrorsOutput {
-        nq: usize,
-        converged: bool,
-        stop_reason: learn_errors::StopReason,
-        iterations: usize,
-        /// Provenance: parameters used for the dada_uniques runs that
-        /// produced this err model. Embedded so a downstream `dada`
-        /// invocation can validate or inherit them. See
-        /// `LearnedErrParams` for field details.
-        params: LearnedErrParams,
-        /// Transition counts: 16 rows (ref_nt*4+query_nt), nq columns.
-        trans: Vec<Vec<u32>>,
-        /// Error rates fed into the final DADA run: 16 × nq.
-        err_in: Vec<Vec<f64>>,
-        /// Error rates estimated from `trans`: 16 × nq.
-        err_out: Vec<Vec<f64>>,
-    }
-
-    fn flat_to_rows_u32(flat: &[u32], nq: usize) -> Vec<Vec<u32>> {
-        (0..16)
-            .map(|r| flat[r * nq..(r + 1) * nq].to_vec())
-            .collect()
-    }
-    fn flat_to_rows_f64(flat: &[f64], nq: usize) -> Vec<Vec<f64>> {
-        (0..16)
-            .map(|r| flat[r * nq..(r + 1) * nq].to_vec())
-            .collect()
-    }
-
-    let out = LearnErrorsOutput {
-        nq: result.nq,
-        converged: result.converged,
-        stop_reason: result.stop_reason,
-        iterations: result.iterations,
-        params: params_snapshot,
-        trans: flat_to_rows_u32(&result.trans, result.nq),
-        err_in: flat_to_rows_f64(&result.err_in, result.nq),
-        err_out: flat_to_rows_f64(&result.err_out, result.nq),
-    };
-
-    let tagged = Tagged::new("learn-errors", out);
-    let json = if compact {
-        serde_json::to_string(&tagged)
-    } else {
-        serde_json::to_string_pretty(&tagged)
-    }
-    .map_err(io::Error::other)?;
-
-    match output {
-        Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
-        None => println!("{json}"),
-    }
-    Ok(())
+    learn_and_write(
+        "learn-errors",
+        all_inputs,
+        resolved,
+        max_consist,
+        diag,
+        &pool,
+        verbose,
+        compact,
+        output,
+    )
 }
 
 pub(crate) fn run_errors_from_sample(args: cli::ErrorsFromSampleArgs) -> io::Result<()> {
@@ -153,15 +75,11 @@ pub(crate) fn run_errors_from_sample(args: cli::ErrorsFromSampleArgs) -> io::Res
         threads,
         output,
         compact,
-        diag_dir,
-        cluster_trace_dir,
-        trace_no_members,
-        trace_min_abund,
+        diag,
         verbose,
     } = args;
     check_input_paths("input", &input)?;
-    let (err_fun, align_params, dada_params) =
-        resolve_learn_params(&fit, denoise, experimental, threads, verbose)?;
+    let resolved = resolve_learn_params(&fit, denoise, experimental, threads, verbose)?;
     let max_consist = fit.max_consist;
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -178,83 +96,17 @@ pub(crate) fn run_errors_from_sample(args: cli::ErrorsFromSampleArgs) -> io::Res
         );
     }
 
-    if let Some(ref dir) = diag_dir {
-        std::fs::create_dir_all(dir)?;
-    }
-
-    let params_snapshot =
-        build_learned_err_params(&err_fun, max_consist, &dada_params, &align_params);
-
-    if let Some(ref dir) = cluster_trace_dir {
-        std::fs::create_dir_all(dir)?;
-    }
-    let trace_params = cluster_trace::TraceParams {
-        no_members: trace_no_members,
-        min_abund: trace_min_abund,
-    };
-
-    let result = pool.install(|| {
-        learn_errors(
-            all_inputs,
-            &err_fun,
-            dada_params,
-            max_consist,
-            LearnDiagOptions {
-                verbose,
-                diag_dir: diag_dir.as_deref(),
-                cluster_trace_dir: cluster_trace_dir.as_deref(),
-                trace_params,
-            },
-        )
-    })?;
-
-    #[derive(Serialize)]
-    struct LearnErrorsOutput {
-        nq: usize,
-        converged: bool,
-        stop_reason: learn_errors::StopReason,
-        iterations: usize,
-        params: LearnedErrParams,
-        trans: Vec<Vec<u32>>,
-        err_in: Vec<Vec<f64>>,
-        err_out: Vec<Vec<f64>>,
-    }
-
-    fn flat_to_rows_u32(flat: &[u32], nq: usize) -> Vec<Vec<u32>> {
-        (0..16)
-            .map(|r| flat[r * nq..(r + 1) * nq].to_vec())
-            .collect()
-    }
-    fn flat_to_rows_f64(flat: &[f64], nq: usize) -> Vec<Vec<f64>> {
-        (0..16)
-            .map(|r| flat[r * nq..(r + 1) * nq].to_vec())
-            .collect()
-    }
-
-    let out = LearnErrorsOutput {
-        nq: result.nq,
-        converged: result.converged,
-        stop_reason: result.stop_reason,
-        iterations: result.iterations,
-        params: params_snapshot,
-        trans: flat_to_rows_u32(&result.trans, result.nq),
-        err_in: flat_to_rows_f64(&result.err_in, result.nq),
-        err_out: flat_to_rows_f64(&result.err_out, result.nq),
-    };
-
-    let tagged = Tagged::new("errors-from-sample", out);
-    let json = if compact {
-        serde_json::to_string(&tagged)
-    } else {
-        serde_json::to_string_pretty(&tagged)
-    }
-    .map_err(io::Error::other)?;
-
-    match output {
-        Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
-        None => println!("{json}"),
-    }
-    Ok(())
+    learn_and_write(
+        "errors-from-sample",
+        all_inputs,
+        resolved,
+        max_consist,
+        diag,
+        &pool,
+        verbose,
+        compact,
+        output,
+    )
 }
 
 pub(crate) fn run_kdist_calibrate(args: cli::KdistCalibrateArgs) -> io::Result<()> {
@@ -310,11 +162,112 @@ pub(crate) fn run_kdist_calibrate(args: cli::KdistCalibrateArgs) -> io::Result<(
     Ok(())
 }
 
+/// Run the self-consistency loop on loaded samples and write the error-model
+/// JSON: everything `learn-errors` and `errors-from-sample` do once their
+/// inputs are loaded.
+#[allow(clippy::too_many_arguments)]
+fn learn_and_write(
+    tag: &'static str,
+    all_inputs: Vec<Vec<dada::RawInput>>,
+    (err_fun, align_params, dada_params): (ErrFun, AlignParams, dada::DadaParams),
+    max_consist: usize,
+    diag: cli::LearnDiagArgs,
+    pool: &rayon::ThreadPool,
+    verbose: bool,
+    compact: bool,
+    output: Option<PathBuf>,
+) -> io::Result<()> {
+    if let Some(ref dir) = diag.diag_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    let params_snapshot =
+        build_learned_err_params(&err_fun, max_consist, &dada_params, &align_params);
+
+    if let Some(ref dir) = diag.cluster_trace_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+    let trace_params = cluster_trace::TraceParams {
+        no_members: diag.trace_no_members,
+        min_abund: diag.trace_min_abund,
+    };
+
+    let result = pool.install(|| {
+        learn_errors(
+            all_inputs,
+            &err_fun,
+            dada_params,
+            max_consist,
+            LearnDiagOptions {
+                verbose,
+                diag_dir: diag.diag_dir.as_deref(),
+                cluster_trace_dir: diag.cluster_trace_dir.as_deref(),
+                trace_params,
+            },
+        )
+    })?;
+
+    // Serialize: represent the three matrices as Vec<Vec<T>> (16 rows × nq cols).
+    #[derive(Serialize)]
+    struct LearnErrorsOutput {
+        nq: usize,
+        converged: bool,
+        stop_reason: learn_errors::StopReason,
+        iterations: usize,
+        /// Provenance: parameters used for the dada_uniques runs that
+        /// produced this err model. Embedded so a downstream `dada`
+        /// invocation can validate or inherit them. See
+        /// `LearnedErrParams` for field details.
+        params: LearnedErrParams,
+        /// Transition counts: 16 rows (ref_nt*4+query_nt), nq columns.
+        trans: Vec<Vec<u32>>,
+        /// Error rates fed into the final DADA run: 16 × nq.
+        err_in: Vec<Vec<f64>>,
+        /// Error rates estimated from `trans`: 16 × nq.
+        err_out: Vec<Vec<f64>>,
+    }
+
+    fn flat_to_rows_u32(flat: &[u32], nq: usize) -> Vec<Vec<u32>> {
+        (0..16)
+            .map(|r| flat[r * nq..(r + 1) * nq].to_vec())
+            .collect()
+    }
+    fn flat_to_rows_f64(flat: &[f64], nq: usize) -> Vec<Vec<f64>> {
+        (0..16)
+            .map(|r| flat[r * nq..(r + 1) * nq].to_vec())
+            .collect()
+    }
+
+    let out = LearnErrorsOutput {
+        nq: result.nq,
+        converged: result.converged,
+        stop_reason: result.stop_reason,
+        iterations: result.iterations,
+        params: params_snapshot,
+        trans: flat_to_rows_u32(&result.trans, result.nq),
+        err_in: flat_to_rows_f64(&result.err_in, result.nq),
+        err_out: flat_to_rows_f64(&result.err_out, result.nq),
+    };
+
+    let tagged = Tagged::new(tag, out);
+    let json = if compact {
+        serde_json::to_string(&tagged)
+    } else {
+        serde_json::to_string_pretty(&tagged)
+    }
+    .map_err(io::Error::other)?;
+
+    match output {
+        Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
+        None => println!("{json}"),
+    }
+    Ok(())
+}
+
 /// Resolve a [`LoessConfig`] from CLI inputs: preset + per-knob overrides.
 /// `--loess-surface`, `--loess-cell`, `--loess-max-rate`, and `--loess-min-rate`
 /// each override the preset's value for that knob if supplied.  `--loess-cell`
 /// is ignored unless the resolved surface is `Interpolate`.
-/// Resolve the LOESS knobs from the CLI.
 ///
 /// `--loess-preset` is deprecated (#205). It survives as an alias because it
 /// appears in shipped docs, the concordance runners' `ERRFUN_ARGS`, and users'
