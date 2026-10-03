@@ -465,6 +465,26 @@ pub struct ErrModelFitArgs {
     pub max_consist: usize,
 }
 
+/// Per-iteration diagnostics shared by `learn-errors` and `errors-from-sample`.
+#[derive(Args)]
+pub struct LearnDiagArgs {
+    /// Directory for per-iteration cluster diagnostics (iter_NNN.json)
+    #[arg(long, help_heading = H_DIAG)]
+    pub diag_dir: Option<PathBuf>,
+
+    /// Directory for full per-iteration cluster traces
+    #[arg(long, help_heading = H_DIAG)]
+    pub cluster_trace_dir: Option<PathBuf>,
+
+    /// Omit the per-cluster `members` array from trace files (~10x smaller)
+    #[arg(long, help_heading = H_DIAG)]
+    pub trace_no_members: bool,
+
+    /// Only trace members with abundance >= this value
+    #[arg(long, default_value_t = 1, help_heading = H_DIAG)]
+    pub trace_min_abund: u32,
+}
+
 /// Arguments for [`Commands::Summary`].
 #[derive(Args)]
 pub struct SummaryArgs {
@@ -1532,21 +1552,8 @@ pub struct ErrorsFromSampleArgs {
     #[arg(long, help_heading = H_DIAG)]
     pub verbose: bool,
 
-    /// Directory for per-iteration cluster diagnostics (iter_NNN.json)
-    #[arg(long, help_heading = H_DIAG)]
-    pub diag_dir: Option<PathBuf>,
-
-    /// Directory for full per-iteration cluster traces
-    #[arg(long, help_heading = H_DIAG)]
-    pub cluster_trace_dir: Option<PathBuf>,
-
-    /// Omit the per-cluster `members` array from trace files (~10x smaller)
-    #[arg(long, help_heading = H_DIAG)]
-    pub trace_no_members: bool,
-
-    /// Only trace members with abundance >= this value
-    #[arg(long, default_value_t = 1, help_heading = H_DIAG)]
-    pub trace_min_abund: u32,
+    #[command(flatten)]
+    pub diag: LearnDiagArgs,
 
     #[command(flatten)]
     pub experimental: ExperimentalArgs,
@@ -1597,21 +1604,8 @@ pub struct LearnErrorsArgs {
     #[arg(long, help_heading = H_DIAG)]
     pub verbose: bool,
 
-    /// Directory for per-iteration cluster diagnostics (iter_NNN.json)
-    #[arg(long, help_heading = H_DIAG)]
-    pub diag_dir: Option<PathBuf>,
-
-    /// Directory for full per-iteration cluster traces
-    #[arg(long, help_heading = H_DIAG)]
-    pub cluster_trace_dir: Option<PathBuf>,
-
-    /// Omit the per-cluster `members` array from trace files (~10x smaller)
-    #[arg(long, help_heading = H_DIAG)]
-    pub trace_no_members: bool,
-
-    /// Only trace members with abundance >= this value
-    #[arg(long, default_value_t = 1, help_heading = H_DIAG)]
-    pub trace_min_abund: u32,
+    #[command(flatten)]
+    pub diag: LearnDiagArgs,
 
     #[command(flatten)]
     pub experimental: ExperimentalArgs,
