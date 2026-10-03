@@ -28,7 +28,8 @@ git config core.hooksPath .githooks
 
 | Path | Purpose |
 |---|---|
-| `src/main.rs` | CLI dispatch — one handler block per subcommand |
+| `src/main.rs` | Argument parsing and dispatch only |
+| `src/commands/` | One handler per subcommand, grouped by stage (`dada.rs`, `errors.rs`, …); helpers used by more than one group in `common.rs` |
 | `src/cli.rs` | Clap structs for every subcommand |
 | `src/error_models.rs` | Error rate estimation (loess, noqual, binned, external) |
 | `src/dada.rs` | Core denoising algorithm |
@@ -47,7 +48,7 @@ git config core.hooksPath .githooks
 
 ## JSON output conventions
 
-All subcommand outputs are flat JSON objects tagged with `dada2_rs_command` and `dada2_rs_version` at the top level — **not** a `{"type": ..., "data": ...}` envelope. This is produced by the `Tagged<T>` wrapper with `#[serde(flatten)]` in `src/main.rs`. Scripts and tests must not assume an envelope.
+All subcommand outputs are flat JSON objects tagged with `dada2_rs_command` and `dada2_rs_version` at the top level — **not** a `{"type": ..., "data": ...}` envelope. This is produced by the `Tagged<T>` wrapper with `#[serde(flatten)]` in `src/misc.rs`. Scripts and tests must not assume an envelope.
 
 ## Versioning
 
