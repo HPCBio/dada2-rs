@@ -43,6 +43,7 @@ use std::collections::BTreeSet;
 /// unrecognised, so this list is load-bearing rather than documentation.
 const KNOWN: &[&str] = &[
     "DADA2RS_MEMBER_ORDER",
+    "DADA2RS_POOL_TIEBREAK",
     "DADA2RS_SHUFFLE_NO_CARRY",
     "DADA2RS_SHUFFLE_NO_PRUNE",
     "DADA2RS_RECONCILE_VERIFY",
@@ -207,22 +208,32 @@ pub fn warn_timing_invalidating() -> usize {
     warnings
 }
 
-/// Warn when a gate that changes *results* is active (#157).
+/// Warn when a gate that changes *results* is active (#157, #260).
 ///
 /// Stronger than [`warn_timing_invalidating`]: output from such a run is not
-/// R-equivalent, so it must never be mistaken for a normal run. Printed
+/// the default's, so it must never be mistaken for a normal run. Printed
 /// regardless of `--verbose`. Returns the number of warnings.
 pub fn warn_result_changing() -> usize {
+    let mut warnings = 0;
     let arm = crate::member_order::member_order();
-    if arm == crate::member_order::MemberOrder::Insertion {
-        return 0;
+    if arm != crate::member_order::MemberOrder::Insertion {
+        eprintln!(
+            "[dada] WARNING: DADA2RS_MEMBER_ORDER={} is an experimental arm that \
+             CHANGES RESULTS.\n[dada]          Output is not R-equivalent (#157).",
+            arm.label()
+        );
+        warnings += 1;
     }
-    eprintln!(
-        "[dada] WARNING: DADA2RS_MEMBER_ORDER={} is an experimental arm that \
-         CHANGES RESULTS.\n[dada]          Output is not R-equivalent (#157).",
-        arm.label()
-    );
-    1
+    let tiebreak = crate::derep::pool_tiebreak();
+    if tiebreak != crate::derep::PoolTiebreak::Lexical {
+        eprintln!(
+            "[dada] WARNING: DADA2RS_POOL_TIEBREAK={} is an experimental arm that \
+             CHANGES dada-pooled RESULTS (#260).",
+            tiebreak.label()
+        );
+        warnings += 1;
+    }
+    warnings
 }
 
 /// One resolved gate, for the `--verbose` summary.
@@ -295,6 +306,11 @@ pub fn report() -> Vec<String> {
             value: crate::member_order::member_order().label(),
             default: crate::member_order::member_order()
                 == crate::member_order::MemberOrder::Insertion,
+        },
+        Resolved {
+            label: "pool tiebreak",
+            value: crate::derep::pool_tiebreak().label().into(),
+            default: crate::derep::pool_tiebreak() == crate::derep::PoolTiebreak::Lexical,
         },
         Resolved {
             label: "par grain",

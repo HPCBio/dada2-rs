@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::io::{self, BufReader};
+use std::sync::OnceLock;
 
 use noodles::fastq;
 use rayon::prelude::*;
@@ -284,6 +285,52 @@ pub fn dereplicate<R: io::Read>(
     Ok(derep)
 }
 
+/// How [`DerepPool::finish`] breaks abundance ties (#260). Selected by
+/// `DADA2RS_POOL_TIEBREAK`. **`first-seen` changes results.**
+///
+/// - `lexical` (default, or unset): by sequence, as `derepFastq` orders a
+///   single sample.
+/// - `first-seen`: by first appearance across samples in input order, as R's
+///   `combineDereps2` does with its stable `order()`. Pooled results then
+///   depend on the order samples are given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoolTiebreak {
+    Lexical,
+    FirstSeen,
+}
+
+impl PoolTiebreak {
+    /// Parse a `DADA2RS_POOL_TIEBREAK` value.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim() {
+            "" | "lexical" => Ok(Self::Lexical),
+            "first-seen" => Ok(Self::FirstSeen),
+            v => Err(format!(
+                "DADA2RS_POOL_TIEBREAK={v:?} is not recognised; expected lexical or first-seen"
+            )),
+        }
+    }
+
+    /// The value as it would be written in the environment.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Lexical => "lexical",
+            Self::FirstSeen => "first-seen",
+        }
+    }
+}
+
+/// The resolved tie-break, read once per process. An unparseable value is
+/// fatal: a mistyped arm silently running the default would compare the
+/// default with itself (see `gates`).
+pub fn pool_tiebreak() -> PoolTiebreak {
+    static VALUE: OnceLock<PoolTiebreak> = OnceLock::new();
+    *VALUE.get_or_init(|| match std::env::var("DADA2RS_POOL_TIEBREAK") {
+        Ok(v) => PoolTiebreak::parse(&v).unwrap_or_else(|e| panic!("{e}")),
+        Err(_) => PoolTiebreak::Lexical,
+    })
+}
+
 /// Folds per-sample dereplications into one pooled unique table for
 /// `dada-pooled` (R `combineDereps2`). Samples are added one at a time and can
 /// be dropped after [`DerepPool::add`], so only the accumulator and the sample
@@ -381,10 +428,15 @@ impl DerepPool {
     /// as its own ASV. Order also decides saturated births (pA = 0, 880 of
     /// 2,490 pooled MiSeq births), where the tie-break is reads, then position.
     ///
-    /// Ties are broken lexically. That matches `derepFastq` but not
-    /// `combineDereps2`, whose stable `order()` keeps first-seen order; #260
-    /// tracks whether to switch.
+    /// Ties are broken by [`pool_tiebreak`]: lexically by default, which
+    /// matches `derepFastq` but not `combineDereps2`, whose stable `order()`
+    /// keeps first-seen order (#260).
     pub fn finish(self) -> PooledDerep {
+        self.finish_with(pool_tiebreak())
+    }
+
+    /// [`DerepPool::finish`] with an explicit tie-break.
+    pub fn finish_with(self, tiebreak: PoolTiebreak) -> PooledDerep {
         let DerepPool {
             seq_to_merged,
             seqs,
@@ -395,10 +447,14 @@ impl DerepPool {
         } = self;
         drop(seq_to_merged);
         let mut perm: Vec<usize> = (0..seqs.len()).collect();
+        // `sort_by` is stable, so `FirstSeen` keeps the pool's first-seen order
+        // among equal abundances.
         perm.sort_by(|&a, &b| {
-            abundance[b]
-                .cmp(&abundance[a])
-                .then_with(|| seqs[a].cmp(&seqs[b]))
+            let by_abundance = abundance[b].cmp(&abundance[a]);
+            match tiebreak {
+                PoolTiebreak::Lexical => by_abundance.then_with(|| seqs[a].cmp(&seqs[b])),
+                PoolTiebreak::FirstSeen => by_abundance,
+            }
         });
         let mut old_to_new = vec![0usize; perm.len()];
         for (new_idx, &old_idx) in perm.iter().enumerate() {
@@ -467,11 +523,15 @@ mod tests {
     }
 
     fn pool(samples: &[Derep]) -> PooledDerep {
+        pool_with(samples, PoolTiebreak::Lexical)
+    }
+
+    fn pool_with(samples: &[Derep], tiebreak: PoolTiebreak) -> PooledDerep {
         let mut pool = DerepPool::new();
         for s in samples {
             pool.add(s);
         }
-        pool.finish()
+        pool.finish_with(tiebreak)
     }
 
     /// #219: a unique that first appears late but is most abundant overall
@@ -530,6 +590,46 @@ mod tests {
         ]);
         let order: Vec<&[u8]> = p.seqs.iter().map(|s| s.as_slice()).collect();
         assert_eq!(order, [&b"AAAA"[..], b"TTTT", b"CCCC", b"GGGG"]);
+    }
+
+    /// R's `combineDereps2` rule: ties keep first appearance across samples,
+    /// in input order, so reversing the samples reverses the tied pair.
+    #[test]
+    fn pooled_first_seen_ties_follow_input_order() {
+        let a = || sample(&[("TTTT", 3, 10), ("GGGG", 2, 10)]);
+        let b = || sample(&[("AAAA", 3, 10), ("CCCC", 2, 10)]);
+        let seqs = |p: PooledDerep| -> Vec<Vec<u8>> { p.seqs };
+        let ab = seqs(pool_with(&[a(), b()], PoolTiebreak::FirstSeen));
+        let ba = seqs(pool_with(&[b(), a()], PoolTiebreak::FirstSeen));
+        let s = |v: &[&str]| -> Vec<Vec<u8>> { v.iter().map(|x| x.as_bytes().to_vec()).collect() };
+        assert_eq!(ab, s(&["TTTT", "AAAA", "GGGG", "CCCC"]));
+        assert_eq!(ba, s(&["AAAA", "TTTT", "CCCC", "GGGG"]));
+    }
+
+    /// The tie-break never overrides abundance: index 0 is the most abundant
+    /// under either rule (#219).
+    #[test]
+    fn pooled_first_seen_keeps_most_abundant_first() {
+        let p = pool_with(
+            &[
+                sample(&[("AAAA", 5, 10), ("CCCC", 1, 10)]),
+                sample(&[("GGGG", 4, 10), ("CCCC", 9, 10)]),
+            ],
+            PoolTiebreak::FirstSeen,
+        );
+        assert_eq!(p.seqs[0], b"CCCC");
+        assert_eq!(p.abundance, vec![10, 5, 4]);
+    }
+
+    #[test]
+    fn pool_tiebreak_parses_and_rejects() {
+        assert_eq!(PoolTiebreak::parse(""), Ok(PoolTiebreak::Lexical));
+        assert_eq!(PoolTiebreak::parse("lexical"), Ok(PoolTiebreak::Lexical));
+        assert_eq!(
+            PoolTiebreak::parse("first-seen"),
+            Ok(PoolTiebreak::FirstSeen)
+        );
+        assert!(PoolTiebreak::parse("firstseen").is_err());
     }
 
     #[test]
