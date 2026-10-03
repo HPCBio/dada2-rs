@@ -1724,7 +1724,7 @@ mod bench_align {
         let len: usize = 1450;
         let nts = [1u8, 2, 3, 4];
         let mut st: u64 = 0x00C0_FFEE_1234_5678;
-        let mut rng = |st: &mut u64, m: usize| {
+        let rng = |st: &mut u64, m: usize| {
             *st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
             ((*st >> 33) as usize) % m
         };
@@ -1888,7 +1888,7 @@ mod bench_align {
         let len: usize = 1450;
         let nts = [1u8, 2, 3, 4];
         let mut st: u64 = 0xABCD_1234;
-        let mut rng = |st: &mut u64, m: usize| {
+        let rng = |st: &mut u64, m: usize| {
             *st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
             ((*st >> 33) as usize) % m
         };
@@ -2358,7 +2358,7 @@ mod tests {
 
         let nts = [1u8, 2, 3, 4];
         let mut st: u64 = 0xDEAD_BEEF_0BAD_F00D;
-        let mut rng = |st: &mut u64, m: usize| {
+        let rng = |st: &mut u64, m: usize| {
             *st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
             ((*st >> 33) as usize) % m
         };
@@ -2413,7 +2413,7 @@ mod tests {
     fn wfa_diagnose() {
         let nts = [1u8, 2, 3, 4];
         let mut st: u64 = 0x1234_5678_9ABC_DEF0;
-        let mut rng = |st: &mut u64, m: usize| {
+        let rng = |st: &mut u64, m: usize| {
             *st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
             ((*st >> 33) as usize) % m
         };
@@ -2519,7 +2519,7 @@ mod tests {
     fn sweep_wfa_parity() {
         let nts = [1u8, 2, 3, 4];
         let mut st: u64 = 0x1234_5678_9ABC_DEF0;
-        let mut rng = |st: &mut u64, m: usize| {
+        let rng = |st: &mut u64, m: usize| {
             *st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
             ((*st >> 33) as usize) % m
         };
