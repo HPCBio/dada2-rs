@@ -328,6 +328,9 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
     let dada_params = resolved.params;
     let run_params = resolved.run;
     let nq = resolved.nq;
+    let sample = sample_name
+        .or(json_sample)
+        .unwrap_or_else(|| fastq_stem(input));
 
     // ---- Run DADA2 ----
     let mut result = pool
@@ -336,11 +339,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
     if let (Some(mpath), Some(m)) = (metrics_json.as_ref(), result.metrics.take()) {
         let mut doc = MetricsDocument::new(t_start.elapsed(), measure_level);
         doc.pipeline.dada = Some(t_start.elapsed().as_secs_f64());
-        doc.push(
-            sample_name.clone().unwrap_or_else(|| "sample".to_string()),
-            None,
-            m,
-        );
+        doc.push(sample.clone(), None, m);
         write_metrics_json(mpath, &doc)?;
         if verbose {
             eprintln!("[dada] wrote run metrics to {}", mpath.display());
@@ -442,10 +441,6 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         #[serde(skip_serializing_if = "Option::is_none")]
         aux: Option<AuxJson>,
     }
-
-    let sample = sample_name
-        .or(json_sample)
-        .unwrap_or_else(|| fastq_stem(input));
 
     // ---- Optional failed-to-denoise unique diagnostic (issue #60) ----
     if let Some(ref fu_path) = failed_uniques_path {

@@ -465,3 +465,37 @@ fn derep_detail_splits_read_and_parse_for_json_inputs() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A single-input run labels its metrics with the same name its output JSON
+/// carries, so the two can be joined. It used to write the literal "sample"
+/// unless `--sample-name` was given (#67).
+#[test]
+fn single_input_metrics_label_matches_output_sample() {
+    let dir = scratch("single_label");
+    let errs = err_model();
+    for (tag, extra) in [("stem", vec![]), ("named", vec!["--sample-name", "S1"])] {
+        let out = dir.join(format!("{tag}.json"));
+        let metrics = dir.join(format!("{tag}.metrics.json"));
+        let res = Command::new(BIN)
+            .args(["dada", "--error-model"])
+            .arg(&errs)
+            .arg("--metrics-json")
+            .arg(&metrics)
+            .arg("-o")
+            .arg(&out)
+            .args(&extra)
+            .arg(fixture("sam1F.fastq.gz"))
+            .output()
+            .expect("dada");
+        assert!(
+            res.status.success(),
+            "{}",
+            String::from_utf8_lossy(&res.stderr)
+        );
+        let doc: Value = serde_json::from_slice(&std::fs::read(&metrics).unwrap()).unwrap();
+        let output: Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+        let expected = if tag == "named" { "S1" } else { "sam1F" };
+        assert_eq!(output["sample"], expected);
+        assert_eq!(doc["runs"][0]["sample"], expected);
+    }
+}
