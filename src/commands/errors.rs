@@ -314,7 +314,6 @@ pub(crate) fn run_kdist_calibrate(args: cli::KdistCalibrateArgs) -> io::Result<(
 /// `--loess-surface`, `--loess-cell`, `--loess-max-rate`, and `--loess-min-rate`
 /// each override the preset's value for that knob if supplied.  `--loess-cell`
 /// is ignored unless the resolved surface is `Interpolate`.
-/// Resolve the LOESS knobs from the CLI.
 ///
 /// `--loess-preset` is deprecated (#205). It survives as an alias because it
 /// appears in shipped docs, the concordance runners' `ERRFUN_ARGS`, and users'

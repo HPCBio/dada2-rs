@@ -1659,13 +1659,6 @@ struct ResolvedDada {
     err_params: Option<LearnedErrParams>,
 }
 
-/// Load the error model and resolve every DADA parameter via the three-tier
-/// precedence (CLI explicit > inherited from err-model `params` > built-in
-/// default). Emits the same warnings the inline handlers used to.
-///
-/// `aux_outputs` and `pool` are handler-specific and passed in. `n_prior` is
-/// filled in later by the caller (priors are marked after this point), so it is
-/// left at 0 here.
 /// Resolve how much instrumentation to collect from the flags that ask for it.
 ///
 /// `--verbose` keeps implying full attribution, so today's stderr output stays
@@ -1686,6 +1679,13 @@ fn resolve_measure_level(
     }
 }
 
+/// Load the error model and resolve every DADA parameter via the three-tier
+/// precedence (CLI explicit > inherited from err-model `params` > built-in
+/// default), warning when an explicit value differs from the model's.
+///
+/// `aux_outputs` and `pool` are handler-specific and passed in. `n_prior` is
+/// filled in later by the caller (priors are marked after this point), so it is
+/// left at 0 here.
 #[allow(clippy::too_many_arguments)]
 fn resolve_dada_params(
     error_model: &Path,
@@ -2376,16 +2376,6 @@ fn denoise_and_serialize(
     ))
 }
 
-/// Build a [`derep::Derep`] for `dada` / `dada-pooled` from either a FASTQ file
-/// (uncompressed or gzipped) or a derep/sample JSON file.
-///
-/// JSON inputs are defensively sorted by abundance descending — DADA2 assumes
-/// the most-abundant unique is at index 0.  The `map` (read → unique) field is
-/// only populated from the FASTQ path; JSON inputs leave it empty since neither
-/// `dada` nor `dada-pooled` consult it.
-///
-/// Returns the dereplicated table plus the JSON's embedded `sample` field
-/// when present; FASTQ inputs always return `None` for the name.
 /// Where a pooled run's serial load front spends its time (issue #127).
 ///
 /// `derep` is serial by design (issue #41 streams one sample at a time to hold
@@ -2412,6 +2402,16 @@ struct DerepLoadCost {
     n_json: usize,
 }
 
+/// Build a [`derep::Derep`] for `dada` / `dada-pooled` from either a FASTQ file
+/// (uncompressed or gzipped) or a derep/sample JSON file.
+///
+/// JSON inputs are defensively sorted by abundance descending — DADA2 assumes
+/// the most-abundant unique is at index 0.  The `map` (read → unique) field is
+/// only populated from the FASTQ path; JSON inputs leave it empty since neither
+/// `dada` nor `dada-pooled` consult it.
+///
+/// Returns the dereplicated table plus the JSON's embedded `sample` field
+/// when present; FASTQ inputs always return `None` for the name.
 fn load_derep_for_dada(
     path: &Path,
     phred_offset: u8,
