@@ -363,18 +363,13 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         {
             std::fs::create_dir_all(parent)?;
         }
-        let sample_name = input
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("dada")
-            .to_string();
         let trace_params = cluster_trace::TraceParams {
             no_members: trace_no_members,
             min_abund: trace_min_abund,
         };
         cluster_trace::write_trace(
             trace_path,
-            &sample_name,
+            &sample,
             None, // no iteration: this is the final dada run
             &raw_inputs,
             &result,
