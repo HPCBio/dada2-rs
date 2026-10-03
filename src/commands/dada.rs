@@ -109,16 +109,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         std::fs::create_dir_all(&output_dir)?;
 
         // Load the optional prior set once.
-        let prior_set: Option<std::collections::HashSet<String>> = match prior {
-            Some(ref prior_path) => Some(
-                read_fasta_records(prior_path)
-                    .with_path(prior_path)?
-                    .into_iter()
-                    .map(|(_, seq)| String::from_utf8_lossy(&seq).to_ascii_uppercase())
-                    .collect(),
-            ),
-            None => None,
-        };
+        let prior_set = prior.as_deref().map(read_prior_set).transpose()?;
 
         // Resolve parameters once (shared across samples).
         let resolved = resolve_dada_params(
@@ -129,19 +120,12 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
             false, // aux_outputs (rejected above for multi-input)
             false, // pool
             verbose,
-            resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution),
+            measure_level,
             denoise,
             experimental,
         )?;
 
-        // Samples are independent and single-pass (load -> denoise ->
-        // write), so fan them across J sub-pools of ~threads/J each. This
-        // keeps every core fed AND bounds memory to J samples in flight
-        // (no all-samples cache). Default round(threads/4); 1 at <=4
-        // threads = the prior serial behavior.
-        let jobs = sample_jobs
-            .unwrap_or_else(|| ((threads as f64 / 4.0).round() as usize).max(1))
-            .clamp(1, input.len().max(1));
+        let jobs = concurrent_samples(sample_jobs, threads, input.len());
         if verbose {
             eprintln!(
                 "[dada] denoising {} sample(s), {jobs} concurrent",
@@ -165,7 +149,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
                     );
                 }
             }
-            let sample = json_sample.unwrap_or_else(|| fastq_stem(path));
+            let sample = sample_label(None, json_sample, path);
             let out = denoise_and_serialize(
                 "dada",
                 &sample,
@@ -204,11 +188,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
 
     // ---- Mark prior sequences ----
     if let Some(ref prior_path) = prior {
-        let prior_seqs: std::collections::HashSet<String> = read_fasta_records(prior_path)
-            .with_path(prior_path)?
-            .into_iter()
-            .map(|(_, seq)| String::from_utf8_lossy(&seq).to_ascii_uppercase())
-            .collect();
+        let prior_seqs = read_prior_set(prior_path)?;
         let n_marked = mark_priors(&mut raw_inputs, &prior_seqs);
         if verbose {
             eprintln!(
@@ -229,13 +209,11 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         aux_outputs,
         false, // pool
         verbose,
-        resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution),
+        measure_level,
         denoise,
         experimental,
     )?;
-    let sample = sample_name
-        .or(json_sample)
-        .unwrap_or_else(|| fastq_stem(input));
+    let sample = sample_label(sample_name, json_sample, input);
     let trace = cluster_trace.as_deref().map(|path| TraceRequest {
         path,
         params: cluster_trace::TraceParams {
@@ -306,21 +284,10 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
     let t_start = std::time::Instant::now();
     let measure_level = resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution);
     check_input_paths("input", &input)?;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     let n_samples = input.len();
-    if let Some(ref names) = sample_names
-        && names.len() != n_samples
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "--sample-names has {} entries but {} input file(s) given",
-                names.len(),
-                n_samples
-            ),
-        ));
-    }
+    check_sample_names(sample_names.as_deref(), n_samples)?;
 
     std::fs::create_dir_all(&output_dir)?;
 
@@ -440,7 +407,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         None => input
             .iter()
             .zip(json_samples)
-            .map(|(p, js)| js.unwrap_or_else(|| fastq_stem(p)))
+            .map(|(p, js)| sample_label(None, js, p))
             .collect(),
     };
 
@@ -538,11 +505,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
 
     // ---- Mark prior sequences ----
     if let Some(ref prior_path) = prior {
-        let prior_seqs: HashSet<String> = read_fasta_records(prior_path)
-            .with_path(prior_path)?
-            .into_iter()
-            .map(|(_, seq)| String::from_utf8_lossy(&seq).to_ascii_uppercase())
-            .collect();
+        let prior_seqs = read_prior_set(prior_path)?;
         let n_marked = mark_priors(&mut raw_inputs, &prior_seqs);
         if verbose {
             eprintln!(
@@ -563,7 +526,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         false, // aux_outputs
         true,  // pool
         verbose,
-        resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution),
+        measure_level,
         denoise,
         experimental,
     )?;
@@ -857,27 +820,8 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
     let low_memory = !cache_samples;
 
     let n_samples = input.len();
-    // How many samples to denoise concurrently (each on a threads/jobs
-    // sub-pool). Default: round(threads/4) ≈ 4 threads/sample, the
-    // aggregate-throughput sweet spot from the sample-jobs sweep (the
-    // wall-time curve plateaus there; more samples-in-flight fills cores
-    // better than the single-sample efficiency curve suggests). 1 at
-    // <=4 threads reproduces the serial path.
-    let jobs = sample_jobs
-        .unwrap_or_else(|| ((threads as f64 / 4.0).round() as usize).max(1))
-        .clamp(1, n_samples.max(1));
-    if let Some(ref names) = sample_names
-        && names.len() != n_samples
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "--sample-names has {} entries but {} input file(s) given",
-                names.len(),
-                n_samples
-            ),
-        ));
-    }
+    let jobs = concurrent_samples(sample_jobs, threads, n_samples);
+    check_sample_names(sample_names.as_deref(), n_samples)?;
 
     std::fs::create_dir_all(&output_dir)?;
 
@@ -898,7 +842,7 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
         reestimate_err_between_rounds,
         false, // pool (pseudo is per-sample, not pooled)
         verbose,
-        resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution),
+        measure_level,
         denoise,
         experimental,
     )?;
@@ -963,7 +907,7 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
             None => input
                 .iter()
                 .zip(&json_samples)
-                .map(|(p, js)| js.clone().unwrap_or_else(|| fastq_stem(p)))
+                .map(|(p, js)| sample_label(None, js.clone(), p))
                 .collect(),
         };
         let collected: Mutex<IndexedAsvs> = Mutex::new(Vec::with_capacity(n_samples));
@@ -998,10 +942,7 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
                 .map_err(io::Error::other)?;
             accumulate_round1_trans(&trans_acc, &result)?;
             let asvs = result_to_asvs(&result);
-            let name = match &sample_names {
-                Some(n) => n[s].clone(),
-                None => js.unwrap_or_else(|| fastq_stem(&input[s])),
-            };
+            let name = sample_label(sample_names.as_ref().map(|n| n[s].clone()), js, &input[s]);
             if verbose {
                 eprintln!("[dada-pseudo]   round 1 {}: {} ASV(s)", name, asvs.len());
             }
@@ -1926,6 +1867,48 @@ impl From<&dada::DadaAux> for AuxJson {
             transitions_ncol: a.transitions_ncol,
         }
     }
+}
+
+/// The `--prior` FASTA as a set of uppercased sequences.
+fn read_prior_set(path: &Path) -> io::Result<std::collections::HashSet<String>> {
+    Ok(read_fasta_records(path)
+        .with_path(path)?
+        .into_iter()
+        .map(|(_, seq)| String::from_utf8_lossy(&seq).to_ascii_uppercase())
+        .collect())
+}
+
+/// A sample's output name: the one given on the command line, else the one
+/// embedded in a derep/sample JSON input, else the FASTQ file stem.
+fn sample_label(cli: Option<String>, json: Option<String>, path: &Path) -> String {
+    cli.or(json).unwrap_or_else(|| fastq_stem(path))
+}
+
+/// Reject a `--sample-names` list that does not name every input exactly once.
+fn check_sample_names(names: Option<&[String]>, n_samples: usize) -> io::Result<()> {
+    match names {
+        Some(names) if names.len() != n_samples => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "--sample-names has {} entries but {} input file(s) given",
+                names.len(),
+                n_samples
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// How many samples to denoise at once, each on a `threads / jobs` sub-pool.
+/// Samples are independent and single-pass, so this keeps every core fed and
+/// bounds memory to `jobs` samples in flight. The default, round(threads/4) ≈
+/// 4 threads per sample, is where the sample-jobs sweep's wall-time curve
+/// plateaus: more samples in flight fill cores better than the single-sample
+/// efficiency curve suggests. At <= 4 threads it is 1, the serial path.
+fn concurrent_samples(sample_jobs: Option<usize>, threads: usize, n_samples: usize) -> usize {
+    sample_jobs
+        .unwrap_or_else(|| ((threads as f64 / 4.0).round() as usize).max(1))
+        .clamp(1, n_samples.max(1))
 }
 
 /// One sample's entry in a `--metrics-json` document: name, round, metrics.
