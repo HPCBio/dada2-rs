@@ -1,7 +1,8 @@
 //! dada2-rs: a Rust port of the DADA2 amplicon denoising algorithm.
 //!
 //! This library crate hosts the full module tree; the `dada2-rs` binary
-//! (`src/main.rs`) is a thin CLI front-end over these modules.
+//! (`src/main.rs`, handlers in `src/commands/`) is a thin CLI front-end over
+//! these modules.
 #![allow(clippy::doc_overindented_list_items)]
 
 pub mod chimera;

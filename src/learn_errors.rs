@@ -274,7 +274,7 @@ impl From<&LoessParams> for LoessConfig {
         let surface = match p.surface.as_str() {
             "interpolate" => LoessSurface::Interpolate {
                 // R `loess.control(cell = 0.2)`, same fallback as
-                // `resolve_loess_config` in main.rs.
+                // `resolve_loess_config` in commands/errors.rs.
                 cell: p.cell.unwrap_or(0.2),
             },
             _ => LoessSurface::Direct,
