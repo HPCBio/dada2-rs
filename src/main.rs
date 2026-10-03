@@ -3559,34 +3559,32 @@ fn run() -> io::Result<()> {
                 gapless: true,
             };
 
-            let dada_params = dada::DadaParams {
-                align: align_params,
-                err_mat: Vec::new(),
-                err_ncol: 0,
-                omega_a,
-                omega_c,
-                omega_p,
-                detect_singletons,
-                max_clust,
-                min_fold,
-                min_hamming,
-                min_abund,
-                use_quals,
-                final_consensus: false,
-                multithread: threads > 1,
+            let dada_params = dada::DadaParams::new(
+                align_params,
+                Vec::new(),
+                0,
+                dada::DenoiseOpts {
+                    omega_a,
+                    omega_c,
+                    omega_p,
+                    detect_singletons,
+                    max_clust,
+                    min_fold,
+                    min_hamming,
+                    min_abund,
+                    use_quals,
+                    greedy,
+                },
+                threads,
                 verbose,
-                // learn-errors denoises one sample at a time.
-                progress_tag: None,
                 // learn-errors has no --metrics-json yet; keep
                 // --verbose's measurements exactly as they were.
-                measure: if verbose {
+                if verbose {
                     MeasureLevel::Attribution
                 } else {
                     MeasureLevel::Off
                 },
-                greedy,
-                aux_outputs: false,
-            };
+            );
 
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
@@ -4255,34 +4253,32 @@ fn run() -> io::Result<()> {
                 gapless: true,
             };
 
-            let dada_params = dada::DadaParams {
-                align: align_params,
-                err_mat: Vec::new(), // overwritten each iteration
-                err_ncol: 0,         // overwritten each iteration
-                omega_a,
-                omega_c,
-                omega_p,
-                detect_singletons,
-                max_clust,
-                min_fold,
-                min_hamming,
-                min_abund,
-                use_quals,
-                final_consensus: false,
-                multithread: threads > 1,
+            let dada_params = dada::DadaParams::new(
+                align_params,
+                Vec::new(), // overwritten each iteration
+                0,
+                dada::DenoiseOpts {
+                    omega_a,
+                    omega_c,
+                    omega_p,
+                    detect_singletons,
+                    max_clust,
+                    min_fold,
+                    min_hamming,
+                    min_abund,
+                    use_quals,
+                    greedy,
+                },
+                threads,
                 verbose,
-                // learn-errors denoises one sample at a time.
-                progress_tag: None,
                 // learn-errors has no --metrics-json yet; keep
                 // --verbose's measurements exactly as they were.
-                measure: if verbose {
+                if verbose {
                     MeasureLevel::Attribution
                 } else {
                     MeasureLevel::Off
                 },
-                greedy,
-                aux_outputs: false,
-            };
+            );
 
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
@@ -4906,27 +4902,30 @@ fn resolve_dada_params(
         }
     }
 
+    // `progress_tag` stays unset here: the concurrent paths set it per sample
+    // (see denoise_and_serialize).
     let params = dada::DadaParams {
-        align: align_params,
-        err_mat,
-        err_ncol: nq,
-        omega_a,
-        omega_c,
-        omega_p,
-        detect_singletons,
-        max_clust,
-        min_fold,
-        min_hamming,
-        min_abund,
-        use_quals,
-        final_consensus: false,
-        multithread: threads > 1,
-        verbose,
-        // Set per sample by the concurrent paths; see denoise_and_serialize.
-        progress_tag: None,
-        measure,
-        greedy,
         aux_outputs,
+        ..dada::DadaParams::new(
+            align_params,
+            err_mat,
+            nq,
+            dada::DenoiseOpts {
+                omega_a,
+                omega_c,
+                omega_p,
+                detect_singletons,
+                max_clust,
+                min_fold,
+                min_hamming,
+                min_abund,
+                use_quals,
+                greedy,
+            },
+            threads,
+            verbose,
+            measure,
+        )
     };
 
     let run = DadaRunParams {

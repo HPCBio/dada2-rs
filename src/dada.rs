@@ -118,6 +118,72 @@ pub struct DadaParams {
     pub aux_outputs: bool,
 }
 
+/// The denoising options R exposes through `setDadaOpt`.
+///
+/// No `Default`: `dada` and `learn-errors` disagree on `OMEGA_C` (1e-40 vs 0,
+/// as in R), so each caller states its own values.
+#[derive(Clone, Copy, Debug)]
+pub struct DenoiseOpts {
+    pub omega_a: f64,
+    pub omega_c: f64,
+    pub omega_p: f64,
+    pub detect_singletons: bool,
+    pub max_clust: usize,
+    pub min_fold: f64,
+    pub min_hamming: u32,
+    pub min_abund: u32,
+    pub use_quals: bool,
+    pub greedy: bool,
+}
+
+impl DadaParams {
+    /// Parameters for one run on `threads` threads, with untagged progress and
+    /// no aux outputs; set `progress_tag` or `aux_outputs` afterwards if needed.
+    pub fn new(
+        align: AlignParams,
+        err_mat: Vec<f64>,
+        err_ncol: usize,
+        opts: DenoiseOpts,
+        threads: usize,
+        verbose: bool,
+        measure: MeasureLevel,
+    ) -> Self {
+        let DenoiseOpts {
+            omega_a,
+            omega_c,
+            omega_p,
+            detect_singletons,
+            max_clust,
+            min_fold,
+            min_hamming,
+            min_abund,
+            use_quals,
+            greedy,
+        } = opts;
+        DadaParams {
+            align,
+            err_mat,
+            err_ncol,
+            omega_a,
+            omega_p,
+            omega_c,
+            detect_singletons,
+            max_clust,
+            min_fold,
+            min_hamming,
+            min_abund,
+            use_quals,
+            final_consensus: false,
+            multithread: threads > 1,
+            verbose,
+            progress_tag: None,
+            measure,
+            greedy,
+            aux_outputs: false,
+        }
+    }
+}
+
 /// A single unique sequence with its abundance, optional quality profile,
 /// and prior flag.
 pub struct RawInput {
@@ -1611,44 +1677,37 @@ mod tests {
 
     /// R defaults, no quality scores, single-threaded. `err_mat` is 16 × `ncol`.
     fn params(err_mat: Vec<f64>, err_ncol: usize) -> DadaParams {
-        DadaParams {
-            align: AlignParams {
-                backend: AlignBackend::Nw,
-                wfa_max_edits: 0,
-                match_score: 5,
-                mismatch: -4,
-                gap_p: -8,
-                homo_gap_p: -8,
-                use_kmers: true,
-                kdist_cutoff: 0.42,
-                screen_backend: ScreenBackend::Kmer,
-                minimizer_k: crate::minimizers::MINIMIZER_K,
-                minimizer_w: crate::minimizers::MINIMIZER_W,
-                screen_audit: false,
-                kmer_size: crate::kmers::KMER_SIZE,
-                band: 16,
-                vectorized: true,
-                gapless: true,
-            },
-            err_mat,
-            err_ncol,
+        let align = AlignParams {
+            backend: AlignBackend::Nw,
+            wfa_max_edits: 0,
+            match_score: 5,
+            mismatch: -4,
+            gap_p: -8,
+            homo_gap_p: -8,
+            use_kmers: true,
+            kdist_cutoff: 0.42,
+            screen_backend: ScreenBackend::Kmer,
+            minimizer_k: crate::minimizers::MINIMIZER_K,
+            minimizer_w: crate::minimizers::MINIMIZER_W,
+            screen_audit: false,
+            kmer_size: crate::kmers::KMER_SIZE,
+            band: 16,
+            vectorized: true,
+            gapless: true,
+        };
+        let opts = DenoiseOpts {
             omega_a: 1e-40,
-            omega_p: 1e-4,
             omega_c: 0.0,
+            omega_p: 1e-4,
             detect_singletons: false,
             max_clust: 0,
             min_fold: 1.0,
             min_hamming: 1,
             min_abund: 1,
             use_quals: false,
-            final_consensus: false,
-            multithread: false,
-            verbose: false,
-            progress_tag: None,
-            measure: MeasureLevel::Off,
             greedy: true,
-            aux_outputs: false,
-        }
+        };
+        DadaParams::new(align, err_mat, err_ncol, opts, 1, false, MeasureLevel::Off)
     }
 
     /// One quality column: every substitution has probability `e`.
