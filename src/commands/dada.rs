@@ -156,34 +156,8 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         let metrics_runs: std::sync::Mutex<Vec<MetricRun>> = std::sync::Mutex::new(Vec::new());
         for_each_sample_concurrent(input.len(), jobs, threads, |i, sub_pool| {
             let path = &input[i];
-            let (derep, json_sample) = load_derep_for_dada(
-                path,
-                phred_offset,
-                sub_pool,
-                verbose,
-                &mut DerepLoadCost::default(),
-            )?;
-            let mut raw_inputs: Vec<dada::RawInput> = derep
-                .uniques
-                .into_iter()
-                .zip(derep.quals)
-                .map(|((seq, count), quals)| {
-                    let sequence = String::from_utf8(seq)
-                        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-                    dada::RawInput {
-                        seq: sequence,
-                        abundance: count as u32,
-                        prior: false,
-                        quals: Some(quals),
-                    }
-                })
-                .collect();
-            if raw_inputs.is_empty() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{}: no uniques found", path.display()),
-                ));
-            }
+            let (mut raw_inputs, json_sample) =
+                load_sample_raws(path, phred_offset, sub_pool, verbose)?;
             if let Some(ref set) = prior_set {
                 let n_marked = mark_priors(&mut raw_inputs, set);
                 if verbose {
@@ -208,6 +182,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
                 collect_failed,
                 verbose,
                 (jobs > 1).then(|| sample.clone()),
+                None,
             )?;
             if collect_failed {
                 failed_rows.lock().unwrap().extend(failed);
@@ -254,7 +229,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         return Ok(());
     }
 
-    // ---- Single input: preserve existing behavior byte-for-byte ----
+    // ---- Single input: -o/stdout, plus --sample-name, aux outputs and trace ----
     if output_dir.is_some() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -263,36 +238,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
     }
     let input = &input[0];
 
-    let (derep, json_sample) = load_derep_for_dada(
-        input,
-        phred_offset,
-        &pool,
-        verbose,
-        &mut DerepLoadCost::default(),
-    )?;
-
-    let mut raw_inputs: Vec<dada::RawInput> = derep
-        .uniques
-        .into_iter()
-        .zip(derep.quals)
-        .map(|((seq, count), quals)| {
-            let sequence = String::from_utf8(seq)
-                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-            dada::RawInput {
-                seq: sequence,
-                abundance: count as u32,
-                prior: false,
-                quals: Some(quals),
-            }
-        })
-        .collect();
-
-    if raw_inputs.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{}: no uniques found", input.display()),
-        ));
-    }
+    let (mut raw_inputs, json_sample) = load_sample_raws(input, phred_offset, &pool, verbose)?;
 
     // ---- Mark prior sequences ----
     if let Some(ref prior_path) = prior {
@@ -325,132 +271,33 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         denoise,
         experimental,
     )?;
-    let dada_params = resolved.params;
-    let run_params = resolved.run;
-    let nq = resolved.nq;
     let sample = sample_name
         .or(json_sample)
         .unwrap_or_else(|| fastq_stem(input));
-
-    // ---- Run DADA2 ----
-    let mut result = pool
-        .install(|| dada::dada_uniques(&raw_inputs, &dada_params))
-        .map_err(io::Error::other)?;
-    if let (Some(mpath), Some(m)) = (metrics_json.as_ref(), result.metrics.take()) {
-        let mut doc = MetricsDocument::new(t_start.elapsed(), measure_level);
-        doc.pipeline.dada = Some(t_start.elapsed().as_secs_f64());
-        doc.push(sample.clone(), None, m);
-        write_metrics_json(mpath, &doc)?;
-        if verbose {
-            eprintln!("[dada] wrote run metrics to {}", mpath.display());
-        }
-    }
-
-    if verbose {
-        eprintln!(
-            "[dada] {} ASV(s) from {} unique input(s); {} aligns, {} shrouded",
-            result.clusters.len(),
-            raw_inputs.len(),
-            result.nalign,
-            result.nshroud,
-        );
-    }
-
-    // ---- Optional cluster trace ----
-    if let Some(ref trace_path) = cluster_trace {
-        if let Some(parent) = trace_path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)?;
-        }
-        let trace_params = cluster_trace::TraceParams {
+    let trace = cluster_trace.as_deref().map(|path| TraceRequest {
+        path,
+        params: cluster_trace::TraceParams {
             no_members: trace_no_members,
             min_abund: trace_min_abund,
-        };
-        cluster_trace::write_trace(
-            trace_path,
-            &sample,
-            None, // no iteration: this is the final dada run
-            &raw_inputs,
-            &result,
-            Some(&dada_params.err_mat),
-            nq,
-            trace_params,
-            compact,
-        )?;
-        if verbose {
-            eprintln!("[dada] cluster trace written to {}", trace_path.display());
-        }
-    }
+        },
+    });
+    let (json, failed, run_metrics) = denoise_and_serialize(
+        "dada",
+        &sample,
+        &file_basename(input),
+        &raw_inputs,
+        &resolved.params,
+        &resolved.run,
+        &pool,
+        compact,
+        failed_uniques_path.is_some(),
+        verbose,
+        None,
+        trace.as_ref(),
+    )?;
 
-    // ---- Serialize output ----
-    #[derive(Serialize)]
-    struct ClusterStatJson {
-        sequence: String,
-        abundance: u32,
-        n0: u32,
-        n1: u32,
-        nunq: u32,
-        pval: f64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        birth_from: Option<usize>,
-        birth_pval: f64,
-        birth_fold: f64,
-        birth_ham: u32,
-        birth_e: f64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        birth_qave: Option<f64>,
-    }
-
-    #[derive(Serialize)]
-    struct BirthSubJson {
-        cluster: usize,
-        pos: u16,
-        nt0: char,
-        nt1: char,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        qual: Option<u8>,
-    }
-
-    #[derive(Serialize)]
-    struct AuxJson {
-        cluster_stats: Vec<ClusterStatJson>,
-        cluster_quality: Vec<Vec<f64>>,
-        cluster_quality_maxlen: usize,
-        birth_subs: Vec<BirthSubJson>,
-        transitions: Vec<u32>,
-        transitions_ncol: usize,
-    }
-
-    #[derive(Serialize)]
-    struct DadaOutput {
-        sample: String,
-        /// Original input file name (no directory) for provenance.
-        input_file: String,
-        num_asvs: usize,
-        total_reads: u32,
-        asvs: Vec<AsvEntry>,
-        stats: DadaStats,
-        params: DadaRunParams,
-        map: Vec<Option<usize>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        aux: Option<AuxJson>,
-    }
-
-    // ---- Optional failed-to-denoise unique diagnostic (issue #60) ----
     if let Some(ref fu_path) = failed_uniques_path {
-        let rows: Vec<failed_uniques::Row> = result
-            .map
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.is_none())
-            .map(|(i, _)| failed_uniques::Row {
-                sequence: raw_inputs[i].seq.clone(),
-                sample: sample.clone(),
-                reads: raw_inputs[i].abundance,
-            })
-            .collect();
-        let n = failed_uniques::write_tsv(fu_path, rows)?;
+        let n = failed_uniques::write_tsv(fu_path, failed)?;
         if verbose {
             eprintln!(
                 "[dada] wrote {n} failed-unique row(s) to {}",
@@ -458,81 +305,15 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
             );
         }
     }
-
-    let total_reads: u32 = result.clusters.iter().map(|c| c.abundance).sum();
-
-    let asvs: Vec<AsvEntry> = result
-        .clusters
-        .iter()
-        .map(|c| asv_entry_from_cluster(c, c.abundance))
-        .collect();
-
-    let aux_json = result.aux.as_ref().map(|a| {
-        let cluster_stats_j = a
-            .cluster_stats
-            .iter()
-            .map(|c| {
-                let sequence: String = c
-                    .sequence
-                    .iter()
-                    .map(|&b| misc::nt_decode(b) as char)
-                    .collect();
-                ClusterStatJson {
-                    sequence,
-                    abundance: c.abundance,
-                    n0: c.n0,
-                    n1: c.n1,
-                    nunq: c.nunq,
-                    pval: c.pval,
-                    birth_from: c.birth_from,
-                    birth_pval: c.birth_pval,
-                    birth_fold: c.birth_fold,
-                    birth_ham: c.birth_ham,
-                    birth_e: c.birth_e,
-                    birth_qave: c.birth_qave,
-                }
-            })
-            .collect();
-        let birth_subs_j = a
-            .birth_subs
-            .iter()
-            .map(|r| BirthSubJson {
-                cluster: r.cluster,
-                pos: r.pos,
-                nt0: r.nt0 as char,
-                nt1: r.nt1 as char,
-                qual: r.qual,
-            })
-            .collect();
-        AuxJson {
-            cluster_stats: cluster_stats_j,
-            cluster_quality: a.cluster_quality.clone(),
-            cluster_quality_maxlen: a.cluster_quality_maxlen,
-            birth_subs: birth_subs_j,
-            transitions: a.transitions.clone(),
-            transitions_ncol: a.transitions_ncol,
+    if let (Some(mpath), Some(m)) = (metrics_json.as_ref(), run_metrics) {
+        let mut doc = MetricsDocument::new(t_start.elapsed(), measure_level);
+        doc.pipeline.dada = Some(t_start.elapsed().as_secs_f64());
+        doc.push(sample, None, m);
+        write_metrics_json(mpath, &doc)?;
+        if verbose {
+            eprintln!("[dada] wrote run metrics to {}", mpath.display());
         }
-    });
-
-    let out = DadaOutput {
-        sample,
-        input_file: file_basename(input),
-        num_asvs: asvs.len(),
-        total_reads,
-        asvs,
-        stats: DadaStats {
-            nalign: result.nalign,
-            nshroud: result.nshroud,
-        },
-        params: DadaRunParams {
-            n_prior: raw_inputs.iter().filter(|r| r.prior).count(),
-            ..run_params
-        },
-        map: result.map,
-        aux: aux_json,
-    };
-
-    let json = to_json(&Tagged::new("dada", out), compact)?;
+    }
 
     match output {
         Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
@@ -831,7 +612,6 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
     )?;
     let dada_params = resolved.params;
     let mut run_params = resolved.run;
-    let nq = resolved.nq;
     run_params.n_prior = raw_inputs.iter().filter(|r| r.prior).count();
 
     // ---- Run DADA once on the merged table ----
@@ -867,49 +647,28 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
     }
 
     // ---- Cluster trace (diagnostics; write-only, does not affect ASVs) ----
-    if let Some(ref trace_path) = cluster_trace {
-        if let Some(parent) = trace_path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)?;
-        }
-        let trace_params = cluster_trace::TraceParams {
-            no_members: trace_no_members,
-            min_abund: trace_min_abund,
+    if let Some(ref path) = cluster_trace {
+        let trace = TraceRequest {
+            path,
+            params: cluster_trace::TraceParams {
+                no_members: trace_no_members,
+                min_abund: trace_min_abund,
+            },
         };
-        cluster_trace::write_trace(
-            trace_path,
+        write_cluster_trace(
+            "dada-pooled",
+            &trace,
             "pooled",
-            None, // no iteration: this is the final pooled dada run
             &raw_inputs,
             &result,
-            Some(&dada_params.err_mat),
-            nq,
-            trace_params,
+            &dada_params,
             compact,
+            verbose,
         )?;
-        if verbose {
-            eprintln!(
-                "[dada-pooled] cluster trace written to {}",
-                trace_path.display()
-            );
-        }
     }
 
     // ---- Per-sample output ----
     let t_output = std::time::Instant::now();
-    #[derive(Serialize)]
-    struct DadaOutput {
-        sample: String,
-        /// Original input file name (no directory) for provenance.
-        input_file: String,
-        num_asvs: usize,
-        total_reads: u32,
-        asvs: Vec<AsvEntry>,
-        stats: DadaStats,
-        params: DadaRunParams,
-        map: Vec<Option<usize>>,
-    }
 
     // Failed-to-denoise uniques (issue #60). Pooled denoising runs once on
     // the merged unique table, so "failed" is a global property
@@ -967,6 +726,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
             },
             params: run_params,
             map,
+            aux: None,
         };
 
         let json = to_json(&Tagged::new("dada-pooled", out), compact)?;
@@ -1474,6 +1234,7 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
                 collect_failed,
                 verbose,
                 (jobs > 1).then(|| sample_name.to_string()),
+                None,
             )?;
             if collect_failed {
                 failed_rows.lock().unwrap().extend(failed);
@@ -1520,6 +1281,7 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
                 collect_failed,
                 verbose,
                 (jobs > 1).then(|| sample_name.to_string()),
+                None,
             )?;
             if collect_failed {
                 failed_rows.lock().unwrap().extend(failed);
@@ -2194,11 +1956,150 @@ fn mark_priors(
     n
 }
 
-/// Run `dada_uniques` on one sample's uniques and serialize the standard
-/// (non-pooled) `DadaOutput` JSON, returning the pretty/compact string. Used by
-/// the multi-input `dada` path and by `dada-pseudo`. The single-input `dada`
-/// path keeps its own inline serialization because it also emits aux outputs
-/// and cluster traces.
+/// One sample's output JSON from `dada`, `dada-pooled` or `dada-pseudo`.
+#[derive(Serialize)]
+struct DadaOutput {
+    sample: String,
+    /// Original input file name (no directory) for provenance.
+    input_file: String,
+    num_asvs: usize,
+    total_reads: u32,
+    asvs: Vec<AsvEntry>,
+    stats: DadaStats,
+    params: DadaRunParams,
+    map: Vec<Option<usize>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    aux: Option<AuxJson>,
+}
+
+#[derive(Serialize)]
+struct ClusterStatJson {
+    sequence: String,
+    abundance: u32,
+    n0: u32,
+    n1: u32,
+    nunq: u32,
+    pval: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    birth_from: Option<usize>,
+    birth_pval: f64,
+    birth_fold: f64,
+    birth_ham: u32,
+    birth_e: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    birth_qave: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct BirthSubJson {
+    cluster: usize,
+    pos: u16,
+    nt0: char,
+    nt1: char,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    qual: Option<u8>,
+}
+
+/// `dada --aux-outputs`: R-parity per-cluster diagnostics.
+#[derive(Serialize)]
+struct AuxJson {
+    cluster_stats: Vec<ClusterStatJson>,
+    cluster_quality: Vec<Vec<f64>>,
+    cluster_quality_maxlen: usize,
+    birth_subs: Vec<BirthSubJson>,
+    transitions: Vec<u32>,
+    transitions_ncol: usize,
+}
+
+impl From<&dada::DadaAux> for AuxJson {
+    fn from(a: &dada::DadaAux) -> Self {
+        let cluster_stats_j = a
+            .cluster_stats
+            .iter()
+            .map(|c| {
+                let sequence: String = c
+                    .sequence
+                    .iter()
+                    .map(|&b| misc::nt_decode(b) as char)
+                    .collect();
+                ClusterStatJson {
+                    sequence,
+                    abundance: c.abundance,
+                    n0: c.n0,
+                    n1: c.n1,
+                    nunq: c.nunq,
+                    pval: c.pval,
+                    birth_from: c.birth_from,
+                    birth_pval: c.birth_pval,
+                    birth_fold: c.birth_fold,
+                    birth_ham: c.birth_ham,
+                    birth_e: c.birth_e,
+                    birth_qave: c.birth_qave,
+                }
+            })
+            .collect();
+        let birth_subs_j = a
+            .birth_subs
+            .iter()
+            .map(|r| BirthSubJson {
+                cluster: r.cluster,
+                pos: r.pos,
+                nt0: r.nt0 as char,
+                nt1: r.nt1 as char,
+                qual: r.qual,
+            })
+            .collect();
+        AuxJson {
+            cluster_stats: cluster_stats_j,
+            cluster_quality: a.cluster_quality.clone(),
+            cluster_quality_maxlen: a.cluster_quality_maxlen,
+            birth_subs: birth_subs_j,
+            transitions: a.transitions.clone(),
+            transitions_ncol: a.transitions_ncol,
+        }
+    }
+}
+
+/// A `--cluster-trace` request: where to write it and what to include.
+struct TraceRequest<'a> {
+    path: &'a Path,
+    params: cluster_trace::TraceParams,
+}
+
+/// Write the cluster trace of a finished denoising run.
+#[allow(clippy::too_many_arguments)]
+fn write_cluster_trace(
+    tag: &str,
+    trace: &TraceRequest,
+    sample: &str,
+    raw_inputs: &[dada::RawInput],
+    result: &dada::DadaResult,
+    params: &dada::DadaParams,
+    compact: bool,
+    verbose: bool,
+) -> io::Result<()> {
+    if let Some(parent) = trace.path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    cluster_trace::write_trace(
+        trace.path,
+        sample,
+        None, // no iteration: this is the final dada run
+        raw_inputs,
+        result,
+        Some(&params.err_mat),
+        params.err_ncol,
+        trace.params,
+        compact,
+    )?;
+    if verbose {
+        eprintln!("[{tag}] cluster trace written to {}", trace.path.display());
+    }
+    Ok(())
+}
+
 /// One ASV record in a dada-family output JSON. Shared by the single-input
 /// `dada`, `dada-pooled`, and the multi-sample `dada` / `dada-pseudo` paths.
 #[derive(Serialize)]
@@ -2265,7 +2166,8 @@ fn to_json<T: Serialize>(value: &T, compact: bool) -> io::Result<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Denoise one sample and serialize its dada JSON. When `collect_failed` is set,
+/// Denoise one sample and serialize its dada JSON, writing its cluster trace
+/// first when `trace` asks for one. When `collect_failed` is set,
 /// also returns the uniques that failed to denoise (`map == null`) as
 /// [`failed_uniques::Row`]s tagged with `sample`; otherwise the row vec is empty.
 fn denoise_and_serialize(
@@ -2283,24 +2185,12 @@ fn denoise_and_serialize(
     // are denoised concurrently, where the records would otherwise be
     // unattributable; `None` keeps the text byte-identical to R's (#172).
     progress_tag: Option<String>,
+    trace: Option<&TraceRequest>,
 ) -> io::Result<(
     String,
     Vec<failed_uniques::Row>,
     Option<metrics::RunMetrics>,
 )> {
-    #[derive(Serialize)]
-    struct DadaOutput {
-        sample: String,
-        /// Original input file name (no directory) for provenance.
-        input_file: String,
-        num_asvs: usize,
-        total_reads: u32,
-        asvs: Vec<AsvEntry>,
-        stats: DadaStats,
-        params: DadaRunParams,
-        map: Vec<Option<usize>>,
-    }
-
     // Only clone when a tag is actually needed: the copy carries `err_mat`,
     // and a serial run has nothing to disambiguate anyway.
     let tagged;
@@ -2327,6 +2217,11 @@ fn denoise_and_serialize(
             result.nalign,
             result.nshroud,
         );
+    }
+    if let Some(t) = trace {
+        write_cluster_trace(
+            tag, t, sample, raw_inputs, &result, params, compact, verbose,
+        )?;
     }
 
     let total_reads: u32 = result.clusters.iter().map(|c| c.abundance).sum();
@@ -2366,6 +2261,7 @@ fn denoise_and_serialize(
             nshroud: result.nshroud,
         },
         params: run_params,
+        aux: result.aux.as_ref().map(AuxJson::from),
         map: result.map,
     };
 
