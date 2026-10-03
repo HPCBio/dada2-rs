@@ -282,7 +282,7 @@ fn run() -> io::Result<()> {
     };
 
     match command {
-        Commands::Summary {
+        Commands::Summary(cli::SummaryArgs {
             input,
             sample_name,
             phred_offset,
@@ -296,7 +296,7 @@ fn run() -> io::Result<()> {
             ee_bins,
             binned_threshold,
             report,
-        } => {
+        }) => {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
@@ -468,14 +468,14 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::SummaryMerge {
+        Commands::SummaryMerge(cli::SummaryMergeArgs {
             inputs,
             output,
             compact,
             binned_threshold,
             report,
             expected_bins,
-        } => {
+        }) => {
             check_input_paths("input", &inputs)?;
             use std::collections::BTreeMap;
 
@@ -706,7 +706,7 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::Derep {
+        Commands::Derep(cli::DerepArgs {
             input,
             sample_name,
             phred_offset,
@@ -715,7 +715,7 @@ fn run() -> io::Result<()> {
             show_map,
             pretty,
             verbose,
-        } => {
+        }) => {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
@@ -796,7 +796,7 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::Dada {
+        Commands::Dada(cli::DadaArgs {
             input,
             error_model,
             use_err_in,
@@ -842,7 +842,7 @@ fn run() -> io::Result<()> {
             metrics_json,
             metrics_attribution,
             verbose,
-        } => {
+        }) => {
             // Wall clock for `--metrics-json`, started before any I/O so the
             // document measures the subcommand and not just the denoiser.
             let t_start = std::time::Instant::now();
@@ -1385,7 +1385,7 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::DadaPooled {
+        Commands::DadaPooled(cli::DadaPooledArgs {
             input,
             error_model,
             use_err_in,
@@ -1429,7 +1429,7 @@ fn run() -> io::Result<()> {
             metrics_json,
             metrics_attribution,
             verbose,
-        } => {
+        }) => {
             let t_start = std::time::Instant::now();
             let measure_level =
                 resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution);
@@ -1999,7 +1999,7 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::DadaPseudo {
+        Commands::DadaPseudo(cli::DadaPseudoArgs {
             input,
             error_model,
             use_err_in,
@@ -2044,7 +2044,7 @@ fn run() -> io::Result<()> {
             metrics_json,
             metrics_attribution,
             verbose,
-        } => {
+        }) => {
             let t_start = std::time::Instant::now();
             let measure_level =
                 resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution);
@@ -2501,7 +2501,7 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::MergePairs {
+        Commands::MergePairs(cli::MergePairsArgs {
             fwd_dada,
             rev_dada,
             fwd_fastq,
@@ -2520,7 +2520,7 @@ fn run() -> io::Result<()> {
             output,
             compact,
             verbose,
-        } => {
+        }) => {
             // ---- Validate that every input path actually exists ----
             // An unmatched shell glob is passed through literally (bash/zsh
             // without `nullglob`/`failglob`), so a wrong directory shows up as
@@ -2656,7 +2656,7 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::RemovePrimers {
+        Commands::RemovePrimers(cli::RemovePrimersArgs {
             input,
             fout,
             sample_name,
@@ -2685,7 +2685,7 @@ fn run() -> io::Result<()> {
             output,
             compact,
             verbose,
-        } => {
+        }) => {
             if allow_indels && verbose {
                 eprintln!("[remove-primers] indel mode enabled — expect ~4× slower matching");
             }
@@ -2791,7 +2791,7 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::FilterAndTrim {
+        Commands::FilterAndTrim(cli::FilterAndTrimArgs {
             fwd,
             filt,
             rev,
@@ -2814,7 +2814,7 @@ fn run() -> io::Result<()> {
             output,
             compact,
             verbose,
-        } => {
+        }) => {
             // ---- Validate paired-end files ----
             if rev.is_some() {
                 filt_rev.as_ref().ok_or_else(|| {
@@ -2945,7 +2945,7 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::MakeSequenceTable {
+        Commands::MakeSequenceTable(cli::MakeSequenceTableArgs {
             input,
             sample_names,
             order_by,
@@ -2954,7 +2954,7 @@ fn run() -> io::Result<()> {
             hash,
             output,
             compact,
-        } => {
+        }) => {
             check_input_paths("input", &input)?;
             if !sample_names.is_empty() && sample_names.len() != input.len() {
                 return Err(io::Error::new(
@@ -3018,7 +3018,7 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::RemoveBimeraDenovo {
+        Commands::RemoveBimeraDenovo(cli::RemoveBimeraDenovoArgs {
             input,
             method,
             min_fold_parent_over_abundance,
@@ -3037,7 +3037,7 @@ fn run() -> io::Result<()> {
             verbose,
             output,
             compact,
-        } => {
+        }) => {
             let table: SequenceTable =
                 read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])
                     .with_path(&input)?;
@@ -3084,7 +3084,7 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::ChimeraDiagnostics {
+        Commands::ChimeraDiagnostics(cli::ChimeraDiagnosticsArgs {
             input,
             min_fold_parent_over_abundance,
             min_parent_abundance,
@@ -3100,7 +3100,7 @@ fn run() -> io::Result<()> {
             trimera_min_flank,
             threads,
             output,
-        } => {
+        }) => {
             let table: SequenceTable =
                 read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])
                     .with_path(&input)?;
@@ -3142,12 +3142,12 @@ fn run() -> io::Result<()> {
             out.flush()?;
         }
 
-        Commands::SeqTableToTsv {
+        Commands::SeqTableToTsv(cli::SeqTableToTsvArgs {
             input,
             prevalence,
             min_abundance,
             output,
-        } => {
+        }) => {
             let table: SequenceTable =
                 read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])
                     .with_path(&input)?;
@@ -3176,12 +3176,12 @@ fn run() -> io::Result<()> {
             out.flush()?;
         }
 
-        Commands::SeqTableToFasta {
+        Commands::SeqTableToFasta(cli::SeqTableToFastaArgs {
             input,
             prevalence,
             min_abundance,
             output,
-        } => {
+        }) => {
             let table: SequenceTable =
                 read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])
                     .with_path(&input)?;
@@ -3206,11 +3206,11 @@ fn run() -> io::Result<()> {
             out.flush()?;
         }
 
-        Commands::TaxToTsv {
+        Commands::TaxToTsv(cli::TaxToTsvArgs {
             input,
             na_string,
             output,
-        } => {
+        }) => {
             #[derive(serde::Deserialize)]
             struct TaxAssignment {
                 sequence_id: String,
@@ -3252,7 +3252,7 @@ fn run() -> io::Result<()> {
             out.flush()?;
         }
 
-        Commands::Sample {
+        Commands::Sample(cli::SampleArgs {
             input,
             output_dir,
             nbases,
@@ -3263,7 +3263,7 @@ fn run() -> io::Result<()> {
             pretty,
             gzip,
             verbose,
-        } => {
+        }) => {
             check_input_paths("input", &input)?;
             std::fs::create_dir_all(&output_dir)?;
 
@@ -3425,7 +3425,7 @@ fn run() -> io::Result<()> {
             println!("{summary_json}");
         }
 
-        Commands::ErrorsFromSample {
+        Commands::ErrorsFromSample(cli::ErrorsFromSampleArgs {
             input,
             errfun,
             pseudocount,
@@ -3469,7 +3469,7 @@ fn run() -> io::Result<()> {
             trace_no_members,
             trace_min_abund,
             verbose,
-        } => {
+        }) => {
             check_input_paths("input", &input)?;
             // R's HOMOPOLYMER_GAP_PENALTY = NULL tracks GAP_PENALTY. R also
             // normalizes a positive penalty to negative before comparing them
@@ -3678,7 +3678,7 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::AssignTaxonomy {
+        Commands::AssignTaxonomy(cli::AssignTaxonomyArgs {
             input,
             ref_fasta,
             min_boot,
@@ -3690,7 +3690,7 @@ fn run() -> io::Result<()> {
             output,
             compact,
             verbose,
-        } => {
+        }) => {
             const MIN_REF_LEN: usize = 20;
             const DADA2_UNSPEC: &str = "_DADA2_UNSPECIFIED";
 
@@ -3931,7 +3931,7 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::AssignSpecies {
+        Commands::AssignSpecies(cli::AssignSpeciesArgs {
             input,
             ref_fasta,
             allow_multiple,
@@ -3939,7 +3939,7 @@ fn run() -> io::Result<()> {
             output,
             compact,
             verbose,
-        } => {
+        }) => {
             const MIN_REF_LEN: usize = 20;
 
             // ---- Read input taxonomy JSON ----
@@ -4115,7 +4115,7 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::LearnErrors {
+        Commands::LearnErrors(cli::LearnErrorsArgs {
             input,
             nbases,
             randomize,
@@ -4163,7 +4163,7 @@ fn run() -> io::Result<()> {
             trace_no_members,
             trace_min_abund,
             verbose,
-        } => {
+        }) => {
             check_input_paths("input", &input)?;
             // R's HOMOPOLYMER_GAP_PENALTY = NULL tracks GAP_PENALTY. R also
             // normalizes a positive penalty to negative before comparing them
@@ -4380,7 +4380,7 @@ fn run() -> io::Result<()> {
             }
         }
 
-        Commands::KdistCalibrate {
+        Commands::KdistCalibrate(cli::KdistCalibrateArgs {
             inputs,
             k,
             screen_backend,
@@ -4402,7 +4402,7 @@ fn run() -> io::Result<()> {
             seed,
             output,
             verbose,
-        } => {
+        }) => {
             check_input_paths("input", &inputs)?;
             kdist_calibrate::run(
                 &inputs,
@@ -4431,7 +4431,7 @@ fn run() -> io::Result<()> {
             )?;
         }
 
-        Commands::ReferenceEval {
+        Commands::ReferenceEval(cli::ReferenceEvalArgs {
             asvs,
             reference,
             max_diffs,
@@ -4449,7 +4449,7 @@ fn run() -> io::Result<()> {
             output,
             threads,
             compact,
-        } => {
+        }) => {
             reference_eval::run(&reference_eval::Params {
                 asvs,
                 reference,
