@@ -101,10 +101,12 @@ ERRFUN="${ERRFUN:-loess}"
 
 # Extra arguments for the chosen errfun, whitespace-split. Needed because some
 # errfuns take a companion flag:
-#   --errfun binned-qual  requires --binned-quals "0,10,20,30,40" (the anchor Q
-#                         values; `dada2-rs summary --report` detects a run's bins)
+#   --errfun binned-qual  requires --binned-quals with the run's ACTUAL bins, read
+#                         from `dada2-rs summary --report` (NovaSeq: 2,11,25,37;
+#                         MiSeq i100: 12,24,38). Anchors that miss them can
+#                         silently zero the model (#263).
 #   --errfun external     requires --errfun-cmd "..."
-# e.g. ERRFUN=binned-qual ERRFUN_ARGS='--binned-quals 2,12,23,37'
+# e.g. ERRFUN=binned-qual ERRFUN_ARGS='--binned-quals 2,11,25,37'   # NovaSeq
 ERRFUN_ARGS="${ERRFUN_ARGS:-}"
 # shellcheck disable=SC2206
 errfun_extra=($ERRFUN_ARGS)

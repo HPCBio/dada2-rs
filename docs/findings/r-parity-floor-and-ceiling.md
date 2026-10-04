@@ -63,8 +63,17 @@ seeds form the null. ASVs that change between arms, per table:
 | MiSeq SOP, 362 samples | pooled / pseudo / per-sample | 0–3 | 16 reads | one 11-mismatch pair, pooled |
 | PacBio HiFi, 95 samples | pooled | 16–30 | 76 reads | 8% of changes, ≤ 18 reads |
 | | pseudo / per-sample | 28–39 | 26 reads | none |
-| NovaSeq ITS2, 30 samples | pooled | 4–16 | 117 reads | none |
+| NovaSeq ITS2, 30 samples ⚠ | pooled | 4–16 | 117 reads | none |
 | | pseudo / per-sample | 19–38 | 97 reads | none |
+
+!!! warning "ITS2 rows are being re-measured"
+    The ITS2 runs used binned-quality anchors that do not match the data's
+    bins (2,11,25,37). The error model was pinned across arms, so each
+    comparison is internally consistent, but the floor's size depends on the
+    model. Treat the ITS2 numbers on this page, including the traced
+    doubletons below, as provisional until
+    [issue 264](https://github.com/HPCBio/dada2-rs/issues/264) re-measures
+    them with corrected bins and an R reference.
 
 Read totals barely move: at most 0.11% of reads (PacBio per-sample). The
 changes are **renames**, not organisms gained or lost: an ASV named after a
