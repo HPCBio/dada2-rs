@@ -332,30 +332,8 @@ pub fn binned_qual_errfun(
         ));
     }
 
-    // R warns when the observed extremes bracket but do not *land on* an anchor
-    // (`makeBinnedQualErrfun`, errorModels.R). That is the case where nothing is
-    // wrong enough to stop: the model is built, but its outermost interpolation
-    // anchor has no observations behind it. The usual way in is a bin set read
-    // off one or two samples, or carried over from a run trimmed differently
-    // (issue #208). Unconditional, like the error-matrix extrapolation warning
-    // in #102 — a model quietly resting on an absent anchor is worth saying out
-    // loud.
-    let on_anchor = |q: f64| binned_quals.iter().any(|&b| (b - q).abs() < 1e-9);
-    let bins = binned_quals
-        .iter()
-        .map(|b| format!("{b}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    for (label, q) in [("minimum", qmin), ("maximum", qmax)] {
-        if !on_anchor(q) {
-            eprintln!(
-                "dada2-rs: warning: {label} observed quality Q{q} is not one of the \
-                 supplied binned values ({bins}); the outermost interpolation anchor on \
-                 that side has no observations behind it. Check the bin set against the \
-                 whole run rather than a few samples -- `summary --report` reports what \
-                 is present in the data it was given."
-            );
-        }
+    for (key, message) in check_binned_anchors(&col_totals, binned_quals, qmin, qmax)? {
+        warn_once(&key, &message);
     }
 
     let mut off_diag = vec![0.0f64; 12 * nq];
@@ -422,6 +400,16 @@ pub fn binned_qual_errfun(
                 .map(|&v| if v.is_finite() { Some(v) } else { None })
                 .collect();
             let filled = extrapolate_flat(raw_opt, nq);
+            // R stops here (its flat fill indexes an all-NA vector); without
+            // this, every rate would silently become `min_error_rate` (#263).
+            if !filled.iter().any(|v| v.is_finite()) {
+                return Err(format!(
+                    "binned-qual: no anchor pair has observations for {}->{} \
+                     transitions, so their error rates cannot be estimated",
+                    ["A", "C", "G", "T"][nti],
+                    ["A", "C", "G", "T"][ntj],
+                ));
+            }
 
             for q in 0..nq {
                 off_diag[off_row * nq + q] = if filled[q].is_finite() {
@@ -435,6 +423,133 @@ pub fn binned_qual_errfun(
     }
 
     Ok(expand_err_matrix(&off_diag, nq))
+}
+
+/// Check binned-quality anchors against the qualities present in `trans`.
+///
+/// `trans` is indexed by each unique's *mean* quality, so binned reads leave
+/// mass spikes at the true bins with a thin smear of averaged columns between
+/// them (on NovaSeq 16S: Q37 70%, Q25 3.4%, Q11 1.7%, every other column under
+/// 1% except near Q37). An anchor's rate is read from its column alone.
+///
+/// Returns `(key, message)` warnings, or an error when the model cannot be built:
+///
+/// - **Error:** an anchor strictly inside the observed range has no
+///   observations at all. Every interpolation segment touching it is skipped,
+///   so rates across the gap become `min_error_rate`, and the whole model when
+///   every segment is affected (#263). R returns `NA` there, or stops.
+/// - **Warning** (R `makeBinnedQualErrfun`, #208): the observed minimum or
+///   maximum is not an anchor.
+/// - **Warning** (dada2-rs only, #263): an anchor in the observed range holds
+///   less mass than a non-anchor column within two qualities of it. A real
+///   bin is a local spike; an anchor beside a heavier column is almost
+///   certainly a mis-stated bin, its rate rests on a handful of transitions,
+///   and the model is likely wrong. R builds the same model silently.
+///
+/// Anchors outside the observed range are silent: NovaSeq's documented Q2 bin
+/// is routinely empty after trimming, and the flat fill below the lowest
+/// observed anchor is the intended behaviour.
+fn check_binned_anchors(
+    col_totals: &[f64],
+    binned_quals: &[f64],
+    qmin: f64,
+    qmax: f64,
+) -> Result<Vec<(String, String)>, String> {
+    let is_anchor = |q: f64| binned_quals.iter().any(|&b| (b - q).abs() < 1e-9);
+    let mass = |q: f64| {
+        let i = q as usize;
+        if q >= 0.0 && i < col_totals.len() {
+            col_totals[i]
+        } else {
+            0.0
+        }
+    };
+    let total: f64 = col_totals.iter().sum();
+    let pct = |m: f64| 100.0 * m / total;
+    let list = |qs: &[f64]| {
+        qs.iter()
+            .map(|q| format!("Q{q}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let bins = binned_quals
+        .iter()
+        .map(|b| format!("{b}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let observed: Vec<f64> = (0..col_totals.len())
+        .map(|i| i as f64)
+        .filter(|&q| mass(q) > 0.0)
+        .collect();
+
+    let empty_inside: Vec<f64> = binned_quals
+        .iter()
+        .copied()
+        .filter(|&b| b > qmin && b < qmax && mass(b) == 0.0)
+        .collect();
+    if !empty_inside.is_empty() {
+        return Err(format!(
+            "binned values {} lie inside the observed quality range (Q{qmin}-Q{qmax}) \
+             but have no observations, so the fit cannot interpolate across them. \
+             The bin set ({bins}) probably does not match the data, which has \
+             qualities {}; `summary --report` lists the bins present.",
+            list(&empty_inside),
+            list(&observed),
+        ));
+    }
+
+    let mut warnings = Vec::new();
+    for (label, q) in [("minimum", qmin), ("maximum", qmax)] {
+        if !is_anchor(q) {
+            warnings.push((
+                format!("{label}-not-anchor"),
+                format!(
+                    "{label} observed quality Q{q} is not one of the supplied binned values \
+                     ({bins}); the outermost interpolation anchor on that side has no \
+                     observations behind it. Check the bin set against the whole run rather \
+                     than a few samples -- `summary --report` reports what is present in the \
+                     data it was given."
+                ),
+            ));
+        }
+    }
+    for &b in binned_quals.iter().filter(|&&b| b >= qmin && b <= qmax) {
+        let heavier = (1..=2)
+            .flat_map(|d| [b - d as f64, b + d as f64])
+            .filter(|&q| !is_anchor(q) && mass(q) > mass(b))
+            .max_by(|x, y| mass(*x).total_cmp(&mass(*y)));
+        if let Some(q) = heavier {
+            warnings.push((
+                format!("sparse-anchor-{b}"),
+                format!(
+                    "binned anchor Q{b} holds {:.3}% of transitions ({:.0}), less than \
+                     Q{q} nearby ({:.3}%). Real bins are mass spikes, so the anchors \
+                     ({bins}) probably do not match this data's bins, and THE ERROR MODEL \
+                     IS LIKELY WRONG: the rates at Q{b} rest on very few transitions. \
+                     `summary --report` lists the bins present.",
+                    pct(mass(b)),
+                    mass(b),
+                    pct(mass(q)),
+                ),
+            ));
+        }
+    }
+    Ok(warnings)
+}
+
+/// Print a binned-quality warning once per process. The errfun runs once per
+/// self-consistency iteration, and the same mis-stated bins would otherwise
+/// repeat every round with slightly different counts.
+fn warn_once(key: &str, message: &str) {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let mut seen = SEEN
+        .get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap();
+    if seen.insert(key.to_string()) {
+        eprintln!("dada2-rs: warning: {message}");
+    }
 }
 
 /// Estimate error rates for PacBio CCS data.
@@ -1012,6 +1127,95 @@ mod tests {
 
     /// Anchors must bracket the observed range; outside it is an error, matching
     /// R's two `stop()` cases rather than its warnings.
+    /// The case behind #263: NovaSeq bins (2,11,25,37) fitted with anchors that
+    /// bracket them but miss both interior bins. Every interpolation segment
+    /// touches an empty anchor, so every rate used to become `min_error_rate`
+    /// with no warning (R stops). It must error and name the empty anchors.
+    #[test]
+    fn binned_qual_errfun_errors_on_empty_interior_anchors() {
+        let nq = 41;
+        let qs: Vec<f64> = (0..nq).map(|i| i as f64).collect();
+        let tr = binned_trans(nq, &[2, 11, 25, 37]);
+        let e = binned_qual_errfun(&tr, &qs, &[2.0, 12.0, 23.0, 37.0], &LoessConfig::default())
+            .expect_err("anchors on empty columns must not build a model");
+        assert!(e.contains("Q12, Q23"), "{e}");
+        assert!(e.contains("Q2, Q11, Q25, Q37"), "{e}");
+    }
+
+    /// One empty interior anchor is enough, even where R would build: there,
+    /// R's flat fill overwrites the observed Q11 rate with Q25's.
+    #[test]
+    fn binned_qual_errfun_errors_on_one_sided_interior_gap() {
+        let nq = 41;
+        let qs: Vec<f64> = (0..nq).map(|i| i as f64).collect();
+        let tr = binned_trans(nq, &[11, 25, 37]);
+        let e = binned_qual_errfun(&tr, &qs, &[11.0, 20.0, 25.0, 37.0], &LoessConfig::default())
+            .expect_err("an empty anchor inside the observed range must error");
+        assert!(e.contains("Q20"), "{e}");
+    }
+
+    /// An empty anchor BELOW the observed range is normal (NovaSeq's Q2 after
+    /// trimming): no error, no warning, and the model equals the one fitted
+    /// without that anchor.
+    #[test]
+    fn binned_qual_errfun_allows_unobserved_outer_anchor() {
+        let nq = 41;
+        let qs: Vec<f64> = (0..nq).map(|i| i as f64).collect();
+        let tr = binned_trans(nq, &[11, 25, 37]);
+        let with_q2 =
+            binned_qual_errfun(&tr, &qs, &[2.0, 11.0, 25.0, 37.0], &LoessConfig::default())
+                .expect("an unobserved anchor below the data must fit");
+        let without =
+            binned_qual_errfun(&tr, &qs, &[11.0, 25.0, 37.0], &LoessConfig::default()).unwrap();
+        assert_eq!(with_q2, without);
+        let col_totals: Vec<f64> = (0..nq)
+            .map(|q| (0..16).map(|r| tr[r * nq + q] as f64).sum())
+            .collect();
+        let warnings =
+            check_binned_anchors(&col_totals, &[2.0, 11.0, 25.0, 37.0], 11.0, 37.0).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// Column totals shaped like real binned `trans`: spikes at the bins and a
+    /// thin smear of mean-quality columns between them.
+    fn binned_mass(nq: usize, bins: &[usize]) -> Vec<f64> {
+        let mut m = vec![0.0; nq];
+        let (lo, hi) = (bins[0], *bins.last().unwrap());
+        m[lo..=hi].fill(50.0);
+        for (i, &b) in bins.iter().enumerate() {
+            m[b] = 10_000.0 * (i + 1) as f64;
+        }
+        m
+    }
+
+    /// Correct anchors on smeared data: no warnings, including for the Q2
+    /// anchor below the data.
+    #[test]
+    fn binned_anchors_on_real_bins_are_silent() {
+        let m = binned_mass(41, &[11, 25, 37]);
+        let w = check_binned_anchors(&m, &[2.0, 11.0, 25.0, 37.0], 11.0, 37.0).unwrap();
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    /// The realistic #263 case: anchors 2,12,23,37 on NovaSeq bins. Q12 and Q23
+    /// are populated by averaged uniques, so nothing errors, but both anchors
+    /// sit beside a heavier true bin and must be named.
+    #[test]
+    fn binned_anchors_beside_heavier_bins_warn() {
+        let m = binned_mass(41, &[11, 25, 37]);
+        let w = check_binned_anchors(&m, &[2.0, 12.0, 23.0, 37.0], 11.0, 37.0).unwrap();
+        let keys: Vec<&str> = w.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"sparse-anchor-12"), "{keys:?}");
+        assert!(keys.contains(&"sparse-anchor-23"), "{keys:?}");
+        assert!(keys.contains(&"minimum-not-anchor"), "{keys:?}");
+        assert!(!keys.contains(&"sparse-anchor-37"), "{keys:?}");
+        let msg = &w.iter().find(|(k, _)| k == "sparse-anchor-12").unwrap().1;
+        assert!(
+            msg.contains("Q11 nearby") && msg.contains("LIKELY WRONG"),
+            "{msg}"
+        );
+    }
+
     #[test]
     fn binned_qual_errfun_errors_when_data_escapes_the_anchors() {
         let nq = 40;
