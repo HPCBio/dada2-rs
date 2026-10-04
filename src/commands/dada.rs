@@ -284,7 +284,6 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
     let t_start = std::time::Instant::now();
     let measure_level = resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution);
     check_input_paths("input", &input)?;
-    use std::collections::HashMap;
 
     let n_samples = input.len();
     check_sample_names(sample_names.as_deref(), n_samples)?;
@@ -296,44 +295,16 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         .build()
         .map_err(io::Error::other)?;
 
-    // ---- Per-sample dereplication (or load from derep/sample JSON) ----
-    // Phase timers (printed under --verbose): derep and merge are
-    // serial, so their share quantifies the single-threaded front of a
-    // pooled run vs the parallel `run_dada`.
-    // Load + dereplicate each sample concurrently. This is the serial
-    // single-threaded front of a pooled run; with many samples it adds
-    // up. A single sample's derep doesn't saturate many threads, so fan
-    // samples across the pool (up to `threads` at once, ~1 thread each)
-    // — across-sample concurrency fills cores best for this I/O+hash work.
-    // ---- Streaming per-sample dereplication + merge (issue #41) ----
-    // Load one sample's derep, fold it into the merged accumulator, then
-    // drop it — so all per-sample dereps are never resident at once. The
-    // previous path loaded every sample's derep up front (parallel) and
-    // held them all through the merge loop, which was the pooled peak
-    // (~all dereps + the accumulator coexisting). Folding into the shared
-    // accumulator must be serial anyway, and the load (derep) is a tiny
-    // fraction of pooled wall, so serializing the load is cheap. Fold
-    // order is sample index order (0..n) — identical to the old loop — so
-    // the merged table, and therefore every byte of output, is unchanged.
+    // ---- Streaming per-sample dereplication + merge (#41) ----
+    // Load one sample, fold it into the pool, drop it, so per-sample dereps
+    // are never all resident. Both steps are serial, unlike `run_dada`; they
+    // are timed apart for the phase report.
     let t_derep = std::time::Instant::now();
     let mut t_merge_acc = std::time::Duration::ZERO;
     let mut derep_cost = DerepLoadCost::default();
 
     let mut json_samples: Vec<Option<String>> = vec![None; n_samples];
-    let mut seq_to_merged: HashMap<Vec<u8>, usize> = HashMap::new();
-    let mut merged_seqs: Vec<Vec<u8>> = Vec::new();
-    // Per-position Phred SUM across samples, kept as integers (issue #39):
-    // per-sample Derep.quals are already u32 sums (#23), so the merge just
-    // adds them — u32 instead of f64 halves this accumulator (the largest
-    // merge intermediate). checked_add guards the (astronomically
-    // unlikely) overflow rather than silently wrapping.
-    let mut merged_qual_sum: Vec<Vec<u32>> = Vec::new();
-    let mut merged_total: Vec<u32> = Vec::new();
-    let mut local_to_merged: Vec<Vec<usize>> = Vec::with_capacity(n_samples);
-    // Per-sample local-unique read COUNTS — the only per-sample state the
-    // output phase needs (not quals/seqs). Building these here lets each
-    // full `derep` drop at the end of its loop iteration (issue #39/#41).
-    let mut sample_unique_counts: Vec<Vec<u32>> = Vec::with_capacity(n_samples);
+    let mut merged = derep::DerepPool::new();
 
     // (reads, uniques) per input, for `pipeline.inputs`. The unnamed
     // `[derep]` line is suppressed here: this is its named home.
@@ -349,37 +320,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         ));
 
         let t_m = std::time::Instant::now();
-        let mut local_map: Vec<usize> = Vec::with_capacity(derep.uniques.len());
-        let mut counts: Vec<u32> = Vec::with_capacity(derep.uniques.len());
-        for ((seq, count), qual) in derep.uniques.iter().zip(derep.quals.iter()) {
-            let count_u32 = *count as u32;
-            let mu = match seq_to_merged.get(seq) {
-                Some(&j) => {
-                    merged_total[j] += count_u32;
-                    // `qual` is already this unique's per-position Phred
-                    // sum; accumulate sums across samples.
-                    for (p, &q) in qual.iter().enumerate() {
-                        merged_qual_sum[j][p] = merged_qual_sum[j][p].checked_add(q).expect(
-                            "merged per-position Phred sum overflows u32 \
-                                     (pooled depth extreme); widen merged_qual_sum to u64",
-                        );
-                    }
-                    j
-                }
-                None => {
-                    let j = merged_seqs.len();
-                    seq_to_merged.insert(seq.clone(), j);
-                    merged_seqs.push(seq.clone());
-                    merged_qual_sum.push(qual.clone());
-                    merged_total.push(count_u32);
-                    j
-                }
-            };
-            local_map.push(mu);
-            counts.push(count_u32);
-        }
-        local_to_merged.push(local_map);
-        sample_unique_counts.push(counts);
+        merged.add(&derep);
         t_merge_acc += t_m.elapsed();
         // `derep` (this sample's full quals + seqs) drops here.
     }
@@ -399,7 +340,13 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
             rss_after_derep_merge / 1024
         );
     }
-    drop(seq_to_merged); // only used inside the merge loop; dead now
+    let derep::PooledDerep {
+        seqs: merged_seqs,
+        qual_sums: merged_qual_sum,
+        abundance: merged_total,
+        local_to_merged,
+        sample_counts: sample_unique_counts,
+    } = merged.finish();
 
     // Resolve sample names: CLI override > JSON-embedded > filename stem.
     let sample_names: Vec<String> = match sample_names {
@@ -448,59 +395,6 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
             io::ErrorKind::InvalidData,
             "All input FASTQ files contain no reads",
         ));
-    }
-
-    // ---- Order the pool by descending abundance (#219) ----
-    // R's `combineDereps2` ends with `ord <- order(derepCounts,
-    // decreasing=TRUE)`; the per-sample path in `derep.rs` already
-    // does the same, with a lexical tie-break, for the reason spelled
-    // out there: the DADA2 loop ASSUMES this ordering. `b_bud`'s scan
-    // is `for r in 1..` with the comment "r=0 is the center", and that
-    // is only true because cluster 0 holds every raw in derep order,
-    // so the most abundant lands at index 0 and `assign_center` then
-    // picks it. Neither R nor we move the centre into place -- the
-    // invariant is inherited from the input ordering.
-    //
-    // This merge built the pool in first-seen order, so the invariant
-    // did not hold and whatever occupied index 0 was PERMANENTLY
-    // unbuddable. On the pinned 95-sample PacBio run that was a
-    // 66,937-read organism: cluster 0's centre sat at position 10020,
-    // position 0 held that raw, and it appeared in none of the 2,818
-    // divisions. R calls it as its own ASV with 106,853 reads.
-    //
-    // Ordering also decides saturated births. 880 of 2,490 pooled
-    // MiSeq births resolve at pA = 0.00e0, where the tie-break is
-    // reads then position -- so matching R's order matters beyond the
-    // index-0 slot.
-    //
-    // The lexical tie-break mirrors `derep.rs`: R's uniques are built
-    // in lexical order and `order(decreasing=TRUE)` is stable, so
-    // equal-abundance uniques keep it.
-    {
-        let mut perm: Vec<usize> = (0..raw_inputs.len()).collect();
-        perm.sort_by(|&a, &b| {
-            raw_inputs[b]
-                .abundance
-                .cmp(&raw_inputs[a].abundance)
-                .then_with(|| raw_inputs[a].seq.cmp(&raw_inputs[b].seq))
-        });
-        let mut old_to_new = vec![0usize; perm.len()];
-        for (new_idx, &old_idx) in perm.iter().enumerate() {
-            old_to_new[old_idx] = new_idx;
-        }
-        let mut slots: Vec<Option<dada::RawInput>> = raw_inputs.into_iter().map(Some).collect();
-        raw_inputs = perm
-            .iter()
-            .map(|&old_idx| slots[old_idx].take().expect("permutation is a bijection"))
-            .collect();
-        // Every per-sample map indexes the merged pool, so it has to
-        // follow the permutation or the split-back silently attributes
-        // reads to the wrong sequence.
-        for local in local_to_merged.iter_mut() {
-            for mu in local.iter_mut() {
-                *mu = old_to_new[*mu];
-            }
-        }
     }
 
     // ---- Mark prior sequences ----

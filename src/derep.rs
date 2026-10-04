@@ -1,3 +1,7 @@
+//! Dereplication: one sample (R `derepFastq`) and a pool of samples (R
+//! `combineDereps2`, `R/multiSample.R`). Ported from DADA2 by Benjamin
+//! Callahan.
+
 use std::collections::HashMap;
 use std::io::{self, BufReader};
 
@@ -280,6 +284,154 @@ pub fn dereplicate<R: io::Read>(
     Ok(derep)
 }
 
+/// Folds per-sample dereplications into one pooled unique table for
+/// `dada-pooled` (R `combineDereps2`). Samples are added one at a time and can
+/// be dropped after [`DerepPool::add`], so only the accumulator and the sample
+/// being added are resident (#41).
+#[derive(Default)]
+pub struct DerepPool {
+    seq_to_merged: HashMap<Vec<u8>, usize>,
+    /// Merged uniques in first-seen order until [`DerepPool::finish`].
+    seqs: Vec<Vec<u8>>,
+    /// Per-position Phred sums, added as integers: per-sample quals are already
+    /// `u32` sums (#23), so `u32` halves the largest merge intermediate (#39).
+    qual_sums: Vec<Vec<u32>>,
+    abundance: Vec<u32>,
+    local_to_merged: Vec<Vec<usize>>,
+    sample_counts: Vec<Vec<u32>>,
+}
+
+/// The pooled unique table, most abundant first.
+pub struct PooledDerep {
+    /// Merged unique sequences.
+    pub seqs: Vec<Vec<u8>>,
+    /// Per-position Phred sums for each merged unique, across all samples.
+    pub qual_sums: Vec<Vec<u32>>,
+    /// Total reads of each merged unique, across all samples.
+    pub abundance: Vec<u32>,
+    /// Per sample, in the order added: each local unique's merged index.
+    pub local_to_merged: Vec<Vec<usize>>,
+    /// Per sample: each local unique's read count.
+    pub sample_counts: Vec<Vec<u32>>,
+}
+
+impl DerepPool {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fold one sample into the pool. Samples must be added in input order:
+    /// `PooledDerep::local_to_merged` is indexed by it.
+    pub fn add(&mut self, derep: &Derep) {
+        let mut local_map: Vec<usize> = Vec::with_capacity(derep.uniques.len());
+        let mut counts: Vec<u32> = Vec::with_capacity(derep.uniques.len());
+        for ((seq, count), qual) in derep.uniques.iter().zip(derep.quals.iter()) {
+            let count_u32 = *count as u32;
+            let mu = match self.seq_to_merged.get(seq) {
+                Some(&j) => {
+                    self.abundance[j] += count_u32;
+                    // `qual` is already this unique's per-position Phred
+                    // sum; accumulate sums across samples.
+                    for (p, &q) in qual.iter().enumerate() {
+                        self.qual_sums[j][p] = self.qual_sums[j][p].checked_add(q).expect(
+                            "merged per-position Phred sum overflows u32 \
+                                     (pooled depth extreme); widen DerepPool::qual_sums to u64",
+                        );
+                    }
+                    j
+                }
+                None => {
+                    let j = self.seqs.len();
+                    self.seq_to_merged.insert(seq.clone(), j);
+                    self.seqs.push(seq.clone());
+                    self.qual_sums.push(qual.clone());
+                    self.abundance.push(count_u32);
+                    j
+                }
+            };
+            local_map.push(mu);
+            counts.push(count_u32);
+        }
+        self.local_to_merged.push(local_map);
+        self.sample_counts.push(counts);
+    }
+
+    /// Merged uniques so far.
+    pub fn len(&self) -> usize {
+        self.seqs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.seqs.is_empty()
+    }
+
+    /// Reads pooled so far.
+    pub fn total_reads(&self) -> u32 {
+        self.abundance.iter().sum()
+    }
+
+    /// Order the pool by descending abundance and hand it over (#219).
+    ///
+    /// The DADA2 loop assumes the most abundant unique is at index 0: `b_bud`'s
+    /// scan is `for r in 1..` ("r=0 is the center"), which holds only because
+    /// cluster 0 starts with every raw in input order and `assign_center` picks
+    /// the most abundant. Neither R nor we move the centre into place. A pool
+    /// left in first-seen order made index 0 permanently unbuddable: a
+    /// 66,937-read organism on the pinned 95-sample PacBio run, which R calls
+    /// as its own ASV. Order also decides saturated births (pA = 0, 880 of
+    /// 2,490 pooled MiSeq births), where the tie-break is reads, then position.
+    ///
+    /// Ties are broken lexically. That matches `derepFastq` but not
+    /// `combineDereps2`, whose stable `order()` keeps first-seen order; #260
+    /// tracks whether to switch.
+    pub fn finish(self) -> PooledDerep {
+        let DerepPool {
+            seq_to_merged,
+            seqs,
+            qual_sums,
+            abundance,
+            mut local_to_merged,
+            sample_counts,
+        } = self;
+        drop(seq_to_merged);
+        let mut perm: Vec<usize> = (0..seqs.len()).collect();
+        perm.sort_by(|&a, &b| {
+            abundance[b]
+                .cmp(&abundance[a])
+                .then_with(|| seqs[a].cmp(&seqs[b]))
+        });
+        let mut old_to_new = vec![0usize; perm.len()];
+        for (new_idx, &old_idx) in perm.iter().enumerate() {
+            old_to_new[old_idx] = new_idx;
+        }
+        let mut seq_slots: Vec<Option<Vec<u8>>> = seqs.into_iter().map(Some).collect();
+        let mut qual_slots: Vec<Option<Vec<u32>>> = qual_sums.into_iter().map(Some).collect();
+        let seqs = perm
+            .iter()
+            .map(|&i| seq_slots[i].take().expect("permutation is a bijection"))
+            .collect();
+        let qual_sums = perm
+            .iter()
+            .map(|&i| qual_slots[i].take().expect("permutation is a bijection"))
+            .collect();
+        let abundance = perm.iter().map(|&i| abundance[i]).collect();
+        // Every per-sample map indexes the pool, so it has to follow the
+        // permutation or the split-back attributes reads to the wrong sequence.
+        for local in local_to_merged.iter_mut() {
+            for mu in local.iter_mut() {
+                *mu = old_to_new[*mu];
+            }
+        }
+        PooledDerep {
+            seqs,
+            qual_sums,
+            abundance,
+            local_to_merged,
+            sample_counts,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,5 +451,90 @@ mod tests {
         // ~46M reads of one unique at Q40 would land here; we fail loudly rather
         // than silently saturate to u32::MAX.
         checked_qual_sum(QUAL_SUM_MAX as f64 + 1.0);
+    }
+
+    /// A sample whose uniques carry a constant per-position quality sum, so
+    /// merged sums are easy to predict.
+    fn sample(uniques: &[(&str, u64, u32)]) -> Derep {
+        Derep {
+            uniques: uniques
+                .iter()
+                .map(|&(s, c, _)| (s.as_bytes().to_vec(), c))
+                .collect(),
+            quals: uniques.iter().map(|&(s, _, q)| vec![q; s.len()]).collect(),
+            map: Vec::new(),
+        }
+    }
+
+    fn pool(samples: &[Derep]) -> PooledDerep {
+        let mut pool = DerepPool::new();
+        for s in samples {
+            pool.add(s);
+        }
+        pool.finish()
+    }
+
+    /// #219: a unique that first appears late but is most abundant overall
+    /// must still land at index 0, where the DADA2 loop expects the centre.
+    #[test]
+    fn pooled_most_abundant_is_at_index_zero() {
+        let p = pool(&[
+            sample(&[("AAAA", 5, 10), ("CCCC", 1, 10)]),
+            sample(&[("GGGG", 4, 10), ("CCCC", 9, 10)]),
+        ]);
+        assert_eq!(p.seqs[0], b"CCCC");
+        assert_eq!(p.abundance, vec![10, 5, 4]);
+        assert_eq!(p.qual_sums[0], vec![20; 4]);
+    }
+
+    /// Each sample's map still points at the sequence it named, after the
+    /// reorder, and its counts are the sample's own, not the pooled total.
+    #[test]
+    fn pooled_sample_maps_follow_the_reorder() {
+        let samples = [
+            sample(&[("AAAA", 5, 10), ("CCCC", 1, 10)]),
+            sample(&[("GGGG", 4, 10), ("CCCC", 9, 10), ("TTTT", 2, 10)]),
+        ];
+        let p = pool(&samples);
+        for (s, derep) in samples.iter().enumerate() {
+            for (lu, (seq, count)) in derep.uniques.iter().enumerate() {
+                let mu = p.local_to_merged[s][lu];
+                assert_eq!(&p.seqs[mu], seq);
+                assert_eq!(p.sample_counts[s][lu] as u64, *count);
+            }
+        }
+    }
+
+    /// The pooled table does not depend on the order samples are added in.
+    #[test]
+    fn pooled_table_is_independent_of_fold_order() {
+        let a = sample(&[("AAAA", 5, 10), ("CCCC", 1, 7)]);
+        let b = sample(&[("GGGG", 4, 3), ("CCCC", 9, 11), ("TTTT", 2, 5)]);
+        let ab = pool(&[a, b]);
+        let a = sample(&[("AAAA", 5, 10), ("CCCC", 1, 7)]);
+        let b = sample(&[("GGGG", 4, 3), ("CCCC", 9, 11), ("TTTT", 2, 5)]);
+        let ba = pool(&[b, a]);
+        assert_eq!(ab.seqs, ba.seqs);
+        assert_eq!(ab.abundance, ba.abundance);
+        assert_eq!(ab.qual_sums, ba.qual_sums);
+    }
+
+    /// PROVISIONAL: pins the current lexical tie-break so the move into the
+    /// library is checked. R's `combineDereps2` keeps first-seen order instead;
+    /// if #260 adopts that, this test changes with it.
+    #[test]
+    fn pooled_ties_are_broken_lexically() {
+        let p = pool(&[
+            sample(&[("TTTT", 3, 10), ("GGGG", 2, 10)]),
+            sample(&[("AAAA", 3, 10), ("CCCC", 2, 10)]),
+        ]);
+        let order: Vec<&[u8]> = p.seqs.iter().map(|s| s.as_slice()).collect();
+        assert_eq!(order, [&b"AAAA"[..], b"TTTT", b"CCCC", b"GGGG"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "overflows u32")]
+    fn pooled_qual_sum_overflow_panics() {
+        pool(&[sample(&[("AAAA", 1, u32::MAX)]), sample(&[("AAAA", 1, 1)])]);
     }
 }
