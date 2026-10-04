@@ -104,7 +104,7 @@ ERRFUN="${ERRFUN:-loess}"
 #   --errfun binned-qual  requires --binned-quals with the run's ACTUAL bins, read
 #                         from `dada2-rs summary --report` (NovaSeq: 2,11,25,37;
 #                         MiSeq i100: 12,24,38). Anchors that miss them can
-#                         silently zero the model (#263).
+#                         silently corrupt the model (#263).
 #   --errfun external     requires --errfun-cmd "..."
 # e.g. ERRFUN=binned-qual ERRFUN_ARGS='--binned-quals 2,11,25,37'   # NovaSeq
 ERRFUN_ARGS="${ERRFUN_ARGS:-}"

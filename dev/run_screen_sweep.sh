@@ -169,7 +169,7 @@ ERRFUN="${ERRFUN:-loess}"
 # Companion flags for errfuns that need them, e.g. for NovaSeq bins
 #   ERRFUN=binned-qual ERRFUN_ARGS='--binned-quals 2,11,25,37'
 # Use the run's actual bins from `summary --report`; anchors that miss them can
-# silently zero the model (#263).
+# silently corrupt the model (#263).
 ERRFUN_ARGS="${ERRFUN_ARGS:-}"
 
 # Denoising mode, passed to run_illumina.sh: unset/false = per-sample `dada`,
