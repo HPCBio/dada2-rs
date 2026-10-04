@@ -105,7 +105,8 @@ case. See [Binned quality scores](../findings/binned-quality.md).
 with `--errfun noqual`.
 
 **`--binned-quals`** — comma-separated anchor quality values for piecewise-linear
-interpolation, e.g. `0,10,20,30,40`. Only used with `--errfun binned-qual`.
+interpolation: the run's actual bins, e.g. `2,11,25,37` for NovaSeq. Only used
+with `--errfun binned-qual`.
 
 !!! tip "Observed bins can be narrower than the instrument's documented ones"
     `summary --report` tells you which quality values are *present in your data*,
@@ -114,14 +115,29 @@ interpolation, e.g. `0,10,20,30,40`. Only used with `--errfun binned-qual`.
     removed by trimming or `--trunc-q`, so a trimmed dataset commonly shows only
     **11, 25, 37**.
 
-    Either set works. An anchor with no observations behind it contributes
-    nothing — the interpolation segment that would need it is skipped and the
-    values below the lowest *observed* anchor are flat-filled, so on one NovaSeq
-    soil dataset `2,11,25,37` and `11,25,37` produce **bit-identical** error
-    matrices.
+    Either set works. An anchor with no observations **below or above** the
+    observed range contributes nothing — the interpolation segment that would
+    need it is skipped and the values beyond the lowest or highest *observed*
+    anchor are flat-filled, so on one NovaSeq soil dataset `2,11,25,37` and
+    `11,25,37` produce **bit-identical** error matrices.
 
-    What matters is that the anchors **bracket** the observed range: a quality
-    score outside them is an error, not a warning, and the same is true in R.
+    Two things are errors, not warnings:
+
+    - a quality score outside the anchors (the same in R);
+    - an anchor **inside** the observed range with no observations at all.
+      Every segment touching it is skipped, so the model has no rate there.
+
+    Mis-stated bins rarely leave an anchor completely empty. Transitions are
+    indexed by each unique's *mean* quality, so binned reads leave mass spikes
+    at the true bins and a thin smear of averaged qualities between them, and
+    a wrong anchor lands in the smear. It still fits, from a handful of
+    transitions, and the model is badly wrong: on NovaSeq 16S, `2,12,23,37`
+    put more than half the error rates at the `1e-7` floor. R builds the same
+    model silently. dada2-rs warns, once per run, when an anchor holds less
+    mass than a non-anchor quality within two of it, and names both
+    ([#263](https://github.com/HPCBio/dada2-rs/issues/263)). Treat that warning
+    as a wrong bin set. To fit a deliberately different scheme, use
+    `--errfun external`.
 
 **`--errfun-cmd`** — command to invoke for `--errfun external`. Whitespace-split
 into argv; the trans-input and err-output file paths are appended as the final
