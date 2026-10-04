@@ -166,8 +166,10 @@ ERR_DIR="${ERR_DIR:-}"
 # ITS2) may want `binned-qual`. Holding it fixed is what keeps this a screen
 # comparison rather than a screen-and-errfun comparison.
 ERRFUN="${ERRFUN:-loess}"
-# Companion flags for errfuns that need them, e.g.
-#   ERRFUN=binned-qual ERRFUN_ARGS='--binned-quals 2,12,23,37'
+# Companion flags for errfuns that need them, e.g. for NovaSeq bins
+#   ERRFUN=binned-qual ERRFUN_ARGS='--binned-quals 2,11,25,37'
+# Use the run's actual bins from `summary --report`; anchors that miss them can
+# silently zero the model (#263).
 ERRFUN_ARGS="${ERRFUN_ARGS:-}"
 
 # Denoising mode, passed to run_illumina.sh: unset/false = per-sample `dada`,
