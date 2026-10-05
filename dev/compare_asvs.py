@@ -87,6 +87,12 @@ def _load_one_json(path, acc, per_sample=False):
         d = json.load(fh)
     tag = d.get("dada2_rs_command") if isinstance(d, dict) else None
 
+    # dada-pooled --pooled-record (`_pooled.json`) sits beside the per-sample
+    # JSONs and repeats their ASVs at pooled abundance; counting it too would
+    # double every abundance.
+    if tag == "dada-pooled-record":
+        return None
+
     if tag in ("dada", "dada-pooled"):
         smp = (d.get("sample") or os.path.basename(path)) if per_sample else None
         for a in d.get("asvs", []):
@@ -145,9 +151,14 @@ def load_run(path, per_sample=False):
             if f.endswith(".gz"):
                 raise ValueError(f"{f}: gzipped input not supported; gunzip first")
             kinds.add(_load_one_json(f, acc, per_sample))
+        kinds.discard(None)
+        if not kinds:
+            raise ValueError(f"{path}: directory holds only a --pooled-record, no per-sample JSONs")
         kind = kinds.pop() if len(kinds) == 1 else "mixed"
     else:
         kind = _load_one_json(path, acc, per_sample)
+        if kind is None:
+            raise ValueError(f"{path}: a --pooled-record; pass the directory of per-sample JSONs instead")
     return acc, kind
 
 
