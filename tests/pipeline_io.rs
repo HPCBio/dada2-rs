@@ -329,3 +329,77 @@ fn dada_cluster_trace_uses_output_sample_name() {
         assert_eq!(read(&trace)["sample"], expected);
     }
 }
+
+/// `--sample-names` is comma-separated on every subcommand that takes it, as
+/// on dada-pooled. make-sequence-table and merge-pairs used to take a
+/// space-separated list, so a comma list became one name and failed the
+/// length check.
+#[test]
+fn sample_names_are_comma_separated() {
+    let dir = scratch("sample_names_commas");
+    let err = err_model();
+    let (f1, r1) = (fixture("sam1F.fastq.gz"), fixture("sam1R.fastq.gz"));
+    let (f2, r2) = (fixture("sam2F.fastq.gz"), fixture("sam2R.fastq.gz"));
+    let dada = |inp: &Path, out: &Path| {
+        run(&[
+            "dada",
+            inp.to_str().unwrap(),
+            "--error-model",
+            err.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+    };
+    let j = |n: &str| dir.join(n);
+    for (inp, out) in [
+        (&f1, "f1.json"),
+        (&r1, "r1.json"),
+        (&f2, "f2.json"),
+        (&r2, "r2.json"),
+    ] {
+        dada(inp, &j(out));
+    }
+    let samples = |p: &Path, key: &str| -> Vec<String> {
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
+        v["samples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().or(s[key].as_str()).unwrap().to_string())
+            .collect()
+    };
+
+    let seqtab = j("seqtab.json");
+    run(&[
+        "make-sequence-table",
+        "--sample-names",
+        "A,B",
+        "-o",
+        seqtab.to_str().unwrap(),
+        j("f1.json").to_str().unwrap(),
+        j("f2.json").to_str().unwrap(),
+    ]);
+    assert_eq!(samples(&seqtab, "sample"), ["A", "B"]);
+
+    let merged = j("merged.json");
+    run(&[
+        "merge-pairs",
+        "--fwd-dada",
+        j("f1.json").to_str().unwrap(),
+        j("f2.json").to_str().unwrap(),
+        "--rev-dada",
+        j("r1.json").to_str().unwrap(),
+        j("r2.json").to_str().unwrap(),
+        "--fwd-fastq",
+        f1.to_str().unwrap(),
+        f2.to_str().unwrap(),
+        "--rev-fastq",
+        r1.to_str().unwrap(),
+        r2.to_str().unwrap(),
+        "--sample-names",
+        "A,B",
+        "-o",
+        merged.to_str().unwrap(),
+    ]);
+    assert_eq!(samples(&merged, "sample"), ["A", "B"]);
+}

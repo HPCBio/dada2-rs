@@ -14,7 +14,8 @@ assembles a flat count matrix, samples × sequences.
 
 **`<INPUT>...`** — `dada` or `merge-pairs` JSON files.
 
-**`--sample-names`** — sample name for each input file. Only applies to
+**`--sample-names`** — comma-separated sample names, one per input file, in
+input order. Only applies to
 single-sample `dada` files; `merge-pairs` files carry sample names internally.
 If provided, the length must match the number of inputs.
 

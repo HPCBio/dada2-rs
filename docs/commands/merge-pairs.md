@@ -31,8 +31,8 @@ overlap length, mismatches and indels.
 **`--fwd-fastq`** / **`--rev-fastq`** (both required) — the FASTQ files those
 dada runs came from, re-dereplicated here to recover the read → unique map.
 
-**`--sample-names`** — override sample names; defaults to the `--fwd-dada`
-filename stems.
+**`--sample-names`** — comma-separated sample names, one per input set, in
+`--fwd-dada` order; defaults to the `--fwd-dada` filename stems.
 
 **`--phred-offset`** — 33 for Sanger / Illumina 1.8+, 64 for Illumina 1.3–1.7.
 
