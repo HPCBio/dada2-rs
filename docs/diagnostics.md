@@ -1086,6 +1086,12 @@ them; [How large the floor is,
 measured](findings/r-parity-floor-and-ceiling.md#how-large-the-floor-is-measured)
 has the results so far.
 
+Pool order, the other ordering that tie-breaks see, is a `dada-pooled` flag
+rather than a gate: see [`--pool-tiebreak`](commands/dada-pooled.md#denoising-alignment-screening).
+`dev/run_pool_tiebreak.sh` runs both of its values with `--pooled-record`;
+given that record, `dev/compare_member_order.py` compares births by sequence,
+since pool position differs between the two by construction.
+
 ### If you add or rename a gate
 
 Add it to `KNOWN` in `src/gates.rs`, or the run will warn about a variable that

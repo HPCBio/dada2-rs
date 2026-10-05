@@ -19,15 +19,22 @@ Exit status is 0 when the matrices are identical, 1 otherwise, so it can gate CI
 
 import argparse
 import json
+import re
 import sys
 
 
-def load(path):
-    """Return {sample: {sequence: count}} from a seqtab JSON."""
+def load(path, strip=None):
+    """Return {sample: {sequence: count}} from a seqtab JSON. `strip` is a
+    regex removed from each sample name, e.g. R's per-direction tables name
+    samples by file (`F3D0F.fastq.gz`) where ours use the stem."""
     j = json.load(open(path))
     samples, seqs, counts = j["samples"], j["sequences"], j["counts"]
     if len(counts) != len(samples):
         sys.exit(f"{path}: {len(counts)} count rows for {len(samples)} samples")
+    if strip:
+        samples = [re.sub(strip, "", x) for x in samples]
+        if len(set(samples)) != len(samples):
+            sys.exit(f"{path}: --strip-sample-suffix {strip!r} makes sample names collide")
     out = {}
     for s, row in zip(samples, counts):
         if len(row) != len(seqs):
@@ -44,9 +51,12 @@ def main():
     ap.add_argument("b")
     ap.add_argument("--label-a", default="A")
     ap.add_argument("--label-b", default="B")
+    ap.add_argument("--strip-sample-suffix", metavar="REGEX",
+                    help="remove this regex from every sample name on both sides, "
+                         "e.g. '[FR]\\.fastq\\.gz$' for R's per-direction tables")
     args = ap.parse_args()
 
-    A, B = load(args.a), load(args.b)
+    A, B = load(args.a, args.strip_sample_suffix), load(args.b, args.strip_sample_suffix)
     la, lb = args.label_a, args.label_b
 
     ok = True
@@ -65,6 +75,14 @@ def main():
              else f"  (only_{la}={len(asvs_a-asvs_b)} only_{lb}={len(asvs_b-asvs_a)})"))
     if asvs_a != asvs_b:
         ok = False
+
+    if not shared_samples:
+        # Without this, the cell line below reads "0 of 0 cells differ; L1 = 0",
+        # which looks like agreement when nothing was compared.
+        print("count matrix: NOT COMPARED -- the two tables share no sample names "
+              "(try --strip-sample-suffix)")
+        print("==> DIFFERS")
+        return 1
 
     # The count axis, cell by cell.
     diff_cells = 0

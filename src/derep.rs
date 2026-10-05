@@ -284,6 +284,28 @@ pub fn dereplicate<R: io::Read>(
     Ok(derep)
 }
 
+/// How [`DerepPool::finish`] breaks abundance ties (#260), selected by
+/// `dada-pooled --pool-tiebreak` and recorded in its output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PoolTiebreak {
+    /// First appearance across inputs, in the order given, as R's `combineDereps2`
+    #[default]
+    FirstSeen,
+    /// By sequence, independent of input order (the default before #260)
+    Lexical,
+}
+
+impl PoolTiebreak {
+    /// The value as written on the command line.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FirstSeen => "first-seen",
+            Self::Lexical => "lexical",
+        }
+    }
+}
+
 /// Folds per-sample dereplications into one pooled unique table for
 /// `dada-pooled` (R `combineDereps2`). Samples are added one at a time and can
 /// be dropped after [`DerepPool::add`], so only the accumulator and the sample
@@ -381,10 +403,10 @@ impl DerepPool {
     /// as its own ASV. Order also decides saturated births (pA = 0, 880 of
     /// 2,490 pooled MiSeq births), where the tie-break is reads, then position.
     ///
-    /// Ties are broken lexically. That matches `derepFastq` but not
-    /// `combineDereps2`, whose stable `order()` keeps first-seen order; #260
-    /// tracks whether to switch.
-    pub fn finish(self) -> PooledDerep {
+    /// Ties follow `tiebreak`. R's `combineDereps2` keeps first-seen order
+    /// (its `order()` is stable), so [`PoolTiebreak::FirstSeen`] matches R and
+    /// makes the result depend on input order, as R's does (#260).
+    pub fn finish(self, tiebreak: PoolTiebreak) -> PooledDerep {
         let DerepPool {
             seq_to_merged,
             seqs,
@@ -395,10 +417,14 @@ impl DerepPool {
         } = self;
         drop(seq_to_merged);
         let mut perm: Vec<usize> = (0..seqs.len()).collect();
+        // `sort_by` is stable, so `FirstSeen` keeps the pool's first-seen order
+        // among equal abundances.
         perm.sort_by(|&a, &b| {
-            abundance[b]
-                .cmp(&abundance[a])
-                .then_with(|| seqs[a].cmp(&seqs[b]))
+            let by_abundance = abundance[b].cmp(&abundance[a]);
+            match tiebreak {
+                PoolTiebreak::Lexical => by_abundance.then_with(|| seqs[a].cmp(&seqs[b])),
+                PoolTiebreak::FirstSeen => by_abundance,
+            }
         });
         let mut old_to_new = vec![0usize; perm.len()];
         for (new_idx, &old_idx) in perm.iter().enumerate() {
@@ -467,11 +493,15 @@ mod tests {
     }
 
     fn pool(samples: &[Derep]) -> PooledDerep {
+        pool_with(samples, PoolTiebreak::FirstSeen)
+    }
+
+    fn pool_with(samples: &[Derep], tiebreak: PoolTiebreak) -> PooledDerep {
         let mut pool = DerepPool::new();
         for s in samples {
             pool.add(s);
         }
-        pool.finish()
+        pool.finish(tiebreak)
     }
 
     /// #219: a unique that first appears late but is most abundant overall
@@ -505,7 +535,9 @@ mod tests {
         }
     }
 
-    /// The pooled table does not depend on the order samples are added in.
+    /// Abundances and quality sums do not depend on the order samples are added
+    /// in, and neither does the order when no abundances tie. (Ties follow
+    /// input order under `first-seen`; see the test below.)
     #[test]
     fn pooled_table_is_independent_of_fold_order() {
         let a = sample(&[("AAAA", 5, 10), ("CCCC", 1, 7)]);
@@ -519,17 +551,65 @@ mod tests {
         assert_eq!(ab.qual_sums, ba.qual_sums);
     }
 
-    /// PROVISIONAL: pins the current lexical tie-break so the move into the
-    /// library is checked. R's `combineDereps2` keeps first-seen order instead;
-    /// if #260 adopts that, this test changes with it.
+    /// The `lexical` arm: ties by sequence, whatever the input order. Default
+    /// before #260.
     #[test]
-    fn pooled_ties_are_broken_lexically() {
+    fn pooled_lexical_arm_breaks_ties_by_sequence() {
+        let p = pool_with(
+            &[
+                sample(&[("TTTT", 3, 10), ("GGGG", 2, 10)]),
+                sample(&[("AAAA", 3, 10), ("CCCC", 2, 10)]),
+            ],
+            PoolTiebreak::Lexical,
+        );
+        let order: Vec<&[u8]> = p.seqs.iter().map(|s| s.as_slice()).collect();
+        assert_eq!(order, [&b"AAAA"[..], b"TTTT", b"CCCC", b"GGGG"]);
+    }
+
+    /// Unset means `first-seen` (#260): the default `pool()` keeps input order
+    /// among ties.
+    #[test]
+    fn pooled_default_breaks_ties_in_first_seen_order() {
         let p = pool(&[
             sample(&[("TTTT", 3, 10), ("GGGG", 2, 10)]),
             sample(&[("AAAA", 3, 10), ("CCCC", 2, 10)]),
         ]);
         let order: Vec<&[u8]> = p.seqs.iter().map(|s| s.as_slice()).collect();
-        assert_eq!(order, [&b"AAAA"[..], b"TTTT", b"CCCC", b"GGGG"]);
+        assert_eq!(order, [&b"TTTT"[..], b"AAAA", b"GGGG", b"CCCC"]);
+    }
+
+    /// R's `combineDereps2` rule: ties keep first appearance across samples,
+    /// in input order, so reversing the samples reverses the tied pair.
+    #[test]
+    fn pooled_first_seen_ties_follow_input_order() {
+        let a = || sample(&[("TTTT", 3, 10), ("GGGG", 2, 10)]);
+        let b = || sample(&[("AAAA", 3, 10), ("CCCC", 2, 10)]);
+        let seqs = |p: PooledDerep| -> Vec<Vec<u8>> { p.seqs };
+        let ab = seqs(pool_with(&[a(), b()], PoolTiebreak::FirstSeen));
+        let ba = seqs(pool_with(&[b(), a()], PoolTiebreak::FirstSeen));
+        let s = |v: &[&str]| -> Vec<Vec<u8>> { v.iter().map(|x| x.as_bytes().to_vec()).collect() };
+        assert_eq!(ab, s(&["TTTT", "AAAA", "GGGG", "CCCC"]));
+        assert_eq!(ba, s(&["AAAA", "TTTT", "CCCC", "GGGG"]));
+    }
+
+    /// The tie-break never overrides abundance: index 0 is the most abundant
+    /// under either rule (#219).
+    #[test]
+    fn pooled_first_seen_keeps_most_abundant_first() {
+        let p = pool_with(
+            &[
+                sample(&[("AAAA", 5, 10), ("CCCC", 1, 10)]),
+                sample(&[("GGGG", 4, 10), ("CCCC", 9, 10)]),
+            ],
+            PoolTiebreak::FirstSeen,
+        );
+        assert_eq!(p.seqs[0], b"CCCC");
+        assert_eq!(p.abundance, vec![10, 5, 4]);
+    }
+
+    #[test]
+    fn pool_tiebreak_defaults_to_first_seen() {
+        assert_eq!(PoolTiebreak::default(), PoolTiebreak::FirstSeen);
     }
 
     #[test]
