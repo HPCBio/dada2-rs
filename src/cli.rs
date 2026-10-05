@@ -707,7 +707,7 @@ pub struct DadaPooledArgs {
     #[arg(required = true, help_heading = H_INPUT)]
     pub input: Vec<PathBuf>,
 
-    /// Sample names, one per input [default: input filename stems]
+    /// Comma-separated sample names, one per input [default: input filename stems]
     #[arg(long, value_delimiter = ',', help_heading = H_INPUT)]
     pub sample_names: Option<Vec<String>>,
 
@@ -797,7 +797,7 @@ pub struct DadaPseudoArgs {
     #[arg(required = true, help_heading = H_INPUT)]
     pub input: Vec<PathBuf>,
 
-    /// Sample names, one per input [default: input filename stems]
+    /// Comma-separated sample names, one per input [default: input filename stems]
     #[arg(long, value_delimiter = ',', help_heading = H_INPUT)]
     pub sample_names: Option<Vec<String>>,
 
@@ -899,8 +899,8 @@ pub struct MergePairsArgs {
     #[arg(long, required = true, num_args = 1.., help_heading = H_INPUT)]
     pub rev_fastq: Vec<PathBuf>,
 
-    /// Sample names, one per input set [default: --fwd-dada filename stems]
-    #[arg(long, num_args = 1.., help_heading = H_INPUT)]
+    /// Comma-separated sample names, one per input set [default: --fwd-dada stems]
+    #[arg(long, value_delimiter = ',', help_heading = H_INPUT)]
     pub sample_names: Option<Vec<String>>,
 
     /// Phred offset for FASTQ re-dereplication
@@ -1171,8 +1171,8 @@ pub struct MakeSequenceTableArgs {
     #[arg(required = true, help_heading = H_INPUT)]
     pub input: Vec<PathBuf>,
 
-    /// Sample name per input file; single-sample `dada` files only
-    #[arg(long, num_args = 1.., help_heading = H_INPUT)]
+    /// Comma-separated sample names, one per input; single-sample `dada` files only
+    #[arg(long, value_delimiter = ',', help_heading = H_INPUT)]
     pub sample_names: Vec<String>,
 
     /// Discard ASVs shorter than this length (inclusive)
