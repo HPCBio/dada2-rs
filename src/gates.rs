@@ -225,10 +225,10 @@ pub fn warn_result_changing() -> usize {
         warnings += 1;
     }
     let tiebreak = crate::derep::pool_tiebreak();
-    if tiebreak != crate::derep::PoolTiebreak::Lexical {
+    if tiebreak != crate::derep::PoolTiebreak::FirstSeen {
         eprintln!(
             "[dada] WARNING: DADA2RS_POOL_TIEBREAK={} is an experimental arm that \
-             CHANGES dada-pooled RESULTS (#260).",
+             CHANGES dada-pooled RESULTS.\n[dada]          Output is not R-equivalent (#260).",
             tiebreak.label()
         );
         warnings += 1;
@@ -310,7 +310,7 @@ pub fn report() -> Vec<String> {
         Resolved {
             label: "pool tiebreak",
             value: crate::derep::pool_tiebreak().label().into(),
-            default: crate::derep::pool_tiebreak() == crate::derep::PoolTiebreak::Lexical,
+            default: crate::derep::pool_tiebreak() == crate::derep::PoolTiebreak::FirstSeen,
         },
         Resolved {
             label: "par grain",

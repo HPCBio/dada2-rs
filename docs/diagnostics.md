@@ -1092,11 +1092,13 @@ matters wherever a birth saturates at `pA = 0` and position decides it:
 
 | value | pooled ties ordered by |
 |---|---|
-| `lexical` (default, or unset) | sequence, as `derepFastq` orders one sample |
-| `first-seen` | first appearance across samples in input order, as R's `combineDereps2` does |
+| `first-seen` (default, or unset) | first appearance across samples in input order, as R's `combineDereps2` does |
+| `lexical` | sequence, as `derepFastq` orders one sample; the default before #260 |
 
-Under `first-seen`, results depend on the order samples are given, so match the
-R run's input order when comparing. The default prints nothing; `first-seen`
+Under `first-seen`, results depend on the order samples are given, as R's do,
+so match the R run's input order when comparing. On the #260 A/B against R it
+gave the identical pooled ASV set on MiSeq and NovaSeq ITS2, both reads, where
+`lexical` differed by up to 12 ASVs. The default prints nothing; `lexical`
 warns like any result-changing arm. `dev/run_pool_tiebreak.sh` runs both arms
 with `--pooled-record`. Given that record, `dev/compare_member_order.py`
 compares births by sequence rather than by pool position, which differs between

@@ -17,7 +17,12 @@ Peak memory is driven by the merged unique table rather than any single sample.
 
 ## Input
 
-**`<INPUT>...`** — FASTQ or derep/sample JSON files, one per sample.
+**`<INPUT>...`** — FASTQ or derep/sample JSON files, one per sample. Their
+order matters, as it does in R: equal-abundance uniques in the merged table
+keep the order they first appear in across the inputs (R's `combineDereps2`),
+and that order can decide which of two tied variants names an ASV. To compare
+with an R run, give the files in the order R received them
+([#260](https://github.com/HPCBio/dada2-rs/issues/260)).
 
 **`--sample-names`** — comma-separated, one per input. Defaults to filename
 stems.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_pool_tiebreak.sh — run one pooled dataset under both DADA2RS_POOL_TIEBREAK
-# arms (issue #260): `lexical` (current default) and `first-seen` (R's
-# combineDereps2 rule).
+# arms (issue #260): `first-seen` (R's combineDereps2 rule, the default since
+# #260) and `lexical` (the earlier default).
 #
 # Under `first-seen`, ties among equal-abundance pooled uniques keep their order
 # of first appearance across samples, in INPUT ORDER. To compare against an R
