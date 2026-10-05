@@ -356,3 +356,74 @@ fn asv_set_ordered(path: &Path) -> Vec<i64> {
         .map(|a| a["abundance"].as_i64().unwrap())
         .collect()
 }
+
+/// `--pool-tiebreak` (#260): `first-seen`, the default, makes pool order follow
+/// input order, as R's `combineDereps2` does; `lexical` makes it independent of
+/// input order. Each output records the rule and its sample's input position,
+/// and `--pooled-record` lists the inputs in order, so a run can be reproduced.
+#[test]
+fn pool_tiebreak_records_order_and_rule() {
+    let dir = scratch("pool_tiebreak");
+    let err = err_model();
+    let (s1, s2) = (fixture("sam1F.fastq.gz"), fixture("sam2F.fastq.gz"));
+    let pooled = |tag: &str, inputs: [&Path; 2], extra: &[&str]| -> serde_json::Value {
+        let out = dir.join(tag);
+        let rec = dir.join(format!("{tag}.pooled.json"));
+        let mut args = vec![
+            "dada-pooled",
+            "--error-model",
+            err.to_str().unwrap(),
+            "--output-dir",
+            out.to_str().unwrap(),
+            "--pooled-record",
+            rec.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        args.extend(inputs.iter().map(|p| p.to_str().unwrap()));
+        run(&args);
+        serde_json::from_slice(&std::fs::read(rec).unwrap()).unwrap()
+    };
+    let order = |rec: &serde_json::Value| -> Vec<String> {
+        rec["uniques"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["sequence"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let fwd = pooled("fs_fwd", [&s1, &s2], &[]);
+    let rev = pooled("fs_rev", [&s2, &s1], &[]);
+    assert_eq!(fwd["pool_tiebreak"], "first-seen");
+    assert_ne!(
+        order(&fwd),
+        order(&rev),
+        "first-seen must follow input order"
+    );
+    let inputs: Vec<&str> = fwd["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["sample"].as_str().unwrap())
+        .collect();
+    assert_eq!(inputs, ["sam1F", "sam2F"]);
+
+    let lex_fwd = pooled("lex_fwd", [&s1, &s2], &["--pool-tiebreak", "lexical"]);
+    let lex_rev = pooled("lex_rev", [&s2, &s1], &["--pool-tiebreak", "lexical"]);
+    assert_eq!(lex_fwd["pool_tiebreak"], "lexical");
+    assert_eq!(
+        order(&lex_fwd),
+        order(&lex_rev),
+        "lexical must not depend on input order"
+    );
+
+    // Per-sample outputs carry the rule and their position in the input order.
+    for (sample, index) in [("sam2F", 0), ("sam1F", 1)] {
+        let v: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.join("fs_rev").join(format!("{sample}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["params"]["pool_tiebreak"], "first-seen");
+        assert_eq!(v["pool_input_index"], index);
+    }
+}

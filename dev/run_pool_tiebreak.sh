@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_pool_tiebreak.sh — run one pooled dataset under both DADA2RS_POOL_TIEBREAK
+# run_pool_tiebreak.sh — run one pooled dataset under both --pool-tiebreak
 # arms (issue #260): `first-seen` (R's combineDereps2 rule, the default since
 # #260) and `lexical` (the earlier default).
 #
@@ -44,13 +44,13 @@ for arm in $ARMS; do
   mkdir -p "$o"
   printf '%s\n' "$@" > "$o/inputs.txt"
   echo "==> $arm ($# input(s))"
-  DADA2RS_POOL_TIEBREAK="$arm" "$BIN" dada-pooled "$@" --error-model "$ERR" \
+  "$BIN" dada-pooled "$@" --pool-tiebreak "$arm" --error-model "$ERR" \
     --output-dir "$o" --pooled-record "$o/_pooled.json" \
     --threads "$THREADS" --verbose ${extra[@]+"${extra[@]}"} 2> "$o/log.txt"
   # Refuse a run whose log does not name the arm: a gate that silently did not
   # take effect makes the arms identical, which is also what a null looks like.
-  if ! grep -q "pool tiebreak=$arm " "$o/log.txt"; then
-    echo "ERROR: $o/log.txt does not confirm pool tiebreak=$arm" >&2; exit 1
+  if ! grep -q "ties in $arm order" "$o/log.txt"; then
+    echo "ERROR: $o/log.txt does not confirm ties in $arm order" >&2; exit 1
   fi
 done
 echo "done: $OUT"

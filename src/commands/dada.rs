@@ -269,6 +269,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         phred_offset,
         threads,
         denoise,
+        pool_tiebreak,
         experimental,
         failed_uniques: failed_uniques_path,
         pooled_record,
@@ -346,7 +347,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         abundance: merged_total,
         local_to_merged,
         sample_counts: sample_unique_counts,
-    } = merged.finish();
+    } = merged.finish(pool_tiebreak);
 
     // Resolve sample names: CLI override > JSON-embedded > filename stem.
     let sample_names: Vec<String> = match sample_names {
@@ -361,10 +362,11 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
     let n_merged = merged_seqs.len();
     if verbose {
         eprintln!(
-            "[dada-pooled] {} sample(s) → {} merged unique(s), {} total reads",
+            "[dada-pooled] {} sample(s) → {} merged unique(s), {} total reads; ties in {} order",
             n_samples,
             n_merged,
-            merged_total.iter().sum::<u32>()
+            merged_total.iter().sum::<u32>(),
+            pool_tiebreak.label(),
         );
     }
 
@@ -427,6 +429,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
     let dada_params = resolved.params;
     let mut run_params = resolved.run;
     run_params.n_prior = raw_inputs.iter().filter(|r| r.prior).count();
+    run_params.pool_tiebreak = Some(pool_tiebreak);
 
     // ---- Run DADA once on the merged table ----
     let rss_after_merge = misc::peak_rss_kb();
@@ -541,6 +544,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
             params: run_params,
             map,
             aux: None,
+            pool_input_index: Some(s),
         };
 
         let json = to_json(&Tagged::new("dada-pooled", out), compact)?;
@@ -581,12 +585,20 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
             count: u32,
         }
         #[derive(Serialize)]
+        struct PooledInput {
+            sample: String,
+            input_file: String,
+        }
+        #[derive(Serialize)]
         struct PooledRecord {
             num_uniques: usize,
             num_asvs: usize,
             uniques: Vec<PooledUnique>,
             map: Vec<Option<usize>>,
             asvs: Vec<AsvEntry>,
+            /// Inputs in the order pooled, which decides tied uniques (#260).
+            inputs: Vec<PooledInput>,
+            pool_tiebreak: derep::PoolTiebreak,
         }
         let pooled_uniques: Vec<PooledUnique> = raw_inputs
             .iter()
@@ -606,6 +618,15 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
             uniques: pooled_uniques,
             map: result.map.clone(),
             asvs: pooled_asvs,
+            inputs: sample_names
+                .iter()
+                .zip(&input)
+                .map(|(sample, path)| PooledInput {
+                    sample: sample.clone(),
+                    input_file: file_basename(path),
+                })
+                .collect(),
+            pool_tiebreak,
         };
         let json = to_json(&Tagged::new("dada-pooled-record", record), compact)?;
         misc::write_maybe_gz(rec_path, json.as_bytes())?;
@@ -1088,6 +1109,9 @@ struct DadaRunParams {
     /// must say so, since the `--error-model` path alone no longer describes it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     reestimated_err_between_rounds: bool,
+    /// How `dada-pooled` ordered tied uniques (#260); pooled runs only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pool_tiebreak: Option<derep::PoolTiebreak>,
 }
 
 /// `true` when `path` looks like a JSON file (`.json` or `.json.gz`).
@@ -1437,6 +1461,7 @@ fn resolve_dada_params(
         n_prior: 0,
         // Set only by dada-pseudo, after round 1, if the re-fit actually ran.
         reestimated_err_between_rounds: false,
+        pool_tiebreak: None,
     };
 
     Ok(ResolvedDada {
@@ -1673,6 +1698,10 @@ struct DadaOutput {
     map: Vec<Option<usize>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     aux: Option<AuxJson>,
+    /// This sample's position in `dada-pooled`'s input order, which decides
+    /// tied uniques under `--pool-tiebreak first-seen` (#260); pooled only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pool_input_index: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -2147,6 +2176,7 @@ fn denoise_and_serialize(
         },
         params: run_params,
         aux: result.aux.as_ref().map(AuxJson::from),
+        pool_input_index: None,
         map: result.map,
     };
 

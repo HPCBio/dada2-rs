@@ -49,7 +49,9 @@ minor versions may carry breaking changes).
   depend on input order, as R's do. Against R `dada(pool=TRUE)`, the pooled ASV
   set is now identical on MiSeq (362 samples) and NovaSeq ITS2 (30), both read
   directions, where it differed by up to 12 ASVs; PacBio HiFi (95) went from 17
-  differing ASVs to 10. `DADA2RS_POOL_TIEBREAK=lexical` restores the old order.
+  differing ASVs to 10. `--pool-tiebreak lexical` restores the old,
+  order-independent rule. Outputs record the rule (`params.pool_tiebreak`) and
+  each sample's `pool_input_index`; `--pooled-record` lists the inputs in order.
 - **The default LOESS fitting surface is now `interpolate`** (#205), matching
   the surface R's `loess()` — and therefore `loessErrfun` — uses. This changes
   error models and can shift ASVs and counts; a stock `learn-errors` run now

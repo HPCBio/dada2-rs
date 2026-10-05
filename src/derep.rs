@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 use std::io::{self, BufReader};
-use std::sync::OnceLock;
 
 use noodles::fastq;
 use rayon::prelude::*;
@@ -285,52 +284,26 @@ pub fn dereplicate<R: io::Read>(
     Ok(derep)
 }
 
-/// How [`DerepPool::finish`] breaks abundance ties (#260). Selected by
-/// `DADA2RS_POOL_TIEBREAK`.
-///
-/// - `first-seen` (default, or unset): by first appearance across samples in
-///   input order, as R's `combineDereps2` does with its stable `order()`.
-///   Pooled results depend on the order samples are given, as R's do. On the
-///   cluster A/B this matched R's pooled ASV set exactly on MiSeq and ITS2
-///   (F and R) and cut PacBio's residual from 17 ASVs to 10.
-/// - `lexical`: by sequence, as `derepFastq` orders a single sample. The
-///   pre-#260 behaviour, kept as a result-changing arm for comparison.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How [`DerepPool::finish`] breaks abundance ties (#260), selected by
+/// `dada-pooled --pool-tiebreak` and recorded in its output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum PoolTiebreak {
-    Lexical,
+    /// First appearance across inputs, in the order given, as R's `combineDereps2`
+    #[default]
     FirstSeen,
+    /// By sequence, independent of input order (the default before #260)
+    Lexical,
 }
 
 impl PoolTiebreak {
-    /// Parse a `DADA2RS_POOL_TIEBREAK` value.
-    pub fn parse(s: &str) -> Result<Self, String> {
-        match s.trim() {
-            "" | "first-seen" => Ok(Self::FirstSeen),
-            "lexical" => Ok(Self::Lexical),
-            v => Err(format!(
-                "DADA2RS_POOL_TIEBREAK={v:?} is not recognised; expected first-seen or lexical"
-            )),
-        }
-    }
-
-    /// The value as it would be written in the environment.
+    /// The value as written on the command line.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Lexical => "lexical",
             Self::FirstSeen => "first-seen",
+            Self::Lexical => "lexical",
         }
     }
-}
-
-/// The resolved tie-break, read once per process. An unparseable value is
-/// fatal: a mistyped arm silently running the default would compare the
-/// default with itself (see `gates`).
-pub fn pool_tiebreak() -> PoolTiebreak {
-    static VALUE: OnceLock<PoolTiebreak> = OnceLock::new();
-    *VALUE.get_or_init(|| match std::env::var("DADA2RS_POOL_TIEBREAK") {
-        Ok(v) => PoolTiebreak::parse(&v).unwrap_or_else(|e| panic!("{e}")),
-        Err(_) => PoolTiebreak::FirstSeen,
-    })
 }
 
 /// Folds per-sample dereplications into one pooled unique table for
@@ -430,14 +403,10 @@ impl DerepPool {
     /// as its own ASV. Order also decides saturated births (pA = 0, 880 of
     /// 2,490 pooled MiSeq births), where the tie-break is reads, then position.
     ///
-    /// Ties are broken by [`pool_tiebreak`]: in first-seen order by default,
-    /// as `combineDereps2`'s stable `order()` leaves them (#260).
-    pub fn finish(self) -> PooledDerep {
-        self.finish_with(pool_tiebreak())
-    }
-
-    /// [`DerepPool::finish`] with an explicit tie-break.
-    pub fn finish_with(self, tiebreak: PoolTiebreak) -> PooledDerep {
+    /// Ties follow `tiebreak`. R's `combineDereps2` keeps first-seen order
+    /// (its `order()` is stable), so [`PoolTiebreak::FirstSeen`] matches R and
+    /// makes the result depend on input order, as R's does (#260).
+    pub fn finish(self, tiebreak: PoolTiebreak) -> PooledDerep {
         let DerepPool {
             seq_to_merged,
             seqs,
@@ -532,7 +501,7 @@ mod tests {
         for s in samples {
             pool.add(s);
         }
-        pool.finish_with(tiebreak)
+        pool.finish(tiebreak)
     }
 
     /// #219: a unique that first appears late but is most abundant overall
@@ -639,14 +608,8 @@ mod tests {
     }
 
     #[test]
-    fn pool_tiebreak_parses_and_rejects() {
-        assert_eq!(PoolTiebreak::parse(""), Ok(PoolTiebreak::FirstSeen));
-        assert_eq!(PoolTiebreak::parse("lexical"), Ok(PoolTiebreak::Lexical));
-        assert_eq!(
-            PoolTiebreak::parse("first-seen"),
-            Ok(PoolTiebreak::FirstSeen)
-        );
-        assert!(PoolTiebreak::parse("firstseen").is_err());
+    fn pool_tiebreak_defaults_to_first_seen() {
+        assert_eq!(PoolTiebreak::default(), PoolTiebreak::FirstSeen);
     }
 
     #[test]

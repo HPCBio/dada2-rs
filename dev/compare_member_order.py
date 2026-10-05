@@ -106,7 +106,7 @@ def births(arm_dir, command):
     if command == "dada-pooled":
         found = BIRTH.findall(text)
         # Raw indices are positions in the pool, which a different pool order
-        # (DADA2RS_POOL_TIEBREAK, #260) permutes. When the arm kept its
+        # (--pool-tiebreak, #260) permutes. When the arm kept its
         # --pooled-record, name each birth by sequence so arms with different
         # pool orders compare on what budded rather than where it sat.
         rec = os.path.join(arm_dir, "_pooled.json")

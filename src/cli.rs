@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 
+use crate::derep::PoolTiebreak;
 use crate::misc::DADA2_RS_VERSION;
 use crate::nwalign::{AlignBackend, ScreenBackend};
 
@@ -732,6 +733,10 @@ pub struct DadaPooledArgs {
 
     #[command(flatten)]
     pub denoise: DadaDenoiseArgs,
+
+    /// Order of equal-abundance uniques in the pool, which can decide tied ASVs
+    #[arg(long, value_enum, default_value_t = PoolTiebreak::FirstSeen, help_heading = H_DENOISE)]
+    pub pool_tiebreak: PoolTiebreak,
 
     /// Number of threads for dereplication and DADA2 comparisons
     #[arg(long, default_value_t = 1, help_heading = H_PERF)]

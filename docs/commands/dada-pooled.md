@@ -18,11 +18,10 @@ Peak memory is driven by the merged unique table rather than any single sample.
 ## Input
 
 **`<INPUT>...`** — FASTQ or derep/sample JSON files, one per sample. Their
-order matters, as it does in R: equal-abundance uniques in the merged table
-keep the order they first appear in across the inputs (R's `combineDereps2`),
-and that order can decide which of two tied variants names an ASV. To compare
-with an R run, give the files in the order R received them
-([#260](https://github.com/HPCBio/dada2-rs/issues/260)).
+order matters, as it does in R, under the default `--pool-tiebreak first-seen`
+(see below). Pass an explicit, byte-sorted list (e.g. `LC_ALL=C ls ...`) rather
+than a shell glob, whose order follows the locale, and keep the list with the
+results; each output records its sample's `pool_input_index`.
 
 **`--sample-names`** — comma-separated, one per input. Defaults to filename
 stems.
@@ -40,7 +39,24 @@ in meaning to [`dada`'s error-model flags](dada.md#error-model).
 ## Denoising, Alignment, Screening
 
 Identical in meaning to `dada`: see [Denoising](dada.md#denoising),
-[Alignment](dada.md#alignment) and [Screening](dada.md#screening).
+[Alignment](dada.md#alignment) and [Screening](dada.md#screening). One flag is
+specific to pooling:
+
+**`--pool-tiebreak`** (default `first-seen`) — how equal-abundance uniques are
+ordered in the merged table. Order matters where a birth saturates at `pA = 0`
+and position decides which of two tied variants names an ASV.
+
+| value | ties ordered by |
+|---|---|
+| `first-seen` | first appearance across the inputs, in the order given, as R's `combineDereps2` |
+| `lexical` | sequence, so results do not depend on input order; the default before #260 |
+
+`first-seen` reproduces R: on the [#260](https://github.com/HPCBio/dada2-rs/issues/260)
+comparison it gave R's pooled ASV set exactly on MiSeq and NovaSeq ITS2 (both
+reads), where `lexical` differed by up to 12 ASVs, and narrowed PacBio HiFi from
+17 to 10. Choose `lexical` when independence from input order matters more than
+R parity. The differences are renames within equal-abundance pairs. Each output
+records the value in `params.pool_tiebreak`.
 
 `--kmer-size` deserves particular attention here. Pooling produces a large,
 diverse unique table, which is exactly the regime where the k-mer screen runs on
@@ -77,7 +93,8 @@ denoising runs once on the merged unique table, "failed" is a *global* property
 emitted per sample it appears in, carrying that sample's read count.
 
 **`--pooled-record`** — write a self-contained pooled record (merged uniques
-with pooled abundance, the global map, and global ASVs) for
+with pooled abundance, the global map, global ASVs, and the inputs in pooled
+order) for
 `kdist-calibrate --from-dada-pooled`. Off by default. Give a path **outside**
 `--output-dir` so it does not join the per-sample `*.json.gz` glob; gzip follows
 the path's `.gz` extension.
