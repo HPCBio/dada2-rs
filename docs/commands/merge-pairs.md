@@ -51,7 +51,8 @@ penalties make a short perfect overlap win over a longer imperfect one at
 another offset, which matters on length-variable amplicons such as ITS
 ([#272](https://github.com/HPCBio/dada2-rs/issues/272)). Where the two reads
 disagree at an accepted mismatch, the forward base is used; R instead takes the
-base from whichever read's cluster has more error-free reads.
+base from whichever read's cluster has more error-free reads
+([#274](https://github.com/HPCBio/dada2-rs/issues/274)).
 
 **`--just-concatenate`** — concatenate forward and RC(reverse) with an N spacer
 instead of merging.
