@@ -12,9 +12,11 @@
 //!    Reads where either direction is unassigned (map entry = `null`) are
 //!    silently dropped.
 //! 4. Distinct (fwd_asv, rev_asv) pairs are counted, then each is attempted:
-//!    the forward ASV sequence is aligned (ends-free Needleman-Wunsch) against
-//!    the reverse-complement of the reverse ASV sequence.  If the overlap is
-//!    long enough, has few enough mismatches, and no indels, the merge is
+//!    the forward ASV sequence is aligned (ends-free, unbanded
+//!    Needleman-Wunsch, with R `mergePairs`'s own scores — see
+//!    [`merge_scores`]) against the reverse-complement of the reverse ASV
+//!    sequence.  If the overlap has at least `min_overlap` matching bases and
+//!    at most `max_mismatch` mismatches and indels together, the merge is
 //!    accepted and the merged amplicon sequence is assembled.
 //!
 //! ## Unique-index ordering guarantee
@@ -45,12 +47,53 @@ use crate::misc::{intstr, nt_decode};
 use crate::nwalign::{AlignBuffers, align_endsfree_with_buf};
 
 // ---------------------------------------------------------------------------
-// Alignment constants (same as core DADA2 algorithm)
+// Alignment scores
 // ---------------------------------------------------------------------------
 
-const MATCH_SCORE: i32 = 5;
-const MISMATCH: i32 = -4;
-const GAP_P: i32 = -8;
+/// `(match, mismatch, gap)` for aligning a forward ASV against RC(reverse).
+///
+/// Not the denoising scores (5 / −4 / −8): R's `mergePairs` swaps in its own
+/// (`R/paired.R`, "prioritize zero-mismatch merges"). At `maxMismatch == 0`
+/// any mismatch or gap costs −64, so a short perfect overlap always beats a
+/// longer imperfect one at another offset; under 5 / −4 / −8 the longer one
+/// can win and the pair is then rejected (#272).
+fn merge_scores(max_mismatch: u32) -> (i32, i32, i32) {
+    if max_mismatch == 0 {
+        (1, -64, -64)
+    } else {
+        (1, -8, -8)
+    }
+}
+
+/// Align a forward ASV against RC(reverse) ends-free and unbanded, as R's
+/// `mergePairs` does, and count the overlap (R `C_eval_pair`).
+///
+/// Returns `(nmatch, nmismatch, nindel, ov_left, ov_right)`, or `None` when
+/// the reads do not overlap.
+fn align_pair(
+    fwd_seq: &str,
+    rc_rev: &str,
+    max_mismatch: u32,
+    buf: &mut AlignBuffers,
+) -> Option<(u32, u32, u32, usize, usize)> {
+    let (match_score, mismatch, gap_p) = merge_scores(max_mismatch);
+    align_endsfree_with_buf(
+        &intstr(fwd_seq.as_bytes()),
+        &intstr(rc_rev.as_bytes()),
+        match_score,
+        mismatch,
+        gap_p,
+        -1,
+        buf,
+    );
+    analyze_overlap(&buf.al0, &buf.al1)
+}
+
+/// R's acceptance rule: at least `minOverlap` matching bases, and at most
+/// `maxMismatch` mismatches and indels together.
+fn accepts(nmatch: u32, nmismatch: u32, nindel: u32, params: &MergeParams) -> bool {
+    nmatch >= params.min_overlap && nmismatch + nindel <= params.max_mismatch
+}
 
 // ---------------------------------------------------------------------------
 // Parameters
@@ -58,9 +101,9 @@ const GAP_P: i32 = -8;
 
 /// Tuning parameters for paired-end merging.
 pub struct MergeParams {
-    /// Minimum overlap length (nmatch + nmismatch + nindel ≥ min_overlap).
+    /// Minimum matching bases in the overlap (R `minOverlap`: `nmatch >= min_overlap`).
     pub min_overlap: u32,
-    /// Maximum mismatches in the overlap region.
+    /// Maximum mismatches plus indels in the overlap (R `maxMismatch`).
     pub max_mismatch: u32,
     /// When true, include rejected merges in the output (with `accept = false`).
     pub return_rejects: bool,
@@ -172,16 +215,23 @@ fn reverse_complement(seq: &str) -> String {
 
 /// Analyse the overlap region in a ends-free NW alignment of fwd vs RC(rev).
 ///
-/// Returns `(nmatch, nmismatch, nindel, ov_left, ov_right)` where `ov_left`
-/// and `ov_right` are the first/last alignment column where **both** strands
-/// have a non-gap base.  Returns `None` if there is no such overlap.
+/// Count matches, mismatches and indels in the overlap, as R's `C_eval_pair`
+/// (`evaluate.cpp`) does.
+///
+/// The overlap runs from the column where **both** strands have begun (the
+/// later of their first bases) to the column where the first of them ends.
+/// A gap inside that span is an indel, including one at its edge: when an
+/// aligned base faces a gap at the first or last overlap column, R counts it,
+/// so a pair that is otherwise a perfect overlap fails `maxMismatch = 0`.
+/// Starting at the first column where both have a base would skip it (#272).
+///
+/// Returns `(nmatch, nmismatch, nindel, ov_left, ov_right)`, or `None` when
+/// the strands do not overlap.
 fn analyze_overlap(al0: &[u8], al1: &[u8]) -> Option<(u32, u32, u32, usize, usize)> {
-    let n = al0.len();
-
-    // First and last columns where both strands have a base.
-    let left = (0..n).find(|&i| al0[i] != b'-' && al1[i] != b'-')?;
-    let right = (0..n).rev().find(|&i| al0[i] != b'-' && al1[i] != b'-')?;
-
+    let first = |al: &[u8]| al.iter().position(|&c| c != b'-');
+    let last = |al: &[u8]| al.iter().rposition(|&c| c != b'-');
+    let left = first(al0)?.max(first(al1)?);
+    let right = last(al0)?.min(last(al1)?);
     if left > right {
         return None;
     }
@@ -192,7 +242,6 @@ fn analyze_overlap(al0: &[u8], al1: &[u8]) -> Option<(u32, u32, u32, usize, usiz
 
     for i in left..=right {
         match (al0[i] == b'-', al1[i] == b'-') {
-            (true, true) => {} // shouldn't occur in a valid alignment
             (false, false) => {
                 if al0[i] == al1[i] {
                     nmatch += 1;
@@ -583,22 +632,7 @@ pub fn merge_sample(
             continue;
         }
 
-        // Encode sequences for the NW aligner (1=A, 2=C, 3=G, 4=T, 5=N).
-        let fwd_enc = intstr(fwd_seq.as_bytes());
-        let rev_enc = intstr(rc_rev.as_bytes());
-
-        // Ends-free NW alignment (band = -1 → unbanded).
-        align_endsfree_with_buf(
-            &fwd_enc,
-            &rev_enc,
-            MATCH_SCORE,
-            MISMATCH,
-            GAP_P,
-            -1,
-            &mut align_buf,
-        );
-
-        let ov = analyze_overlap(&align_buf.al0, &align_buf.al1);
+        let ov = align_pair(fwd_seq, &rc_rev, params.max_mismatch, &mut align_buf);
 
         let (nmatch, nmismatch, nindel, ov_left, ov_right) = match ov {
             Some(v) => v,
@@ -624,9 +658,7 @@ pub fn merge_sample(
             }
         };
 
-        let overlap_len = nmatch + nmismatch + nindel;
-        let accept =
-            overlap_len >= params.min_overlap && nmismatch <= params.max_mismatch && nindel == 0;
+        let accept = accepts(nmatch, nmismatch, nindel, params);
 
         // Rescue pairs that overlapped but failed the acceptance criteria by
         // concatenating them (takes precedence over return_rejects).
@@ -712,5 +744,114 @@ mod count_pairs_tests {
         let (pairs, total) = count_pairs(&fwd, &rev, &fmap, &rmap);
         assert_eq!(pairs, vec![((0, 0), 2), ((1, 1), 1), ((0, 1), 1)]);
         assert_eq!(total, 4);
+    }
+}
+
+#[cfg(test)]
+mod merge_scoring_tests {
+    use super::*;
+
+    /// An amplicon whose forward and reverse reads share a 16-base perfect
+    /// overlap, plus a 60-column overlap at another offset with 4 mismatches
+    /// (a 44 bp near-repeat), the shape length-variable ITS2 produces (#272).
+    /// Returns (amplicon, forward read, RC(reverse) read).
+    fn repeat_amplicon() -> (String, String, String) {
+        let n = 150; // forward read length
+        let mut state: u64 = 0x2720_2720;
+        let mut base = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            b"ACGT"[(state >> 33) as usize % 4]
+        };
+        let mut a: Vec<u8> = (0..n - 16).map(|_| base()).collect();
+        let head = a[n - 60..n - 44].to_vec();
+        a.extend_from_slice(&head); // a[n-16..n] = a[n-60..n-44]
+        let period = a[n - 44..n].to_vec();
+        a.extend_from_slice(&period); // a[n..n+44] = a[n-44..n] ...
+        for i in [n + 5, n + 15, n + 25, n + 35] {
+            a[i] = if a[i] == b'A' { b'C' } else { b'A' }; // ... with 4 differences
+        }
+        a.extend((0..40).map(|_| base()));
+        let amplicon = String::from_utf8(a).unwrap();
+        let fwd = amplicon[..n].to_string();
+        let rc_rev = amplicon[n - 16..].to_string();
+        (amplicon, fwd, rc_rev)
+    }
+
+    fn params(max_mismatch: u32) -> MergeParams {
+        MergeParams {
+            min_overlap: 12,
+            max_mismatch,
+            return_rejects: false,
+            rescue_unmerged: false,
+            trim_overhang: false,
+            just_concatenate: false,
+            concat_nnn_len: 10,
+            phred_offset: 33,
+            check_sample_ids: true,
+            verbose: false,
+        }
+    }
+
+    /// With the denoising scores (5 / −4 / −8) the longer imperfect overlap
+    /// wins, so the pair would be rejected: the pre-#272 behaviour.
+    #[test]
+    fn denoising_scores_prefer_the_long_imperfect_overlap() {
+        let (_, fwd, rc_rev) = repeat_amplicon();
+        let mut buf = AlignBuffers::new();
+        align_endsfree_with_buf(
+            &intstr(fwd.as_bytes()),
+            &intstr(rc_rev.as_bytes()),
+            5,
+            -4,
+            -8,
+            -1,
+            &mut buf,
+        );
+        let (nmatch, nmismatch, nindel, _, _) = analyze_overlap(&buf.al0, &buf.al1).unwrap();
+        assert_eq!((nmatch, nmismatch, nindel), (56, 4, 0));
+        assert!(!accepts(nmatch, nmismatch, nindel, &params(0)));
+    }
+
+    /// R's `mergePairs` scores find the 16-base perfect overlap, accept it, and
+    /// rebuild the amplicon exactly.
+    #[test]
+    fn merge_scores_find_the_perfect_overlap_and_merge() {
+        let (amplicon, fwd, rc_rev) = repeat_amplicon();
+        let mut buf = AlignBuffers::new();
+        let (nmatch, nmismatch, nindel, left, right) =
+            align_pair(&fwd, &rc_rev, 0, &mut buf).unwrap();
+        assert_eq!((nmatch, nmismatch, nindel), (16, 0, 0));
+        assert!(accepts(nmatch, nmismatch, nindel, &params(0)));
+        let merged = build_merged(&buf.al0, &buf.al1, left, right, false, true);
+        assert_eq!(merged, amplicon);
+    }
+
+    /// R's `C_eval_pair` starts the overlap where both strands have begun, so
+    /// a base facing a gap at that first column is an indel. This is the shape
+    /// of a real MiSeq V4 pair: the reverse read's first base is gapped against
+    /// the forward read (a gap and a mismatch both cost −64), and R rejects it.
+    /// Starting at the first column where both have a base would hide it.
+    #[test]
+    fn overlap_starts_where_both_strands_have_begun() {
+        let fwd = b"CCCCC-GGACT----";
+        let rcrev = b"-----TGGACTAAAA";
+        let (nmatch, nmismatch, nindel, left, right) = analyze_overlap(fwd, rcrev).unwrap();
+        assert_eq!((left, right), (5, 10));
+        assert_eq!((nmatch, nmismatch, nindel), (5, 0, 1));
+        assert!(!accepts(nmatch, nmismatch, nindel, &params(0)));
+    }
+
+    /// R's acceptance rule: `minOverlap` counts matching bases only, and indels
+    /// count against `maxMismatch` rather than being refused outright.
+    #[test]
+    fn acceptance_follows_r() {
+        assert!(!accepts(11, 0, 0, &params(0)), "11 matches < minOverlap 12");
+        assert!(accepts(12, 0, 0, &params(0)));
+        assert!(!accepts(11, 1, 0, &params(1)), "a mismatch is not a match");
+        assert!(
+            accepts(20, 0, 1, &params(1)),
+            "one indel within maxMismatch 1"
+        );
+        assert!(!accepts(20, 1, 1, &params(1)), "mismatch + indel = 2 > 1");
     }
 }

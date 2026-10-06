@@ -85,6 +85,16 @@ minor versions may carry breaking changes).
   are given.
 
 ### Fixed
+- **`merge-pairs` now finds and judges the overlap as R's `mergePairs` does**
+  (#272). It aligned with the denoising scores (5 / −4 / −8), so on
+  length-variable amplicons a longer, imperfect overlap at a wrong offset could
+  outscore a short perfect one and the pair was rejected; it now uses R's merge
+  scores (1 / −64 / −64 at `--max-mismatch 0`, 1 / −8 / −8 otherwise). The
+  overlap is counted as R's `C_eval_pair` counts it, from the column where both
+  reads have begun, and accepted on R's rule (`--min-overlap` counts matching
+  bases; `--max-mismatch` counts mismatches plus indels). On NovaSeq ITS2 this
+  restores the 10 merged cells (93 reads) R kept and we dropped; merged MiSeq V4
+  output is unchanged.
 - `assign-species` matched a query against a reference only when the two
   sequences were **equal in full**, so it returned nothing on any full-length
   reference — the ordinary case, since species FASTAs hold ~1.4 kb 16S and

@@ -907,11 +907,11 @@ pub struct MergePairsArgs {
     #[arg(long, default_value_t = 33, help_heading = H_INPUT)]
     pub phred_offset: u8,
 
-    /// Minimum overlap between the forward and RC(reverse) ASVs
+    /// Minimum matching bases in the forward/RC(reverse) overlap (R minOverlap)
     #[arg(long, default_value_t = 12, help_heading = H_MERGE)]
     pub min_overlap: u32,
 
-    /// Maximum mismatches allowed in the overlap region
+    /// Maximum mismatches plus indels allowed in the overlap (R maxMismatch)
     #[arg(long, default_value_t = 0, help_heading = H_MERGE)]
     pub max_mismatch: u32,
 

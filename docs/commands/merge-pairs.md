@@ -38,11 +38,21 @@ dada runs came from, re-dereplicated here to recover the read → unique map.
 
 ## Merging
 
-**`--min-overlap`** (default 12) — minimum overlap between the forward and
-RC(reverse) ASVs.
+**`--min-overlap`** (default 12) — minimum number of **matching** bases in the
+overlap between the forward and RC(reverse) ASVs, as R's `minOverlap`.
 
-**`--max-mismatch`** (default 0) — maximum mismatches allowed in the overlap
-region.
+**`--max-mismatch`** (default 0) — maximum mismatches **plus indels** allowed in
+the overlap, as R's `maxMismatch`.
+
+The overlap is found as R's `mergePairs` finds it: an unbanded, ends-free
+alignment scored 1 / −64 / −64 (match / mismatch / gap) at `--max-mismatch 0`,
+and 1 / −8 / −8 otherwise. These are not the denoising scores: the heavy
+penalties make a short perfect overlap win over a longer imperfect one at
+another offset, which matters on length-variable amplicons such as ITS
+([#272](https://github.com/HPCBio/dada2-rs/issues/272)). Where the two reads
+disagree at an accepted mismatch, the forward base is used; R instead takes the
+base from whichever read's cluster has more error-free reads
+([#274](https://github.com/HPCBio/dada2-rs/issues/274)).
 
 **`--just-concatenate`** — concatenate forward and RC(reverse) with an N spacer
 instead of merging.
