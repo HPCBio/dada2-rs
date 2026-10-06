@@ -27,8 +27,9 @@
 #     two estimators are not lumped together.
 #   - If the JSON was produced with --errfun-cmd "Rscript loess_reference.R",
 #     the diff should be ~ machine epsilon (sanity check on this script).
-#   - If the JSON has no `trans` block (e.g. produced by
-#     learnerrors_to_dada2rs.R), the file is skipped with a note.
+#   - A model converted from R by learnerrors_to_dada2rs.R is skipped with a
+#     note: it records no errfun or surface, so a refit would be guessing.
+#     (It may carry `trans`; a JSON with no `trans` at all is skipped too.)
 
 suppressPackageStartupMessages(library(jsonlite))
 
@@ -129,8 +130,12 @@ compare_one <- function(path) {
                  error = function(e) { cat("  read error: ", conditionMessage(e), "\n"); NULL })
   if (is.null(em)) return(invisible(NULL))
 
+  if (identical(em$dada2_rs_version, "r-import")) {
+    cat("  converted from an R learnErrors() RDS (no errfun provenance) — skipping\n")
+    return(invisible(NULL))
+  }
   if (is.null(em$trans) || length(em$trans) == 0L) {
-    cat("  no `trans` block in JSON — skipping (likely converted from R RDS)\n")
+    cat("  no `trans` block in JSON — skipping\n")
     return(invisible(NULL))
   }
 

@@ -39,8 +39,9 @@ def load_trans(path):
         d = json.load(fh)
     if "trans" not in d:
         sys.exit(
-            f"{path} has no `trans` block. learn-errors JSONs written by "
-            "learnerrors_to_dada2rs.R do not carry one; use a native "
+            f"{path} has no `trans` block. learnerrors_to_dada2rs.R writes one "
+            "only when converting a full learnErrors() object, not a bare "
+            "error matrix; convert the full object, or use a native "
             "dada2-rs learn-errors output."
         )
     trans, nq = d["trans"], d["nq"]

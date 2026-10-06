@@ -9,12 +9,16 @@
 #   Rscript scripts/learnerrors_to_dada2rs.R --help
 #
 # The input RDS may contain either:
-#   (a) the list returned by learnErrors() — $err_out is used; or
-#   (b) a 16-row error-rate matrix directly (e.g. saveRDS(getErrors(errR), ...)).
+#   (a) the list returned by learnErrors() — $err_out is used, and its $trans
+#       transition counts are written too; or
+#   (b) a 16-row error-rate matrix directly (e.g. saveRDS(getErrors(errR), ...)),
+#       which carries no counts, so the output has no `trans`.
 #
 # The output JSON sets both `err_in` and `err_out` to the same matrix, so
 # the value of dada2-rs's --use-err-in flag has no effect on downstream
-# inference.  Row order must be A2A,A2C,A2G,A2T,C2A,...,T2T.
+# inference.  `trans` is not used by inference either; it is there so a parity
+# check can compare R's transition counts with a dada2-rs learn-errors model
+# (dev/compare_error_models.py).  Row order must be A2A,A2C,A2G,A2T,C2A,...,T2T.
 #
 # Dependencies: jsonlite, optparse
 
@@ -56,16 +60,36 @@ if (!is.null(rownames(err)) && !identical(rownames(err), expected_rows)) {
 nq <- ncol(err)
 err_rows <- lapply(seq_len(16L), function(i) unname(as.numeric(err[i, ])))
 
+trans <- if (is.list(obj) && !is.null(obj$trans)) obj$trans else NULL
+if (!is.null(trans)) {
+  if (!is.matrix(trans) || nrow(trans) != 16L || ncol(trans) != nq) {
+    stop("$trans must be 16 x ", nq, " to match $err_out; got ",
+         paste(dim(trans), collapse = " x "))
+  }
+  if (!is.null(rownames(trans)) && !identical(rownames(trans), expected_rows)) {
+    stop("$trans row order must be ", paste(expected_rows, collapse = ","))
+  }
+  if (any(trans < 0) || any(trans != round(trans)) ||
+      any(trans > .Machine$integer.max)) {
+    stop("$trans must hold non-negative integer counts")
+  }
+}
+
 output <- list(
   dada2_rs_command = "learn-errors",
   dada2_rs_version = "r-import",
-  nq               = nq,
-  err_in           = err_rows,
-  err_out          = err_rows
+  nq               = nq
 )
+if (!is.null(trans)) {
+  output$trans <- lapply(seq_len(16L), function(i) unname(as.integer(trans[i, ])))
+}
+output$err_in  <- err_rows
+output$err_out <- err_rows
 
 writeLines(
   toJSON(output, auto_unbox = TRUE, digits = NA, pretty = TRUE),
   out_path
 )
-cat(sprintf("Wrote %s (16 x %d error matrix)\n", out_path, nq))
+cat(sprintf("Wrote %s (16 x %d error matrix%s)\n", out_path, nq,
+            if (is.null(trans)) ", no trans" else
+              sprintf(", trans with %.0f transitions", sum(trans))))

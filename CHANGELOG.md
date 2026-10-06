@@ -8,6 +8,11 @@ minor versions may carry breaking changes).
 ## [0.2.0] - Unreleased
 
 ### Added
+- `scripts/learnerrors_to_dada2rs.R` now writes R's `trans` transition counts
+  when converting a full `learnErrors()` object, so `dev/compare_error_models.py`
+  can check a dada2-rs model against R's in one step (identical transition
+  totals, then rates in log10). Inference ignores `trans`; converted models load
+  and denoise exactly as before. A bare error matrix still converts without it.
 - `--errfun binned-qual` now warns when the **observed** minimum or maximum
   quality is not one of the supplied `--binned-quals` anchors (#208). The
   anchors still only have to *bracket* the data — that case fits, and R warns
