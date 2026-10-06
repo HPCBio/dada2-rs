@@ -10,12 +10,14 @@ a bug, and treating a deliberate divergence as a regression.
 
 Concretely, on the pooled 362-sample MiSeq SOP and 30-sample NovaSeq ITS2 runs,
 both read directions, we now reproduce R's ASV set **exactly** and differ by
-**0 to 4 single reads** across the whole sample × ASV table, while the measured
-floor on the same runs is up to 14 ASVs. Getting there took removing three
-*systematic* ordering differences, each of which had been hiding inside what
-looked like floor; the last of them,
-[the pool's tie-break](#a-third-instance-the-pools-tie-break), was attributed to
-the floor on this very page until it was measured.
+**0 to 4 single reads** across the whole sample × ASV table, and ITS2's merged
+table by 5, while the measured floor on the same runs is up to 14 ASVs. On pooled
+PacBio HiFi we differ by 10 ASVs against a floor of 17–36, with a cell-level gap
+still open ([issue 269](https://github.com/HPCBio/dada2-rs/issues/269)).
+Getting there took removing four *systematic* differences, three in ordering
+and one in merging, each of which had been hiding inside what looked like
+floor; one of them, [the pool's tie-break](#a-third-instance-the-pools-tie-break),
+was attributed to the floor on this very page until it was measured.
 
 ## The floor: saturated births make ordering the comparator
 
@@ -49,9 +51,20 @@ single read that one implementation assigns to one ASV and the other to a
 neighbour. Per-sample totals and the ASV set agree. That is a read-assignment
 tie, a level below which ASV is born.
 
-PacBio is not yet there. Its remaining cells are mostly small abundance shifts
-inside large ASVs (15,194 vs 15,183 reads) that do not depend on the pool's
-tie-break; the source is long-read specific and tracked in
+The same holds after merging. NovaSeq ITS2's merged, pre-chimera table has R's
+ASV set exactly, and its 5 differing cells, one read each, are the
+per-direction ties above carried through `merge-pairs`. That needed a fourth
+systematic difference fixed, this one not about order: `merge-pairs` had aligned
+with the denoising scores instead of R's `mergePairs` scores, and counted the
+overlap differently, so on long ITS2 variants with a 13–15-base overlap it
+rejected 93 reads' worth of pairs that R merged
+([issue 272](https://github.com/HPCBio/dada2-rs/issues/272)).
+
+PacBio is not yet there at the cell level, though its 10 differing ASVs are
+fewer than any single member-order shuffle produces (17–36; see below). Its
+remaining cells are mostly small abundance shifts inside large ASVs (15,194 vs
+15,183 reads) that do not depend on the pool's tie-break; the source is
+long-read specific and tracked in
 [issue 269](https://github.com/HPCBio/dada2-rs/issues/269). Chimera removal was
 separately confirmed exactly equivalent on the earlier PacBio tables by
 cross-feeding both directions — zero differences either way — so the gap is
@@ -70,7 +83,7 @@ pooled runs in R's pool order (`--pool-tiebreak first-seen`):
 |---|---|---|---|---|
 | MiSeq SOP, 362 samples | pooled, forward / reverse | 0–2 / 0 | 16 reads | none; the 2 are one 11-mismatch pair |
 | | pseudo / per-sample | ≤ 3 | 16 reads | none |
-| PacBio HiFi, 95 samples | pooled | *re-measure pending* | | |
+| PacBio HiFi, 95 samples | pooled | 17–36 | 76 reads | 7% of changes, ≤ 21 reads |
 | | pseudo / per-sample | 28–39 | 26 reads | none |
 | NovaSeq ITS2, 30 samples | pooled, forward / reverse | 10–14 / 10–14 | 117 reads | none / 18% of changes |
 | | pseudo, forward / reverse | 24–34 / 28–39 | 78 reads | none |
@@ -80,9 +93,11 @@ The ITS2 rows were re-measured with the run's actual binned-quality anchors
 (2,11,25,37); the first measurement used anchors that missed them
 ([issue 264](https://github.com/HPCBio/dada2-rs/issues/264)). The ranges moved
 little — pooled was 4–16, pseudo and per-sample 19–38 — and the largest pooled
-change is still 117 reads. The MiSeq pseudo and per-sample row and the PacBio
-pseudo and per-sample row are the original measurements: neither mode pools
-dereps, so the pool's tie-break cannot reach them.
+change is still 117 reads. The PacBio pooled floor barely moved either: 16–30
+under the old pool tie-break, 17–36 now, largest change still 76 reads. The
+MiSeq pseudo and per-sample row and the PacBio pseudo and per-sample row are
+the original measurements: neither mode pools dereps, so the pool's tie-break
+cannot reach them.
 
 Read totals barely move: at most 0.11% of reads (PacBio per-sample), 0.06% on
 ITS2. The changes are **renames**, not organisms gained or lost: an ASV named
@@ -94,9 +109,11 @@ equal reads, order picks the centre, and the other cannot reach `OMEGA_A`
 against it.
 
 The floor grows with read length and diversity, from 0–2 ASVs on MiSeq V4 to
-1–1.6% of the table on full-length PacBio. **On 16S and ITS2 the residual
-against R is now below anything the floor produces:** R lands exactly where our
-unshuffled order does, and single shuffles move 2 to 14 ASVs.
+17–39, about 1% of the table, on full-length PacBio. **The residual against R
+is now below anything the floor produces:** on 16S and ITS2 R lands exactly
+where our unshuffled order does, while single shuffles move 2 to 14 ASVs; on
+pooled PacBio R differs from our default by 10 ASVs, while shuffles move 17–36
+from our default and 15–34 from R.
 
 `sorted` is a fair stand-in for R's ordering: R and dada2-rs both start from
 derep order and share the same `swap_remove` member updates. On every pooled
@@ -310,6 +327,8 @@ divergence, pin both sides of it.
   ITS2 re-measure with corrected bins
 - [Issue 269](https://github.com/HPCBio/dada2-rs/issues/269) — the PacBio
   residual still open
+- [Issue 272](https://github.com/HPCBio/dada2-rs/issues/272) — `merge-pairs`
+  alignment scores and overlap counting; the merged ITS2 comparison above
 - [Issue 100](https://github.com/HPCBio/dada2-rs/issues/100) — the pseudo-pooling
   re-fit
 - [LOESS error-model correctness](loess-error-model-correctness.md) — the other
