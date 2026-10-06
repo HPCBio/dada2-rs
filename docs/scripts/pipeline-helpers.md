@@ -24,7 +24,11 @@ used — or a bare 16-row error-rate matrix, e.g. from
 T2T`.
 
 The output sets `err_in` and `err_out` to the same matrix, so `--use-err-in`
-makes no difference downstream.
+makes no difference downstream. From a full `learnErrors()` object it also
+writes R's `trans` (transition counts), which inference ignores but a parity
+check needs: `dev/compare_error_models.py rs=ours.json R=converted.json`
+compares the two models' transition totals and their rates in log10. A bare
+matrix carries no counts, so its output has no `trans`.
 
 The other direction — having dada2-rs call an R or Python *fitting function* per
 self-consistency iteration — is `--errfun external`; see
