@@ -90,14 +90,15 @@ reader benefit. Three homes, and only three:
   invites opposite mistakes. The floor: on a 95-sample pooled HiFi run **1,596 of
   2,818 divisions had `pA = 0.00e0`**, so the ranking statistic carries no
   information and the decision falls to reads, then to *position in the member
-  list* — an input-ordering artifact neither implementation chose. We match R
-  exactly pre-chimera and differ by 21 reads in 2.39M, with mirrored exclusive
-  sets: a coin flip, not a defect, and not reducible. The ceiling: pseudo-pooling,
-  where R's actual behaviour is unintended and we follow the intent instead. Also
-  the distinction that matters — a *systematic* ordering difference is a bug (one
-  was, and cost 2,450 reads), the tie-break sensitivity underneath it is a floor.
-  And the warning that our bit-identical `trans` was produced by the one code path
-  the bug could not reach.
+  list* — an input-ordering artifact neither implementation chose. With three
+  systematic ordering differences removed, pooled MiSeq and NovaSeq ITS2 now
+  match R's ASV set exactly and differ by **0–4 single reads** per table, below a
+  floor of up to 14 ASVs; PacBio still has an open residual (#269). The ceiling:
+  pseudo-pooling, where R's actual behaviour is unintended and we follow the
+  intent instead. Also the distinction that matters — a *systematic* ordering
+  difference is a bug, the tie-break sensitivity underneath it is a floor — and
+  its converse: the pool's tie-break (#260) sat inside the floor's range and was
+  systematic all the same.
 - [**Binned quality scores**](binned-quality.md) — a series, because the answer is
   **dataset-dependent** and we cannot yet predict which datasets are sensitive:
     - [PacBio (SequelIIe & Revio)](binned-quality-error-model.md) — binning never
