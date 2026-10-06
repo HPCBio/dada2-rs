@@ -4,13 +4,17 @@
 # cluster, and could the non-centre sibling ever bud?
 #
 # Usage:
-#   trace_pair_157.sh <binary> <err.json> <sample.fastq.gz> <armA> <armB> <seq1> <seq2> [out-dir]
+#   trace_asv_pair.sh <binary> <err.json> <sample.fastq.gz> <armA> <armB> <seq1> <seq2> [out-dir]
 # e.g. armA=insertion armB=shuffle:2
 #
 # Prints (1) each sequence's derep count and rank, (2) per arm, the cluster(s)
 # holding either sequence: centre, cluster reads, and for each of the pair its
-# reads, lambda, e_reads, and the abundance p-value it would need to bud, as
-# P(X >= reads | e_reads) x nraw against OMEGA_A.
+# reads, lambda, e_reads, and its budding p-value against OMEGA_A, as pA x nraw.
+# pA is calc_pA as the budding test computes it, conditioned on presence:
+# P(X >= reads | E) / (1 - e^-E). The trace's own `pval` is the final OMEGA_C
+# pass's unconditioned value; reading it as pA understates a doubleton's p by
+# about a factor of E, which an earlier version of this script did (#246).
+# For every pair in a table, use find_pairs.py, trace_pairs.sh, summarize.py.
 set -euo pipefail
 BIN=${1:?binary}; ERR=${2:?err.json}; FQ=${3:?fastq}; A=${4:?armA}; B=${5:?armB}
 S1=${6:?seq1}; S2=${7:?seq2}; OUT=${8:-trace_pair_out}
@@ -32,16 +36,13 @@ for arm in "$A" "$B"; do
     --threads 1 --cluster-trace "$OUT/$tag.trace.json" -o "$OUT/$tag.json"
 done
 
-python3 - "$OUT" "$A" "$B" "$S1" "$S2" <<'EOF'
-import json, math, sys
+python3 - "$OUT" "$A" "$B" "$S1" "$S2" "$(dirname "$0")" <<'EOF'
+import json, sys
 out, A, B, s1, s2 = sys.argv[1:6]
 pair = {s1.upper(): "seq1", s2.upper(): "seq2"}
 
-def upper_tail(n, lam):
-    """P(X >= n) for Poisson(lam), summed directly (stable for tiny lam)."""
-    if lam <= 0:
-        return 0.0 if n > 0 else 1.0
-    return sum(math.exp(-lam + k * math.log(lam) - math.lgamma(k + 1)) for k in range(n, n + 200))
+sys.path.insert(0, sys.argv[6])
+from summarize import calc_pa
 
 u = json.load(open(f"{out}/derep.json"))["uniques"]
 print(f"derep: {len(u)} uniques, {sum(x['count'] for x in u)} reads")
@@ -69,7 +70,7 @@ for arm in (A, B):
             if seqs[m["raw_seq_id"]] == centre:
                 print(f"    {name}: {m['abundance']} reads  [centre]")
                 continue
-            p = upper_tail(m["abundance"], m["e_reads"])
+            p = calc_pa(m["abundance"], m["e_reads"])
             print(f"    {name}: {m['abundance']} reads, lambda {m['lambda']:.2e}, e_reads {m['e_reads']:.2e}, "
                   f"pA x nraw {p * t['nraw']:.1e} -> "
                   f"{'could bud' if p * t['nraw'] < t['omega_a'] else 'cannot bud (not significant)'}")
