@@ -63,8 +63,9 @@ rejected 93 reads' worth of pairs that R merged
 PacBio is not yet there at the cell level, though its 10 differing ASVs are
 fewer than any single member-order shuffle produces (17–36; see below). Its
 remaining cells are mostly small abundance shifts inside large ASVs (15,194 vs
-15,183 reads) that do not depend on the pool's tie-break; the source is
-long-read specific and tracked in
+15,183 reads) that do not depend on the pool's tie-break or on member order —
+the same cells head the list in every member-order arm — so they are not
+floor; the source is long-read specific and tracked in
 [issue 269](https://github.com/HPCBio/dada2-rs/issues/269). Chimera removal was
 separately confirmed exactly equivalent on the earlier PacBio tables by
 cross-feeding both directions — zero differences either way — so the gap is
