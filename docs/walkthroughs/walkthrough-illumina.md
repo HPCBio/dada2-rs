@@ -79,6 +79,14 @@ default because of its size.)
     control how many run concurrently. See
     [Performance & Benchmarking](../benchmarking.md) for the concurrency model.
 
+!!! tip "Name each read pair"
+    Give the forward and reverse reads of a sample the same name, so
+    `merge-pairs` can check the pairing. The simplest route is
+    `dada2-rs derep <fastq> --sample-name <name> -o <name>.json` for each read,
+    then `dada` on the derep JSONs with `--output-dir`. When denoising FASTQ
+    directly, use `--sample-name` or `--sample-names`. See
+    [`merge-pairs`](../commands/merge-pairs.md#recommended-name-each-pair-upstream).
+
 ## 4. Merge paired reads
 
 ```bash
@@ -89,6 +97,9 @@ dada2-rs merge-pairs \
   --rev-fastq filtered/rev/*.fastq.gz \
   -o merged.json --verbose
 ```
+
+With named samples, add `--check-sample-ids` to stop on a mispaired sample
+instead of only warning.
 
 ## 5. Build sequence table and remove chimeras
 
