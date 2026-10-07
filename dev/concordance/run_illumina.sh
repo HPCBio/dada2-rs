@@ -184,6 +184,53 @@ if [ -n "$ERR_DIR" ]; then
   echo "==> reusing error models from $ERR_DIR (skipping learn-errors)"
   cp "$ERR_DIR/errF.json" "$OUT/errF.json"
   cp "$ERR_DIR/errR.json" "$OUT/errR.json"
+
+  # A reused model carries the errfun and surface of the run that learned it;
+  # #269 was a stale `direct` model. Same guard as run_pacbio.sh. The surface is
+  # checked only for loess, since binned-qual and noqual use the config just to
+  # clamp. ALLOW_STALE_ERR=1 overrides; a version mismatch only warns.
+  want_surface=$(printf '%s\n' "$ERRFUN_ARGS" | sed -n 's/.*--loess-surface[= ]\([a-z]*\).*/\1/p')
+  if [ -z "$want_surface" ]; then
+    want_surface=$("$BIN" learn-errors --help | sed -n 's/.*LOESS fitting surface \[default: \([a-z]*\).*/\1/p' | head -1)
+  fi
+  bin_version=$("$BIN" --version | awk '{print $NF}')
+  stale=""
+  for dir in F R; do
+    read -r err_version err_errfun err_surface < <(python3 - "$OUT/err$dir.json" <<'PY'
+import json, sys
+j = json.load(open(sys.argv[1]))
+p = j.get("params") or {}
+print(j.get("dada2_rs_version", "?"), p.get("errfun", "-"), (p.get("loess") or {}).get("surface", "-"))
+PY
+)
+    echo "    err$dir: version $err_version, errfun $err_errfun, surface $err_surface"
+    if [ "$err_version" = "r-import" ]; then
+      echo "    err$dir: R-imported model (learnerrors_to_dada2rs.R): R's own fit, nothing to check"
+      continue
+    fi
+    if [ "$err_version" != "$bin_version" ]; then
+      echo "run_illumina.sh: WARNING: err$dir is from $err_version, binary is $bin_version" >&2
+    fi
+    if [ "$err_errfun" != "$ERRFUN" ]; then
+      stale="${stale:+$stale; }err$dir errfun is '$err_errfun', this run uses '$ERRFUN'"
+    elif [ "$ERRFUN" = "loess" ]; then
+      if [ -z "$want_surface" ]; then
+        echo "run_illumina.sh: WARNING: could not read the default surface from $BIN; not checked" >&2
+      elif [ "$err_surface" != "$want_surface" ]; then
+        stale="${stale:+$stale; }err$dir surface is '$err_surface', this run would fit '$want_surface'"
+      fi
+    fi
+  done
+  echo "    this run: version $bin_version, errfun $ERRFUN, surface ${want_surface:-unknown}"
+  if [ -n "$stale" ]; then
+    echo "run_illumina.sh: reused error models do not match this run: $stale" >&2
+    if [ -n "${ALLOW_STALE_ERR:-}" ]; then
+      echo "    ALLOW_STALE_ERR set; continuing" >&2
+    else
+      echo "  Re-learn them, or set ALLOW_STALE_ERR=1 to use them anyway." >&2
+      exit 1
+    fi
+  fi
 else
 echo "==> learn-errors (fwd, rev)"
 run_step learn-errors.fwd "$BIN" learn-errors "${filtFs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
