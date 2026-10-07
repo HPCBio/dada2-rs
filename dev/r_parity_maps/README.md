@@ -18,6 +18,8 @@ the divisive loop, not the fit.
 | `compare_maps.py` | per sample: moved uniques and differing transition cells; exit 1 on any difference |
 | `r_pooled_maps.R` | the same uniques table from a saved pooled run (`write_reference.R --save-dada`) |
 | `rs_pooled_maps.sh` | lays out a `dada-pooled` output directory for `compare_maps.py` |
+| `export_err_in.R` | writes each learnErrors pass's input model (`$err_in[[k]]`) as `err_in_<k>.json` |
+| `run_replay.sh` | replays every learnErrors pass on both sides from R's per-pass inputs |
 
 Both sides check that map + derep rebuild every ASV's reads, so a derep in a
 different order than the run's own fails rather than scrambling the join.
@@ -43,6 +45,30 @@ After the fix: 0 cells.
 This path feeds `dada --aux-outputs` and cluster quality only. learn-errors
 builds its transitions separately (`build_trans_mat`, Raws without k-mers), so
 it never took the shortcut, and the learned model is unchanged.
+
+## Replaying learnErrors
+
+A learned model that differs from R's says nothing about which pass first
+diverged. `learnErrors` keeps the input model of every self-consistency pass, so
+each pass can be rerun on both sides from identical input:
+
+```bash
+THREADS=8 dev/r_parity_maps/run_replay.sh target/release/dada2-rs ref.err.rds replay train/*.fastq.gz
+```
+
+The FASTQs must be exactly the training set, all of it used. Each pass runs
+per-sample `dada` with `OMEGA_C = 0`, as `learnErrors` does. At the last pass,
+R's per-sample transitions must sum to the model's own `trans`. If they do not,
+the run is not replaying `learnErrors`.
+
+- **Every pass identical:** denoising is the same given the same model, so the
+  learned models drift through the error-model fit.
+- **A pass differs:** `pass_<k>/diffs.tsv` names the samples, uniques and cells.
+
+Both ends must be exact for this to mean anything: the converter writes 17
+significant digits and `serde_json` parses with `float_roundtrip`.
+
+## Pooled runs
 
 Per-sample runs cannot reproduce a pooled difference. For a pooled run:
 
