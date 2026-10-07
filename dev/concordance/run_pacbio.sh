@@ -232,6 +232,48 @@ ERR_DIR="${ERR_DIR:-}"
 if [ -n "$ERR_DIR" ]; then
   echo "==> reusing error model from $ERR_DIR (skipping learn-errors)"
   cp "$ERR_DIR/err.json" "$OUT/err.json"
+
+  # A reused model carries whatever surface its binary defaulted to. The #269
+  # comparison used a pre-a42fd33 `direct` model against R's `interpolate`: up
+  # to +50% rates at Q60-66 on PacBio. Refuse a surface mismatch; ALLOW_STALE_ERR=1
+  # overrides. Version is reported only, since every commit build differs.
+  want_surface=$(printf '%s\n' "$ERRFUN_ARGS" | sed -n 's/.*--loess-surface[= ]\([a-z]*\).*/\1/p')
+  if [ -z "$want_surface" ]; then
+    want_surface=$("$BIN" learn-errors --help | sed -n 's/.*LOESS fitting surface \[default: \([a-z]*\).*/\1/p' | head -1)
+  fi
+  read -r err_version err_errfun err_surface < <(python3 - "$OUT/err.json" <<'PY'
+import json, sys
+j = json.load(open(sys.argv[1]))
+p = j.get("params") or {}
+print(j.get("dada2_rs_version", "?"), p.get("errfun", "-"), (p.get("loess") or {}).get("surface", "-"))
+PY
+)
+  bin_version=$("$BIN" --version | awk '{print $NF}')
+  echo "    model: version $err_version, errfun $err_errfun, surface $err_surface"
+  echo "    this run: version $bin_version, surface ${want_surface:-unknown}"
+  if [ "$err_version" = "r-import" ]; then
+    echo "    R-imported model (learnerrors_to_dada2rs.R): R's own fit, no surface to check"
+  else
+    if [ "$err_version" != "$bin_version" ]; then
+      echo "run_pacbio.sh: WARNING: error model is from $err_version, binary is $bin_version" >&2
+    fi
+    stale=""
+    if [ "$err_errfun" != "pacbio" ]; then stale="errfun is '$err_errfun', not 'pacbio'"; fi
+    if [ -z "$want_surface" ]; then
+      echo "run_pacbio.sh: WARNING: could not read the default surface from $BIN; not checked" >&2
+    elif [ "$err_surface" != "$want_surface" ]; then
+      stale="${stale:+$stale; }surface is '$err_surface', this run would fit '$want_surface'"
+    fi
+    if [ -n "$stale" ]; then
+      echo "run_pacbio.sh: reused error model does not match this run: $stale" >&2
+      if [ -n "${ALLOW_STALE_ERR:-}" ]; then
+        echo "    ALLOW_STALE_ERR set; continuing" >&2
+      else
+        echo "  Re-learn it, or set ALLOW_STALE_ERR=1 to use it anyway." >&2
+        exit 1
+      fi
+    fi
+  fi
 else
 echo "==> learn-errors (pacbio errfun, k=$KMER)"
 run_step learn-errors "$BIN" learn-errors "${trains[@]}" --nbases "$NBASES" --errfun pacbio \
