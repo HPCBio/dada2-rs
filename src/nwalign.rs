@@ -1520,8 +1520,13 @@ fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers)
     // For the k-mer backend this reproduces the historical `kodist == kdist`
     // test exactly (that equality IS `intersection == positional`); for the
     // minimizer backend it restores a predicate that `kdist` could not express.
+    // Without k-mers there is no shortcut: R's raw_align computes `kodist` only
+    // under `use_kmers`, leaving it at -1 != kdist, so the final-subs pass
+    // (use_kmers = false, Rmain.cpp) always takes the full alignment (#277).
     let take_gapless = p.band == 0
-        || (p.gapless && pair_is_gapless(raw1, raw2, p.kmer_size, &mut buf.kord_counts));
+        || (p.use_kmers
+            && p.gapless
+            && pair_is_gapless(raw1, raw2, p.kmer_size, &mut buf.kord_counts));
     if p.screen_audit {
         // The gapless shortcut fires on `kodist == kdist`: the positional and
         // compositional k-mer distances agreeing means no shifts, hence no
@@ -3426,6 +3431,71 @@ mod tests {
             (buf.al0.clone(), buf.al1.clone()),
             want,
             "homopolymer gap penalty must use the homopolymer-aware aligner, not vectorized"
+        );
+    }
+
+    /// Without k-mers the gapless shortcut must not fire. R's raw_align leaves
+    /// `kodist` at -1 unless `use_kmers`, so the final-subs pass (use_kmers =
+    /// false, Rmain.cpp) always aligns. Taking the shortcut there shifted
+    /// learn-errors transition counts against R (#277).
+    #[test]
+    fn gapless_shortcut_requires_kmers() {
+        // Equal lengths, the last 4 bases shifted by one. A tail shorter than k
+        // adds no shared k-mer, so the pair passes the gapless test; NW scores
+        // higher with one interior gap plus a free end gap than with 4 mismatches.
+        let s1 = encode("ACGTTGCAAGGCTTACCGATAGCTAGGCATCGATGACGT");
+        let s2 = encode("ACGTTGCAAGGCTTACCGATAGCTAGGCATCGATGCGTA");
+        let mut params = AlignParams {
+            backend: AlignBackend::Nw,
+            wfa_max_edits: 0,
+            match_score: 5,
+            mismatch: -4,
+            gap_p: -8,
+            homo_gap_p: -8,
+            use_kmers: true,
+            kdist_cutoff: 0.42,
+            screen_backend: ScreenBackend::Kmer,
+            minimizer_k: crate::minimizers::MINIMIZER_K,
+            minimizer_w: crate::minimizers::MINIMIZER_W,
+            screen_audit: false,
+            kmer_size: 5,
+            band: 16,
+            vectorized: true,
+            gapless: true,
+        };
+        let mut r1 = Raw::new(s1.clone(), None, 10, false);
+        let mut r2 = Raw::new(s2.clone(), None, 5, false);
+        crate::kmers::raw_assign_kmers(&mut r1, params.kmer_size);
+        crate::kmers::raw_assign_kmers(&mut r2, params.kmer_size);
+
+        let gapless = align_gapless(&s1, &s2);
+        let nw = align_vectorized(
+            &s1,
+            &s2,
+            &VectorizedAlignScores {
+                match_score: 5,
+                mismatch: -4,
+                gap_p: -8,
+                end_gap_p: 0,
+                band: 16,
+            },
+        );
+        assert_ne!(
+            gapless, nw,
+            "test precondition: gapless and NW alignments must differ"
+        );
+
+        let al = raw_align(&r1, &r2, &params).expect("alignment produced");
+        assert_eq!(
+            al, gapless,
+            "with k-mers, an indel-free pair takes the gapless shortcut"
+        );
+
+        params.use_kmers = false;
+        let al = raw_align(&r1, &r2, &params).expect("alignment produced");
+        assert_eq!(
+            al, nw,
+            "without k-mers, the pair must be aligned (R: kodist = -1)"
         );
     }
 }
