@@ -72,11 +72,38 @@ def read_rs(rs_dir, s):
     return uniq, trans
 
 
+def model_check(label, model_path, per_sample):
+    """Sum per-sample trans and diff against a learned model's trans.
+
+    Run under the model's err_in with OMEGA_C = 0, per-sample dada replays the
+    final learning pass, so the sum must equal the model's trans exactly. If it
+    does not, the run is not replaying that pass and its maps say nothing about
+    learning. Returns 1 on a mismatch.
+    """
+    if any(t is None for t in per_sample):
+        sys.exit(f"{label} model check: a sample has no per-sample trans")
+    total = {}
+    for t in per_sample:
+        for k, n in t.items():
+            total[k] = total.get(k, 0) + n
+    m = json.load(open(model_path))["trans"]
+    model = {(TRANS[i], q): n for i, row in enumerate(m) for q, n in enumerate(row) if n}
+    cells = sorted((k, model.get(k, 0), total.get(k, 0)) for k in set(model) | set(total)
+                   if model.get(k, 0) != total.get(k, 0))
+    print(f"{label} model check: {len(per_sample)} sample(s), sum {sum(total.values()):,} vs "
+          f"model {sum(model.values()):,}; {len(cells)} cell(s) differ", file=sys.stderr)
+    for (t, q), want, got in cells[:12]:
+        print(f"    {t} Q{q}: model {want}, samples {got}", file=sys.stderr)
+    return 1 if cells else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("r_dir")
     ap.add_argument("rs_dir")
     ap.add_argument("-o", "--out", help="TSV of moved uniques and differing trans cells")
+    ap.add_argument("--r-model", help="err.json whose trans the R side's per-sample trans must sum to")
+    ap.add_argument("--rs-model", help="err.json whose trans the dada2-rs side's per-sample trans must sum to")
     a = ap.parse_args()
 
     r_samples = {os.path.basename(p)[: -len(".r.uniques.tsv")]
@@ -116,6 +143,13 @@ def main():
             out_rows.append([s, "unique", short(seq), ab, short(c_r), short(c_s), seq])
         for (t, q), r, x in cells:
             out_rows.append([s, "trans", t, q, r, x, ""])
+
+    # The model checks cover every sample on that side, not just the shared ones:
+    # the model was learned from all of them.
+    if a.r_model:
+        n_diff += model_check("R", a.r_model, [read_r(a.r_dir, s)[1] for s in sorted(r_samples)])
+    if a.rs_model:
+        n_diff += model_check("rs", a.rs_model, [read_rs(a.rs_dir, s)[1] for s in sorted(rs_samples)])
 
     if a.out:
         with open(a.out, "w") as fh:
