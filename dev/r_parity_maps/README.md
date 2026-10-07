@@ -16,6 +16,11 @@ the divisive loop, not the fit.
 | `r_dada_maps.R` | R `dada()` per sample; writes `<s>.r.uniques.tsv`, `<s>.r.trans.tsv`, `<s>.r.dada.rds` |
 | `rs_dada_maps.sh` | `derep`, then `dada --aux-outputs` on the derep JSON, so `map` indexes a file on disk |
 | `compare_maps.py` | per sample: moved uniques and differing transition cells; exit 1 on any difference |
+| `r_pooled_maps.R` | the same uniques table from a saved pooled run (`write_reference.R --save-dada`) |
+| `rs_pooled_maps.sh` | lays out a `dada-pooled` output directory for `compare_maps.py` |
+
+Both sides check that map + derep rebuild every ASV's reads, so a derep in a
+different order than the run's own fails rather than scrambling the join.
 
 ```bash
 Rscript scripts/learnerrors_to_dada2rs.R err.rds err.json
@@ -35,6 +40,18 @@ gapless shortcut firing in the final-subs pass, where R never takes it
 (`use_kmers = false` leaves `kodist = -1`). That guard was lost in 447c1f3.
 After the fix: 0 cells.
 
-Per-sample runs cannot reproduce a pooled difference. For that, run
-`write_reference.R --pool=true --save-dada` and re-derep each FASTQ to recover
-the sequences each `$map` indexes.
+This path feeds `dada --aux-outputs` and cluster quality only. learn-errors
+builds its transitions separately (`build_trans_mat`, Raws without k-mers), so
+it never took the shortcut, and the learned model is unchanged.
+
+Per-sample runs cannot reproduce a pooled difference. For a pooled run:
+
+```bash
+Rscript dev/r_parity_maps/r_pooled_maps.R ref.dd.rds filt/ out/r
+dev/r_parity_maps/rs_pooled_maps.sh target/release/dada2-rs run/dada out/rs filt/*.fastq.gz
+python3 dev/r_parity_maps/compare_maps.py out/r out/rs -o moved.tsv
+```
+
+On 4 local PacBio samples pooled under R's model: 0 moved uniques. As a
+negative control, R pooled against our per-sample maps reports 305-733 moved
+uniques per sample.

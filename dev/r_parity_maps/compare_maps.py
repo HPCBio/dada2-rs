@@ -32,8 +32,11 @@ def read_r(r_dir, s):
         rows = list(csv.DictReader(fh, delimiter="\t"))
     uniq = {r["sequence"]: (int(r["abundance"]), None if r["center"] == "NA" else r["center"])
             for r in rows}
+    path = os.path.join(r_dir, f"{s}.r.trans.tsv")
+    if not os.path.exists(path):  # r_pooled_maps.R writes none
+        return uniq, None
     trans = {}
-    with open(os.path.join(r_dir, f"{s}.r.trans.tsv")) as fh:
+    with open(path) as fh:
         for r in csv.DictReader(fh, delimiter="\t"):
             t = r.pop("trans")
             for q, n in r.items():
@@ -48,9 +51,19 @@ def read_rs(rs_dir, s):
     asvs = [a["sequence"] for a in dada["asvs"]]
     if len(dada["map"]) != len(derep):
         sys.exit(f"{s}: dada map has {len(dada['map'])} entries, derep has {len(derep)}")
+    # map + derep must rebuild every ASV's reads. A derep in another order than
+    # the one dada ran on would scramble the map and still join by sequence.
+    rebuilt = [0] * len(asvs)
+    for u, m in zip(derep, dada["map"]):
+        if m is not None:
+            rebuilt[m] += u["count"]
+    if rebuilt != [a["abundance"] for a in dada["asvs"]]:
+        sys.exit(f"{s}: map + derep do not reproduce the ASV abundances; wrong derep?")
     uniq = {u["sequence"]: (u["count"], None if m is None else asvs[m])
             for u, m in zip(derep, dada["map"])}
-    aux = dada.get("aux") or sys.exit(f"{s}: no aux block; run dada with --aux-outputs")
+    aux = dada.get("aux")
+    if aux is None:  # dada-pooled: no per-sample transitions
+        return uniq, None
     ncol = aux["transitions_ncol"]
     trans = {}
     for i, n in enumerate(aux["transitions"]):
@@ -88,6 +101,8 @@ def main():
             n_diff += 1
             continue
         moved = [(seq, ru[seq][0], ru[seq][1], su[seq][1]) for seq in ru if ru[seq][1] != su[seq][1]]
+        if rt is None or st is None:
+            rt = st = {}  # one side has no per-sample transitions: compare maps only
         cells = sorted((k, rt.get(k, 0), st.get(k, 0)) for k in set(rt) | set(st)
                        if rt.get(k, 0) != st.get(k, 0))
         l1 = sum(abs(r - x) for _, r, x in cells)
