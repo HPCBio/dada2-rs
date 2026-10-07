@@ -21,8 +21,40 @@ overlap length, mismatches and indels.
 !!! warning "Files are matched by position"
     The first `--fwd-dada` corresponds to the first `--rev-dada`,
     `--fwd-fastq` and `--rev-fastq`. Shell globbing sorts consistently, so
-    matched directories work, but mismatched naming will silently pair the
-    wrong files. Pass `--check-sample-ids` to have that verified.
+    matched directories work, but mismatched naming will pair the wrong files.
+    `merge-pairs` always warns when a FASTQ differs from the one the dada JSON
+    records as its `source_fastq`; `--check-sample-ids` makes a mismatch fatal.
+
+## Recommended: name each pair upstream
+
+Give both reads of a pair the same sample name before denoising, rather than
+relying on file names:
+
+```bash
+for s in sampleA sampleB; do
+  dada2-rs derep filtered/fwd/${s}_R1.fastq.gz --sample-name $s -o derep/fwd/$s.json
+  dada2-rs derep filtered/rev/${s}_R2.fastq.gz --sample-name $s -o derep/rev/$s.json
+done
+dada2-rs dada derep/fwd/*.json --error-model errors_fwd.json --output-dir dada/fwd/
+dada2-rs dada derep/rev/*.json --error-model errors_rev.json --output-dir dada/rev/
+
+dada2-rs merge-pairs --check-sample-ids \
+  --fwd-dada  dada/fwd/*.json \
+  --rev-dada  dada/rev/*.json \
+  --fwd-fastq filtered/fwd/*_R1.fastq.gz \
+  --rev-fastq filtered/rev/*_R2.fastq.gz \
+  -o merged.json
+```
+
+A derep JSON carries the sample name and its source FASTQ into the dada JSON,
+and `dada --output-dir` names each output after the sample, so the forward and
+reverse lists line up. If you denoise FASTQ directly, set the same names with
+`--sample-name` (`dada`) or `--sample-names` (`dada`, `dada-pooled`,
+`dada-pseudo`).
+
+Without explicit names, the sample name is the FASTQ file name minus its
+extension, which keeps the read-direction suffix (`sampleA_R1` vs `sampleA_R2`),
+so `--check-sample-ids` rejects correct input.
 
 ## Input
 
@@ -84,8 +116,10 @@ output.
 
 **`--check-sample-ids`** — verify that the forward and reverse dada JSONs carry
 the same `sample` field, that it matches the resolved sample name, and that both
-FASTQ filenames contain the sample name as a substring. Cheap insurance against
-positional mismatching; worth using on every multi-sample run.
+FASTQ filenames contain the sample name as a substring; any failure is fatal.
+Off by default, because it needs the samples to have been named upstream (see
+[above](#recommended-name-each-pair-upstream)). The substring test is loose: `sam1`
+also matches `sam10_R1.fastq.gz`.
 
 **`--verbose`** — per-sample progress to stderr.
 
