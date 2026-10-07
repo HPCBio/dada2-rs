@@ -136,7 +136,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         let sink = SampleSink::new("dada", &output_dir, gzip, verbose, None);
         for_each_sample_concurrent(input.len(), jobs, threads, |i, sub_pool| {
             let path = &input[i];
-            let (mut raw_inputs, json_sample) =
+            let (mut raw_inputs, identity) =
                 load_sample_raws(path, phred_offset, sub_pool, verbose)?;
             if let Some(ref set) = prior_set {
                 let n_marked = mark_priors(&mut raw_inputs, set);
@@ -149,11 +149,12 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
                     );
                 }
             }
-            let sample = sample_label(None, json_sample, path);
+            let sample = sample_label(None, identity.sample, path);
             let out = denoise_and_serialize(
                 "dada",
                 &sample,
                 &file_basename(path),
+                identity.source_fastq,
                 &raw_inputs,
                 &resolved.params,
                 &resolved.run,
@@ -184,7 +185,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
     }
     let input = &input[0];
 
-    let (mut raw_inputs, json_sample) = load_sample_raws(input, phred_offset, &pool, verbose)?;
+    let (mut raw_inputs, identity) = load_sample_raws(input, phred_offset, &pool, verbose)?;
 
     // ---- Mark prior sequences ----
     if let Some(ref prior_path) = prior {
@@ -213,7 +214,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         denoise,
         experimental,
     )?;
-    let sample = sample_label(sample_name, json_sample, input);
+    let sample = sample_label(sample_name, identity.sample, input);
     let trace = cluster_trace.as_deref().map(|path| TraceRequest {
         path,
         params: cluster_trace::TraceParams {
@@ -225,6 +226,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         "dada",
         &sample,
         &file_basename(input),
+        identity.source_fastq,
         &raw_inputs,
         &resolved.params,
         &resolved.run,
@@ -304,17 +306,17 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
     let mut t_merge_acc = std::time::Duration::ZERO;
     let mut derep_cost = DerepLoadCost::default();
 
-    let mut json_samples: Vec<Option<String>> = vec![None; n_samples];
+    let mut identities: Vec<InputIdentity> = Vec::with_capacity(n_samples);
     let mut merged = derep::DerepPool::new();
 
     // (reads, uniques) per input, for `pipeline.inputs`. The unnamed
     // `[derep]` line is suppressed here: this is its named home.
     let mut input_counts: Vec<(u64, usize)> = Vec::with_capacity(n_samples);
 
-    for i in 0..n_samples {
-        let (derep, name) =
-            load_derep_for_dada(&input[i], phred_offset, &pool, false, &mut derep_cost)?;
-        json_samples[i] = name;
+    for path in &input {
+        let (derep, identity) =
+            load_derep_for_dada(path, phred_offset, &pool, false, &mut derep_cost)?;
+        identities.push(identity);
         input_counts.push((
             derep.uniques.iter().map(|(_, c)| c).sum(),
             derep.uniques.len(),
@@ -354,8 +356,8 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         Some(names) => names,
         None => input
             .iter()
-            .zip(json_samples)
-            .map(|(p, js)| sample_label(None, js, p))
+            .zip(&mut identities)
+            .map(|(p, id)| sample_label(None, id.sample.take(), p))
             .collect(),
     };
 
@@ -534,6 +536,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         let out = DadaOutput {
             sample: sample_name.clone(),
             input_file: file_basename(&input[s]),
+            source_fastq: identities[s].source_fastq.take(),
             num_asvs: n_asvs,
             total_reads,
             asvs,
@@ -805,26 +808,28 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
     }
     type R1 = (
         Vec<String>,
+        Vec<Option<String>>,
         Vec<Vec<(String, u32)>>,
         Option<Vec<Vec<dada::RawInput>>>,
     );
-    let (sample_names, round1_asvs, mut sample_raws_opt): R1 = if !low_memory {
+    let (sample_names, source_fastqs, round1_asvs, mut sample_raws_opt): R1 = if !low_memory {
         // Cached: pre-load all uniques, then denoise from the cache.
         let mut sample_raws: Vec<Vec<dada::RawInput>> = Vec::with_capacity(n_samples);
-        let mut json_samples: Vec<Option<String>> = Vec::with_capacity(n_samples);
+        let mut identities: Vec<InputIdentity> = Vec::with_capacity(n_samples);
         for path in &input {
-            let (raws, js) = load_sample_raws(path, phred_offset, &pool, verbose)?;
+            let (raws, identity) = load_sample_raws(path, phred_offset, &pool, verbose)?;
             sample_raws.push(raws);
-            json_samples.push(js);
+            identities.push(identity);
         }
         let names: Vec<String> = match &sample_names {
             Some(n) => n.clone(),
             None => input
                 .iter()
-                .zip(&json_samples)
-                .map(|(p, js)| sample_label(None, js.clone(), p))
+                .zip(&identities)
+                .map(|(p, id)| sample_label(None, id.sample.clone(), p))
                 .collect(),
         };
+        let sources = identities.into_iter().map(|id| id.source_fastq).collect();
         let collected: Mutex<IndexedAsvs> = Mutex::new(Vec::with_capacity(n_samples));
         for_each_sample_concurrent(n_samples, jobs, threads, |s, sub_pool| {
             let result = sub_pool
@@ -846,31 +851,40 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
         for (s, asvs) in collected.into_inner().unwrap() {
             r1[s] = asvs;
         }
-        (names, r1, Some(sample_raws))
+        (names, sources, r1, Some(sample_raws))
     } else {
         // Streaming: load + denoise + drop per sample; capture name + ASVs.
         let collected: Mutex<IndexedNamedAsvs> = Mutex::new(Vec::with_capacity(n_samples));
         for_each_sample_concurrent(n_samples, jobs, threads, |s, sub_pool| {
-            let (raws, js) = load_sample_raws(&input[s], phred_offset, sub_pool, verbose)?;
+            let (raws, identity) = load_sample_raws(&input[s], phred_offset, sub_pool, verbose)?;
             let result = sub_pool
                 .install(|| dada::dada_uniques(&raws, &resolved.params))
                 .map_err(io::Error::other)?;
             accumulate_round1_trans(&trans_acc, &result)?;
             let asvs = result_to_asvs(&result);
-            let name = sample_label(sample_names.as_ref().map(|n| n[s].clone()), js, &input[s]);
+            let name = sample_label(
+                sample_names.as_ref().map(|n| n[s].clone()),
+                identity.sample,
+                &input[s],
+            );
             if verbose {
                 eprintln!("[dada-pseudo]   round 1 {}: {} ASV(s)", name, asvs.len());
             }
-            collected.lock().unwrap().push((s, name, asvs));
+            collected
+                .lock()
+                .unwrap()
+                .push((s, name, identity.source_fastq, asvs));
             Ok(())
         })?;
         let mut names = vec![String::new(); n_samples];
+        let mut sources = vec![None; n_samples];
         let mut r1: Vec<Vec<(String, u32)>> = vec![Vec::new(); n_samples];
-        for (s, name, asvs) in collected.into_inner().unwrap() {
+        for (s, name, source, asvs) in collected.into_inner().unwrap() {
             names[s] = name;
+            sources[s] = source;
             r1[s] = asvs;
         }
-        (names, r1, None)
+        (names, sources, r1, None)
     };
 
     // ---- Build a sequence table from round-1 ASVs (samples × sequences) ----
@@ -1034,6 +1048,7 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
             "dada-pseudo",
             sample_name,
             &file_basename(&input[s]),
+            source_fastqs[s].clone(),
             raws,
             &resolved.params,
             &resolved.run,
@@ -1554,9 +1569,10 @@ fn errfun_from_learned(p: &LearnedErrParams) -> io::Result<ErrFun> {
 /// from the concurrent round-1 denoise, then reassembled by index).
 type IndexedAsvs = Vec<(usize, Vec<(String, u32)>)>;
 
-/// Like [`IndexedAsvs`] but also carrying the resolved sample name — used by the
-/// streaming dada-pseudo round 1, which loads names on the fly (no pre-load).
-type IndexedNamedAsvs = Vec<(usize, String, Vec<(String, u32)>)>;
+/// Like [`IndexedAsvs`] but also carrying the resolved sample name and source
+/// FASTQ — used by the streaming dada-pseudo round 1, which loads them on the
+/// fly (no pre-load).
+type IndexedNamedAsvs = Vec<(usize, String, Option<String>, Vec<(String, u32)>)>;
 
 /// Run `f` over samples `0..n` with bounded across-sample concurrency: spawn
 /// `jobs` workers, each owning a rayon sub-pool of ~`threads / jobs` threads,
@@ -1613,15 +1629,15 @@ fn for_each_sample_concurrent(
 }
 
 /// Load one sample's dereplicated uniques as `RawInput`s (FASTQ or derep/sample
-/// JSON), returning them alongside any JSON-embedded sample name. Errors if the
+/// JSON), returning them alongside the input's [`InputIdentity`]. Errors if the
 /// sample has no uniques. Used by the multi-sample `dada`/`dada-pseudo` paths.
 fn load_sample_raws(
     path: &Path,
     phred_offset: u8,
     pool: &rayon::ThreadPool,
     verbose: bool,
-) -> io::Result<(Vec<dada::RawInput>, Option<String>)> {
-    let (derep, json_sample) = load_derep_for_dada(
+) -> io::Result<(Vec<dada::RawInput>, InputIdentity)> {
+    let (derep, identity) = load_derep_for_dada(
         path,
         phred_offset,
         pool,
@@ -1649,7 +1665,7 @@ fn load_sample_raws(
             format!("{}: no uniques found", path.display()),
         ));
     }
-    Ok((raws, json_sample))
+    Ok((raws, identity))
 }
 
 /// Map a DADA result's clusters to (decoded sequence, reads) ASV pairs.
@@ -1690,6 +1706,9 @@ struct DadaOutput {
     sample: String,
     /// Original input file name (no directory) for provenance.
     input_file: String,
+    /// The FASTQ behind `input_file`: itself, or the one a derep JSON records.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_fastq: Option<String>,
     num_asvs: usize,
     total_reads: u32,
     asvs: Vec<AsvEntry>,
@@ -1799,6 +1818,24 @@ fn read_prior_set(path: &Path) -> io::Result<std::collections::HashSet<String>> 
         .into_iter()
         .map(|(_, seq)| String::from_utf8_lossy(&seq).to_ascii_uppercase())
         .collect())
+}
+
+/// Who an input is, as recorded upstream: the `sample` a derep/sample JSON
+/// embeds, and the FASTQ it was dereplicated from, which `merge-pairs` checks
+/// its `--fwd-fastq`/`--rev-fastq` against (#111).
+#[derive(Default)]
+struct InputIdentity {
+    sample: Option<String>,
+    source_fastq: Option<String>,
+}
+
+impl InputIdentity {
+    fn fastq(path: &Path) -> Self {
+        Self {
+            sample: None,
+            source_fastq: Some(file_basename(path)),
+        }
+    }
 }
 
 /// A sample's output name: the one given on the command line, else the one
@@ -2092,6 +2129,7 @@ fn denoise_and_serialize(
     tag: &'static str,
     sample: &str,
     input_file: &str,
+    source_fastq: Option<String>,
     raw_inputs: &[dada::RawInput],
     params: &dada::DadaParams,
     run_params: &DadaRunParams,
@@ -2167,6 +2205,7 @@ fn denoise_and_serialize(
     let out = DadaOutput {
         sample: sample.to_string(),
         input_file: input_file.to_string(),
+        source_fastq,
         num_asvs: asvs.len(),
         total_reads,
         asvs,
@@ -2221,15 +2260,14 @@ struct DerepLoadCost {
 /// only populated from the FASTQ path; JSON inputs leave it empty since neither
 /// `dada` nor `dada-pooled` consult it.
 ///
-/// Returns the dereplicated table plus the JSON's embedded `sample` field
-/// when present; FASTQ inputs always return `None` for the name.
+/// Returns the dereplicated table plus the input's [`InputIdentity`].
 fn load_derep_for_dada(
     path: &Path,
     phred_offset: u8,
     pool: &rayon::ThreadPool,
     verbose: bool,
     cost: &mut DerepLoadCost,
-) -> io::Result<(derep::Derep, Option<String>)> {
+) -> io::Result<(derep::Derep, InputIdentity)> {
     let t_sample = std::time::Instant::now();
     let r = load_derep_for_dada_inner(path, phred_offset, pool, verbose, cost);
     cost.per_sample.push(t_sample.elapsed());
@@ -2242,7 +2280,7 @@ fn load_derep_for_dada_inner(
     pool: &rayon::ThreadPool,
     verbose: bool,
     cost: &mut DerepLoadCost,
-) -> io::Result<(derep::Derep, Option<String>)> {
+) -> io::Result<(derep::Derep, InputIdentity)> {
     if is_json_path(path) {
         #[derive(serde::Deserialize)]
         struct UniqueEntryJson {
@@ -2261,6 +2299,9 @@ fn load_derep_for_dada_inner(
             dada2_rs_command: Option<String>,
             #[serde(default)]
             sample: Option<String>,
+            /// The FASTQ `derep` read, carried on as `source_fastq` (#111).
+            #[serde(default)]
+            input_file: Option<String>,
             #[serde(default)]
             sort_order: Option<String>,
             uniques: Vec<UniqueEntryJson>,
@@ -2279,7 +2320,10 @@ fn load_derep_for_dada_inner(
         cost.bytes += jc.bytes;
         cost.n_json += 1;
         let t_build = std::time::Instant::now();
-        let sample_name = parsed.sample;
+        let identity = InputIdentity {
+            sample: parsed.sample,
+            source_fastq: parsed.input_file,
+        };
         let mut entries = parsed.uniques;
         // Skip the defensive sort when the producer has declared the order.
         // Older JSONs without `sort_order` get sorted, matching prior behaviour.
@@ -2310,7 +2354,7 @@ fn load_derep_for_dada_inner(
                 quals,
                 map: Vec::new(),
             },
-            sample_name,
+            identity,
         ))
     } else if path.extension().and_then(|e| e.to_str()) == Some("gz") {
         // FASTQ is a single streaming pass — read, decompress and dereplicate
@@ -2326,7 +2370,7 @@ fn load_derep_for_dada_inner(
             verbose,
         )?;
         cost.build += t_build.elapsed();
-        Ok((derep, None))
+        Ok((derep, InputIdentity::fastq(path)))
     } else {
         cost.any_fastq = true;
         cost.bytes += std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -2338,7 +2382,7 @@ fn load_derep_for_dada_inner(
             verbose,
         )?;
         cost.build += t_build.elapsed();
-        Ok((derep, None))
+        Ok((derep, InputIdentity::fastq(path)))
     }
 }
 

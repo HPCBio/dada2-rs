@@ -403,3 +403,74 @@ fn sample_names_are_comma_separated() {
     ]);
     assert_eq!(samples(&merged, "sample"), ["A", "B"]);
 }
+
+/// `dada*` run from a derep JSON records the FASTQ behind it as `source_fastq`,
+/// so `merge-pairs`' provenance warning stays silent on aligned lists and
+/// still fires when the FASTQ lists are swapped (#111).
+#[test]
+fn merge_pairs_provenance_from_derep_json() {
+    let dir = scratch("merge_provenance");
+    let err = err_model();
+    let names = ["sam1F", "sam2F", "sam1R", "sam2R"];
+    for name in names {
+        let fq = fixture(&format!("{name}.fastq.gz"));
+        run(&[
+            "derep",
+            fq.to_str().unwrap(),
+            "-o",
+            dir.join(format!("{name}.derep.json")).to_str().unwrap(),
+        ]);
+    }
+    let derep = |name: &str| dir.join(format!("{name}.derep.json"));
+    let fastq = |name: &str| fixture(&format!("{name}.fastq.gz"));
+    const WARNING: &str = "check that the file lists line up";
+
+    for mode in ["dada", "dada-pooled", "dada-pseudo"] {
+        let (fwd, rev) = (dir.join(format!("{mode}_F")), dir.join(format!("{mode}_R")));
+        for (pair, out) in [(["sam1F", "sam2F"], &fwd), (["sam1R", "sam2R"], &rev)] {
+            run(&[
+                mode,
+                derep(pair[0]).to_str().unwrap(),
+                derep(pair[1]).to_str().unwrap(),
+                "--error-model",
+                err.to_str().unwrap(),
+                "--output-dir",
+                out.to_str().unwrap(),
+                "--threads",
+                "1",
+            ]);
+        }
+        let v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fwd.join("sam1F.json")).unwrap()).unwrap();
+        assert_eq!(v["input_file"], "sam1F.derep.json", "{mode}");
+        assert_eq!(v["source_fastq"], "sam1F.fastq.gz", "{mode}");
+
+        let merge = |fwd_fq: [&str; 2]| {
+            let out = std::process::Command::new(common::BIN)
+                .args([
+                    "merge-pairs",
+                    "--fwd-dada",
+                    fwd.join("sam1F.json").to_str().unwrap(),
+                    fwd.join("sam2F.json").to_str().unwrap(),
+                    "--rev-dada",
+                    rev.join("sam1R.json").to_str().unwrap(),
+                    rev.join("sam2R.json").to_str().unwrap(),
+                    "--fwd-fastq",
+                    fastq(fwd_fq[0]).to_str().unwrap(),
+                    fastq(fwd_fq[1]).to_str().unwrap(),
+                    "--rev-fastq",
+                    fastq("sam1R").to_str().unwrap(),
+                    fastq("sam2R").to_str().unwrap(),
+                    "-o",
+                    dir.join(format!("{mode}_merged.json")).to_str().unwrap(),
+                ])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stderr).into_owned()
+        };
+        let aligned = merge(["sam1F", "sam2F"]);
+        assert!(!aligned.contains(WARNING), "{mode}: {aligned}");
+        let swapped = merge(["sam2F", "sam1F"]);
+        assert!(swapped.contains(WARNING), "{mode}: {swapped}");
+    }
+}
