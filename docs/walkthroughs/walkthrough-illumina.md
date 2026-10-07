@@ -21,6 +21,9 @@ dada2-rs filter-and-trim \
   --compress --verbose
 ```
 
+Run this for each sample; later steps expect `filtered/<sample>_R1.fastq.gz` and
+`filtered/<sample>_R2.fastq.gz`.
+
 ## 2. Learn the error model
 
 **Option A — from pre-computed derep JSON files** (via the `sample` subcommand):
@@ -43,6 +46,8 @@ dada2-rs learn-errors filtered/*_R1.fastq.gz \
   -o errors_fwd.json --verbose
 ```
 
+Repeat either option on `filtered/*_R2.fastq.gz` to write `errors_rev.json`.
+
 ### Visualise cluster diagnostics during error learning
 
 Pass `--diag-dir` to emit an `iter_NNN.json` file for each self-consistency
@@ -61,45 +66,48 @@ alignment work across iterations.
 ## 3. Denoise each sample
 
 ```bash
-dada2-rs dada filtered/sample_R1.fastq.gz \
-  --error-model errors_fwd.json \
-  -o dada/sample_R1.json --verbose
+# Dereplicate each read under one shared sample name per pair
+for s in sampleA sampleB; do
+  dada2-rs derep filtered/${s}_R1.fastq.gz --sample-name $s -o derep/fwd/$s.json
+  dada2-rs derep filtered/${s}_R2.fastq.gz --sample-name $s -o derep/rev/$s.json
+done
+
+dada2-rs dada derep/fwd/*.json --error-model errors_fwd.json \
+  --output-dir dada/fwd/ --verbose
+dada2-rs dada derep/rev/*.json --error-model errors_rev.json \
+  --output-dir dada/rev/ --verbose
 ```
 
-Repeat for reverse reads using the reverse error model.
+Naming each pair lets `merge-pairs` check the pairing: the derep JSON carries
+the sample name and its source FASTQ into the dada JSON, and `--output-dir`
+names each output after the sample. `dada` also reads FASTQ directly; set the
+names then with `--sample-name` or `--sample-names`. See
+[`merge-pairs`](../commands/merge-pairs.md#recommended-name-each-pair-upstream).
 
 The read → cluster map is always in the output; there is no flag for it, and
 downstream tools rely on it being there. (`derep` is the one that gates its
 map — `--show-map` there adds the per-read → unique index, which is off by
 default because of its size.)
 
-!!! tip "Multiple samples at once"
-    `dada` accepts more than one input. Pass several filtered FASTQs and an
-    `--output-dir` to denoise them in one invocation; use `--sample-jobs N` to
-    control how many run concurrently. See
-    [Performance & Benchmarking](../benchmarking.md) for the concurrency model.
-
-!!! tip "Name each read pair"
-    Give the forward and reverse reads of a sample the same name, so
-    `merge-pairs` can check the pairing. The simplest route is
-    `dada2-rs derep <fastq> --sample-name <name> -o <name>.json` for each read,
-    then `dada` on the derep JSONs with `--output-dir`. When denoising FASTQ
-    directly, use `--sample-name` or `--sample-names`. See
-    [`merge-pairs`](../commands/merge-pairs.md#recommended-name-each-pair-upstream).
+!!! tip "Concurrency"
+    Use `--sample-jobs N` to control how many samples `dada` denoises
+    concurrently. See [Performance & Benchmarking](../benchmarking.md) for the
+    concurrency model.
 
 ## 4. Merge paired reads
 
 ```bash
-dada2-rs merge-pairs \
-  --fwd-dada dada/fwd/*.json \
-  --rev-dada dada/rev/*.json \
-  --fwd-fastq filtered/fwd/*.fastq.gz \
-  --rev-fastq filtered/rev/*.fastq.gz \
+dada2-rs merge-pairs --check-sample-ids \
+  --fwd-dada  dada/fwd/*.json \
+  --rev-dada  dada/rev/*.json \
+  --fwd-fastq filtered/*_R1.fastq.gz \
+  --rev-fastq filtered/*_R2.fastq.gz \
   -o merged.json --verbose
 ```
 
-With named samples, add `--check-sample-ids` to stop on a mispaired sample
-instead of only warning.
+The four lists are matched by position, so each glob must expand in the same
+sample order. With samples named as in step 3, `--check-sample-ids` stops on a
+mispaired sample instead of only warning.
 
 ## 5. Build sequence table and remove chimeras
 
