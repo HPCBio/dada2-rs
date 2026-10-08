@@ -1453,22 +1453,64 @@ pub fn raw_align_with_screen(
 /// happened to work while `kdist` was a k-mer frequency distance, and it broke
 /// silently when a different screen supplied a distance from another space
 /// (see `docs/findings/minimizer-screening.md`).
+/// `DADA2RS_GAPLESS_X86=1` reproduces x86-64 R DADA2's gapless test (#277),
+/// for parity checks against R runs on Intel/AMD machines. Off by default.
+///
+/// On x86-64, R runs `kord_dist_SSEi`, which compares sequences of unequal
+/// length over the shorter one; the plain `kord_dist` (every other platform,
+/// and this port) returns -1 for unequal lengths. So x86 R can take the
+/// gapless shortcut for a pair that differs by an indel near one end, whereas
+/// ARM R and dada2-rs align it. The gapless alignment pads the shorter
+/// sequence, which turns the indel into a run of substitutions and collapses
+/// lambda. The asymmetry dates from DADA2 commit 4a89b96 (2018).
+pub fn gapless_x86_compat() -> bool {
+    static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var_os("DADA2RS_GAPLESS_X86").is_some())
+}
+
 fn pair_is_gapless(raw1: &Raw, raw2: &Raw, k: usize, scratch: &mut Vec<i32>) -> bool {
-    if raw1.len() != raw2.len() {
+    pair_is_gapless_with(raw1, raw2, k, scratch, gapless_x86_compat())
+}
+
+/// [`pair_is_gapless`] with the x86 compatibility choice passed in, so both
+/// behaviours are testable in one process (the gate is read once).
+fn pair_is_gapless_with(
+    raw1: &Raw,
+    raw2: &Raw,
+    k: usize,
+    scratch: &mut Vec<i32>,
+    x86: bool,
+) -> bool {
+    if raw1.len() != raw2.len() && !x86 {
         return false; // kord_dist is undefined for unequal lengths
     }
     let (Some(o1), Some(o2)) = (&raw1.kord, &raw2.kord) else {
         return false;
     };
-    let Some(klen) = raw1.len().checked_sub(k - 1).filter(|&l| l > 0) else {
+    let Some(klen) = raw1
+        .len()
+        .min(raw2.len())
+        .checked_sub(k - 1)
+        .filter(|&l| l > 0)
+    else {
         return false;
     };
     if o1.len() < klen || o2.len() < klen {
         return false;
     }
-    let (a, b) = (&o1[..klen], &o2[..klen]);
-
-    let positional = a.iter().zip(b).filter(|(x, y)| x == y).count();
+    let positional = o1[..klen]
+        .iter()
+        .zip(&o2[..klen])
+        .filter(|(x, y)| x == y)
+        .count();
+    // x86 R compares that positional count, taken over the shorter length
+    // (kord_dist_SSEi), with kmer_dist's overlap of the two FULL k-mer
+    // compositions. For equal lengths the two framings coincide.
+    let (a, b) = if x86 {
+        (&o1[..], &o2[..])
+    } else {
+        (&o1[..klen], &o2[..klen])
+    };
 
     let n = crate::kmers::n_kmers(k);
     if scratch.len() < n {
@@ -3497,5 +3539,27 @@ mod tests {
             al, nw,
             "without k-mers, the pair must be aligned (R: kodist = -1)"
         );
+    }
+
+    /// Unequal lengths are never gapless by default (R's plain kord_dist, the
+    /// non-x86 path). x86 R's kord_dist_SSEi compares over the shorter length,
+    /// so a one-base extension passes there; DADA2RS_GAPLESS_X86 reproduces it.
+    #[test]
+    fn gapless_x86_compat_takes_unequal_lengths() {
+        let s1 = encode("ACGTTGCAAGGCTTACCGATAGCTAGGCATCGATG");
+        let mut s2 = s1.clone();
+        s2.push(1); // one extra base at the 3' end
+        let mut r1 = Raw::new(s1.clone(), None, 10, false);
+        let mut r2 = Raw::new(s2, None, 1, false);
+        crate::kmers::raw_assign_kmers(&mut r1, 5);
+        crate::kmers::raw_assign_kmers(&mut r2, 5);
+        let mut scratch = Vec::new();
+        assert!(!pair_is_gapless_with(&r1, &r2, 5, &mut scratch, false));
+        assert!(pair_is_gapless_with(&r1, &r2, 5, &mut scratch, true));
+        // Equal lengths: identical answer either way.
+        let mut r3 = Raw::new(s1, None, 1, false);
+        crate::kmers::raw_assign_kmers(&mut r3, 5);
+        assert!(pair_is_gapless_with(&r1, &r3, 5, &mut scratch, false));
+        assert!(pair_is_gapless_with(&r1, &r3, 5, &mut scratch, true));
     }
 }
