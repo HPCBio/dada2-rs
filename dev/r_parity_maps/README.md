@@ -89,6 +89,20 @@ being compared: compiler flags are part of what is under test. Birth p-values
 differ in their last bits unless dada2-rs is built with `--features
 rmath-ppois`.
 
+## x86-64 R and the gapless shortcut (#277)
+
+On x86-64, R DADA2 decides its gapless shortcut with `kord_dist_SSEi`,
+which compares sequences of unequal length over the shorter one. The plain
+`kord_dist` (every other platform, and dada2-rs) returns -1 for unequal
+lengths. A pair whose indel sits within k bases of an end then passes on x86,
+is aligned without gaps, and its λ collapses. That was the whole PacBio
+residual against R on the cluster.
+
+- `DADA2RS_GAPLESS_X86=1` reproduces the x86 behaviour, for parity runs against
+  x86 R. Off by default; dada2-rs keeps the non-x86 behaviour.
+- `r_gapless_fix.patch` is the proposed one-line fix to R DADA2: require
+  equal lengths before taking the shortcut.
+
 ## Pooled runs
 
 Per-sample runs cannot reproduce a pooled difference. For a pooled run:
