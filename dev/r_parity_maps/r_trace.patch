@@ -1,0 +1,90 @@
+--- dada2.orig/src/Rmain.cpp	2026-10-07 22:49:12
++++ dada2/src/Rmain.cpp	2026-10-07 22:49:48
+@@ -16,6 +16,56 @@
+ //' @useDynLib dada2
+ //' @importFrom Rcpp evalCpp
+ 
++// ---- dada2-rs #277 per-read trace (diagnostic build only) -------------------
++// DADA2RS_TRACE_RAW=<0-based derep index> prints the same TRACE lines as
++// dada2-rs's raw_trace module, at the same points in run_dada, with doubles as
++// raw IEEE-754 bits, so the two logs diff directly.
++#include <cstring>
++#include <cstdint>
++#include <cstdlib>
++static long tr_raw() {
++  const char *s = getenv("DADA2RS_TRACE_RAW");
++  return s ? atol(s) : -1;
++}
++static unsigned long long tr_bits(double x) {
++  uint64_t u; memcpy(&u, &x, sizeof u); return (unsigned long long) u;
++}
++static void tr_bud(B *b, unsigned int i) {
++  if (tr_raw() < 0) return;
++  Bi *bi = b->bi[i];
++  REprintf("TRACE BUD %u from %u centre %d pval %016llx\n", i, bi->birth_from,
++           bi->center ? (int) bi->center->index : -1, tr_bits(bi->birth_pval));
++}
++static void tr_cmp(B *b, unsigned int i) {
++  long t = tr_raw();
++  if (t < 0 || t >= (long) b->nraw) return;
++  Raw *raw = b->raw[t];
++  const Comparison *hit = NULL;
++  for (size_t k = 0; k < b->bi[i]->comp.size(); k++) {
++    if ((long) b->bi[i]->comp[k].index == t) { hit = &b->bi[i]->comp[k]; break; }
++  }
++  if (hit) {
++    REprintf("TRACE CMP %u stored 1 lambda %016llx lock %d emm %016llx\n", i,
++             tr_bits(hit->lambda), (int) raw->lock, tr_bits(raw->E_minmax));
++  } else {
++    REprintf("TRACE CMP %u stored 0 lambda - lock %d emm %016llx\n", i,
++             (int) raw->lock, tr_bits(raw->E_minmax));
++  }
++}
++static void tr_pos(B *b, const char *phase) {
++  long t = tr_raw();
++  if (t < 0 || t >= (long) b->nraw) return;
++  Raw *raw = b->raw[t];
++  long ci = -1;
++  for (unsigned int i = 0; i < b->nclust && ci < 0; i++)
++    for (unsigned int r = 0; r < b->bi[i]->nraw; r++)
++      if (b->bi[i]->raw[r] == raw) { ci = i; break; }
++  REprintf("TRACE POS %s nclust %u in %ld comp.i %u lambda %016llx creads %u lock %d p %016llx\n",
++           phase, b->nclust, ci, raw->comp.i, tr_bits(raw->comp.lambda),
++           ci >= 0 ? b->bi[ci]->reads : 0u, (int) raw->lock, tr_bits(raw->p));
++}
++// -----------------------------------------------------------------------------
++
+ B *run_dada(Raw **raws, int nraw, Rcpp::NumericMatrix errMat, 
+             int match, int mismatch, int gap_pen, int homo_gap_pen, bool use_kmers, double kdist_cutoff, int band_size, 
+             double omegaA, double omegaP, bool detect_singletons, 
+@@ -310,13 +360,16 @@
+   else { b_compare(bb, 0, errMat, match, mismatch, gap_pen, homo_gap_pen, use_kmers, 1.0, band_size, vectorized_alignment, SSE, gapless, greedy, verbose); }
+ //  if(multithread) { b_p_update_parallel(bb); }
+   b_p_update(bb, greedy, detect_singletons); // Calculates abundance p-value for each raw in its cluster (consensuses)
+-  
++  tr_cmp(bb, 0); tr_pos(bb, "P");
++
+   if(max_clust < 1) { max_clust = bb->nraw; }
+-  
++
+   while( (bb->nclust < max_clust) && (newi = b_bud(bb, min_fold, min_hamming, min_abund, verbose)) ) {
+     if(verbose) Rprintf("\nNew Cluster C%i:", newi);
++    tr_bud(bb, newi);
+     if(multithread) { b_compare_parallel(bb, newi, errMat, match, mismatch, gap_pen, homo_gap_pen, use_kmers, kdist_cutoff, band_size, vectorized_alignment, SSE, gapless, greedy, verbose); }
+     else { b_compare(bb, newi, errMat, match, mismatch, gap_pen, homo_gap_pen, use_kmers, kdist_cutoff, band_size, vectorized_alignment, SSE, gapless, greedy, verbose); }
++    tr_cmp(bb, newi);
+     // Keep shuffling and updating until no more shuffles
+     nshuffle = 0;
+     do {
+@@ -324,9 +377,11 @@
+       if(verbose) { Rprintf("S"); }
+     } while(shuffled && ++nshuffle < MAX_SHUFFLE);
+     if(verbose && nshuffle >= MAX_SHUFFLE) { Rprintf("Warning: Reached maximum (%i) shuffles.\n", MAX_SHUFFLE); }
++    tr_pos(bb, "S");
+ 
+ //    if(multithread) { b_p_update_parallel(bb); }
+     b_p_update(bb, greedy, detect_singletons);
++    tr_pos(bb, "P");
+     Rcpp::checkUserInterrupt();
+   } // while( (bb->nclust < max_clust) && (newi = b_bud(bb, min_fold, min_hamming, min_abund, verbose)) )
+   

@@ -68,6 +68,27 @@ the run is not replaying `learnErrors`.
 Both ends must be exact for this to mean anything: the converter writes 17
 significant digits and `serde_json` parses with `float_roundtrip`.
 
+## Tracing one read
+
+When one read lands in a different cluster, `trace_read.sh` follows it through
+both implementations. A patched R DADA2 (`r_trace.patch`) and dada2-rs
+(`DADA2RS_TRACE_RAW`) print the same `TRACE` lines at the same points: every
+cluster birth, the read's comparison with each new cluster (λ, stored or not,
+lock, `E_minmax`), and its cluster after each shuffle and p-update. Doubles are
+printed as raw IEEE-754 bits, so equal means bit-equal. The first differing
+line names the quantity.
+
+```bash
+dev/r_parity_maps/install_r_trace.sh ~/R/dada2-trace          # once, with the reference's R
+R_TRACE_LIB=~/R/dada2-trace ITER=6 dev/r_parity_maps/trace_read.sh \
+    target/release/dada2-rs ref.err.rds sample.fastq.gz <read sequence> trace_out
+```
+
+Build the traced DADA2 with the same R, on the same machine, as the reference
+being compared: compiler flags are part of what is under test. Birth p-values
+differ in their last bits unless dada2-rs is built with `--features
+rmath-ppois`.
+
 ## Pooled runs
 
 Per-sample runs cannot reproduce a pooled difference. For a pooled run:

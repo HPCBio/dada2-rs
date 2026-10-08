@@ -1143,6 +1143,8 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         params.min_abund,
     );
     t_pupdate += t.elapsed();
+    raw_trace::cmp(&bb, 0);
+    raw_trace::pos(&bb, "P");
 
     let max_clust = if params.max_clust == 0 {
         bb.raws.len()
@@ -1210,6 +1212,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         // with its Division fragment), then open this one.
         rec.flush();
         rec_print!(rec, "New Cluster C{newi}:");
+        raw_trace::bud(&bb, newi);
 
         let t = Instant::now();
         if params.multithread {
@@ -1247,6 +1250,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             );
         }
         t_compare += t.elapsed();
+        raw_trace::cmp(&bb, newi);
         // Append the new cluster's comps to the persistent candidate index
         // (ascending cluster order preserved: newi is the largest index so far).
         let t = Instant::now();
@@ -1297,6 +1301,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             eprintln!("Warning: Reached maximum ({MAX_SHUFFLE}) shuffles.");
         }
 
+        raw_trace::pos(&bb, "S");
         member_orderer.apply(&mut bb);
         let t = Instant::now();
         let repriced = b_p_update(
@@ -1308,6 +1313,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             params.min_abund,
         );
         t_pupdate += t.elapsed();
+        raw_trace::pos(&bb, "P");
         pupd_rounds += 1;
         pupd_stats += repriced;
 
@@ -1665,6 +1671,81 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     }
 
     bb
+}
+
+/// Per-read event trace for R parity (#277). `DADA2RS_TRACE_RAW=<index>` names
+/// one raw by its 0-based position in the dereplicated input; every event that
+/// can decide its cluster is printed to stderr as a `TRACE` line. The R side
+/// (dev/r_parity_maps/r_trace.patch) prints the same lines at the same points
+/// in `run_dada`, with floats as raw IEEE-754 bits, so the two logs diff
+/// directly and the first differing line names the quantity.
+mod raw_trace {
+    use crate::containers::B;
+    use std::sync::OnceLock;
+
+    pub(super) fn traced() -> Option<usize> {
+        static T: OnceLock<Option<usize>> = OnceLock::new();
+        *T.get_or_init(|| std::env::var("DADA2RS_TRACE_RAW").ok()?.trim().parse().ok())
+    }
+
+    fn bits(x: f64) -> String {
+        format!("{:016x}", x.to_bits())
+    }
+
+    /// A cluster's birth: parent, centre raw, birth p-value. Printed for every
+    /// cluster, so cluster numbering can be lined up between the two sides.
+    pub(super) fn bud(b: &B, i: usize) {
+        if traced().is_none() {
+            return;
+        }
+        let c = &b.clusters[i];
+        eprintln!(
+            "TRACE BUD {i} from {} centre {} pval {}",
+            c.birth_from,
+            c.center.map_or(-1, |x| x as i64),
+            bits(c.birth_pval)
+        );
+    }
+
+    /// After comparing cluster `i`: was the traced raw's comparison stored, its
+    /// lambda, the raw's lock state, and its E_minmax.
+    pub(super) fn cmp(b: &B, i: usize) {
+        let Some(t) = traced() else { return };
+        let raw = &b.raws[t];
+        let stored = b.clusters[i].comp.iter().find(|c| c.index as usize == t);
+        eprintln!(
+            "TRACE CMP {i} stored {} lambda {} lock {} emm {}",
+            stored.is_some() as u8,
+            stored.map_or("-".to_string(), |c| bits(c.lambda)),
+            raw.lock as u8,
+            bits(b.e_minmax[t])
+        );
+    }
+
+    /// The traced raw's cluster and state after a phase (`S` shuffle, `P` p-update).
+    pub(super) fn pos(b: &B, phase: &str) {
+        let Some(t) = traced() else { return };
+        let raw = &b.raws[t];
+        // Membership, not raw.comp.i: if the two ever disagree, that is a finding.
+        let ci = b
+            .clusters
+            .iter()
+            .position(|c| c.raws.contains(&t))
+            .map_or(-1, |x| x as i64);
+        let creads = if ci >= 0 {
+            b.clusters[ci as usize].reads
+        } else {
+            0
+        };
+        eprintln!(
+            "TRACE POS {phase} nclust {} in {ci} comp.i {} lambda {} creads {creads} lock {} p {}",
+            b.clusters.len(),
+            raw.comp.i,
+            bits(raw.comp.lambda),
+            raw.lock as u8,
+            bits(raw.p)
+        );
+    }
 }
 
 #[cfg(test)]
