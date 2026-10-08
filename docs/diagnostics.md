@@ -1086,6 +1086,20 @@ them; [How large the floor is,
 measured](findings/r-parity-floor-and-ceiling.md#how-large-the-floor-is-measured)
 has the results so far.
 
+`DADA2RS_GAPLESS_X86=1` reproduces x86-64 R DADA2's gapless test, which also
+skips alignment for some pairs of unequal length
+([#277](https://github.com/HPCBio/dada2-rs/issues/277)). Use it only to compare
+against an R reference built on x86-64; it warns on every run:
+
+```
+[dada] WARNING: DADA2RS_GAPLESS_X86 is set: the gapless shortcut reproduces x86-64 R DADA2,
+[dada]          which also takes it for some pairs of unequal length. CHANGES RESULTS (#277).
+```
+
+[x86-64 R and the gapless
+shortcut](findings/r-parity-floor-and-ceiling.md#x86-64-r-and-the-gapless-shortcut)
+has the mechanism and the PacBio result.
+
 Pool order, the other ordering that tie-breaks see, is a `dada-pooled` flag
 rather than a gate: see [`--pool-tiebreak`](commands/dada-pooled.md#denoising-alignment-screening).
 `dev/run_pool_tiebreak.sh` runs both of its values with `--pooled-record`;
