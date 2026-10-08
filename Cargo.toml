@@ -74,7 +74,8 @@ rmath-ppois = []
 # nwalign.rs from emitting `unexpected_cfgs` warnings when built without the
 # feature defined (e.g. `cargo install dada2-rs`). Harmless when the feature is
 # present in the manifest.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("wfa"))'] }
+# The same holds for `rmath-ppois`, which the publish script also strips (#277).
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("wfa", "rmath-ppois"))'] }
 
 [dev-dependencies]
 serde_json = "1"
