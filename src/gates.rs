@@ -54,6 +54,8 @@ const KNOWN: &[&str] = &[
     "DADA2RS_WFA_MAX_STEPS",
     "DADA2RS_BENCH_THREADS",
     "DADA2RS_MINIMIZER_INDEX",
+    "DADA2RS_GAPLESS_X86",
+    "DADA2RS_TRACE_RAW",
 ];
 
 /// What happened to a variable that is no longer the current spelling.
@@ -213,16 +215,25 @@ pub fn warn_timing_invalidating() -> usize {
 /// R-equivalent, so it must never be mistaken for a normal run. Printed
 /// regardless of `--verbose`. Returns the number of warnings.
 pub fn warn_result_changing() -> usize {
+    let mut warnings = 0;
     let arm = crate::member_order::member_order();
-    if arm == crate::member_order::MemberOrder::Insertion {
-        return 0;
+    if arm != crate::member_order::MemberOrder::Insertion {
+        eprintln!(
+            "[dada] WARNING: DADA2RS_MEMBER_ORDER={} is an experimental arm that \
+             CHANGES RESULTS.\n[dada]          Output is not R-equivalent (#157).",
+            arm.label()
+        );
+        warnings += 1;
     }
-    eprintln!(
-        "[dada] WARNING: DADA2RS_MEMBER_ORDER={} is an experimental arm that \
-         CHANGES RESULTS.\n[dada]          Output is not R-equivalent (#157).",
-        arm.label()
-    );
-    1
+    if crate::nwalign::gapless_x86_compat() {
+        eprintln!(
+            "[dada] WARNING: DADA2RS_GAPLESS_X86 is set: the gapless shortcut \
+             reproduces x86-64 R DADA2,\n[dada]          which also takes it for \
+             some pairs of unequal length. CHANGES RESULTS (#277)."
+        );
+        warnings += 1;
+    }
+    warnings
 }
 
 /// One resolved gate, for the `--verbose` summary.
@@ -295,6 +306,11 @@ pub fn report() -> Vec<String> {
             value: crate::member_order::member_order().label(),
             default: crate::member_order::member_order()
                 == crate::member_order::MemberOrder::Insertion,
+        },
+        Resolved {
+            label: "gapless x86 compat",
+            value: on_off(crate::nwalign::gapless_x86_compat()),
+            default: !crate::nwalign::gapless_x86_compat(),
         },
         Resolved {
             label: "par grain",

@@ -11,9 +11,11 @@ a bug, and treating a deliberate divergence as a regression.
 Concretely, on the pooled 362-sample MiSeq SOP and 30-sample NovaSeq ITS2 runs,
 both read directions, we now reproduce R's ASV set **exactly** and differ by
 **0 to 4 single reads** across the whole sample × ASV table, and ITS2's merged
-table by 5, while the measured floor on the same runs is up to 14 ASVs. On pooled
-PacBio HiFi we differ by 10 ASVs against a floor of 17–36, with a cell-level gap
-still open ([issue 269](https://github.com/HPCBio/dada2-rs/issues/269)).
+table by 5, while the measured floor on the same runs is up to 14 ASVs. Pooled
+PacBio HiFi has R's ASV set exactly and differs by 15 single reads, every one
+of them from [a gapless test that only x86-64 R
+takes](#x86-64-r-and-the-gapless-shortcut); with that test emulated, the
+95-sample table and the learned transition counts are identical to R's.
 Getting there took removing four *systematic* differences, three in ordering
 and one in merging, each of which had been hiding inside what looked like
 floor; one of them, [the pool's tie-break](#a-third-instance-the-pools-tie-break),
@@ -44,7 +46,7 @@ With the systematic differences removed (see below), the residual against R
 | MiSeq SOP 362, reverse | 0 | 0 of 179,919 | 0 |
 | NovaSeq ITS2 30, forward | 0 | 2 of 15,852 | 2 |
 | NovaSeq ITS2 30, reverse | 0 | 4 of 16,212 | 4 |
-| PacBio HiFi 95 | 10 (2,791 = 2,791 in count) | 404 of 62,649 | 558 |
+| PacBio HiFi 95 | 0 | 30 of 62,585 (0 emulating x86 R) | 30 (0) |
 
 On 16S and ITS2 every remaining difference is a pair of cells in one sample: a
 single read that one implementation assigns to one ASV and the other to a
@@ -60,16 +62,12 @@ overlap differently, so on long ITS2 variants with a 13–15-base overlap it
 rejected 93 reads' worth of pairs that R merged
 ([issue 272](https://github.com/HPCBio/dada2-rs/issues/272)).
 
-PacBio is not yet there at the cell level, though its 10 differing ASVs are
-fewer than any single member-order shuffle produces (17–36; see below). Its
-remaining cells are mostly small abundance shifts inside large ASVs (15,194 vs
-15,183 reads) that do not depend on the pool's tie-break or on member order —
-the same cells head the list in every member-order arm — so they are not
-floor; the source is long-read specific and tracked in
-[issue 269](https://github.com/HPCBio/dada2-rs/issues/269). Chimera removal was
-separately confirmed exactly equivalent on the earlier PacBio tables by
-cross-feeding both directions — zero differences either way — so the gap is
-upstream of it.
+PacBio's 30 cells have the same shape, 15 single reads, but they are not
+ties. Each is a read 1–2 bases shorter or longer than a large centre, which x86-64
+R compares without gaps and we align; see [the ceiling](#x86-64-r-and-the-gapless-shortcut).
+The R reference was built on x86-64. An earlier residual of 10 ASVs and 558
+reads came from a stale error model, not from denoising
+([issue 269](https://github.com/HPCBio/dada2-rs/issues/269)).
 
 ### How large the floor is, measured
 
@@ -98,7 +96,9 @@ change is still 117 reads. The PacBio pooled floor barely moved either: 16–30
 under the old pool tie-break, 17–36 now, largest change still 76 reads. The
 MiSeq pseudo and per-sample row and the PacBio pseudo and per-sample row are
 the original measurements: neither mode pools dereps, so the pool's tie-break
-cannot reach them.
+cannot reach them. All PacBio rows used an error model since found to be stale
+([issue 269](https://github.com/HPCBio/dada2-rs/issues/269)) and are due to be
+re-measured.
 
 Read totals barely move: at most 0.11% of reads (PacBio per-sample), 0.06% on
 ITS2. The changes are **renames**, not organisms gained or lost: an ASV named
@@ -112,9 +112,9 @@ against it.
 The floor grows with read length and diversity, from 0–2 ASVs on MiSeq V4 to
 17–39, about 1% of the table, on full-length PacBio. **The residual against R
 is now below anything the floor produces:** on 16S and ITS2 R lands exactly
-where our unshuffled order does, while single shuffles move 2 to 14 ASVs; on
-pooled PacBio R differs from our default by 10 ASVs, while shuffles move 17–36
-from our default and 15–34 from R.
+where our unshuffled order does, and on PacBio so does x86-64 R with its gapless
+test emulated, while single shuffles move 2 to 14 ASVs on 16S and ITS2 and
+17–36 on PacBio.
 
 `sorted` is a fair stand-in for R's ordering: R and dada2-rs both start from
 derep order and share the same `swap_remove` member updates. On every pooled
@@ -240,7 +240,7 @@ Measured against R with everything else pinned:
 | MiSeq SOP 362, reverse | identical | identical |
 | NovaSeq ITS2 30, forward | 12 ASVs; 55 cells, 432 reads | 0; 2 cells, 2 reads |
 | NovaSeq ITS2 30, reverse | 8 ASVs; 42 cells, 91 reads | 0; 4 cells, 4 reads |
-| PacBio HiFi 95 | 17 ASVs; 474 cells, 762 reads | 10 ASVs; 404 cells, 558 reads |
+| PacBio HiFi 95, stale model | 17 ASVs; 474 cells, 762 reads | 10 ASVs; 404 cells, 558 reads |
 
 The two MiSeq forward ASVs are the pair this page used to cite as the textbook
 floor case — two 2-read uniques eleven mismatches apart, both saturating
@@ -276,6 +276,32 @@ way, so neither the default nor the emulation can drift unnoticed. That is the
 pattern to follow whenever we depart from R: do not merely document the
 divergence, pin both sides of it.
 
+### x86-64 R and the gapless shortcut
+
+R DADA2's results depend on the CPU it runs on. `raw_align` skips the alignment
+when the positional k-mer distance equals the composition distance, which is
+meant to show the pair has no indel. On x86-64 R computes the positional
+distance with `kord_dist_SSEi`, which compares sequences of unequal length over
+the shorter one; everywhere else, `kord_dist` returns -1 for unequal lengths and
+the shortcut cannot fire. The SSE version's own comment says it returns -1
+too; its length check was lost in DADA2 commit `4a89b96` (2018).
+
+When an indel lies within k bases of either end, the two distances still come
+out equal, so x86-64 R lines the pair up without gaps. Every base past the indel
+then counts as a substitution, λ collapses (4.3e-8 to 1.6e-17 in the traced
+case), and the comparison is dropped as below `E_minmax`. The read then
+stays with a small cluster when it is closer to a large one.
+
+dada2-rs keeps the documented behaviour, which is also what R does on ARM.
+`DADA2RS_GAPLESS_X86=1` reproduces x86-64 R, for parity runs against an x86-64
+reference. On the pooled 95-sample PacBio run, learned and denoised, it takes
+the residual from 15 reads to **0 of 62,585 cells**, and the learned `trans` from
+10 differing cells to 0 of 1,504. A per-read trace with the emulation agreed
+with x86-64 R's on every event (1,450 lines, birth p-values aside). The emulation
+is covered by a unit test, not by a CI reference; the full-run result is
+recorded in [issue 277](https://github.com/HPCBio/dada2-rs/issues/277), along
+with a one-line fix proposed upstream.
+
 ## What this dictates
 
 - **Quote parity with its floor.** On pooled runs, report the share of divisions
@@ -290,6 +316,10 @@ divergence, pin both sides of it.
   matched abundances, with read totals agreeing to ~1 in 2.4M, are a tie-break.
   A one-sided difference, or one concentrated at high abundance, is not. Pairs
   within a few edits at equal abundance are renames.
+- **Record the reference's CPU architecture.** R DADA2 gives different answers
+  on x86-64 and ARM ([above](#x86-64-r-and-the-gapless-shortcut)). Compare
+  against an R reference from a known architecture, and emulate x86-64 when the
+  reference was built there.
 - **Remeasure the floor on new data.** `dev/run_member_order.sh` and
   `dev/compare_member_order.py` run and summarise the arms; the floor depends on
   amplicon, platform and pooling mode, so these numbers do not transfer.
@@ -327,7 +357,9 @@ divergence, pin both sides of it.
   experiment; [issue 264](https://github.com/HPCBio/dada2-rs/issues/264) — the
   ITS2 re-measure with corrected bins
 - [Issue 269](https://github.com/HPCBio/dada2-rs/issues/269) — the PacBio
-  residual still open
+  residual from a stale error model
+- [Issue 277](https://github.com/HPCBio/dada2-rs/issues/277) — the remaining
+  15 PacBio reads, traced to x86-64 R's gapless shortcut
 - [Issue 272](https://github.com/HPCBio/dada2-rs/issues/272) — `merge-pairs`
   alignment scores and overlap counting; the merged ITS2 comparison above
 - [Issue 100](https://github.com/HPCBio/dada2-rs/issues/100) — the pseudo-pooling

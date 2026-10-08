@@ -86,8 +86,11 @@ if (!is.null(trans)) {
 output$err_in  <- err_rows
 output$err_out <- err_rows
 
+# 17 significant digits: a double needs that many to round-trip. `digits = NA`
+# writes 15, which moved 1,390 of 1,504 PacBio cells by up to 4.7e-15 relative,
+# so an "R's model" arm was never exactly R's model (#277).
 writeLines(
-  toJSON(output, auto_unbox = TRUE, digits = NA, pretty = TRUE),
+  toJSON(output, auto_unbox = TRUE, digits = I(17), pretty = TRUE),
   out_path
 )
 cat(sprintf("Wrote %s (16 x %d error matrix%s)\n", out_path, nq,

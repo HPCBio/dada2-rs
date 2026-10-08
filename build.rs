@@ -42,9 +42,35 @@ fn watch_git_state() {
     }
 }
 
+/// The `rmath-ppois` diagnostic arm (#277): link R's own libR so calc_pA can
+/// call its ppois. Returns the version-string tag that marks such a build.
+fn link_r_for_rmath_ppois() -> &'static str {
+    if std::env::var_os("CARGO_FEATURE_RMATH_PPOIS").is_none() {
+        return "";
+    }
+    println!("cargo:rerun-if-env-changed=R_HOME");
+    let r_home = std::env::var("R_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let out = Command::new("R").arg("RHOME").output().ok()?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        });
+    let r_home = r_home.expect("feature rmath-ppois: set R_HOME or put `R` on PATH");
+    let lib = Path::new(&r_home).join("lib");
+    println!("cargo:rustc-link-search=native={}", lib.display());
+    println!("cargo:rustc-link-lib=dylib=R");
+    // Embed the path so the binary finds libR without LD_LIBRARY_PATH.
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
+    "+rmath-ppois"
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     watch_git_state();
+    let arm = link_r_for_rmath_ppois();
     // Allow callers to inject the version (e.g. Docker builds without .git).
     println!("cargo:rerun-if-env-changed=DADA2_RS_VERSION_FULL");
 
@@ -55,7 +81,7 @@ fn main() {
     if let Ok(injected) = std::env::var("DADA2_RS_VERSION_FULL") {
         let injected = injected.trim();
         if !injected.is_empty() {
-            println!("cargo:rustc-env=DADA2_RS_VERSION_FULL={injected}");
+            println!("cargo:rustc-env=DADA2_RS_VERSION_FULL={injected}{arm}");
             return;
         }
     }
@@ -77,5 +103,5 @@ fn main() {
         format!("{cargo_version}-{sha}")
     };
 
-    println!("cargo:rustc-env=DADA2_RS_VERSION_FULL={version}");
+    println!("cargo:rustc-env=DADA2_RS_VERSION_FULL={version}{arm}");
 }

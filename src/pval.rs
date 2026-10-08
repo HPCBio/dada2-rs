@@ -8,6 +8,7 @@
 //! `statrs::distribution::Poisson`, which uses the same regularised
 //! incomplete gamma function that R's `ppois` calls internally.
 
+#[cfg(not(feature = "rmath-ppois"))]
 use statrs::distribution::{DiscreteCDF, Poisson};
 
 use crate::containers::{B, Raw, Sub};
@@ -477,14 +478,20 @@ pub fn calc_pA(reads: u32, e_reads: f64, prior: bool) -> f64 {
     if e_reads <= 0.0 {
         return 0.0;
     }
-    let pois = match Poisson::new(e_reads) {
-        Ok(p) => p,
-        Err(_) => return 0.0, // unreachable given the guard above
+    #[cfg(feature = "rmath-ppois")]
+    let pval = r_ppois_upper(reads, e_reads);
+    #[cfg(not(feature = "rmath-ppois"))]
+    let pval = {
+        let pois = match Poisson::new(e_reads) {
+            Ok(p) => p,
+            Err(_) => return 0.0, // unreachable given the guard above
+        };
+        let mut pval = pois.sf((reads - 1) as u64);
+        if pval == 0.0 && e_reads > 0.0 {
+            pval = poisson_upper_tail_direct(reads, e_reads);
+        }
+        pval
     };
-    let mut pval = pois.sf((reads - 1) as u64);
-    if pval == 0.0 && e_reads > 0.0 {
-        pval = poisson_upper_tail_direct(reads, e_reads);
-    }
 
     if prior {
         return pval;
@@ -499,6 +506,37 @@ pub fn calc_pA(reads: u32, e_reads: f64, prior: bool) -> f64 {
         norm
     };
     pval / norm
+}
+
+/// R's own `ppois(reads - 1, e_reads, lower.tail = FALSE)`, from libR, as
+/// C++ `calc_pA` calls it through Rcpp. Diagnostic arm only (#277): it holds
+/// the p-value numerics identical to R DADA2 on the same machine.
+#[cfg(feature = "rmath-ppois")]
+fn r_ppois_upper(reads: u32, e_reads: f64) -> f64 {
+    unsafe extern "C" {
+        fn Rf_ppois(x: f64, lambda: f64, lower_tail: i32, log_p: i32) -> f64;
+        static mut R_PosInf: f64;
+        static mut R_NegInf: f64;
+        static mut R_NaN: f64;
+        static mut R_NaReal: f64;
+        static mut R_NaInt: i32;
+    }
+    // R's math routines bound-check against these globals, which R's own
+    // startup (InitArithmetic) sets. Without an R session they are 0, so
+    // "x >= +Inf" holds for every positive x and ppois returns 1.
+    static INIT: std::sync::Once = std::sync::Once::new();
+    // SAFETY: written once, before any read, under Once; the values are R's own.
+    INIT.call_once(|| unsafe {
+        R_PosInf = f64::INFINITY;
+        R_NegInf = f64::NEG_INFINITY;
+        R_NaN = f64::NAN;
+        R_NaReal = f64::from_bits(0x7FF0_0000_0000_07A2); // R's NA_real_ (payload 1954)
+        R_NaInt = i32::MIN;
+    });
+    // SAFETY: Rf_ppois is arithmetic on its arguments and the globals above.
+    // Its warning path (precision loss) would need an R session; the grid check
+    // against R's ppois is what shows this arm returns R's values.
+    unsafe { Rf_ppois((reads - 1) as f64, e_reads, 0, 0) }
 }
 
 /// Compute lambda: the probability under the error model that `raw`'s
@@ -587,6 +625,7 @@ pub fn compute_lambda(
 /// `gamma_lr` losing precision for very small λ. The leading term
 /// `e^{-λ} λ^reads / reads!` dominates for small λ; the series correction
 /// `1 + λ/(k+1) + λ²/((k+1)(k+2)) + ...` converges quickly.
+#[cfg(not(feature = "rmath-ppois"))]
 fn poisson_upper_tail_direct(reads: u32, lambda: f64) -> f64 {
     debug_assert!(reads > 0);
     debug_assert!(lambda > 0.0);

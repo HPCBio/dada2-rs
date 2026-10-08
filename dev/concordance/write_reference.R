@@ -32,7 +32,7 @@ if (length(args) < 3) stop(paste(
   "[primer_fwd primer_rev] [--pool=false|pseudo|true] [--errfun=loess|binned-qual]",
   "[--binned-quals=2,11,25,37] [--prefiltered] [--threads=N] [--nbases=N]",
   "  --pool=pseudo-fixed-err: two pseudo rounds sharing ONE error model (#221)",
-  "[--train-samples=FILE]",
+  "[--train-samples=FILE] [--save-dada]",
   "(--pool/--prefiltered/--train-samples/--nbases apply to BOTH platforms)"))
 platform <- args[1]; data_dir <- args[2]; out_csv <- args[3]
 
@@ -122,6 +122,12 @@ cat(sprintf("threads: %s\n", if (isTRUE(MT)) "TRUE (detectCores; NOT cgroup-awar
 # training data as well as in whatever was under test. It is also closer to real
 # use -- nobody trains on a whole run.
 TRAIN_SAMPLES <- flag("train-samples")
+
+# --save-dada: also save the dada-class objects (<stem>.dd.rds, or .ddF.rds /
+# .ddR.rds). A sequence table can say a read moved between two ASVs but not
+# which read; each object's $map can (#277). $map indexes the sample's own
+# derepFastq() uniques, so re-derep the same FASTQ to recover the sequences.
+SAVE_DADA <- any(args == "--save-dada")
 
 NBASES <- flag("nbases")
 NBASES <- if (!is.na(NBASES)) as.numeric(NBASES) else 1e8
@@ -285,6 +291,11 @@ if (platform == "illumina") {
     saveRDS(st_dir, paste0(stem, ".dada", nm, ".rds"))
     write_long(st_dir, paste0(stem, ".dada", nm, ".csv"))
   }
+  if (SAVE_DADA) {
+    saveRDS(ddF, paste0(stem, ".ddF.rds"))
+    saveRDS(ddR, paste0(stem, ".ddR.rds"))
+    cat(sprintf("wrote %s.ddF.rds and .ddR.rds (dada objects)\n", stem))
+  }
 
 } else if (platform == "pacbio") {
   # --- Parameters: keep in sync with run_pacbio.sh ---
@@ -337,6 +348,11 @@ if (platform == "illumina") {
   if (length(sample.names) == 1) rownames(seqtab.nochim) <- sample.names
   write_long(seqtab.nochim, out_csv)
   save_artifacts(out_csv, seqtab, list(err = err))
+  if (SAVE_DADA) {
+    stem <- sub("\\.csv$", "", out_csv)
+    saveRDS(dd, paste0(stem, ".dd.rds"))
+    cat(sprintf("wrote %s.dd.rds (dada objects)\n", stem))
+  }
 
 } else {
   stop("unknown platform: ", platform, " (expected illumina or pacbio)")

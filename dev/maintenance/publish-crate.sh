@@ -29,7 +29,7 @@ restore() {
 trap restore EXIT
 cp "$MANIFEST" "$BACKUP"
 
-echo "==> Stripping the experimental WFA git dependency + feature for publishing"
+echo "==> Stripping the experimental WFA git dependency + feature, and the rmath-ppois diagnostic feature"
 python3 - "$MANIFEST" <<'PY'
 import re, sys
 path = sys.argv[1]
@@ -41,6 +41,13 @@ s = re.sub(r'(?m)^wfa2lib-rs\s*=.*\n', '', s)
 s = re.sub(r'(?m)^wfa\s*=\s*\[.*\]\s*\n', '', s)
 if s == before:
     sys.exit("ERROR: expected WFA dependency/feature lines were not found; "
+             "manifest layout may have changed — update publish-crate.sh.")
+# The `rmath-ppois` diagnostic feature links R's libR (#277). The published
+# crate must never depend on R, even under --all-features.
+after_wfa = s
+s = re.sub(r'(?m)^rmath-ppois\s*=\s*\[.*\]\s*\n', '', s)
+if s == after_wfa:
+    sys.exit("ERROR: expected the rmath-ppois feature line was not found; "
              "manifest layout may have changed — update publish-crate.sh.")
 open(path, "w").write(s)
 PY
