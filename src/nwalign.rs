@@ -1425,6 +1425,9 @@ pub fn raw_align_with_screen(
         buf.last_dp_nanos = t.elapsed().as_nanos() as u64;
         buf.last_align_nanos = buf.last_dp_nanos;
     }
+    if p.screen_audit && gapless_shadow::is_shadow_hit(raw1, raw2, p, &mut buf.kord_counts) {
+        gapless_shadow::observe(raw1, raw2, buf);
+    }
     r
 }
 
@@ -1539,6 +1542,205 @@ fn pair_is_gapless_with(
 pub static GAPLESS_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static GAPLESS_TOTAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Shadow audit of x86 R's gapless test on the default path (#281).
+///
+/// Under `--screen-audit`, every unequal-length pair that the default aligns by
+/// NW but x86-64 R would have shortcut (`pair_is_gapless_with(.., x86 = true)`)
+/// is also aligned by padding, and the two alignments are compared. Results are
+/// unchanged: the NW alignment is what the caller uses.
+pub mod gapless_shadow {
+    use super::{AlignBuffers, AlignParams, Raw};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    /// Bucket labels for mismatches in the padded overlap.
+    pub const MISM_LABELS: [&str; 5] = ["0", "1", "2", "3", "4+"];
+    /// Bucket labels for the length difference.
+    pub const DLEN_LABELS: [&str; 4] = ["1", "2", "3", "4+"];
+    /// Bucket labels for the distance from the last mismatch to the overlap end.
+    pub const TAIL_LABELS: [&str; 4] = ["0-4", "5-9", "10-19", "20+"];
+    const MAX_EXAMPLES: usize = 20;
+
+    /// `[pairs, al-identical]` per bucket.
+    type Hist<const N: usize> = [[AtomicU64; 2]; N];
+
+    static DP_PAIRS: AtomicU64 = AtomicU64::new(0);
+    static DP_LEN_SUM: AtomicU64 = AtomicU64::new(0);
+    static HITS: AtomicU64 = AtomicU64::new(0);
+    static AL_EQUAL: AtomicU64 = AtomicU64::new(0);
+    static SUB_EQUAL: AtomicU64 = AtomicU64::new(0);
+    static HIT_LEN_SUM: AtomicU64 = AtomicU64::new(0);
+    static EQUAL_LEN_SUM: AtomicU64 = AtomicU64::new(0);
+    static H_MISM: Hist<5> = [const { [const { AtomicU64::new(0) }; 2] }; 5];
+    static H_DLEN: Hist<4> = [const { [const { AtomicU64::new(0) }; 2] }; 4];
+    static H_TAIL: Hist<4> = [const { [const { AtomicU64::new(0) }; 2] }; 4];
+    static EXAMPLES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    /// Count one pair aligned by DP (not by the shortcut), for scale.
+    pub fn record_dp(raw1: &Raw, raw2: &Raw) {
+        DP_PAIRS.fetch_add(1, Relaxed);
+        DP_LEN_SUM.fetch_add(raw1.len().max(raw2.len()) as u64, Relaxed);
+    }
+
+    /// How a padded alignment of `s1`/`s2` compares with the NW one.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Class {
+        pub dlen: usize,
+        /// Mismatches in the overlap, counted as `al2subs` would (N excluded).
+        pub mism: usize,
+        /// Bases after the last overlap mismatch; `None` when there is none.
+        pub tail: Option<usize>,
+        /// NW `al0`/`al1` are byte-identical to the padded alignment.
+        pub al_equal: bool,
+        /// `al2subs` gives the same map, positions and nucleotides.
+        pub sub_equal: bool,
+    }
+
+    fn is_padded(al: &[u8], s: &[u8], len: usize) -> bool {
+        al.len() == len && al[..s.len()] == *s && al[s.len()..].iter().all(|&c| c == b'-')
+    }
+
+    pub fn classify(s1: &[u8], s2: &[u8], nw_al0: &[u8], nw_al1: &[u8]) -> Class {
+        let len = s1.len().max(s2.len());
+        let ov = s1.len().min(s2.len());
+        let mut mism = 0;
+        let mut last = None;
+        for i in 0..ov {
+            if s1[i] != s2[i] && s1[i] != 5 && s2[i] != 5 {
+                mism += 1;
+                last = Some(i);
+            }
+        }
+        let al_equal = is_padded(nw_al0, s1, len) && is_padded(nw_al1, s2, len);
+        let sub_equal = al_equal || {
+            let mut b = AlignBuffers::new();
+            super::align_gapless_with_buf(s1, s2, &mut b);
+            let (p, n) = (
+                super::al2subs(&b.al0, &b.al1),
+                super::al2subs(nw_al0, nw_al1),
+            );
+            p.len0 == n.len0 && p.map == n.map && p.pos == n.pos && p.nt0 == n.nt0 && p.nt1 == n.nt1
+        };
+        Class {
+            dlen: len - ov,
+            mism,
+            tail: last.map(|i| ov - 1 - i),
+            al_equal,
+            sub_equal,
+        }
+    }
+
+    /// Whether the pair is one the x86 test admits and the default does not.
+    pub fn is_shadow_hit(raw1: &Raw, raw2: &Raw, p: &AlignParams, scratch: &mut Vec<i32>) -> bool {
+        raw1.len() != raw2.len()
+            && p.band != 0
+            && p.use_kmers
+            && p.gapless
+            && !super::gapless_x86_compat()
+            && super::pair_is_gapless_with(raw1, raw2, p.kmer_size, scratch, true)
+    }
+
+    /// Classify a shadow hit whose NW alignment is in `buf`.
+    pub fn observe(raw1: &Raw, raw2: &Raw, buf: &AlignBuffers) {
+        let c = classify(&raw1.seq, &raw2.seq, &buf.al0, &buf.al1);
+        let len = raw1.len().max(raw2.len()) as u64;
+        let eq = c.al_equal as usize;
+        HITS.fetch_add(1, Relaxed);
+        HIT_LEN_SUM.fetch_add(len, Relaxed);
+        if c.al_equal {
+            AL_EQUAL.fetch_add(1, Relaxed);
+            EQUAL_LEN_SUM.fetch_add(len, Relaxed);
+        }
+        if c.sub_equal {
+            SUB_EQUAL.fetch_add(1, Relaxed);
+        }
+        let bump = |h: &[AtomicU64; 2]| {
+            h[0].fetch_add(1, Relaxed);
+            h[1].fetch_add(eq as u64, Relaxed);
+        };
+        bump(&H_MISM[c.mism.min(4)]);
+        bump(&H_DLEN[c.dlen.clamp(1, 4) - 1]);
+        if let Some(t) = c.tail {
+            bump(
+                &H_TAIL[match t {
+                    0..=4 => 0,
+                    5..=9 => 1,
+                    10..=19 => 2,
+                    _ => 3,
+                }],
+            );
+        }
+        if !c.al_equal {
+            let mut ex = EXAMPLES.lock().unwrap();
+            if ex.len() < MAX_EXAMPLES {
+                let gaps = |al: &[u8]| al.iter().filter(|&&x| x == b'-').count();
+                let nw = super::al2subs(&buf.al0, &buf.al1).nsubs();
+                ex.push(format!(
+                    "len {}/{} dlen {} mism {} tail {:?} nw_subs {} nw_gaps {}/{} sub_equal {}",
+                    raw1.len(),
+                    raw2.len(),
+                    c.dlen,
+                    c.mism,
+                    c.tail,
+                    nw,
+                    gaps(&buf.al0),
+                    gaps(&buf.al1),
+                    c.sub_equal
+                ));
+            }
+        }
+    }
+
+    fn hist<const N: usize>(h: &Hist<N>, labels: &[&str; N]) -> String {
+        labels
+            .iter()
+            .zip(h)
+            .map(|(l, b)| format!("{l}:{}/{}", b[1].load(Relaxed), b[0].load(Relaxed)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Report lines; buckets read `identical/pairs`.
+    pub fn report() -> String {
+        let (dp, dp_len) = (
+            DP_PAIRS.load(Relaxed),
+            DP_LEN_SUM.load(Relaxed).max(1) as f64,
+        );
+        let hits = HITS.load(Relaxed);
+        let pct = |v: u64, n: u64| 100.0 * v as f64 / n.max(1) as f64;
+        let mut s = format!(
+            "[screen-audit] x86 gapless shadow: {hits} / {dp} DP-aligned pairs ({:.2}%), \
+             {:.2}% of DP length\n",
+            pct(hits, dp),
+            100.0 * HIT_LEN_SUM.load(Relaxed) as f64 / dp_len,
+        );
+        let (al, sub) = (AL_EQUAL.load(Relaxed), SUB_EQUAL.load(Relaxed));
+        s.push_str(&format!(
+            "[screen-audit] x86 gapless shadow: padded == NW alignment {al} ({:.2}%), \
+             same subs {sub} ({:.2}%); identical pairs are {:.2}% of DP length\n",
+            pct(al, hits),
+            pct(sub, hits),
+            100.0 * EQUAL_LEN_SUM.load(Relaxed) as f64 / dp_len,
+        ));
+        s.push_str(&format!(
+            "[screen-audit] x86 gapless shadow | overlap mismatches: {}\n",
+            hist(&H_MISM, &MISM_LABELS)
+        ));
+        s.push_str(&format!(
+            "[screen-audit] x86 gapless shadow | length difference: {}\n",
+            hist(&H_DLEN, &DLEN_LABELS)
+        ));
+        s.push_str(&format!(
+            "[screen-audit] x86 gapless shadow | bases after last mismatch: {}",
+            hist(&H_TAIL, &TAIL_LABELS)
+        ));
+        for e in EXAMPLES.lock().unwrap().iter() {
+            s.push_str(&format!("\n[screen-audit] x86 gapless shadow differs: {e}"));
+        }
+        s
+    }
+}
+
 /// Minimizer-sketch screen distance for a pair (experimental,
 /// [`ScreenBackend::Minimizer`]).
 ///
@@ -1580,6 +1782,8 @@ fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers)
         GAPLESS_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if take_gapless {
             GAPLESS_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            gapless_shadow::record_dp(raw1, raw2);
         }
     }
     if take_gapless {
@@ -3561,5 +3765,68 @@ mod tests {
         crate::kmers::raw_assign_kmers(&mut r3, 5);
         assert!(pair_is_gapless_with(&r1, &r3, 5, &mut scratch, false));
         assert!(pair_is_gapless_with(&r1, &r3, 5, &mut scratch, true));
+    }
+
+    /// The #281 shadow audit must be able to report both outcomes: a pure 3'
+    /// overhang where padding equals NW, and the #277 near-end indel where it
+    /// does not. Both pairs pass the x86 test, so both are shadow hits.
+    #[test]
+    fn gapless_shadow_classifies_overhang_and_near_end_indel() {
+        let base = "ACGTTGCAAGGCTTACCGATAGCTAGGCATCGATGCCATGACTTGCAGTCCAGATCGTAC";
+        let s1 = encode(base);
+        let mut over = s1.clone();
+        over.extend(encode("GA")); // pure 3' overhang
+        let mut indel = s1.clone();
+        indel.remove(s1.len() - 4); // deletion 4 bases from the 3' end
+        indel.extend(encode("AC")); // keep it shorter than s1 by one
+
+        let params = AlignParams {
+            backend: AlignBackend::Nw,
+            wfa_max_edits: 0,
+            match_score: 5,
+            mismatch: -4,
+            gap_p: -8,
+            homo_gap_p: -8,
+            use_kmers: true,
+            kdist_cutoff: 0.42,
+            screen_backend: ScreenBackend::Kmer,
+            minimizer_k: crate::minimizers::MINIMIZER_K,
+            minimizer_w: crate::minimizers::MINIMIZER_W,
+            screen_audit: true,
+            kmer_size: 5,
+            band: 16,
+            vectorized: true,
+            gapless: true,
+        };
+        let mut r1 = Raw::new(s1.clone(), None, 10, false);
+        crate::kmers::raw_assign_kmers(&mut r1, 5);
+        let mut scratch = Vec::new();
+        let mut seen = Vec::new();
+        for s2 in [over, indel] {
+            let mut r2 = Raw::new(s2.clone(), None, 1, false);
+            crate::kmers::raw_assign_kmers(&mut r2, 5);
+            assert!(gapless_shadow::is_shadow_hit(
+                &r1,
+                &r2,
+                &params,
+                &mut scratch
+            ));
+            let mut buf = AlignBuffers::new();
+            raw_align_dp(&r1, &r2, &params, &mut buf).unwrap();
+            seen.push(gapless_shadow::classify(&s1, &s2, &buf.al0, &buf.al1));
+        }
+        assert_eq!(
+            seen[0],
+            gapless_shadow::Class {
+                dlen: 2,
+                mism: 0,
+                tail: None,
+                al_equal: true,
+                sub_equal: true
+            }
+        );
+        assert!(!seen[1].al_equal && !seen[1].sub_equal);
+        assert_eq!(seen[1].dlen, 1);
+        assert!(seen[1].mism > 0);
     }
 }

@@ -568,6 +568,7 @@ pub fn dada_uniques_cached(
             "[screen-audit] gapless shortcut: {hits} / {tot} aligned pairs ({:.2}%)",
             100.0 * hits as f64 / tot.max(1) as f64
         );
+        eprintln!("{}", crate::nwalign::gapless_shadow::report());
     }
 
     // ---- Final per-raw p-value pass ----
