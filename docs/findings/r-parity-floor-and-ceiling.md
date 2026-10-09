@@ -83,7 +83,7 @@ pooled runs in R's pool order (`--pool-tiebreak first-seen`):
 | MiSeq SOP, 362 samples | pooled, forward / reverse | 0–2 / 0 | 16 reads | none; the 2 are one 11-mismatch pair |
 | | pseudo / per-sample | ≤ 3 | 16 reads | none |
 | PacBio HiFi, 95 samples | pooled | 19–24 | 76 reads | 11% of changes, ≤ 21 reads |
-| | pseudo / per-sample | 28–39 | 26 reads | none |
+| | pseudo / per-sample | 29–35 / 28–36 | 32 reads | none |
 | NovaSeq ITS2, 30 samples | pooled, forward / reverse | 10–14 / 10–14 | 117 reads | none / 18% of changes |
 | | pseudo, forward / reverse | 24–34 / 28–39 | 78 reads | none |
 | | per-sample, forward / reverse | 25–32 / 26–39 | 97 reads | none / 2% |
@@ -92,25 +92,26 @@ The ITS2 rows were re-measured with the run's actual binned-quality anchors
 (2,11,25,37); the first measurement used anchors that missed them
 ([issue 264](https://github.com/HPCBio/dada2-rs/issues/264)). The ranges moved
 little — pooled was 4–16, pseudo and per-sample 19–38 — and the largest pooled
-change is still 117 reads. The PacBio pooled row was re-measured with a current
-error model: 19–24, against 17–36 with the stale model of
-[issue 269](https://github.com/HPCBio/dada2-rs/issues/269); the largest change
-is still 76 reads, and 63% of changes are within 3 edits. The MiSeq pseudo and
-per-sample row and the PacBio pseudo and per-sample row are the original
-measurements: neither mode pools dereps, so the pool's tie-break cannot reach
-them. The PacBio pseudo and per-sample row also used the stale model.
+change is still 117 reads. The PacBio rows were re-measured with a current
+error model, replacing the stale model of
+[issue 269](https://github.com/HPCBio/dada2-rs/issues/269): pooled 19–24 (was
+17–36), largest change still 76 reads, 63% of changes within 3 edits; pseudo
+and per-sample 28–36 (was 28–39), 96% within 3 edits. The MiSeq pseudo and
+per-sample row is the original measurement: neither mode pools dereps, so the
+pool's tie-break cannot reach it.
 
-Read totals barely move: at most 0.11% of reads (PacBio per-sample), 0.06% on
+Read totals barely move: at most 0.12% of reads (PacBio per-sample), 0.06% on
 ITS2. The changes are **renames**, not organisms gained or lost: an ASV named
 after a 1–3-edit variant of its centre (a substitution or a homopolymer indel),
-at unchanged abundance. That is 81–93% of changes per-sample and pseudo; pooled
+at unchanged abundance. That is 81–93% of changes per-sample and pseudo in the
+original measurements, and 96% on PacBio re-measured; pooled
 runs have more swaps further apart (half of the ITS2 reverse changes), still
 between equally abundant pairs. Typically two members tie at `pA = 0` with
 equal reads, order picks the centre, and the other cannot reach `OMEGA_A`
 against it.
 
 The floor grows with read length and diversity, from 0–2 ASVs on MiSeq V4 to
-19–39, about 1% of the table, on full-length PacBio. **The residual against R
+19–36, about 1% of the table, on full-length PacBio. **The residual against R
 is now below anything the floor produces:** on 16S and ITS2 R lands exactly
 where our unshuffled order does, and on PacBio so does x86-64 R with its gapless
 test emulated, while single shuffles move 2 to 14 ASVs on 16S and ITS2 and
