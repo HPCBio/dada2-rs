@@ -82,7 +82,7 @@ pooled runs in R's pool order (`--pool-tiebreak first-seen`):
 |---|---|---|---|---|
 | MiSeq SOP, 362 samples | pooled, forward / reverse | 0–2 / 0 | 16 reads | none; the 2 are one 11-mismatch pair |
 | | pseudo / per-sample | ≤ 3 | 16 reads | none |
-| PacBio HiFi, 95 samples | pooled | 17–36 | 76 reads | 7% of changes, ≤ 21 reads |
+| PacBio HiFi, 95 samples | pooled | 19–24 | 76 reads | 11% of changes, ≤ 21 reads |
 | | pseudo / per-sample | 28–39 | 26 reads | none |
 | NovaSeq ITS2, 30 samples | pooled, forward / reverse | 10–14 / 10–14 | 117 reads | none / 18% of changes |
 | | pseudo, forward / reverse | 24–34 / 28–39 | 78 reads | none |
@@ -92,13 +92,13 @@ The ITS2 rows were re-measured with the run's actual binned-quality anchors
 (2,11,25,37); the first measurement used anchors that missed them
 ([issue 264](https://github.com/HPCBio/dada2-rs/issues/264)). The ranges moved
 little — pooled was 4–16, pseudo and per-sample 19–38 — and the largest pooled
-change is still 117 reads. The PacBio pooled floor barely moved either: 16–30
-under the old pool tie-break, 17–36 now, largest change still 76 reads. The
-MiSeq pseudo and per-sample row and the PacBio pseudo and per-sample row are
-the original measurements: neither mode pools dereps, so the pool's tie-break
-cannot reach them. All PacBio rows used an error model since found to be stale
-([issue 269](https://github.com/HPCBio/dada2-rs/issues/269)) and are due to be
-re-measured.
+change is still 117 reads. The PacBio pooled row was re-measured with a current
+error model: 19–24, against 17–36 with the stale model of
+[issue 269](https://github.com/HPCBio/dada2-rs/issues/269); the largest change
+is still 76 reads, and 63% of changes are within 3 edits. The MiSeq pseudo and
+per-sample row and the PacBio pseudo and per-sample row are the original
+measurements: neither mode pools dereps, so the pool's tie-break cannot reach
+them. The PacBio pseudo and per-sample row also used the stale model.
 
 Read totals barely move: at most 0.11% of reads (PacBio per-sample), 0.06% on
 ITS2. The changes are **renames**, not organisms gained or lost: an ASV named
@@ -110,11 +110,13 @@ equal reads, order picks the centre, and the other cannot reach `OMEGA_A`
 against it.
 
 The floor grows with read length and diversity, from 0–2 ASVs on MiSeq V4 to
-17–39, about 1% of the table, on full-length PacBio. **The residual against R
+19–39, about 1% of the table, on full-length PacBio. **The residual against R
 is now below anything the floor produces:** on 16S and ITS2 R lands exactly
 where our unshuffled order does, and on PacBio so does x86-64 R with its gapless
 test emulated, while single shuffles move 2 to 14 ASVs on 16S and ITS2 and
-17–36 on PacBio.
+20–24 on pooled PacBio. Against R the shuffles differ by the same counts, 20–24
+ASVs and 200–351 cells; our default differs by 0 ASVs and 30 cells, and by none
+with the emulation.
 
 `sorted` is a fair stand-in for R's ordering: R and dada2-rs both start from
 derep order and share the same `swap_remove` member updates. On every pooled
