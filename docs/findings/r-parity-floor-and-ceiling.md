@@ -8,14 +8,14 @@ and we deliberately follow the intent instead. A parity number quoted without
 both bounds invites two opposite mistakes: treating an irreducible tie-break as
 a bug, and treating a deliberate divergence as a regression.
 
-Concretely, on the pooled 362-sample MiSeq SOP and 30-sample NovaSeq ITS2 runs,
-both read directions, we now reproduce R's ASV set **exactly** and differ by
-**0 to 4 single reads** across the whole sample × ASV table, and ITS2's merged
-table by 5, while the measured floor on the same runs is up to 14 ASVs. Pooled
-PacBio HiFi has R's ASV set exactly and differs by 15 single reads, every one
-of them from [a gapless test that only x86-64 R
-takes](#x86-64-r-and-the-gapless-shortcut); with that test emulated, the
-95-sample table and the learned transition counts are identical to R's.
+Concretely, on the pooled 362-sample MiSeq SOP, 30-sample NovaSeq ITS2 and
+95-sample PacBio HiFi runs, we now reproduce R's ASV set **exactly** and differ
+by **0 to 15 single reads** across the whole sample × ASV table, while the
+measured floor on the same runs is up to 14 ASVs (Illumina) and 24 (PacBio).
+On ITS2 and PacBio every one of those reads comes from [a gapless test that only
+x86-64 R takes](#x86-64-r-and-the-gapless-shortcut); with that test emulated,
+the ITS2 forward, reverse and merged tables and the PacBio table and learned
+transition counts are identical to R's.
 Getting there took removing four *systematic* differences, three in ordering
 and one in merging, each of which had been hiding inside what looked like
 floor; one of them, [the pool's tie-break](#a-third-instance-the-pools-tie-break),
@@ -44,29 +44,31 @@ With the systematic differences removed (see below), the residual against R
 |---|---|---|---|
 | MiSeq SOP 362, forward | 0 | 2 of 205,782 | 2 |
 | MiSeq SOP 362, reverse | 0 | 0 of 179,919 | 0 |
-| NovaSeq ITS2 30, forward | 0 | 2 of 15,852 | 2 |
-| NovaSeq ITS2 30, reverse | 0 | 4 of 16,212 | 4 |
+| NovaSeq ITS2 30, forward | 0 | 2 of 15,852 (0 emulating x86 R) | 2 (0) |
+| NovaSeq ITS2 30, reverse | 0 | 4 of 16,212 (0 emulating x86 R) | 4 (0) |
 | PacBio HiFi 95 | 0 | 30 of 62,585 (0 emulating x86 R) | 30 (0) |
 
-On 16S and ITS2 every remaining difference is a pair of cells in one sample: a
-single read that one implementation assigns to one ASV and the other to a
-neighbour. Per-sample totals and the ASV set agree. That is a read-assignment
-tie, a level below which ASV is born.
+Every remaining difference is a pair of cells in one sample: a single read
+that one implementation assigns to one ASV and the other to a neighbour.
+Per-sample totals and the ASV set agree. On ITS2 and PacBio these are not ties:
+emulating x86-64 R's gapless test removes every one, and on PacBio each traced
+read is 1–2 bases shorter or longer than a large centre, which x86-64 R compares
+without gaps and we align; see [the ceiling](#x86-64-r-and-the-gapless-shortcut).
+Both R references were built on x86-64. MiSeq's 2 forward cells have not been
+run with the emulation.
 
 The same holds after merging. NovaSeq ITS2's merged, pre-chimera table has R's
 ASV set exactly, and its 5 differing cells, one read each, are the
-per-direction ties above carried through `merge-pairs`. That needed a fourth
+per-direction differences above carried through `merge-pairs`; emulating x86-64
+R, 0 of 14,075 cells differ. That needed a fourth
 systematic difference fixed, this one not about order: `merge-pairs` had aligned
 with the denoising scores instead of R's `mergePairs` scores, and counted the
 overlap differently, so on long ITS2 variants with a 13–15-base overlap it
 rejected 93 reads' worth of pairs that R merged
 ([issue 272](https://github.com/HPCBio/dada2-rs/issues/272)).
 
-PacBio's 30 cells have the same shape, 15 single reads, but they are not
-ties. Each is a read 1–2 bases shorter or longer than a large centre, which x86-64
-R compares without gaps and we align; see [the ceiling](#x86-64-r-and-the-gapless-shortcut).
-The R reference was built on x86-64. An earlier residual of 10 ASVs and 558
-reads came from a stale error model, not from denoising
+On PacBio, an earlier residual of 10 ASVs and 558 reads came from a stale
+error model, not from denoising
 ([issue 269](https://github.com/HPCBio/dada2-rs/issues/269)).
 
 ### How large the floor is, measured
@@ -112,10 +114,10 @@ against it.
 
 The floor grows with read length and diversity, from 0–2 ASVs on MiSeq V4 to
 19–36, about 1% of the table, on full-length PacBio. **The residual against R
-is now below anything the floor produces:** on 16S and ITS2 R lands exactly
-where our unshuffled order does, and on PacBio so does x86-64 R with its gapless
-test emulated, while single shuffles move 2 to 14 ASVs on 16S and ITS2 and
-20–24 on pooled PacBio. Against R the shuffles differ by the same counts, 20–24
+is now below anything the floor produces:** on 16S, ITS2 and PacBio R lands
+on our unshuffled order's ASV set exactly, and on ITS2 and PacBio on its every
+cell with x86-64 R's gapless test emulated, while single shuffles move 2 to 14
+ASVs on 16S and ITS2 and 20–24 on pooled PacBio. Against R the shuffles differ by the same counts, 20–24
 ASVs and 200–351 cells; our default differs by 0 ASVs and 30 cells, and by none
 with the emulation.
 
@@ -303,7 +305,9 @@ the residual from 15 reads to **0 of 62,585 cells**, and the learned `trans` fro
 with x86-64 R's on every event (1,450 lines, birth p-values aside). The emulation
 is covered by a unit test, not by a CI reference; the full-run result is
 recorded in [issue 277](https://github.com/HPCBio/dada2-rs/issues/277), along
-with a one-line fix proposed upstream.
+with a one-line fix proposed upstream. On pooled NovaSeq ITS2 it takes the
+forward, reverse and merged residuals (2, 4 and 5 reads) to 0
+([issue 246](https://github.com/HPCBio/dada2-rs/issues/246)).
 
 ## What this dictates
 
@@ -363,6 +367,8 @@ with a one-line fix proposed upstream.
   residual from a stale error model
 - [Issue 277](https://github.com/HPCBio/dada2-rs/issues/277) — the remaining
   15 PacBio reads, traced to x86-64 R's gapless shortcut
+- [Issue 246](https://github.com/HPCBio/dada2-rs/issues/246) — the ITS2
+  residual, re-run emulating x86-64 R
 - [Issue 272](https://github.com/HPCBio/dada2-rs/issues/272) — `merge-pairs`
   alignment scores and overlap counting; the merged ITS2 comparison above
 - [Issue 100](https://github.com/HPCBio/dada2-rs/issues/100) — the pseudo-pooling
