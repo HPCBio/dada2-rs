@@ -8,6 +8,13 @@
 #   - the 515F site sits ~150 nt INTERNALLY
 #   - no reverse primer detected in the merged product
 #
+# The spacers also make LENGTH variants. Every raw read is the same length, so
+# a primer at offset 0 vs 4 leaves the insert starting at the same base but
+# ending up to 4 bases earlier or later: the same molecule becomes several
+# "prefix" variants, which DADA2 cannot split (see
+# docs/findings/primer-trimming-length-variants.md). Set EQUALIZE_R1/_R2 below
+# to remove them.
+#
 # Why cutadapt and not `dada2-rs filter-and-trim`: filter-and-trim removes
 # leading bases by fixed offset (--trim-left) and does not match primer
 # sequence. With the primer at 5 different offsets no single value is correct
@@ -113,6 +120,14 @@ echo
 
 # Set to 1 ONLY if the diagnostic shows both primers present at high rates.
 DISCARD_UNTRIMMED=${DISCARD_UNTRIMMED:-0}
+
+# Length equalisation (off unless set). After primer removal, shorten reads
+# longer than N to N; shorter reads are left alone. Choose N per direction from
+# the post-trim length report below: the shortest full-length peak. On a
+# fixed-insert 16S amplicon this costs at most the spacer width (4 nt), but it
+# comes out of the merge overlap -- see "Next steps".
+EQUALIZE_R1=${EQUALIZE_R1:-}
+EQUALIZE_R2=${EQUALIZE_R2:-}
 if [[ "$DISCARD_UNTRIMMED" == "1" ]]; then
     DISCARD_FLAG="--discard-untrimmed"
     echo ">>> --discard-untrimmed ENABLED"
@@ -154,6 +169,46 @@ for R1 in "$IN_DIR"/*"$SUF1"; do
 done
 shopt -u nullglob
 
+# ---------------------------------------------------------------------------
+# Step 3 — post-trim read lengths, and optional equalisation.
+#
+# Raw reads are all one length, so any spread here comes from where the primer
+# sat. Several peaks within a few nt of each other are prefix length variants.
+# ---------------------------------------------------------------------------
+lengths() {  # lengths <fastq.gz>: the five most common read lengths
+    set +o pipefail
+    zcat -f -- "$1" | awk 'NR % 4 == 2 { print length }' | sort -n | uniq -c \
+        | sort -rn | head -5 | awk '{ printf " %s nt: %s", $2, $1 } END { print "" }'
+    set -o pipefail
+}
+FIRST_OUT=$(find "$OUT_DIR" -maxdepth 1 -name "*$SUF1" | sort | head -1)
+if [[ -n "$FIRST_OUT" ]]; then
+    echo
+    echo "=== Post-trim read lengths, $(basename "${FIRST_OUT%$SUF1}") (top 5)"
+    echo "  R1:$(lengths "$FIRST_OUT")"
+    echo "  R2:$(lengths "${FIRST_OUT%$SUF1}$SUF2")"
+fi
+
+# A separate single-file pass per read direction: it filters nothing, so pairs
+# stay in sync, and it works on cutadapt versions without -L.
+equalize() {  # equalize <suffix> <length>
+    local suf=$1 len=$2 f
+    for f in "$OUT_DIR"/*"$suf"; do
+        cutadapt -l "$len" -j "$THREADS" -o "$f.eq.tmp.gz" "$f" > /dev/null 2>&1 \
+            || { echo "ERROR: cutadapt -l $len failed on $f" >&2; exit 1; }
+        mv "$f.eq.tmp.gz" "$f"
+    done
+    echo "  equalised *$suf to at most $len nt"
+}
+shopt -s nullglob
+[[ -n "$EQUALIZE_R1" ]] && equalize "$SUF1" "$EQUALIZE_R1"
+[[ -n "$EQUALIZE_R2" ]] && equalize "$SUF2" "$EQUALIZE_R2"
+shopt -u nullglob
+if [[ -n "$EQUALIZE_R1$EQUALIZE_R2" && -n "$FIRST_OUT" ]]; then
+    echo "  after:  R1:$(lengths "$FIRST_OUT")"
+    echo "          R2:$(lengths "${FIRST_OUT%$SUF1}$SUF2")"
+fi
+
 echo
 echo "=== Done: $n pair(s) -> $OUT_DIR"
 echo
@@ -175,8 +230,16 @@ Next steps
    spacer) from R1 leaves roughly 33 nt. That is still workable but thin, so
    keep truncation conservative in filter-and-trim -- aggressive --trunc-len
    will push pairs under minOverlap and silently cost you the merge.
+   Equalising R1 spends up to 4 more of those nt.
 
-3. Then quality-filter (NOT primer-trim) with filter-and-trim, and re-run
+3. Read the post-trim length report. Peaks a few nt apart are the same
+   molecules at different primer positions; DADA2 cannot separate them and
+   names the ASV after whichever wins a tie. Rerun with EQUALIZE_R1 /
+   EQUALIZE_R2 set to the shortest full-length peak. Paired merging usually
+   hides this (the mate covers the ragged end); per-direction and pooled
+   forward tables do not.
+
+4. Then quality-filter (NOT primer-trim) with filter-and-trim, and re-run
    learn-errors + dada-pooled for both errfun arms so the A/B is rebuilt on
    properly trimmed reads.
 NOTE
