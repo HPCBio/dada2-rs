@@ -54,10 +54,16 @@ Per-sample totals and the ASV set agree. On ITS2 and PacBio these are not ties:
 emulating x86-64 R's gapless test removes every one, and on PacBio each traced
 read is 1–2 bases shorter or longer than a large centre, which x86-64 R compares
 without gaps and we align; see [the ceiling](#x86-64-r-and-the-gapless-shortcut).
-Both R references were built on x86-64. MiSeq's 2 forward cells have not been
-run with the emulation.
+Both R references were built on x86-64.
 
-The same holds after merging. NovaSeq ITS2's merged, pre-chimera table has R's
+MiSeq's 2 forward cells, one read in one sample, are the only difference left
+unexplained. Its reads are truncated to a fixed length, so the gapless shortcut
+cannot fire, and the read stays put with inputs in R's order, with R's own
+error model in place of ours (which differs by up to 3e-14 relative), and with
+R's `ppois` in place of ours. It disappears in the merged table, which matches
+R exactly ([issue 246](https://github.com/HPCBio/dada2-rs/issues/246)).
+
+After merging, NovaSeq ITS2's pre-chimera table also has R's
 ASV set exactly, and its 5 differing cells, one read each, are the
 per-direction differences above carried through `merge-pairs`; emulating x86-64
 R, 0 of 14,075 cells differ. That needed a fourth
