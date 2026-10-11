@@ -16,6 +16,7 @@ the divisive loop, not the fit.
 | `r_dada_maps.R` | R `dada()` per sample; writes `<s>.r.uniques.tsv`, `<s>.r.trans.tsv`, `<s>.r.dada.rds` |
 | `rs_dada_maps.sh` | `derep`, then `dada --aux-outputs` on the derep JSON, so `map` indexes a file on disk |
 | `compare_maps.py` | per sample: moved uniques and differing transition cells; exit 1 on any difference |
+| `r_pooled_dada.R` | pooled `dada()` on one direction with a saved `err.rds`, kept for `r_pooled_maps.R`; fails unless it reproduces the reference's table |
 | `r_pooled_maps.R` | the same uniques table from a saved pooled run (`write_reference.R --save-dada`) |
 | `rs_pooled_maps.sh` | lays out a `dada-pooled` output directory for `compare_maps.py` |
 | `export_err_in.R` | writes each learnErrors pass's input model (`$err_in[[k]]`) as `err_in_<k>.json` |
@@ -108,6 +109,8 @@ residual against R on the cluster.
 Per-sample runs cannot reproduce a pooled difference. For a pooled run:
 
 ```bash
+# only if the reference was built without --save-dada; filt/ in sort() order
+Rscript dev/r_parity_maps/r_pooled_dada.R ref.errF.rds ref.dadaF.rds ref.dd.rds 32 filt/*_F_filt.fastq.gz
 Rscript dev/r_parity_maps/r_pooled_maps.R ref.dd.rds filt/ out/r
 dev/r_parity_maps/rs_pooled_maps.sh target/release/dada2-rs run/dada out/rs filt/*.fastq.gz
 python3 dev/r_parity_maps/compare_maps.py out/r out/rs -o moved.tsv
