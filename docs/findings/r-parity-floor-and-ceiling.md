@@ -15,7 +15,8 @@ measured floor on the same runs is up to 14 ASVs (Illumina) and 24 (PacBio).
 On ITS2 and PacBio every one of those reads comes from [a gapless test that only
 x86-64 R takes](#x86-64-r-and-the-gapless-shortcut); with that test emulated,
 the ITS2 forward, reverse and merged tables and the PacBio table and learned
-transition counts are identical to R's.
+transition counts are identical to R's. MiSeq's one read is identical too once
+both R's error model and R's `ppois` are used.
 Getting there took removing four *systematic* differences, three in ordering
 and one in merging, each of which had been hiding inside what looked like
 floor; one of them, [the pool's tie-break](#a-third-instance-the-pools-tie-break),
@@ -56,12 +57,17 @@ read is 1–2 bases shorter or longer than a large centre, which x86-64 R compar
 without gaps and we align; see [the ceiling](#x86-64-r-and-the-gapless-shortcut).
 Both R references were built on x86-64.
 
-MiSeq's 2 forward cells, one read in one sample, are the only difference left
-unexplained. Its reads are truncated to a fixed length, so the gapless shortcut
-cannot fire, and the read stays put with inputs in R's order, with R's own
-error model in place of ours (which differs by up to 3e-14 relative), and with
-R's `ppois` in place of ours. It disappears in the merged table, which matches
-R exactly ([issue 246](https://github.com/HPCBio/dada2-rs/issues/246)).
+MiSeq's 2 forward cells are one read that is a pool singleton, one
+substitution from each of two 70-read sibling centres (same substitution, same
+quality), so its λ to each is bit-identical. Whichever cluster holds it keeps
+it: the holder's reads include the read itself. Its cluster is decided by
+history, which the result below ties to last-bit differences in birth
+p-values; those depend on both the model and `ppois`. The read stays put with
+R's error model alone (ours differs by up to 3e-14 relative) and with R's
+`ppois` alone; with **both**, the forward table matches R exactly, 0 of 205,782
+cells, so no algorithm differs. The gapless shortcut cannot fire on MiSeq's
+fixed-length reads, and the merged table matches R exactly
+([issue 284](https://github.com/HPCBio/dada2-rs/issues/284)).
 
 After merging, NovaSeq ITS2's pre-chimera table also has R's
 ASV set exactly, and its 5 differing cells, one read each, are the
@@ -375,6 +381,8 @@ forward, reverse and merged residuals (2, 4 and 5 reads) to 0
   15 PacBio reads, traced to x86-64 R's gapless shortcut
 - [Issue 246](https://github.com/HPCBio/dada2-rs/issues/246) — the ITS2
   residual, re-run emulating x86-64 R
+- [Issue 284](https://github.com/HPCBio/dada2-rs/issues/284) — the MiSeq read,
+  an exact λ tie settled by birth history
 - [Issue 272](https://github.com/HPCBio/dada2-rs/issues/272) — `merge-pairs`
   alignment scores and overlap counting; the merged ITS2 comparison above
 - [Issue 100](https://github.com/HPCBio/dada2-rs/issues/100) — the pseudo-pooling
