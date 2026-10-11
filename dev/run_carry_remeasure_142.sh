@@ -73,6 +73,21 @@ VERSION="$("$BIN" --version | awk '{print $NF}')"
 mkdir -p "$OUT"
 echo "binary: $BIN ($VERSION)" | tee -a "$OUT/versions.txt"
 
+# The system a run came from. The re-measure is planned for a migrated cluster
+# (new OS and SLURM, Ceph instead of GPFS). The leading account of #142 is
+# #151's reused-buffer effect, which depends on glibc's mmap threshold and on
+# page-fault behaviour, so glibc, kernel and THP are recorded with the numbers.
+{
+    echo "--- environment ($(date -u +%FT%TZ), stages: $STAGES)"
+    echo "host: $(hostname)  kernel: $(uname -sr)"
+    echo "glibc: $( (ldd --version 2>/dev/null || true) | head -1)"
+    echo "thp: $(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo n/a)"
+    echo "numa: $( (numactl --hardware 2>/dev/null || true) | head -1)"
+    echo "perf: $(command -v perf || echo absent)  paranoid: $(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo n/a)"
+    echo "out fs: $( (df -PT "$OUT" 2>/dev/null || true) | awk 'NR==2 {print $2, $1}')"
+    echo "slurm: job ${SLURM_JOB_ID:-none}, cpus ${SLURM_CPUS_ON_NODE:-n/a}"
+} | tee -a "$OUT/versions.txt"
+
 # Filtered inputs in one fixed order. Pooled ties break in first-seen order, so
 # both tools must see the samples in the same order; R's list.files() sorts,
 # and so does this (C locale; SRA run accessions collate the same either way).
