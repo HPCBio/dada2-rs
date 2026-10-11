@@ -19,6 +19,7 @@ the divisive loop, not the fit.
 | `r_pooled_dada.R` | pooled `dada()` on one direction with a saved `err.rds`, kept for `r_pooled_maps.R`; fails unless it reproduces the reference's table |
 | `r_pooled_maps.R` | the same uniques table from a saved pooled run (`write_reference.R --save-dada`) |
 | `rs_pooled_maps.sh` | lays out a `dada-pooled` output directory for `compare_maps.py` |
+| `probe_unique.py` | one moved unique: samples, pool abundance, mismatches to both centres, pooled-quality rounding both ways, its λ to each centre (raw bits) |
 | `export_err_in.R` | writes each learnErrors pass's input model (`$err_in[[k]]`) as `err_in_<k>.json` |
 | `run_replay.sh` | replays every learnErrors pass on both sides from R's per-pass inputs |
 
@@ -115,6 +116,11 @@ Rscript dev/r_parity_maps/r_pooled_maps.R ref.dd.rds filt/ out/r
 dev/r_parity_maps/rs_pooled_maps.sh target/release/dada2-rs run/dada out/rs filt/*.fastq.gz
 python3 dev/r_parity_maps/compare_maps.py out/r out/rs -o moved.tsv
 ```
+
+`probe_unique.py` then takes one moved sequence and its two centres from
+`moved.tsv`. On #284 it found a pool singleton at bit-identical λ to two
+equal-abundance centres, which pointed at birth history rather than the read's
+own arithmetic.
 
 On 4 local PacBio samples pooled under R's model: 0 moved uniques. As a
 negative control, R pooled against our per-sample maps reports 305-733 moved
