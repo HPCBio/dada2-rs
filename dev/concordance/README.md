@@ -23,6 +23,7 @@ breakdown labels them so.
 | `compare_to_reference.py` | Diffs a dada2-rs seqtab JSON vs the R reference CSV — recall, precision, log-count correlation. Pure stdlib. Warn-only by default; `--gate` to fail. |
 | `run_illumina.sh` | dada2-rs paired-end pipeline → `seqtab.nochim.json`. `POOL=pseudo` switches denoising to `dada-pseudo` and enforces a positive control (below). |
 | `run_pacbio.sh` | dada2-rs single-end PacBio pipeline → `seqtab.nochim.json` (k=5, to match R). |
+| `train_pin.sh` | Sourced by both runners. `TRAIN_SAMPLES=<manifest>` pins the error-model training set (one sample name per line, as `write_reference.R --train-samples` and `pick_training_subset.py`); the run stops if `NBASES` would truncate it. `NBASES` accepts `1e8`-style values. Defaults: Illumina 1e8, PacBio 2e8, provisional ([training-set notes](../../docs/error-model-training.md)). |
 | `write_reference.R` | Run **once** in R to produce the reference CSV. Defines the CSV schema. |
 | `reference/` | Committed reference CSVs (you generate these). |
 | `data/pacbio/` | Committed subsampled PacBio fixture (you add this). |

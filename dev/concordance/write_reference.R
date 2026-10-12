@@ -130,11 +130,11 @@ TRAIN_SAMPLES <- flag("train-samples")
 SAVE_DADA <- any(args == "--save-dada")
 
 NBASES <- flag("nbases")
-NBASES <- if (!is.na(NBASES)) as.numeric(NBASES) else 1e8
+# Defaults match run_illumina.sh (1e8, R's own) and run_pacbio.sh (2e8). They
+# are provisional (#225): see docs/error-model-training.md.
+NBASES <- if (!is.na(NBASES)) as.numeric(NBASES) else if (platform == "pacbio") 2e8 else 1e8
 cat(sprintf("nbases: %s%s\n", format(NBASES, scientific = TRUE),
-            if (is.na(flag("nbases")))
-              " (R default; run_illumina.sh defaults to 2e7, run_pacbio.sh to 2e8 -- match them)"
-            else ""))
+            if (is.na(flag("nbases"))) " (default for this platform)" else ""))
 
 args <- args[!grepl("^--", args)]
 

@@ -13,6 +13,7 @@
 # Usage: run_pacbio.sh <binary> <data-dir> <out-dir> <primer_fwd> <primer_rev> [threads]
 #   <data-dir> holds raw <sample>.fastq.gz (primered, single-end).
 set -euo pipefail
+. "$(dirname "$0")/train_pin.sh"
 
 BIN="${1:?usage: run_pacbio.sh <binary> <data-dir> <out-dir> [primer_fwd primer_rev] [threads]}"
 DATA="${2:?missing data-dir}"
@@ -68,20 +69,17 @@ BAND=32
 # should give the same ASVs (see issue #15).
 KMER="${PACBIO_KMER:-5}"
 MAX_MISMATCH=2
-# learnErrors' subsampling budget. MUST be raised past the training set when
-# PACBIO_TRAIN_SAMPLES pins one -- otherwise dada2-rs trains on a PREFIX of the
-# manifest while R (given a matching --nbases) uses all of it, and the arms
-# differ in training data as well as in whatever is under test. write_reference.R
-# refuses that on the R side; nothing can refuse it here, because this script
-# hands learn-errors an explicit file list and cannot know the manifest's size
-# without reading every FASTQ. So it is checked below instead.
-NBASES="${NBASES:-200000000}"
+# learn-errors budget. Provisional default (#225): see
+# docs/error-model-training.md for why no value is measured as best. With
+# TRAIN_SAMPLES set it must cover the whole manifest, which train_pin.sh checks.
+NBASES=$(train_pin_nbases "${NBASES:-2e8}") || exit 1
 
 # Pin the error-model training set to these samples (one name per line, matching
 # the filtered stems without the _filt suffix), then denoise everything --
 # the same contract as write_reference.R's --train-samples. Produce the manifest
 # with pick_training_subset.py --suffix _filt.fastq.gz so both sides agree.
-PACBIO_TRAIN_SAMPLES="${PACBIO_TRAIN_SAMPLES:-}"
+# PACBIO_TRAIN_SAMPLES is the older name and still works.
+TRAIN_SAMPLES="${TRAIN_SAMPLES:-${PACBIO_TRAIN_SAMPLES:-}}"
 
 # Full pooling (R pool=TRUE) instead of per-sample dada. Must match the R
 # reference's --pool, or the comparison is measuring the pooling mode.
@@ -178,32 +176,12 @@ else
 fi
 
 trains=("${filts[@]}")
-if [ -n "$PACBIO_TRAIN_SAMPLES" ]; then
+if [ -n "$TRAIN_SAMPLES" ]; then
+  idx=$(train_pin_indices run_pacbio.sh "$TRAIN_SAMPLES" "${names[@]}") || exit 1
   trains=()
-  while IFS= read -r want; do
-    want=$(printf '%s' "$want" | tr -d '[:space:]')   # tolerate CRLF manifests
-    [ -z "$want" ] && continue
-    found=""
-    for i in "${!names[@]}"; do
-      if [ "${names[$i]}" = "$want" ]; then found="${filts[$i]}"; break; fi
-    done
-    if [ -z "$found" ]; then
-      echo "run_pacbio.sh: --train-samples name not present in $DATA: $want" >&2
-      exit 1
-    fi
-    trains+=("$found")
-  done < "$PACBIO_TRAIN_SAMPLES"
-  echo "==> training on ${#trains[@]} of ${#filts[@]} samples (pinned via $PACBIO_TRAIN_SAMPLES)"
-  # Guard the mirror image of the trap write_reference.R catches: a pinned
-  # manifest bigger than NBASES means learn-errors silently takes a prefix.
-  train_bases=$(gzip -cd "${trains[@]}" | awk 'NR%4==2 {n+=length($0)} END {print n+0}')
-  echo "==> training set: $train_bases bases; nbases = $NBASES"
-  if [ "$train_bases" -gt "$NBASES" ]; then
-    echo "run_pacbio.sh: NBASES ($NBASES) is smaller than the pinned training set" >&2
-    echo "  ($train_bases bases), so learn-errors would train on only a prefix." >&2
-    echo "  Re-run with NBASES=$(( train_bases * 11 / 10 )) or larger." >&2
-    exit 1
-  fi
+  for i in $idx; do trains+=("${filts[$i]}"); done
+  echo "==> training on ${#trains[@]} of ${#filts[@]} samples (pinned via $TRAIN_SAMPLES)"
+  train_pin_guard run_pacbio.sh "$NBASES" reads "${trains[@]}"
 fi
 
 # ERR_DIR: reuse an error model instead of learning one, mirroring

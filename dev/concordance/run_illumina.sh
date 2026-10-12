@@ -11,6 +11,7 @@
 #   <data-dir> holds paired files named <sample>F.fastq.gz / <sample>R.fastq.gz
 #              (e.g. sam1F.fastq.gz + sam1R.fastq.gz).
 set -euo pipefail
+. "$(dirname "$0")/train_pin.sh"
 
 BIN="${1:?usage: run_illumina.sh <binary> <data-dir> <out-dir> [threads]}"
 DATA="${2:?missing data-dir}"
@@ -86,7 +87,17 @@ TRUNC_LEN_R=160
 MAX_EE=2
 TRUNC_Q=2
 MAX_N=0
-NBASES="${NBASES:-20000000}"   # learn-errors subsampling cap; small data uses all reads anyway
+# learn-errors budget, per direction. Provisional default (#225): see
+# docs/error-model-training.md for why no value is measured as best. It matches
+# write_reference.R's Illumina default; with TRAIN_SAMPLES set it must cover the
+# whole manifest in each direction, which train_pin.sh checks.
+NBASES=$(train_pin_nbases "${NBASES:-1e8}") || exit 1
+
+# Pin the error-model training set to these samples (one name per line: the
+# input stem before F.fastq.gz), then denoise everything -- the contract of
+# write_reference.R --train-samples. Produce the manifest with
+# pick_training_subset.py, which defaults to the same suffix.
+TRAIN_SAMPLES="${TRAIN_SAMPLES:-}"
 
 # Error-fitting function. Overridable because it is NOT a neutral default on
 # every platform: NovaSeq and other binned-quality instruments emit a handful of
@@ -153,10 +164,11 @@ fi
 # workflow says not to use truncLen there for the same reason.
 PREFILTERED="${PREFILTERED:-}"
 
-filtFs=(); filtRs=()
+filtFs=(); filtRs=(); names=()
 for f in "${fwds[@]}"; do
   base=$(basename "$f")
   name=${base%F.fastq.gz}
+  names+=("$name")
   r="$DATA/${name}R.fastq.gz"
   [ -e "$r" ] || { echo "run_illumina.sh: missing reverse mate for $f" >&2; exit 1; }
   if [ -n "$PREFILTERED" ]; then
@@ -173,6 +185,16 @@ for f in "${fwds[@]}"; do
 done
 if [ -n "$PREFILTERED" ]; then
   echo "==> PREFILTERED: using ${#filtFs[@]} input pairs as-is (no filter-and-trim)"
+fi
+
+trainFs=("${filtFs[@]}"); trainRs=("${filtRs[@]}")
+if [ -n "$TRAIN_SAMPLES" ]; then
+  idx=$(train_pin_indices run_illumina.sh "$TRAIN_SAMPLES" "${names[@]}") || exit 1
+  trainFs=(); trainRs=()
+  for i in $idx; do trainFs+=("${filtFs[$i]}"); trainRs+=("${filtRs[$i]}"); done
+  echo "==> training on ${#trainFs[@]} of ${#filtFs[@]} pairs (pinned via $TRAIN_SAMPLES)"
+  train_pin_guard run_illumina.sh "$NBASES" forward "${trainFs[@]}"
+  train_pin_guard run_illumina.sh "$NBASES" reverse "${trainRs[@]}"
 fi
 
 # Optional: reuse an existing error model instead of learning one. Lets the
@@ -233,9 +255,9 @@ PY
   fi
 else
 echo "==> learn-errors (fwd, rev)"
-run_step learn-errors.fwd "$BIN" learn-errors "${filtFs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
+run_step learn-errors.fwd "$BIN" learn-errors "${trainFs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
     --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${learn_screen_arg[@]+"${learn_screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/errF.json"
-run_step learn-errors.rev "$BIN" learn-errors "${filtRs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
+run_step learn-errors.rev "$BIN" learn-errors "${trainRs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
     --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${learn_screen_arg[@]+"${learn_screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/errR.json"
 fi
 
