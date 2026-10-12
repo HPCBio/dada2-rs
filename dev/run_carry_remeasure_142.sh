@@ -130,6 +130,14 @@ if has_stage prep; then
         --bases "$TRAIN_BASES" --suffix F.fastq.gz --out "$OUT/train.txt"
 fi
 
+# Every later stage reads prep's output. A new <out> may reuse another run's
+# instead (link filtered/, copy train.txt) to change only the errfun.
+if has_stage learn || has_stage r; then
+    [ -s "$OUT/train.txt" ] && [ -d "$FILT" ] || {
+        echo "ERROR: $OUT needs filtered/ and train.txt: run STAGES=prep, or link" \
+             "filtered/ and copy train.txt from an earlier <out>" >&2; exit 1; }
+fi
+
 # ---------------------------------------------------------------------------
 if has_stage learn; then
     mkdir -p "$OUT/err"
