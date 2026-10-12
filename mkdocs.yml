@@ -95,6 +95,7 @@ nav:
     - Plotting: scripts/plotting.md
     - Pipeline helpers: scripts/pipeline-helpers.md
   - Parameters: parameters.md
+  - Choosing the error-model training set: error-model-training.md
   - Performance:
     - Tuning for your data: tuning-for-your-data.md
     - Tooling & metrics: benchmarking.md
