@@ -105,11 +105,12 @@ read first* as of the data volume.
 - **One run, one platform.** Forward reads of a single MiSeq run. Whether ~500 Mbp
   is the general stabilisation point or specific to this run's diversity is
   untested; a more diverse run should need more.
-- **The run is likely heterogeneous** (samples from more than one population).
-  Arm B's 1.25–1.43× spread may then include the effect of drawing different
-  populations, not only sampling noise, and a homogeneous run could stabilise at
-  a lower budget. Tested under
-  [issue #105](https://github.com/HPCBio/dada2-rs/issues/105).
+- **The run is homogeneous.** The samples are fecal pellets from C57BL/6 mice
+  in one lab, on one diet, plus a few mock communities
+  ([metadata](https://github.com/spholmes/F1000_workflow/blob/master/data/MIMARKS_Data_combined.csv)).
+  Arm B's 1.25–1.43× spread is therefore sample-to-sample noise within one
+  population, not a mixture of populations. A heterogeneous run is untested
+  ([issue #105](https://github.com/HPCBio/dada2-rs/issues/105)).
 - **The ladder saturates.** 1 Gb and 5 Gb are the same model because the data ran
   out at ~780 M transitions. The true convergence point could be above the data
   available here.

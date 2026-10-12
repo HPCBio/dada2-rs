@@ -18,7 +18,7 @@ treat the defaults below as provisional.
 | Question | Evidence | Source |
 |---|---|---|
 | How many bases | Small effect above 1e8 on the error plots; ASV sets 98.5% shared at 1e8 vs 5e8 | User comparisons, no truth set |
-| How many bases (dada2-rs) | Below ~500 Mbp, changing the budget moves the model about as much as changing which samples are read | [nbases convergence](findings/learn-errors-nbases-convergence.md), one MiSeq run, likely heterogeneous |
+| How many bases (dada2-rs) | Below ~500 Mbp, changing the budget moves the model about as much as changing which samples are read | [nbases convergence](findings/learn-errors-nbases-convergence.md), one homogeneous MiSeq run (mouse feces) |
 | `--randomize` | Five shuffled sample orders at 1e8 differ by 1.25–1.43× | Same finding (Arm B); nothing in R found |
 | Low-diversity or same-environment samples | +18% reads kept for sediment samples with a sediment-only model | User report, read retention only |
 | Mock or control samples only | A better-looking error plot on PacBio full-length 16S | User report, plots only |
