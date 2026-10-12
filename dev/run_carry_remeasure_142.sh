@@ -36,6 +36,10 @@
 #   NBASES=1000000000000     learn-errors cap on BOTH sides (an integer: our
 #                            --nbases rejects 1e12); must exceed the training
 #                            set or R trains on a prefix of it
+#   ERRFUN=loess             error function for `learn` and `r`, on BOTH sides;
+#                            binned-quality data (NovaSeq) wants binned-qual
+#   BINNED_QUALS=            the run's actual bins, required with binned-qual
+#                            (e.g. 2,11,25,37 for this NovaSeq run)
 #   THREADS=64  REPS=2
 #   NUMA_POLICY=interleave   see dev/numa_pin.sh
 #   ERR_DIR=                 use err{F,R}.json from here for `ab` instead of
@@ -60,6 +64,14 @@ NBASES="${NBASES:-1000000000000}"
 THREADS="${THREADS:-64}"
 REPS="${REPS:-2}"
 R_THREADS="${R_THREADS:-$THREADS}"
+ERRFUN="${ERRFUN:-loess}"
+BINNED_QUALS="${BINNED_QUALS:-}"
+# The same errfun reaches both sides; R's flags are the `=` form of ours.
+ERRFUN_RS=(--errfun "$ERRFUN"); ERRFUN_R=(--errfun="$ERRFUN")
+if [ "$ERRFUN" = binned-qual ]; then
+    [ -n "$BINNED_QUALS" ] || { echo "ERRFUN=binned-qual needs BINNED_QUALS" >&2; exit 1; }
+    ERRFUN_RS+=(--binned-quals "$BINNED_QUALS"); ERRFUN_R+=(--binned-quals="$BINNED_QUALS")
+fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
@@ -72,6 +84,7 @@ has_stage() { [[ " $STAGES " == *" $1 "* ]]; }
 VERSION="$("$BIN" --version | awk '{print $NF}')"
 mkdir -p "$OUT"
 echo "binary: $BIN ($VERSION)" | tee -a "$OUT/versions.txt"
+echo "errfun: ${ERRFUN_RS[*]}" | tee -a "$OUT/versions.txt"
 
 # The system a run came from. The re-measure is planned for a migrated cluster
 # (new OS and SLURM, Ceph instead of GPFS). The leading account of #142 is
@@ -124,7 +137,8 @@ if has_stage learn; then
         train=()
         while IFS= read -r n; do train+=("$FILT/$n$d.fastq.gz"); done < "$OUT/train.txt"
         echo "==> learn-errors $d (${#train[@]} pinned samples)"
-        "$BIN" learn-errors "${train[@]}" --nbases "$NBASES" --threads "$THREADS" \
+        "$BIN" learn-errors "${train[@]}" "${ERRFUN_RS[@]}" \
+            --nbases "$NBASES" --threads "$THREADS" \
             --verbose -o "$OUT/err/err$d.json" 2> "$OUT/err/learn$d.log" \
             || { tail -5 "$OUT/err/learn$d.log" >&2; exit 1; }
     done
@@ -190,7 +204,7 @@ if has_stage r; then
     echo "==> R reference (pool=TRUE) on $FILT"
     Rscript "$HERE/concordance/write_reference.R" illumina "$FILT" "$OUT/r/ref.csv" \
         --prefiltered --pool=true --train-samples="$OUT/train.txt" \
-        --nbases="$NBASES" --threads="$R_THREADS" 2>&1 | tee "$OUT/r/log.txt"
+        --nbases="$NBASES" --threads="$R_THREADS" "${ERRFUN_R[@]}" 2>&1 | tee "$OUT/r/log.txt"
     Rscript -e 'cat("R dada2", as.character(packageVersion("dada2")), R.version$platform, "\n")' \
         | tee -a "$OUT/versions.txt"
 fi

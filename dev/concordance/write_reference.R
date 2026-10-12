@@ -252,8 +252,10 @@ if (platform == "illumina") {
   assert_nbases_covers(trainFs, "forward")
   assert_nbases_covers(trainRs, "reverse")
 
-  errF <- learnErrors(trainFs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
-  errR <- learnErrors(trainRs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT)
+  errF <- learnErrors(trainFs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT,
+                      verbose = TRUE)
+  errR <- learnErrors(trainRs, errorEstimationFunction = ERRFUN_FN, nbases = NBASES, multithread = MT,
+                      verbose = TRUE)
   if (PSEUDO_FIXED) {
     # Mirror dada2-rs's default pseudo-pooling: round 1 per-sample, derive
     # priors, round 2 per-sample with the SAME err. R's prior rule is
@@ -340,7 +342,7 @@ if (platform == "illumina") {
   assert_nbases_covers(trains, "reads")
 
   err <- learnErrors(trains, errorEstimationFunction = PacBioErrfun, nbases = NBASES,
-                     BAND_SIZE = 32, multithread = MT)
+                     BAND_SIZE = 32, multithread = MT, verbose = TRUE)
   dd <- dada(filts, err = err, pool = POOL, BAND_SIZE = 32, multithread = MT)
   seqtab <- makeSequenceTable(dd)
   seqtab.nochim <- removeBimeraDenovo(seqtab, method = "consensus",
