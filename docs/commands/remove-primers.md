@@ -16,9 +16,10 @@ the reverse-complement direction are flipped before trimming.
 Outputs a trimmed FASTQ; JSON stats (`reads_in` / `reads_out`) go to stdout or
 `-o`.
 
-`remove-primers` takes one file, so it is for single-end reads such as PacBio
-HiFi. On paired-end data it would discard different reads from R1 and R2 and
-break the pairing. Use `cutadapt` instead; see
+As a port of R's `removePrimers()`, `remove-primers` is currently designed for
+single-end reads, mainly PacBio HiFi. Run on each file of a pair, it would
+discard different reads from R1 and R2 and break the pairing. For paired-end
+data use `cutadapt`; see
 [Removing primers from paired-end reads](../primer-removal.md).
 
 !!! tip "Verify the primers are actually there"

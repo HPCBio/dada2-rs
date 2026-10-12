@@ -2,9 +2,21 @@
 
 **Use `cutadapt` to remove primers from paired-end amplicon reads, then
 dada2-rs for everything after.** dada2-rs has no paired-end, sequence-aware
-primer removal, and it won't get one
-([issue #113](https://github.com/HPCBio/dada2-rs/issues/113), closed as won't
-fix). `cutadapt` already does the job well, and it's what we use in practice.
+primer removal, and adding one is not a priority
+([issue #113](https://github.com/HPCBio/dada2-rs/issues/113)). `cutadapt` is
+what we use in practice:
+
+- **It is fast and flexible.** For example, it accepts several forward and
+  reverse primers in one pass, as used by mixed-primer libraries that raise base
+  diversity. dada2-rs would need one pass per primer.
+- **It kept slightly more reads** than `remove-primers` and R's
+  `removePrimers()` at similar settings in our runs, probably because it matches
+  primers more flexibly (see the [PacBio walkthrough](walkthroughs/walkthrough-pacbio.md)).
+
+If paired-end support is added, it will go into `remove-primers`, which
+identifies the primer by sequence and applies the `filter-and-trim` filters in
+the same step. There is no plan to reproduce `cutadapt` without a specific
+reason to.
 
 This matters most for libraries built with **heterogeneity spacers**: 0–N nt of
 padding before the primer that varies from read to read, added to raise base
@@ -19,11 +31,11 @@ direction of an error-model comparison
 | Tool | Finds the primer by sequence | Paired-end | Handles spacers |
 |---|---|---|---|
 | [`filter-and-trim`](commands/filter-and-trim.md) `--trim-left` | No: removes a fixed number of bases | Yes | No |
-| [`remove-primers`](commands/remove-primers.md) | Yes: searches the whole read, IUPAC-aware | No: one file at a time | On single-end reads only |
+| [`remove-primers`](commands/remove-primers.md) | Yes: searches the whole read, IUPAC-aware | Not yet: single-end only | On single-end reads |
 | `cutadapt` | Yes | Yes: keeps pairs in sync | Yes |
 
-`remove-primers` mirrors R's `removePrimers()`, which is designed for
-full-length single-end reads such as PacBio HiFi. It discards reads with no
+`remove-primers` is a port of R's `removePrimers()` and, like it, is currently
+designed for single-end reads, mainly PacBio HiFi. It discards reads with no
 primer match, file by file. Run separately on R1 and R2, it would discard
 different reads from each file and break the pairing that `merge-pairs` needs.
 
