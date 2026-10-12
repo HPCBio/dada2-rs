@@ -34,7 +34,9 @@ Output is a JSON object with three flat 16 × nq matrices:
 
     Raise `--nbases`, pass a hand-picked set of inputs, or pre-`sample` each
     file to spread learning across samples. Tracked in
-    [issue #68](https://github.com/HPCBio/dada2-rs/issues/68).
+    [issue #68](https://github.com/HPCBio/dada2-rs/issues/68). For what is
+    known about choosing training samples, see
+    [Choosing the error-model training set](../error-model-training.md).
 
 ## Input
 
