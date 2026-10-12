@@ -183,7 +183,8 @@ Three outcomes, three different responses:
     different offsets there is no correct value — too small leaves spacer bases,
     too large eats real sequence, and either way one biological sequence becomes
     several ASVs. Use `cutadapt` (or R's `removePrimers()`) upstream, and reserve
-    `filter-and-trim` for quality filtering. Tracked in [#113].
+    `filter-and-trim` for quality filtering. See
+    [Removing primers from paired-end reads](../primer-removal.md) ([#113]).
 
 **2. Search the reverse complement at the 3' end.** A merged read contains the
 reverse primer *reverse-complemented*. Searching for it in forward orientation

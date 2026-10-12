@@ -45,7 +45,10 @@ below this value.
 discarding reads that are shorter.
 
 **`--trim-left`** / **`--trim-right`** (default 0) — remove this many bases from
-the 5′ / 3′ end.
+the 5′ / 3′ end. This is a fixed-position trim, not primer removal: it doesn't
+look for the primer sequence. If the primer can start at more than one position
+(heterogeneity spacers), remove primers with `cutadapt` first; see
+[Removing primers from paired-end reads](../primer-removal.md).
 
 ## Filtering
 
