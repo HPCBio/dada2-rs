@@ -25,7 +25,7 @@
 
 use crate::nwalign::AlignBuffers;
 #[cfg(feature = "wfa")]
-use crate::nwalign::{VectorizedAlignScores, align_vectorized_with_buf};
+use crate::nwalign::{VectorizedAlignScores, align_vectorized_with_buf, band_adjust};
 
 #[cfg(feature = "wfa")]
 use std::cell::RefCell;
@@ -133,8 +133,9 @@ pub(crate) fn cigar_to_alignment_into(
 ///
 /// `match_score`/`mismatch`/`gap_p` use the DADA2 score convention (match > 0,
 /// the rest < 0); they are converted to WFA penalties internally. `band` is the
-/// DADA2 banding radius (matches the NW path): a `BandedStatic ±band` heuristic
-/// is applied so WFA explores the same diagonal band NW does, which both matches
+/// DADA2 banding radius (matches the NW path): a `BandedStatic` heuristic over
+/// NW's own diagonal range (`band_adjust`, widened by the length difference) is
+/// applied per pair, so WFA explores the same band NW does, which both matches
 /// NW's band-limited semantics and bounds WFA's O(n·s) cost on divergent pairs
 /// (issue #51). `band < 0` means unbanded.
 ///
@@ -178,17 +179,21 @@ pub fn align_wfa_endsfree_with_buf(
             // Compute the full CIGAR, not just the score (default ComputeScore
             // leaves the cigar empty).
             aligner.alignment_scope = AlignmentScope::ComputeAlignment;
-            // Match NW's diagonal band so WFA stays band-limited and its O(n·s)
-            // cost can't blow up on divergent-but-screened pairs (issue #51).
-            if band >= 0 {
-                aligner.set_heuristic(HeuristicStrategy::BandedStatic {
-                    min_k: -band,
-                    max_k: band,
-                });
-            }
             *slot = Some((key, aligner));
         }
         let aligner = &mut slot.as_mut().unwrap().1;
+        // Match NW's diagonal band so WFA stays band-limited and its O(n·s)
+        // cost can't blow up on divergent-but-screened pairs (issue #51). The
+        // band is per pair: NW widens one side by the length difference, and a
+        // symmetric ±band cut WFA off from leading gaps NW can take. A WFA
+        // diagonal is text offset minus pattern offset, NW's `j - i`.
+        if band >= 0 {
+            let (lband, rband) = band_adjust(s1.len(), s2.len(), band);
+            aligner.set_heuristic(HeuristicStrategy::BandedStatic {
+                min_k: -lband,
+                max_k: rband,
+            });
+        }
         // Edit-budget cap (issue #51): abort WFA once cost exceeds the bound so
         // divergent pairs don't pay the full O(n·s) extend. Capped pairs fall
         // back to NW below. `max_steps` is the caller's cost cap (from
@@ -200,13 +205,19 @@ pub fn align_wfa_endsfree_with_buf(
             max_steps
         };
         aligner.set_max_alignment_steps(cap);
-        // Full ends-free: leading/trailing gaps on either strand are free.
-        aligner.set_alignment_free_ends(
-            s1.len() as i32,
-            s1.len() as i32,
-            s2.len() as i32,
-            s2.len() as i32,
-        );
+        // Ends-free, with each free end bounded by what the banded NW path can
+        // reach: `band + |len1 - len2|` (see `band_adjust`). Whole-length free
+        // ends let WFA (C and the port alike) stop on the no-overlap alignment
+        // (all end gaps, score 0) for divergent pairs once begin-free gaps are
+        // honored (HPCBio/wfa2lib-rs#17); on PacBio this collapsed the
+        // unbounded arm's ASVs (#51). Unbanded keeps whole-length free ends.
+        let (p_free, t_free) = if band >= 0 {
+            let fe = band + (s1.len() as i32 - s2.len() as i32).abs();
+            (fe.min(s1.len() as i32), fe.min(s2.len() as i32))
+        } else {
+            (s1.len() as i32, s2.len() as i32)
+        };
+        aligner.set_alignment_free_ends(p_free, p_free, t_free, t_free);
         aligner.align_endsfree(s1, s2);
         // On MaxStepsReached the CIGAR is left empty; fall back to the banded NW
         // ends-free path so the pair still gets a valid alignment (byte-identical

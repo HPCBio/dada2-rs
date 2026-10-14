@@ -330,7 +330,7 @@ fn traceback_into(
 }
 
 /// Compute (lband, rband) adjusted for length difference.
-fn band_adjust(len1: usize, len2: usize, band: i32) -> (i32, i32) {
+pub(crate) fn band_adjust(len1: usize, len2: usize, band: i32) -> (i32, i32) {
     if len2 > len1 {
         (band, band + (len2 - len1) as i32)
     } else if len1 > len2 {
@@ -2513,6 +2513,54 @@ mod tests {
         align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, -1, i32::MAX, &mut buf);
         let wfa = [buf.al0.clone(), buf.al1.clone()];
         assert_eq!(score_alignment(&wfa, 5, -4, -8), 255);
+    }
+
+    /// Free ends are bounded by the band (#51). With whole-length free ends and
+    /// begin-free gaps honored (HPCBio/wfa2lib-rs#17), WFA stops on the
+    /// no-overlap alignment (all end gaps, score 0) for this pair, which is
+    /// trimmed from two reads of the PacBio concordance fixture. C WFA2-lib
+    /// `3282f83` does the same. The optimum needs a 30-column leading gap, on
+    /// diagonal +30, so it also checks that WFA gets NW's asymmetric band
+    /// (`band_adjust`), not ±band. The first assertion shows the failure is
+    /// reachable; the adapter must find NW's optimum.
+    #[test]
+    #[cfg(feature = "wfa")]
+    fn wfa_free_ends_bounded_by_band() {
+        use wfa2lib_rs::aligner::{AffineAligner, AlignmentScope};
+        use wfa2lib_rs::penalties::{AffinePenalties, WavefrontPenalties};
+        let a = b"AAGAAGCACCGGCTAACTCCGTGCCAGCAGCCGCGGT";
+        let b = b"AGTCGTGACTCTTTTTGCATGTACCTTATGAATAAGGACCGGCTAATTCCG";
+
+        let mut raw = AffineAligner::new(WavefrontPenalties::new_affine(AffinePenalties {
+            match_: -5,
+            mismatch: 4,
+            gap_opening: 0,
+            gap_extension: 8,
+        }));
+        raw.alignment_scope = AlignmentScope::ComputeAlignment;
+        raw.set_alignment_free_ends(
+            a.len() as i32,
+            a.len() as i32,
+            b.len() as i32,
+            b.len() as i32,
+        );
+        raw.align_endsfree(a, b);
+        assert_eq!(raw.cigar().operations_slice().len(), a.len() + b.len());
+
+        let (s1, s2) = (
+            encode(std::str::from_utf8(a).unwrap()),
+            encode(std::str::from_utf8(b).unwrap()),
+        );
+        let ef = align_endsfree(&s1, &s2, 5, -4, -8, BAND);
+        let mut buf = AlignBuffers::new();
+        align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, BAND, i32::MAX, &mut buf);
+        let wfa = [buf.al0.clone(), buf.al1.clone()];
+        let (swfa, sef) = (
+            score_alignment(&wfa, 5, -4, -8),
+            score_alignment(&ef, 5, -4, -8),
+        );
+        assert!(swfa > 0, "WFA returned the no-overlap alignment");
+        assert_eq!(swfa, sef);
     }
 
     /// Known WFA ends-free divergences that C WFA2-lib shares, so the port
