@@ -2524,8 +2524,8 @@ mod tests {
     ///   in (346 vs 347).
     /// - Begin shift on a periodic sequence: WFA opens free begin-gaps one
     ///   repeat unit off the true diagonal (CIGAR `IIIMMMMMMMMDDDD`, 40) rather
-    ///   than one interior gap (47). Hidden before HPCBio/wfa2lib-rs#17, which
-    ///   made the port honor begin-free gaps.
+    ///   than one interior gap (47); HPCBio/wfa2lib-rs#37. Hidden before
+    ///   HPCBio/wfa2lib-rs#17, which made the port honor begin-free gaps.
     ///
     /// The edit cap does not mask either: these pairs finish far under budget.
     /// If a case becomes optimal, this guard fails; move it to an equality test.
