@@ -1598,13 +1598,11 @@ fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers)
     // `--align-backend wfa2`) or the undocumented `DADA2RS_ALIGN_BACKEND=wfa`
     // override (handy for sweeps). Replaces only the vectorized/ends-free path;
     // the gapless fast-path (above) and the homopolymer-aware path (below) are
-    // left untouched. NOTE: WFA ends-free is not byte-identical to align_endsfree
-    // (see sweep_wfa_parity / wfa_endsfree_known_divergence), though it is
-    // ASV-equivalent on tested data. The residual divergence is shared with C
-    // WFA2-lib (smarco/WFA2-lib#102 at the trailing end, plus a begin-gap shift
-    // on periodic sequence); the port reproduces C. The edit cap does NOT fix
-    // this (these are low-edit pairs that finish under budget); it only bounds
-    // the divergent-pair cost (issue #51).
+    // left untouched. The adapter runs the fork's corrected mode, which fixes C
+    // WFA2-lib's ends-free misses under a match reward, so WFA reaches
+    // align_endsfree's optimum score (sweep_wfa_parity, 0/10,000; alignments
+    // can still differ on ties). The edit cap only bounds the divergent-pair
+    // cost (issue #51).
     #[cfg(feature = "wfa")]
     if (p.backend == AlignBackend::Wfa2 || *USE_WFA_BACKEND) && !use_homo {
         align_wfa_endsfree_with_buf(
@@ -2563,33 +2561,27 @@ mod tests {
         assert_eq!(swfa, sef);
     }
 
-    /// Known WFA ends-free divergences that C WFA2-lib shares, so the port
-    /// keeps them (it targets C-identical output). Both cases are reproduced by
-    /// C WFA2-lib `3282f83` (`dev/wfa-ffi-oracle`, same penalties).
+    /// C WFA2-lib ends-free misses that the adapter's corrected mode fixes
+    /// (`Compat::Corrected`, HPCBio/wfa2lib-rs#32). C `3282f83` scores these
+    /// below the optimum, and the port does too in its default C mode:
     ///
-    /// - Trailing end (smarco/WFA2-lib#102): WFA takes a mismatch plus a free
+    /// - Trailing end (Marco-Sola-Lab/WFA2-lib#102): a mismatch plus a free
     ///   trailing end-gap where the optimum places an interior gap one column
-    ///   in (346 vs 347).
-    /// - Begin shift on a periodic sequence: WFA opens free begin-gaps one
-    ///   repeat unit off the true diagonal (CIGAR `IIIMMMMMMMMDDDD`, 40) rather
-    ///   than one interior gap (47); HPCBio/wfa2lib-rs#37. Hidden before
-    ///   HPCBio/wfa2lib-rs#17, which made the port honor begin-free gaps.
-    ///
-    /// The edit cap does not mask either: these pairs finish far under budget.
-    /// If a case becomes optimal, this guard fails; move it to an equality test.
+    ///   in (C 346, optimum 347).
+    /// - Periodic sequence (HPCBio/wfa2lib-rs#37): free begin-gaps one repeat
+    ///   unit off the true diagonal (C 40, optimum 47).
     #[test]
     #[cfg(feature = "wfa")]
-    fn wfa_endsfree_known_divergence() {
-        let cases: [(&str, &str, i32, i32); 2] = [
+    fn wfa_endsfree_corrected_c_misses() {
+        let cases: [(&str, &str, i32); 2] = [
             (
                 "TAACGACGAACGAGTTTCTAAACCAAAGAACGTAACAAGGAGTTGCCTCTTAGCCTTGGCCTACGCAGGAA",
                 "TAACGACGAACGAGTTTCTAAACCAAAGAACGTAACAAGGAGTTGCCTCTTAGCCTTGGCCTACGCAGGGAA",
                 347,
-                346,
             ),
-            ("ACGTACGTACGT", "ACGACGTACGT", 47, 40),
+            ("ACGTACGTACGT", "ACGACGTACGT", 47),
         ];
-        for (a, b, opt, documented) in cases {
+        for (a, b, opt) in cases {
             let (s1, s2) = (encode(a), encode(b));
             let ef = align_endsfree(&s1, &s2, 5, -4, -8, -1);
             assert_eq!(score_alignment(&ef, 5, -4, -8), opt, "{a} / {b}");
@@ -2597,18 +2589,13 @@ mod tests {
             let mut buf = AlignBuffers::new();
             align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, -1, i32::MAX, &mut buf);
             let wfa = [buf.al0.clone(), buf.al1.clone()];
-            assert_eq!(
-                score_alignment(&wfa, 5, -4, -8),
-                documented,
-                "{a} / {b}: WFA score changed from the documented divergence; \
-                 if it now equals {opt}, move this case to an equality test"
-            );
+            assert_eq!(score_alignment(&wfa, 5, -4, -8), opt, "{a} / {b}");
         }
     }
 
     /// Randomized parity stress test: WFA must match `align_endsfree`'s optimal
     /// score across many random pairs (varied lengths, indels). Run explicitly:
-    ///   cargo test --release -- --ignored sweep_wfa_parity --nocapture
+    ///   just test --features wfa --lib -- --ignored sweep_wfa_parity --nocapture
     #[test]
     #[ignore]
     #[cfg(feature = "wfa")]
@@ -2661,17 +2648,14 @@ mod tests {
                 fails_by_edits[e], total_by_edits[e]
             );
         }
-        // INFORMATIONAL (not asserted): documents the known divergence between
-        // the WFA backend and `align_endsfree`. WFA-via-Eizenga ends-free does
-        // not reproduce DADA2's exact score-maximizing optimum at gap/homopolymer
-        // boundaries and sequence ends (free end-gap crediting differs), so it is
-        // NOT yet a drop-in for align_endsfree. Tracked for the fork's ends-free
-        // handling. See wfa_diagnose for concrete counterexamples.
+        // With the fork's corrected mode (`Compat::Corrected`) WFA reaches
+        // `align_endsfree`'s optimum on every pair; in C mode 332/10,000
+        // disagreed (#51).
         let low_edit_fails: u32 = fails_by_edits[..=4].iter().sum();
         let total_fails: u32 = fails_by_edits.iter().sum();
-        println!(
-            "  TOTAL: {total_fails} disagree ({low_edit_fails} at <=4 edits) \
-             — known WFA ends-free divergence, see doc comment"
+        assert_eq!(
+            total_fails, 0,
+            "{total_fails} disagree ({low_edit_fails} at <=4 edits)"
         );
     }
 

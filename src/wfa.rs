@@ -32,7 +32,7 @@ use std::cell::RefCell;
 #[cfg(feature = "wfa")]
 use std::sync::LazyLock;
 #[cfg(feature = "wfa")]
-use wfa2lib_rs::aligner::{AffineAligner, AlignStatus, AlignmentScope};
+use wfa2lib_rs::aligner::{AffineAligner, AlignStatus, AlignmentScope, Compat};
 #[cfg(feature = "wfa")]
 use wfa2lib_rs::heuristic::HeuristicStrategy;
 #[cfg(feature = "wfa")]
@@ -179,6 +179,12 @@ pub fn align_wfa_endsfree_with_buf(
             // Compute the full CIGAR, not just the score (default ComputeScore
             // leaves the cigar empty).
             aligner.alignment_scope = AlignmentScope::ComputeAlignment;
+            // Fix the C WFA2-lib bugs the fork reproduces by default
+            // (HPCBio/wfa2lib-rs#32), notably ends-free with a match reward
+            // stopping at the first free end rather than the best one
+            // (Marco-Sola-Lab/WFA2-lib#102, HPCBio/wfa2lib-rs#37 and #38).
+            // dada2-rs needs NW's optimum, not C-identical output.
+            aligner.set_compat(Compat::Corrected);
             *slot = Some((key, aligner));
         }
         let aligner = &mut slot.as_mut().unwrap().1;
