@@ -32,11 +32,19 @@ use std::cell::RefCell;
 #[cfg(feature = "wfa")]
 use std::sync::LazyLock;
 #[cfg(feature = "wfa")]
-use wfa2lib_rs::aligner::{AffineAligner, AlignStatus, AlignmentScope, Compat};
+use wfa2lib_rs::aligner::{AffineAligner, AlignStatus, AlignmentScope, Compat, WavefrontAligner};
 #[cfg(feature = "wfa")]
 use wfa2lib_rs::heuristic::HeuristicStrategy;
 #[cfg(feature = "wfa")]
-use wfa2lib_rs::penalties::{AffinePenalties, WavefrontPenalties};
+use wfa2lib_rs::penalties::{AffinePenalties, LinearPenalties, WavefrontPenalties};
+
+/// `DADA2RS_WFA_LINEAR=1` runs WFA with gap-linear penalties (one wavefront)
+/// instead of affine with gap opening 0 (three). Same scores and, on the
+/// fixtures, byte-identical error models; about 2x faster uncapped with half
+/// the peak memory. An A/B switch until confirmed at scale (#51).
+#[cfg(feature = "wfa")]
+static WFA_LINEAR: LazyLock<bool> =
+    LazyLock::new(|| std::env::var("DADA2RS_WFA_LINEAR").is_ok_and(|v| v == "1"));
 
 /// Opt-in switch for the experimental WFA alignment backend (issue #49).
 /// Set `DADA2RS_ALIGN_BACKEND=wfa` to route the ends-free path through WFA.
@@ -161,13 +169,41 @@ pub fn align_wfa_endsfree_with_buf(
     // right home.
     //
     // Cache key is (match, mismatch, gap_p, band) — all constant within a run.
-    type WfaCache = ((i32, i32, i32, i32), AffineAligner);
+    type Key = (i32, i32, i32, i32);
     thread_local! {
-        static WFA: RefCell<Option<WfaCache>> = const { RefCell::new(None) };
+        static WFA: RefCell<Option<(Key, AffineAligner)>> = const { RefCell::new(None) };
+        static WFA_LIN: RefCell<Option<(Key, WavefrontAligner<1>)>> =
+            const { RefCell::new(None) };
+    }
+    let key = (match_score, mismatch, gap_p, band);
+    if *WFA_LINEAR {
+        WFA_LIN.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.as_ref().map(|(k, _)| *k) != Some(key) {
+                let penalties = WavefrontPenalties::new_linear(LinearPenalties {
+                    match_: -match_score,
+                    mismatch: -mismatch,
+                    indel: -gap_p,
+                });
+                *slot = Some((key, configure(WavefrontAligner::<1>::new(penalties))));
+            }
+            let aligner = &mut slot.as_mut().unwrap().1;
+            align_with(
+                aligner,
+                s1,
+                s2,
+                match_score,
+                mismatch,
+                gap_p,
+                band,
+                max_steps,
+                buf,
+            );
+        });
+        return;
     }
     WFA.with(|cell| {
         let mut slot = cell.borrow_mut();
-        let key = (match_score, mismatch, gap_p, band);
         if slot.as_ref().map(|(k, _)| *k) != Some(key) {
             let penalties = WavefrontPenalties::new_affine(AffinePenalties {
                 match_: -match_score,
@@ -175,77 +211,109 @@ pub fn align_wfa_endsfree_with_buf(
                 gap_opening: 0,
                 gap_extension: -gap_p,
             });
-            let mut aligner = AffineAligner::new(penalties);
-            // Compute the full CIGAR, not just the score (default ComputeScore
-            // leaves the cigar empty).
-            aligner.alignment_scope = AlignmentScope::ComputeAlignment;
-            // Fix the C WFA2-lib bugs the fork reproduces by default
-            // (HPCBio/wfa2lib-rs#32), notably ends-free with a match reward
-            // stopping at the first free end rather than the best one
-            // (Marco-Sola-Lab/WFA2-lib#102, HPCBio/wfa2lib-rs#37 and #38).
-            // dada2-rs needs NW's optimum, not C-identical output.
-            aligner.set_compat(Compat::Corrected);
-            *slot = Some((key, aligner));
+            *slot = Some((key, configure(AffineAligner::new(penalties))));
         }
         let aligner = &mut slot.as_mut().unwrap().1;
-        // Match NW's diagonal band so WFA stays band-limited and its O(n·s)
-        // cost can't blow up on divergent-but-screened pairs (issue #51). The
-        // band is per pair: NW widens one side by the length difference, and a
-        // symmetric ±band cut WFA off from leading gaps NW can take. A WFA
-        // diagonal is text offset minus pattern offset, NW's `j - i`.
-        if band >= 0 {
-            let (lband, rband) = band_adjust(s1.len(), s2.len(), band);
-            aligner.set_heuristic(HeuristicStrategy::BandedStatic {
-                min_k: -lband,
-                max_k: rband,
-            });
-        }
-        // Edit-budget cap (issue #51): abort WFA once cost exceeds the bound so
-        // divergent pairs don't pay the full O(n·s) extend. Capped pairs fall
-        // back to NW below. `max_steps` is the caller's cost cap (from
-        // `wfa_cost_cap`); the `DADA2RS_WFA_MAX_STEPS` env var overrides it for
-        // ad-hoc sweeps. i32::MAX = unbounded.
-        let cap = if *WFA_MAX_STEPS != i32::MAX {
-            *WFA_MAX_STEPS
-        } else {
-            max_steps
-        };
-        aligner.set_max_alignment_steps(cap);
-        // Ends-free, with each free end bounded by what the banded NW path can
-        // reach: `band + |len1 - len2|` (see `band_adjust`). Whole-length free
-        // ends let WFA (C and the port alike) stop on the no-overlap alignment
-        // (all end gaps, score 0) for divergent pairs once begin-free gaps are
-        // honored (HPCBio/wfa2lib-rs#17); on PacBio this collapsed the
-        // unbounded arm's ASVs (#51). Unbanded keeps whole-length free ends.
-        let (p_free, t_free) = if band >= 0 {
-            let fe = band + (s1.len() as i32 - s2.len() as i32).abs();
-            (fe.min(s1.len() as i32), fe.min(s2.len() as i32))
-        } else {
-            (s1.len() as i32, s2.len() as i32)
-        };
-        aligner.set_alignment_free_ends(p_free, p_free, t_free, t_free);
-        aligner.align_endsfree(s1, s2);
-        // On MaxStepsReached the CIGAR is left empty; fall back to the banded NW
-        // ends-free path so the pair still gets a valid alignment (byte-identical
-        // to the pure-NW backend for exactly these capped, divergent pairs).
-        if aligner.status() == AlignStatus::MaxStepsReached {
-            align_vectorized_with_buf(
-                s1,
-                s2,
-                &VectorizedAlignScores {
-                    match_score: match_score as i16,
-                    mismatch: mismatch as i16,
-                    gap_p: gap_p as i16,
-                    end_gap_p: 0,
-                    band,
-                },
-                buf,
-            );
-            return;
-        }
-        let ops = aligner.cigar().operations_slice();
-        cigar_to_alignment_into(ops, s1, s2, &mut buf.al0, &mut buf.al1);
+        align_with(
+            aligner,
+            s1,
+            s2,
+            match_score,
+            mismatch,
+            gap_p,
+            band,
+            max_steps,
+            buf,
+        );
     });
+}
+
+/// One-time setup shared by the affine and linear aligners.
+#[cfg(feature = "wfa")]
+fn configure<const N: usize>(mut aligner: WavefrontAligner<N>) -> WavefrontAligner<N> {
+    // Compute the full CIGAR, not just the score (default ComputeScore
+    // leaves the cigar empty).
+    aligner.alignment_scope = AlignmentScope::ComputeAlignment;
+    // Fix the C WFA2-lib bugs the fork reproduces by default
+    // (HPCBio/wfa2lib-rs#32), notably ends-free with a match reward
+    // stopping at the first free end rather than the best one
+    // (Marco-Sola-Lab/WFA2-lib#102, HPCBio/wfa2lib-rs#37 and #38).
+    // dada2-rs needs NW's optimum, not C-identical output.
+    aligner.set_compat(Compat::Corrected);
+    aligner
+}
+
+/// Per-pair band, cap and free ends, then align (or fall back to NW).
+#[cfg(feature = "wfa")]
+#[allow(clippy::too_many_arguments)]
+fn align_with<const N: usize>(
+    aligner: &mut WavefrontAligner<N>,
+    s1: &[u8],
+    s2: &[u8],
+    match_score: i32,
+    mismatch: i32,
+    gap_p: i32,
+    band: i32,
+    max_steps: i32,
+    buf: &mut AlignBuffers,
+) {
+    // Match NW's diagonal band so WFA stays band-limited and its O(n·s)
+    // cost can't blow up on divergent-but-screened pairs (issue #51). The
+    // band is per pair: NW widens one side by the length difference, and a
+    // symmetric ±band cut WFA off from leading gaps NW can take. A WFA
+    // diagonal is text offset minus pattern offset, NW's `j - i`.
+    if band >= 0 {
+        let (lband, rband) = band_adjust(s1.len(), s2.len(), band);
+        aligner.set_heuristic(HeuristicStrategy::BandedStatic {
+            min_k: -lband,
+            max_k: rband,
+        });
+    }
+    // Edit-budget cap (issue #51): abort WFA once cost exceeds the bound so
+    // divergent pairs don't pay the full O(n·s) extend. Capped pairs fall
+    // back to NW below. `max_steps` is the caller's cost cap (from
+    // `wfa_cost_cap`); the `DADA2RS_WFA_MAX_STEPS` env var overrides it for
+    // ad-hoc sweeps. i32::MAX = unbounded.
+    let cap = if *WFA_MAX_STEPS != i32::MAX {
+        *WFA_MAX_STEPS
+    } else {
+        max_steps
+    };
+    aligner.set_max_alignment_steps(cap);
+    // Ends-free, with each free end bounded by what the banded NW path can
+    // reach: `band + |len1 - len2|` (see `band_adjust`). Whole-length free
+    // ends let WFA (C and the port alike) stop on the no-overlap alignment
+    // (all end gaps, score 0) for divergent pairs once begin-free gaps are
+    // honored (HPCBio/wfa2lib-rs#17); on PacBio this collapsed the
+    // unbounded arm's ASVs (#51). Unbanded keeps whole-length free ends.
+    let (p_free, t_free) = if band >= 0 {
+        let fe = band + (s1.len() as i32 - s2.len() as i32).abs();
+        (fe.min(s1.len() as i32), fe.min(s2.len() as i32))
+    } else {
+        (s1.len() as i32, s2.len() as i32)
+    };
+    aligner.set_alignment_free_ends(p_free, p_free, t_free, t_free);
+    aligner.align_endsfree(s1, s2);
+    // On MaxStepsReached the CIGAR is left empty; fall back to the banded NW
+    // ends-free path so the pair still gets a valid alignment (byte-identical
+    // to the pure-NW backend for exactly these capped, divergent pairs).
+    if aligner.status() == AlignStatus::MaxStepsReached {
+        align_vectorized_with_buf(
+            s1,
+            s2,
+            &VectorizedAlignScores {
+                match_score: match_score as i16,
+                mismatch: mismatch as i16,
+                gap_p: gap_p as i16,
+                end_gap_p: 0,
+                band,
+            },
+            buf,
+        );
+        return;
+    }
+    let ops = aligner.cigar().operations_slice();
+    cigar_to_alignment_into(ops, s1, s2, &mut buf.al0, &mut buf.al1);
 }
 
 /// NW-only build stub for the WFA backend (issue #63). The experimental WFA
