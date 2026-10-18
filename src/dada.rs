@@ -1760,6 +1760,7 @@ mod tests {
     fn params(err_mat: Vec<f64>, err_ncol: usize) -> DadaParams {
         let align = AlignParams {
             backend: AlignBackend::Nw,
+            end_model: crate::nwalign::EndModel::EndsFree,
             wfa_max_edits: 0,
             match_score: 5,
             mismatch: -4,

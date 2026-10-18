@@ -23,7 +23,7 @@
 //! build [`align_wfa_endsfree_with_buf`] is a stub that aborts with a clear
 //! message; [`wfa_cost_cap`] is always available since it is pure arithmetic.
 
-use crate::nwalign::AlignBuffers;
+use crate::nwalign::{AlignBuffers, EndModel};
 #[cfg(feature = "wfa")]
 use crate::nwalign::{VectorizedAlignScores, align_vectorized_with_buf, band_adjust};
 
@@ -159,6 +159,7 @@ pub fn align_wfa_endsfree_with_buf(
     mismatch: i32,
     gap_p: i32,
     band: i32,
+    ends: EndModel,
     max_steps: i32,
     buf: &mut AlignBuffers,
 ) {
@@ -196,6 +197,7 @@ pub fn align_wfa_endsfree_with_buf(
                 mismatch,
                 gap_p,
                 band,
+                ends,
                 max_steps,
                 buf,
             );
@@ -222,6 +224,7 @@ pub fn align_wfa_endsfree_with_buf(
             mismatch,
             gap_p,
             band,
+            ends,
             max_steps,
             buf,
         );
@@ -254,6 +257,7 @@ fn align_with<const N: usize>(
     mismatch: i32,
     gap_p: i32,
     band: i32,
+    ends: EndModel,
     max_steps: i32,
     buf: &mut AlignBuffers,
 ) {
@@ -292,12 +296,29 @@ fn align_with<const N: usize>(
     } else {
         (s1.len() as i32, s2.len() as i32)
     };
-    aligner.set_alignment_free_ends(p_free, p_free, t_free, t_free);
-    aligner.align_endsfree(s1, s2);
+    // Penalised ends (issue #289): global is end-to-end; end-free-only frees
+    // trailing gaps only. With a free end the match reward changes which
+    // alignment is best, so end-free-only relies on the corrected mode and the
+    // real reward (HPCBio/wfa2lib-rs#31); global ranks alike either way.
+    match ends {
+        EndModel::Global => {
+            aligner.align_end2end(s1, s2);
+        }
+        EndModel::EndFreeOnly => {
+            aligner.set_alignment_free_ends(0, p_free, 0, t_free);
+            aligner.align_endsfree(s1, s2);
+        }
+        EndModel::EndsFree => {
+            aligner.set_alignment_free_ends(p_free, p_free, t_free, t_free);
+            aligner.align_endsfree(s1, s2);
+        }
+    }
     // On MaxStepsReached the CIGAR is left empty; fall back to the banded NW
-    // ends-free path so the pair still gets a valid alignment (byte-identical
-    // to the pure-NW backend for exactly these capped, divergent pairs).
+    // path under the same end model, so the pair still gets a valid alignment
+    // (byte-identical to the pure-NW backend for exactly these capped pairs).
     if aligner.status() == AlignStatus::MaxStepsReached {
+        let (begin_free, end_free) = ends.free_ends();
+        let edge = |free: bool| if free { 0 } else { gap_p as i16 };
         align_vectorized_with_buf(
             s1,
             s2,
@@ -305,7 +326,8 @@ fn align_with<const N: usize>(
                 match_score: match_score as i16,
                 mismatch: mismatch as i16,
                 gap_p: gap_p as i16,
-                end_gap_p: 0,
+                begin_gap_p: edge(begin_free),
+                end_gap_p: edge(end_free),
                 band,
             },
             buf,
@@ -330,6 +352,7 @@ pub fn align_wfa_endsfree_with_buf(
     _mismatch: i32,
     _gap_p: i32,
     _band: i32,
+    _ends: EndModel,
     _max_steps: i32,
     _buf: &mut AlignBuffers,
 ) {

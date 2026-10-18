@@ -19,7 +19,7 @@ use derep::dereplicate;
 use learn_errors::{ErrFun, LearnedErrParams};
 use metrics::{MeasureLevel, MetricsDocument};
 use misc::{Tagged, read_fasta_records, read_tagged_json};
-use nwalign::{AlignBackend, AlignParams, ScreenBackend};
+use nwalign::{AlignBackend, AlignParams, EndModel, ScreenBackend};
 use sequence_table::{HashAlgo, SequenceTable};
 use serde::Serialize;
 
@@ -1231,6 +1231,7 @@ fn resolve_dada_params(
         minimizer_w,
         screen_audit,
         wfa_max_edits,
+        end_model,
     } = experimental;
     let em: ErrorModelJson = read_tagged_json(error_model, &["learn-errors", "errors-from-sample"])
         .with_path(error_model)?;
@@ -1312,6 +1313,7 @@ fn resolve_dada_params(
     // a real error-copy alignment (those are ~99.9% identical), tight enough to
     // bound divergent non-error-copy pairs that slip past the k-mer screen.
     let wfa_max_edits = resolve!(wfa_max_edits, wfa_max_edits, WFA_MAX_EDITS_DEFAULT);
+    let end_model = resolve!(end_model, end_model, EndModel::EndsFree);
 
     // ---- Consistency warnings (only when NOT inheriting) ----
     if !inherit_err_params && let Some(em_params) = p {
@@ -1344,6 +1346,7 @@ fn resolve_dada_params(
         check!("use_kmers", use_kmers, em_params.use_kmers);
         check!("align_backend", backend, em_params.backend);
         check!("wfa_max_edits", wfa_max_edits, em_params.wfa_max_edits);
+        check!("end_model", end_model, em_params.end_model);
         // The screen gates which pairs reach build_trans_mat, so it shapes the
         // fitted model as surely as kdist_cutoff does -- up to 90.9% relative
         // difference in err_out on the MiSeq SOP. Applying a model across a
@@ -1381,6 +1384,7 @@ fn resolve_dada_params(
 
     let align_params = AlignParams {
         backend,
+        end_model,
         wfa_max_edits,
         match_score,
         mismatch,

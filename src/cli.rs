@@ -4,7 +4,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 
 use crate::derep::PoolTiebreak;
 use crate::misc::DADA2_RS_VERSION;
-use crate::nwalign::{AlignBackend, ScreenBackend};
+use crate::nwalign::{AlignBackend, EndModel, ScreenBackend};
 
 /// Help headings shared across subcommands. Keep this list closed: a new
 /// heading means a new category for every subcommand that has such a flag,
@@ -417,6 +417,10 @@ pub struct ExperimentalArgs {
     /// EXPERIMENTAL: WFA edit-budget cap, 0 = unbounded [default: 50]
     #[arg(long, help_heading = H_EXP)]
     pub wfa_max_edits: Option<i32>,
+
+    /// EXPERIMENTAL: free alignment ends; R is `ends-free` [default: ends-free]
+    #[arg(long, value_enum, help_heading = H_EXP)]
+    pub end_model: Option<EndModel>,
 }
 
 /// Error-function and self-consistency flags shared by `learn-errors` and

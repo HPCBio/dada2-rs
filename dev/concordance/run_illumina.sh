@@ -34,6 +34,11 @@ POOL="${POOL:-false}"
 ALIGN_BACKEND="${ALIGN_BACKEND:-}"
 backend_arg=()
 [ -n "$ALIGN_BACKEND" ] && backend_arg=(--align-backend "$ALIGN_BACKEND")
+# Optional alignment end model (#289): ends-free (R, the default), end-free-only
+# or global. Denoising steps only; remove-bimera-denovo has no such flag.
+END_MODEL="${END_MODEL:-}"
+end_arg=()
+[ -n "$END_MODEL" ] && end_arg=(--end-model "$END_MODEL")
 
 # Optional pre-alignment screen backend (kmer|minimizer), experimental. Applied
 # ONLY to the screening subcommands (learn-errors, dada, dada-pseudo) -- unlike
@@ -256,9 +261,9 @@ PY
 else
 echo "==> learn-errors (fwd, rev)"
 run_step learn-errors.fwd "$BIN" learn-errors "${trainFs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
-    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${learn_screen_arg[@]+"${learn_screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/errF.json"
+    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${learn_screen_arg[@]+"${learn_screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/errF.json"
 run_step learn-errors.rev "$BIN" learn-errors "${trainRs[@]}" --nbases "$NBASES" --errfun "$ERRFUN" ${errfun_extra[@]+"${errfun_extra[@]}"} \
-    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${learn_screen_arg[@]+"${learn_screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/errR.json"
+    --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${learn_screen_arg[@]+"${learn_screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/errR.json"
 fi
 
 if [ "$POOL" = "pseudo" ] || [ "$POOL" = "pseudo-fixed-err" ]; then
@@ -299,11 +304,11 @@ if [ "$POOL" = "pseudo" ] || [ "$POOL" = "pseudo-fixed-err" ]; then
   run_step dada-pseudo.fwd "$BIN" dada-pseudo "${filtFs[@]}" --error-model "$OUT/errF.json" \
       -o "$OUT/dada_fwd" --priors-out "$OUT/priors_fwd.fasta" \
       ${reest_arg[@]+"${reest_arg[@]}"} \
-      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
   run_step dada-pseudo.rev "$BIN" dada-pseudo "${filtRs[@]}" --error-model "$OUT/errR.json" \
       -o "$OUT/dada_rev" --priors-out "$OUT/priors_rev.fasta" \
       ${reest_arg[@]+"${reest_arg[@]}"} \
-      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
 
   # Positive control: did the priors actually CHANGE anything?
   #
@@ -317,7 +322,7 @@ if [ "$POOL" = "pseudo" ] || [ "$POOL" = "pseudo-fixed-err" ]; then
   echo "==> positive control: per-sample run for comparison"
   run_step dada.fwd "$BIN" dada "${filtFs[@]}" --error-model "$OUT/errF.json" \
       --output-dir "$OUT/control_persample" --threads "$THREADS" \
-      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} > /dev/null
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} > /dev/null
   python3 - "$OUT/dada_fwd" "$OUT/control_persample" <<'PYCTL'
 import glob, json, os, sys
 def load(d):
@@ -352,17 +357,17 @@ elif [ "$POOL" = "true" ]; then
   echo "==> dada-pooled (fwd, rev; full pooling)"
   run_step dada-pooled.fwd "$BIN" dada-pooled "${filtFs[@]}" --error-model "$OUT/errF.json" \
       -o "$OUT/dada_fwd" --threads "$THREADS" \
-      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
   run_step dada-pooled.rev "$BIN" dada-pooled "${filtRs[@]}" --error-model "$OUT/errR.json" \
       -o "$OUT/dada_rev" --threads "$THREADS" \
-      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
 else
   # Per-sample denoising (pool=FALSE analog) — matches R dada() default.
   echo "==> dada (fwd, rev; per-sample)"
   run_step dada.fwd "$BIN" dada "${filtFs[@]}" --error-model "$OUT/errF.json" \
-      --output-dir "$OUT/dada_fwd" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+      --output-dir "$OUT/dada_fwd" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
   run_step dada.rev "$BIN" dada "${filtRs[@]}" --error-model "$OUT/errR.json" \
-      --output-dir "$OUT/dada_rev" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+      --output-dir "$OUT/dada_rev" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
 fi
 
 echo "==> merge-pairs"

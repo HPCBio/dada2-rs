@@ -60,6 +60,44 @@ pub enum AlignBackend {
     Wfa2,
 }
 
+/// Which alignment ends are free of gap penalties (issue #289).
+///
+/// `EndsFree` is R DADA2's model and the default. The others are opt-in for
+/// primer-trimmed amplicons, whose reads are anchored at the primer sites.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum EndModel {
+    /// Leading and trailing gaps free on both sequences (R DADA2).
+    #[default]
+    EndsFree,
+    /// Leading gaps penalised, trailing gaps free: 5'-anchored reads
+    /// truncated to a fixed length.
+    EndFreeOnly,
+    /// No free end gaps: reads anchored at both ends.
+    Global,
+}
+
+impl EndModel {
+    /// Whether leading (`begin`) and trailing (`end`) gaps are free.
+    pub fn free_ends(self) -> (bool, bool) {
+        match self {
+            EndModel::EndsFree => (true, true),
+            EndModel::EndFreeOnly => (false, true),
+            EndModel::Global => (false, false),
+        }
+    }
+}
+
 /// Which pre-alignment screen decides whether a pair is worth aligning.
 ///
 /// Both backends feed the same `kdist_cutoff` gate and neither defines the
@@ -95,6 +133,8 @@ pub enum ScreenBackend {
 pub struct AlignParams {
     /// Which pairwise-alignment backend to use for the ends-free path.
     pub backend: AlignBackend,
+    /// Which alignment ends are free of gap penalties (issue #289).
+    pub end_model: EndModel,
     /// WFA edit-budget cap (issue #51), in edit operations. WFA aborts once the
     /// alignment needs more than this many edits and the pair falls back to the
     /// banded NW path (byte-identical to the NW backend for that pair). Bounds
@@ -138,13 +178,15 @@ pub struct AlignParams {
 
 /// Scoring parameters for [`align_vectorized_with_buf`].
 ///
-/// Uses `i16` to match the SIMD-friendly DP tables; `end_gap_p = 0` gives
-/// ends-free behaviour, `end_gap_p = gap_p` gives standard NW edge costs.
+/// Uses `i16` to match the SIMD-friendly DP tables. `begin_gap_p` scores
+/// leading gaps and `end_gap_p` trailing ones: `0` makes that end free, `gap_p`
+/// gives standard NW edge costs.
 #[derive(Clone, Copy, Debug)]
 pub struct VectorizedAlignScores {
     pub match_score: i16,
     pub mismatch: i16,
     pub gap_p: i16,
+    pub begin_gap_p: i16,
     pub end_gap_p: i16,
     pub band: i32,
 }
@@ -399,6 +441,32 @@ pub fn align_endsfree_with_buf(
     band: i32,
     buf: &mut AlignBuffers,
 ) {
+    align_ends_with_buf(
+        s1,
+        s2,
+        match_score,
+        mismatch,
+        gap_p,
+        band,
+        EndModel::EndsFree,
+        buf,
+    );
+}
+
+/// [`align_endsfree_with_buf`] under any [`EndModel`]: a penalised end charges
+/// `gap_p` per gap column, as an interior gap does (issue #289).
+#[allow(clippy::too_many_arguments)]
+pub fn align_ends_with_buf(
+    s1: &[u8],
+    s2: &[u8],
+    match_score: i32,
+    mismatch: i32,
+    gap_p: i32,
+    band: i32,
+    ends: EndModel,
+    buf: &mut AlignBuffers,
+) {
+    let (begin_free, end_free) = ends.free_ends();
     let len1 = s1.len();
     let len2 = s2.len();
     let ncol = len2 + 1;
@@ -410,11 +478,19 @@ pub fn align_endsfree_with_buf(
         let d = &mut buf.d32[..nrow * ncol];
         let p = &mut buf.p32[..nrow * ncol];
 
-        // Initialise edges (ends-free: score 0).
+        // Initialise edges: score 0 when leading gaps are free.
         for slot in p.iter_mut().step_by(ncol).take(len1 + 1) {
             *slot = 3;
         }
         p[..=len2].fill(2);
+        if !begin_free {
+            for i in 1..=len1 {
+                d[i * ncol] = d[(i - 1) * ncol] + gap_p;
+            }
+            for j in 1..=len2 {
+                d[j] = d[j - 1] + gap_p;
+            }
+        }
 
         let (lband, rband) = band_adjust(len1, len2, band);
         fill_band_sentinels(d, ncol, len1, len2, lband, rband, band);
@@ -431,12 +507,12 @@ pub fn align_endsfree_with_buf(
                 len2
             };
             for j in l..=r {
-                let left = if i == len1 {
+                let left = if end_free && i == len1 {
                     d[i * ncol + j - 1]
                 } else {
                     d[i * ncol + j - 1] + gap_p
                 };
-                let up = if j == len2 {
+                let up = if end_free && j == len2 {
                     d[(i - 1) * ncol + j]
                 } else {
                     d[(i - 1) * ncol + j] + gap_p
@@ -501,8 +577,10 @@ pub fn align_endsfree_homo_with_buf(
         gap_p,
         homo_gap_p,
         band,
+        end_model,
         ..
     } = *params;
+    let (begin_free, end_free) = end_model.free_ends();
     let len1 = s1.len();
     let len2 = s2.len();
     let ncol = len2 + 1;
@@ -522,6 +600,18 @@ pub fn align_endsfree_homo_with_buf(
             *slot = 3;
         }
         p[..=len2].fill(2);
+        // Penalised leading gaps (issue #289) cost what an interior gap at that
+        // position would.
+        if !begin_free {
+            for i in 1..=len1 {
+                let g = if homo1[i - 1] { homo_gap_p } else { gap_p };
+                d[i * ncol] = d[(i - 1) * ncol] + g;
+            }
+            for j in 1..=len2 {
+                let g = if homo2[j - 1] { homo_gap_p } else { gap_p };
+                d[j] = d[j - 1] + g;
+            }
+        }
 
         let (lband, rband) = band_adjust(len1, len2, band);
         fill_band_sentinels(d, ncol, len1, len2, lband, rband, band);
@@ -538,14 +628,14 @@ pub fn align_endsfree_homo_with_buf(
                 len2
             };
             for j in l..=r {
-                let left = if i == len1 {
+                let left = if end_free && i == len1 {
                     d[i * ncol + j - 1]
                 } else if homo2[j - 1] {
                     d[i * ncol + j - 1] + homo_gap_p
                 } else {
                     d[i * ncol + j - 1] + gap_p
                 };
-                let up = if j == len2 {
+                let up = if end_free && j == len2 {
                     d[(i - 1) * ncol + j]
                 } else if homo1[i - 1] {
                     d[(i - 1) * ncol + j] + homo_gap_p
@@ -798,8 +888,9 @@ fn dploop(
 /// Cache-friendly diagonal-banded Needleman-Wunsch using `i16` DP tables.
 ///
 /// Processes anti-diagonals (i+j = constant) left to right, giving sequential
-/// memory access patterns that auto-vectorise with LLVM.  `end_gap_p = 0`
-/// gives ends-free behaviour; `end_gap_p = gap_p` gives standard NW edge costs.
+/// memory access patterns that auto-vectorise with LLVM. `begin_gap_p` and
+/// `end_gap_p` score leading and trailing gaps: `0` is ends-free, `gap_p` is
+/// standard NW (see [`VectorizedAlignScores`]).
 /// Equivalent to C++ `nwalign_vectorized2`.
 #[allow(dead_code)]
 pub fn align_vectorized(
@@ -825,6 +916,7 @@ pub fn align_vectorized_with_buf(
         match_score,
         mismatch,
         gap_p,
+        begin_gap_p,
         end_gap_p,
         band,
     } = *scores;
@@ -906,18 +998,18 @@ pub fn align_vectorized_with_buf(
             slot[start_col] = 0;
         } else {
             if row < left_fill_limit {
-                slot[left_col(row)] = end_gap_p;
+                slot[left_col(row)] = begin_gap_p;
                 p[row * ncol + left_col(row)] = 3;
             }
             if row < top_fill_limit {
-                slot[top_col(row)] = end_gap_p;
+                slot[top_col(row)] = begin_gap_p;
                 p[row * ncol + top_col(row)] = 2;
             }
         }
     }
     p[start_col] = 0;
     // Edge score for row 1; advanced once per row below.
-    let mut row_free = end_gap_p;
+    let mut row_free = begin_gap_p;
 
     // Main DP: iterate over anti-diagonals (row = i + j).
     let mut row = 2usize;
@@ -938,7 +1030,7 @@ pub fn align_vectorized_with_buf(
         // up-front passes over the full matrix; ordering within the row is
         // preserved (sentinels first, then edge fills, then the DP), which
         // matters where an edge cell lands on a sentinel column.
-        row_free = row_free.saturating_add(end_gap_p);
+        row_free = row_free.saturating_add(begin_gap_p);
         {
             let cur = &mut slots[2];
             cur[0] = fill_val;
@@ -1200,7 +1292,7 @@ pub fn align_vectorized_with_buf(
 /// `--verbose` logs so archived runs are self-labeling (issue #51). The WFA
 /// edit-budget cap is shown only for the WFA backend (it is inert under NW).
 pub fn backend_repr(p: &AlignParams) -> String {
-    match p.backend {
+    let backend = match p.backend {
         AlignBackend::Nw => "alignment backend: nw (Needleman-Wunsch)".to_string(),
         AlignBackend::Wfa2 => {
             let cap = if p.wfa_max_edits > 0 {
@@ -1210,6 +1302,12 @@ pub fn backend_repr(p: &AlignParams) -> String {
             };
             format!("alignment backend: wfa2 (experimental WFA; {cap})")
         }
+    };
+    // Named only off the default, so R-parity runs read as before (issue #289).
+    match p.end_model {
+        EndModel::EndsFree => backend,
+        EndModel::EndFreeOnly => format!("{backend}; end model: end-free-only (experimental)"),
+        EndModel::Global => format!("{backend}; end model: global (experimental)"),
     }
 }
 
@@ -1612,6 +1710,7 @@ fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers)
             p.mismatch,
             p.gap_p,
             p.band,
+            p.end_model,
             wfa_cost_cap(p.wfa_max_edits, p.gap_p),
             buf,
         );
@@ -1628,6 +1727,7 @@ fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers)
             p.mismatch,
             p.gap_p,
             p.band,
+            p.end_model,
             wfa_cost_cap(p.wfa_max_edits, p.gap_p),
             buf,
         );
@@ -1640,6 +1740,8 @@ fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers)
     const VECTORIZED_MAX_LEN: usize = 3500;
     let too_long = raw1.len() > VECTORIZED_MAX_LEN || raw2.len() > VECTORIZED_MAX_LEN;
     if p.vectorized && !too_long && !use_homo {
+        let (begin_free, end_free) = p.end_model.free_ends();
+        let edge = |free: bool| if free { 0 } else { p.gap_p as i16 };
         align_vectorized_with_buf(
             &raw1.seq,
             &raw2.seq,
@@ -1647,7 +1749,8 @@ fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers)
                 match_score: p.match_score as i16,
                 mismatch: p.mismatch as i16,
                 gap_p: p.gap_p as i16,
-                end_gap_p: 0,
+                begin_gap_p: edge(begin_free),
+                end_gap_p: edge(end_free),
                 band: p.band,
             },
             buf,
@@ -1658,13 +1761,14 @@ fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers)
         align_endsfree_homo_with_buf(&raw1.seq, &raw2.seq, p, buf);
         return Some(());
     }
-    align_endsfree_with_buf(
+    align_ends_with_buf(
         &raw1.seq,
         &raw2.seq,
         p.match_score,
         p.mismatch,
         p.gap_p,
         p.band,
+        p.end_model,
         buf,
     );
     Some(())
@@ -1819,6 +1923,7 @@ mod bench_align {
                 match_score: 5,
                 mismatch: -4,
                 gap_p: -8,
+                begin_gap_p: 0,
                 end_gap_p: 0,
                 band,
             };
@@ -1969,6 +2074,7 @@ mod bench_align {
                 match_score: 5,
                 mismatch: -4,
                 gap_p: -8,
+                begin_gap_p: 0,
                 end_gap_p: 0,
                 band,
             };
@@ -2068,6 +2174,7 @@ mod bench_align {
             match_score: 5,
             mismatch: -4,
             gap_p: -8,
+            begin_gap_p: 0,
             end_gap_p: 0,
             band: 32,
         };
@@ -2184,6 +2291,7 @@ mod tests {
                 match_score: MATCH as i16,
                 mismatch: MM as i16,
                 gap_p: GAP as i16,
+                begin_gap_p: 0,
                 end_gap_p: 0,
                 band: BAND,
             },
@@ -2206,7 +2314,17 @@ mod tests {
     fn compare_wfa(s1: &[u8], s2: &[u8], label: &str) {
         let ef = align_endsfree(s1, s2, MATCH, MM, GAP, BAND);
         let mut buf = AlignBuffers::new();
-        align_wfa_endsfree_with_buf(s1, s2, MATCH, MM, GAP, BAND, i32::MAX, &mut buf);
+        align_wfa_endsfree_with_buf(
+            s1,
+            s2,
+            MATCH,
+            MM,
+            GAP,
+            BAND,
+            EndModel::EndsFree,
+            i32::MAX,
+            &mut buf,
+        );
         let wfa = [buf.al0.clone(), buf.al1.clone()];
 
         let score_ef = score_alignment(&ef, MATCH, MM, GAP);
@@ -2281,6 +2399,7 @@ mod tests {
                 match_score: MATCH as i16,
                 mismatch: MM as i16,
                 gap_p: GAP as i16,
+                begin_gap_p: 0,
                 end_gap_p: 0,
                 band: BAND,
             },
@@ -2297,7 +2416,17 @@ mod tests {
         let s2 = encode("AGGTAAGTACCTACCTAGGT");
         let cap = wfa_cost_cap(2, GAP); // 2 edits -> cost 16
         let mut buf = AlignBuffers::new();
-        align_wfa_endsfree_with_buf(&s1, &s2, MATCH, MM, GAP, BAND, cap, &mut buf);
+        align_wfa_endsfree_with_buf(
+            &s1,
+            &s2,
+            MATCH,
+            MM,
+            GAP,
+            BAND,
+            EndModel::EndsFree,
+            cap,
+            &mut buf,
+        );
 
         // Non-vacuity: the (uncapped) optimal really does exceed the budget, so
         // the fallback path is the one under test.
@@ -2323,8 +2452,28 @@ mod tests {
 
         let mut capped = AlignBuffers::new();
         let mut uncapped = AlignBuffers::new();
-        align_wfa_endsfree_with_buf(&s1, &s2, MATCH, MM, GAP, BAND, cap, &mut capped);
-        align_wfa_endsfree_with_buf(&s1, &s2, MATCH, MM, GAP, BAND, i32::MAX, &mut uncapped);
+        align_wfa_endsfree_with_buf(
+            &s1,
+            &s2,
+            MATCH,
+            MM,
+            GAP,
+            BAND,
+            EndModel::EndsFree,
+            cap,
+            &mut capped,
+        );
+        align_wfa_endsfree_with_buf(
+            &s1,
+            &s2,
+            MATCH,
+            MM,
+            GAP,
+            BAND,
+            EndModel::EndsFree,
+            i32::MAX,
+            &mut uncapped,
+        );
 
         assert_eq!(
             capped.al0, uncapped.al0,
@@ -2429,7 +2578,17 @@ mod tests {
             // Ends-free: WFA endsfree vs scalar align_endsfree, for comparison.
             let e_scalar = align_endsfree(&s1, &s2, 5, -4, -8, -1);
             let mut buf = AlignBuffers::new();
-            align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, -1, i32::MAX, &mut buf);
+            align_wfa_endsfree_with_buf(
+                &s1,
+                &s2,
+                5,
+                -4,
+                -8,
+                -1,
+                EndModel::EndsFree,
+                i32::MAX,
+                &mut buf,
+            );
             let e_wfa = [buf.al0.clone(), buf.al1.clone()];
             if score_alignment(&e_scalar, 5, -4, -8) != score_alignment(&e_wfa, 5, -4, -8) {
                 endsfree_fails += 1;
@@ -2473,7 +2632,17 @@ mod tests {
             }
             let ef = align_endsfree(&s1, &s2, 5, -4, -8, -1);
             let mut buf = AlignBuffers::new();
-            align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, -1, i32::MAX, &mut buf);
+            align_wfa_endsfree_with_buf(
+                &s1,
+                &s2,
+                5,
+                -4,
+                -8,
+                -1,
+                EndModel::EndsFree,
+                i32::MAX,
+                &mut buf,
+            );
             let wfa = [buf.al0.clone(), buf.al1.clone()];
             let sef = score_alignment(&ef, 5, -4, -8);
             let swfa = score_alignment(&wfa, 5, -4, -8);
@@ -2508,7 +2677,17 @@ mod tests {
         assert_eq!(score_alignment(&ef, 5, -4, -8), 255);
 
         let mut buf = AlignBuffers::new();
-        align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, -1, i32::MAX, &mut buf);
+        align_wfa_endsfree_with_buf(
+            &s1,
+            &s2,
+            5,
+            -4,
+            -8,
+            -1,
+            EndModel::EndsFree,
+            i32::MAX,
+            &mut buf,
+        );
         let wfa = [buf.al0.clone(), buf.al1.clone()];
         assert_eq!(score_alignment(&wfa, 5, -4, -8), 255);
     }
@@ -2551,7 +2730,17 @@ mod tests {
         );
         let ef = align_endsfree(&s1, &s2, 5, -4, -8, BAND);
         let mut buf = AlignBuffers::new();
-        align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, BAND, i32::MAX, &mut buf);
+        align_wfa_endsfree_with_buf(
+            &s1,
+            &s2,
+            5,
+            -4,
+            -8,
+            BAND,
+            EndModel::EndsFree,
+            i32::MAX,
+            &mut buf,
+        );
         let wfa = [buf.al0.clone(), buf.al1.clone()];
         let (swfa, sef) = (
             score_alignment(&wfa, 5, -4, -8),
@@ -2559,6 +2748,203 @@ mod tests {
         );
         assert!(swfa > 0, "WFA returned the no-overlap alignment");
         assert_eq!(swfa, sef);
+    }
+
+    /// Score under an end model: end gaps cost `gap_p` unless that end is free.
+    fn score_ends(al: &[Vec<u8>; 2], gap_p: i32, ends: EndModel) -> i32 {
+        let (begin_free, end_free) = ends.free_ends();
+        let n = al[0].len();
+        let lead = (0..n).take_while(|&k| al[0][k] == b'-' || al[1][k] == b'-');
+        let lead_n = lead
+            .clone()
+            .take_while(|&k| {
+                al[0][..=k].iter().all(|&b| b == b'-') || al[1][..=k].iter().all(|&b| b == b'-')
+            })
+            .count();
+        let trail_n = (0..n)
+            .rev()
+            .take_while(|&k| {
+                al[0][k..].iter().all(|&b| b == b'-') || al[1][k..].iter().all(|&b| b == b'-')
+            })
+            .count();
+        let free = score_alignment(al, 5, -4, gap_p);
+        let charge = |free_end: bool, cols: usize| if free_end { 0 } else { gap_p * cols as i32 };
+        free + charge(begin_free, lead_n) + charge(end_free, trail_n)
+    }
+
+    /// Random amplicon-like pairs: s2 is s1 with up to 8 edits, some at the ends.
+    fn random_pairs(n: usize, seed: u64) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut st = seed;
+        let mut rng = |m: usize| {
+            st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((st >> 33) as usize) % m
+        };
+        (0..n)
+            .map(|_| {
+                let len = 40 + rng(210);
+                let s1: Vec<u8> = (0..len).map(|_| 1 + rng(4) as u8).collect();
+                let mut s2 = s1.clone();
+                for _ in 0..rng(9) {
+                    // Bias a third of the edits to within 3 bases of an end.
+                    let p = match rng(3) {
+                        0 => rng(3.min(s2.len())),
+                        1 => s2.len().saturating_sub(1 + rng(3.min(s2.len()))),
+                        _ => rng(s2.len()),
+                    };
+                    match rng(3) {
+                        0 => s2[p] = 1 + rng(4) as u8,
+                        1 => s2.insert(p, 1 + rng(4) as u8),
+                        _ => {
+                            if s2.len() > 3 {
+                                s2.remove(p);
+                            }
+                        }
+                    }
+                }
+                (s1, s2)
+            })
+            .collect()
+    }
+
+    const END_MODELS: [EndModel; 3] = [EndModel::EndsFree, EndModel::EndFreeOnly, EndModel::Global];
+
+    /// Vectorized and scalar NW find the same optimum under every end model
+    /// (issue #289), banded and unbanded.
+    #[test]
+    fn end_models_vectorized_matches_scalar() {
+        let mut buf = AlignBuffers::new();
+        for ends in END_MODELS {
+            let (begin_free, end_free) = ends.free_ends();
+            let edge = |free: bool| if free { 0 } else { GAP as i16 };
+            for band in [BAND, -1] {
+                for (s1, s2) in random_pairs(1000, 0xE7D5 + (band + 1) as u64) {
+                    align_ends_with_buf(&s1, &s2, MATCH, MM, GAP, band, ends, &mut buf);
+                    let sc = [buf.al0.clone(), buf.al1.clone()];
+                    let scores = VectorizedAlignScores {
+                        match_score: MATCH as i16,
+                        mismatch: MM as i16,
+                        gap_p: GAP as i16,
+                        begin_gap_p: edge(begin_free),
+                        end_gap_p: edge(end_free),
+                        band,
+                    };
+                    let ve = align_vectorized(&s1, &s2, &scores);
+                    assert_eq!(
+                        score_ends(&sc, GAP, ends),
+                        score_ends(&ve, GAP, ends),
+                        "{ends:?} band={band}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Global agrees with the independent standard NW, `align_standard`.
+    #[test]
+    fn end_model_global_matches_align_standard() {
+        let mut buf = AlignBuffers::new();
+        for (s1, s2) in random_pairs(1000, 0x6C0B) {
+            align_ends_with_buf(&s1, &s2, MATCH, MM, GAP, -1, EndModel::Global, &mut buf);
+            let g = [buf.al0.clone(), buf.al1.clone()];
+            let st = align_standard(&s1, &s2, MATCH, MM, GAP, -1);
+            assert_eq!(
+                score_ends(&g, GAP, EndModel::Global),
+                score_ends(&st, GAP, EndModel::Global)
+            );
+        }
+    }
+
+    /// The homopolymer kernel, at `homo_gap_p == gap_p`, matches the scalar one
+    /// under every end model.
+    #[test]
+    fn end_models_homo_kernel_matches_scalar() {
+        let mut buf = AlignBuffers::new();
+        let mut hbuf = AlignBuffers::new();
+        for ends in END_MODELS {
+            let params = AlignParams {
+                backend: AlignBackend::Nw,
+                end_model: ends,
+                wfa_max_edits: 0,
+                match_score: MATCH,
+                mismatch: MM,
+                gap_p: GAP,
+                homo_gap_p: GAP,
+                use_kmers: false,
+                kdist_cutoff: 0.42,
+                screen_backend: ScreenBackend::Kmer,
+                minimizer_k: crate::minimizers::MINIMIZER_K,
+                minimizer_w: crate::minimizers::MINIMIZER_W,
+                screen_audit: false,
+                kmer_size: 5,
+                band: BAND,
+                vectorized: false,
+                gapless: false,
+            };
+            for (s1, s2) in random_pairs(500, 0x40B0) {
+                align_ends_with_buf(&s1, &s2, MATCH, MM, GAP, BAND, ends, &mut buf);
+                align_endsfree_homo_with_buf(&s1, &s2, &params, &mut hbuf);
+                let a = [buf.al0.clone(), buf.al1.clone()];
+                let h = [hbuf.al0.clone(), hbuf.al1.clone()];
+                assert_eq!(
+                    score_ends(&a, GAP, ends),
+                    score_ends(&h, GAP, ends),
+                    "{ends:?}"
+                );
+            }
+        }
+    }
+
+    /// A deletion at either end is free only where the model frees that end.
+    #[test]
+    fn end_models_charge_terminal_deletions() {
+        // 52 nt, 51 shared columns of matches (255) once the extra base is gapped.
+        let s1 = encode("AACAGCGCAAACCAACTCGCTAGCTAGCAAAATCTTGTGTTTCTGCCTAGCG");
+        let lead_del = s1[1..].to_vec();
+        let trail_del = s1[..s1.len() - 1].to_vec();
+        let mut buf = AlignBuffers::new();
+        let mut score = |s2: &[u8], ends: EndModel| {
+            align_ends_with_buf(&s1, s2, 5, -4, -8, -1, ends, &mut buf);
+            score_ends(&[buf.al0.clone(), buf.al1.clone()], -8, ends)
+        };
+        assert_eq!(score(&lead_del, EndModel::EndsFree), 255);
+        assert_eq!(score(&lead_del, EndModel::EndFreeOnly), 247);
+        assert_eq!(score(&lead_del, EndModel::Global), 247);
+        assert_eq!(score(&trail_del, EndModel::EndsFree), 255);
+        assert_eq!(score(&trail_del, EndModel::EndFreeOnly), 255);
+        assert_eq!(score(&trail_del, EndModel::Global), 247);
+    }
+
+    /// WFA finds NW's optimum under every end model.
+    #[test]
+    #[cfg(feature = "wfa")]
+    fn end_models_wfa_matches_nw() {
+        let mut nw = AlignBuffers::new();
+        let mut wf = AlignBuffers::new();
+        for ends in END_MODELS {
+            for band in [BAND, -1] {
+                for (s1, s2) in random_pairs(500, 0x3FA + (band + 1) as u64) {
+                    align_ends_with_buf(&s1, &s2, MATCH, MM, GAP, band, ends, &mut nw);
+                    align_wfa_endsfree_with_buf(
+                        &s1,
+                        &s2,
+                        MATCH,
+                        MM,
+                        GAP,
+                        band,
+                        ends,
+                        i32::MAX,
+                        &mut wf,
+                    );
+                    let a = [nw.al0.clone(), nw.al1.clone()];
+                    let w = [wf.al0.clone(), wf.al1.clone()];
+                    assert_eq!(
+                        score_ends(&a, GAP, ends),
+                        score_ends(&w, GAP, ends),
+                        "{ends:?} band={band}"
+                    );
+                }
+            }
+        }
     }
 
     /// C WFA2-lib ends-free misses that the adapter's corrected mode fixes
@@ -2587,7 +2973,17 @@ mod tests {
             assert_eq!(score_alignment(&ef, 5, -4, -8), opt, "{a} / {b}");
 
             let mut buf = AlignBuffers::new();
-            align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, -1, i32::MAX, &mut buf);
+            align_wfa_endsfree_with_buf(
+                &s1,
+                &s2,
+                5,
+                -4,
+                -8,
+                -1,
+                EndModel::EndsFree,
+                i32::MAX,
+                &mut buf,
+            );
             let wfa = [buf.al0.clone(), buf.al1.clone()];
             assert_eq!(score_alignment(&wfa, 5, -4, -8), opt, "{a} / {b}");
         }
@@ -2635,7 +3031,17 @@ mod tests {
             }
             let ef = align_endsfree(&s1, &s2, 5, -4, -8, -1);
             let mut buf = AlignBuffers::new();
-            align_wfa_endsfree_with_buf(&s1, &s2, 5, -4, -8, -1, i32::MAX, &mut buf);
+            align_wfa_endsfree_with_buf(
+                &s1,
+                &s2,
+                5,
+                -4,
+                -8,
+                -1,
+                EndModel::EndsFree,
+                i32::MAX,
+                &mut buf,
+            );
             let wfa = [buf.al0.clone(), buf.al1.clone()];
             total_by_edits[nedits] += 1;
             if score_alignment(&ef, 5, -4, -8) != score_alignment(&wfa, 5, -4, -8) {
@@ -2699,6 +3105,7 @@ mod tests {
             match_score,
             mismatch,
             gap_p,
+            begin_gap_p,
             end_gap_p,
             band,
         } = *scores;
@@ -2743,7 +3150,7 @@ mod tests {
         {
             let mut row = 1usize;
             let mut col = start_col - 1;
-            let mut d_free = end_gap_p;
+            let mut d_free = begin_gap_p;
             let limit = 1 + band_usize.min(len1);
             while row < limit {
                 d[row * ncol + col] = d_free;
@@ -2752,7 +3159,7 @@ mod tests {
                     col = col.saturating_sub(1);
                 }
                 row += 1;
-                d_free = d_free.saturating_add(end_gap_p);
+                d_free = d_free.saturating_add(begin_gap_p);
             }
         }
 
@@ -2760,7 +3167,7 @@ mod tests {
         {
             let mut row = 1usize;
             let mut col = start_col;
-            let mut d_free = end_gap_p;
+            let mut d_free = begin_gap_p;
             let limit = 1 + (band_usize + len2 - len1).min(len2);
             while row < limit {
                 d[row * ncol + col] = d_free;
@@ -2769,7 +3176,7 @@ mod tests {
                     col += 1;
                 }
                 row += 1;
-                d_free = d_free.saturating_add(end_gap_p);
+                d_free = d_free.saturating_add(begin_gap_p);
             }
         }
 
@@ -3066,6 +3473,7 @@ mod tests {
                 match_score: 5,
                 mismatch: -4,
                 gap_p: -8,
+                begin_gap_p: 0,
                 end_gap_p: 0,
                 band,
             };
@@ -3141,6 +3549,7 @@ mod tests {
                                         match_score: 5,
                                         mismatch: -4,
                                         gap_p: -8,
+                                        begin_gap_p: 0,
                                         end_gap_p: 0,
                                         band,
                                     };
@@ -3246,6 +3655,7 @@ mod tests {
                             match_score: 5,
                             mismatch: -4,
                             gap_p: -8,
+                            begin_gap_p: end_gap_p,
                             end_gap_p,
                             band,
                         };
@@ -3280,6 +3690,7 @@ mod tests {
             match_score: 5,
             mismatch: -4,
             gap_p: -8,
+            begin_gap_p: 0,
             end_gap_p: 0,
             band: 16,
         };
@@ -3423,6 +3834,7 @@ mod tests {
                         match_score: 5,
                         mismatch: -4,
                         gap_p: -8,
+                        begin_gap_p: 0,
                         end_gap_p: 0,
                         band,
                     },
@@ -3452,6 +3864,7 @@ mod tests {
 
         let params = AlignParams {
             backend: AlignBackend::Nw,
+            end_model: crate::nwalign::EndModel::EndsFree,
             wfa_max_edits: 0,
             match_score: 5,
             mismatch: -4,
@@ -3484,6 +3897,7 @@ mod tests {
                 match_score: 5,
                 mismatch: -4,
                 gap_p: -8,
+                begin_gap_p: 0,
                 end_gap_p: 0,
                 band: 16,
             },
@@ -3522,6 +3936,7 @@ mod tests {
         let s2 = encode("ACGTTGCAAGGCTTACCGATAGCTAGGCATCGATGCGTA");
         let mut params = AlignParams {
             backend: AlignBackend::Nw,
+            end_model: crate::nwalign::EndModel::EndsFree,
             wfa_max_edits: 0,
             match_score: 5,
             mismatch: -4,
@@ -3551,6 +3966,7 @@ mod tests {
                 match_score: 5,
                 mismatch: -4,
                 gap_p: -8,
+                begin_gap_p: 0,
                 end_gap_p: 0,
                 band: 16,
             },

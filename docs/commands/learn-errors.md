@@ -244,7 +244,7 @@ this abundance.
 
 Identical in meaning to [`dada`'s experimental flags](dada.md#experimental):
 `--screen-backend`, `--minimizer-k`, `--minimizer-w`, `--screen-audit`,
-`--wfa-max-edits`.
+`--wfa-max-edits`, `--end-model`.
 
 ## See also
 

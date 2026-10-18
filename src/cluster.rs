@@ -1985,6 +1985,7 @@ mod compare_fold_tests {
     fn params() -> AlignParams {
         AlignParams {
             backend: crate::nwalign::AlignBackend::Nw,
+            end_model: crate::nwalign::EndModel::EndsFree,
             wfa_max_edits: 0,
             match_score: 5,
             mismatch: -4,

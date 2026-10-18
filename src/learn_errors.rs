@@ -211,6 +211,11 @@ pub struct LearnedErrParams {
     #[serde(default)]
     pub wfa_max_edits: i32,
 
+    /// Alignment end model the model was learned with (issue #289). Defaults
+    /// to `ends-free` (R's) for JSONs produced before this field existed.
+    #[serde(default)]
+    pub end_model: crate::nwalign::EndModel,
+
     /// Pre-alignment screen the model was learned with (experimental).
     ///
     /// This is a genuine error-model parameter, not bookkeeping: `build_trans_mat`
@@ -1072,6 +1077,27 @@ mod tests {
         let json = serde_json::to_string(&src).unwrap();
         let back: LearnedErrParams = serde_json::from_str(&json).unwrap();
         assert_eq!(back.wfa_max_edits, 37);
+    }
+
+    /// An error model written before `end_model` existed reads as R's
+    /// `ends-free`; a present value round-trips in its kebab-case spelling.
+    #[test]
+    fn learned_err_params_end_model_default_and_roundtrip() {
+        use crate::nwalign::EndModel;
+        let p: LearnedErrParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(p.end_model, EndModel::EndsFree);
+        let p: LearnedErrParams =
+            serde_json::from_str(r#"{"end_model": "end-free-only"}"#).unwrap();
+        assert_eq!(p.end_model, EndModel::EndFreeOnly);
+
+        let src = LearnedErrParams {
+            end_model: EndModel::Global,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&src).unwrap();
+        assert!(json.contains(r#""end_model":"global""#), "{json}");
+        let back: LearnedErrParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.end_model, EndModel::Global);
     }
 
     // --- derep/sample JSON input to learn-errors (issue #68 groundwork) ------

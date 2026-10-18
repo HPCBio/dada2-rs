@@ -380,6 +380,7 @@ fn build_learned_err_params(
         vectorized: ap.vectorized,
         gapless: ap.gapless,
         backend: ap.backend,
+        end_model: ap.end_model,
         wfa_max_edits: ap.wfa_max_edits,
         screen_backend: ap.screen_backend,
         minimizer_k: ap.minimizer_k,
@@ -424,6 +425,7 @@ fn resolve_learn_params(
         minimizer_w,
         screen_audit,
         wfa_max_edits,
+        end_model,
     } = experimental;
     // R's HOMOPOLYMER_GAP_PENALTY = NULL tracks GAP_PENALTY. R also
     // normalizes a positive penalty to negative before comparing them
@@ -496,6 +498,7 @@ fn resolve_learn_params(
 
     let align_params = AlignParams {
         backend: align_backend.unwrap_or_default(),
+        end_model: end_model.unwrap_or_default(),
         wfa_max_edits: wfa_max_edits.unwrap_or(WFA_MAX_EDITS_DEFAULT),
         match_score,
         mismatch,

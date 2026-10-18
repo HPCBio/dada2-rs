@@ -272,6 +272,24 @@ specified in those raw cost units, not edits. `DADA2RS_WFA_LINEAR=1` runs WFA
 with gap-linear penalties instead of affine with gap opening 0: the same scores
 with one wavefront instead of three, for benchmarking (#51).
 
+**`--end-model`** (default `ends-free`) — which alignment ends are free of gap
+penalties ([#289](https://github.com/HPCBio/dada2-rs/issues/289)). The default,
+`ends-free`, is R DADA2's model: leading and trailing gaps cost nothing on either
+sequence. The other two assume primer-trimmed amplicons, whose reads start (and
+possibly end) at the same biological position:
+
+| value | free end gaps | intended input |
+| --- | --- | --- |
+| `ends-free` | both ends | anything; R DADA2's model |
+| `end-free-only` | trailing only | primers trimmed at 5', reads truncated to a fixed length (`--trunc-len`) |
+| `global` | none | both primers trimmed, e.g. full-length PacBio 16S |
+
+A penalised end gap costs `--gap-p` per column, as an interior gap does. Both
+backends honour it; chimera detection keeps R's model. The value is recorded in
+the error model, and `dada` warns when its own differs. Whether either opt-in
+model improves ASV calls is not yet measured against a truth set: on the PacBio
+concordance fixture `global` drops one of R's 93 ASVs.
+
 ## See also
 
 - [Per-sample denoising algorithm](../algorithm-dada.md)
