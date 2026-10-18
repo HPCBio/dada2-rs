@@ -296,19 +296,28 @@ falls at different biological positions whenever an indel sits between them. A
 trailing overhang there is expected, and `global` would charge it as gaps or
 force mismatches near the 3' end, which then count as errors in the error model.
 Forward and reverse reads are denoised separately, before merging, so the same
-applies to both. Use `free-3p` for these reads. `global` fits only when a
-read spans the whole amplicon and both primers are removed, as with full-length
-PacBio 16S, or with short amplicons whose reverse primer and read-through are
-trimmed (for example by `cutadapt`).
+applies to both. Use `free-3p` for these reads. `global` fits only when
+*every* read spans the whole amplicon and both primers are removed: full-length
+PacBio 16S, or short amplicons whose reads all run through to the reverse
+primer. Amplicons of variable length, such as ITS2, mix reads that run through
+with reads that do not, so their 3' ends are not consistently anchored; use
+`free-3p` there.
 
-Both models assume primers were removed exactly. A read that keeps part of a
-primer, or loses a few bases past it, pays gap penalties at the 5' end that
-`ends-free` would not charge.
+**Ragged 5' ends.** A read that keeps part of a primer, or loses a few bases
+past it, is charged a leading gap under `free-3p` and `global` that `ends-free`
+leaves free. This does not change the ASVs: a read's error probability (λ) is
+computed from substitutions only, as in R, so a read that differs from its
+centre only by a leading gap is absorbed the same way under every model. On the
+MSA-1003 mock, giving 1–20% of reads a ragged start (±1–3 bases), or leaving
+the full forward primer on 1–5% of them, gave the same ASVs under all three
+models (#289).
 
 Both backends honour the setting; chimera detection keeps R's model. The value
-is recorded in the error model, and `dada` warns when its own differs. Whether
-either opt-in model improves ASV calls is not yet measured against a truth set;
-on the PacBio concordance fixture `global` drops one of R's 93 ASVs.
+is recorded in the error model, and `dada` warns when its own differs. Against
+truth (MiSeq SOP Mock, PacBio MSA-1003) neither opt-in model changes ASV calls;
+`free-3p` gives a byte-identical table on the MiSeq SOP. `global` on truncated
+Illumina reads raises reverse-read error rates by up to 24%, which is the 3'
+mismatch effect described above (#289).
 
 ## See also
 
