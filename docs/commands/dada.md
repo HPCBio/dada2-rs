@@ -272,23 +272,43 @@ specified in those raw cost units, not edits. `DADA2RS_WFA_LINEAR=1` runs WFA
 with gap-linear penalties instead of affine with gap opening 0: the same scores
 with one wavefront instead of three, for benchmarking (#51).
 
-**`--end-model`** (default `ends-free`) — which alignment ends are free of gap
-penalties ([#289](https://github.com/HPCBio/dada2-rs/issues/289)). The default,
-`ends-free`, is R DADA2's model: leading and trailing gaps cost nothing on either
-sequence. The other two assume primer-trimmed amplicons, whose reads start (and
-possibly end) at the same biological position:
+**`--end-model`** (default `ends-free`) — which alignment end gaps are free
+([#289](https://github.com/HPCBio/dada2-rs/issues/289)). An end gap is a run of
+gaps at the start or end of an alignment, where one sequence overhangs the other.
+A free end gap costs nothing; a penalised one costs `--gap-p` per column, like
+an interior gap.
 
-| value | free end gaps | intended input |
-| --- | --- | --- |
-| `ends-free` | both ends | anything; R DADA2's model |
-| `end-free-only` | trailing only | primers trimmed at 5', reads truncated to a fixed length (`--trunc-len`) |
-| `global` | none | both primers trimmed, e.g. full-length PacBio 16S |
+| value | leading (5') gaps | trailing (3') gaps | use for |
+| --- | --- | --- | --- |
+| `ends-free` | free | free | anything; R DADA2's model |
+| `end-free-only` | penalised | free | reads that start right after a trimmed primer and end at an arbitrary point |
+| `global` | penalised | penalised | reads trimmed of *both* primers, so both ends sit at fixed biological positions |
 
-A penalised end gap costs `--gap-p` per column, as an interior gap does. Both
-backends honour it; chimera detection keeps R's model. The value is recorded in
-the error model, and `dada` warns when its own differs. Whether either opt-in
-model improves ASV calls is not yet measured against a truth set: on the PacBio
-concordance fixture `global` drops one of R's 93 ASVs.
+`ends-free` and `end-free-only` differ only at the 5' end. `ends-free` lets one
+read start later than the other at no cost. `end-free-only` assumes primer
+removal has put every read's first base at the same position, so a leading gap
+must be a real indel and is charged as one.
+
+**Why not `global` for Illumina or other paired-end data.** Each read is
+anchored only at its own primer. Its 3' end is set by the number of sequencing
+cycles or by `--trunc-len`, not by the amplicon, so the last base of two reads
+falls at different biological positions whenever an indel sits between them. A
+trailing overhang there is expected, and `global` would charge it as gaps or
+force mismatches near the 3' end, which then count as errors in the error model.
+Forward and reverse reads are denoised separately, before merging, so the same
+applies to both. Use `end-free-only` for these reads. `global` fits only when a
+read spans the whole amplicon and both primers are removed, as with full-length
+PacBio 16S, or with short amplicons whose reverse primer and read-through are
+trimmed (for example by `cutadapt`).
+
+Both models assume primers were removed exactly. A read that keeps part of a
+primer, or loses a few bases past it, pays gap penalties at the 5' end that
+`ends-free` would not charge.
+
+Both backends honour the setting; chimera detection keeps R's model. The value
+is recorded in the error model, and `dada` warns when its own differs. Whether
+either opt-in model improves ASV calls is not yet measured against a truth set;
+on the PacBio concordance fixture `global` drops one of R's 93 ASVs.
 
 ## See also
 
