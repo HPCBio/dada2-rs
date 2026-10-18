@@ -737,7 +737,7 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 [[package]]
 name = "wfa2lib-rs"
 version = "0.1.0"
-source = "git+https://github.com/HPCBio/wfa2lib-rs?rev=dc112f8#dc112f8a4d9a9da0c1723e69acec5b03cba4c661"
+source = "git+https://github.com/HPCBio/wfa2lib-rs?rev=bef359a#bef359abc6a7f61ae5db17a762d047bfba98fd9b"
 
 [[package]]
 name = "wide"
