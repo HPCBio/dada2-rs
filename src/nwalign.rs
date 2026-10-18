@@ -82,7 +82,9 @@ pub enum EndModel {
     EndsFree,
     /// Leading gaps penalised, trailing gaps free: 5'-anchored reads
     /// truncated to a fixed length.
-    EndFreeOnly,
+    #[value(name = "free-3p")]
+    #[serde(rename = "free-3p")]
+    Free3p,
     /// No free end gaps: reads anchored at both ends.
     Global,
 }
@@ -92,7 +94,7 @@ impl EndModel {
     pub fn free_ends(self) -> (bool, bool) {
         match self {
             EndModel::EndsFree => (true, true),
-            EndModel::EndFreeOnly => (false, true),
+            EndModel::Free3p => (false, true),
             EndModel::Global => (false, false),
         }
     }
@@ -1306,7 +1308,7 @@ pub fn backend_repr(p: &AlignParams) -> String {
     // Named only off the default, so R-parity runs read as before (issue #289).
     match p.end_model {
         EndModel::EndsFree => backend,
-        EndModel::EndFreeOnly => format!("{backend}; end model: end-free-only (experimental)"),
+        EndModel::Free3p => format!("{backend}; end model: free-3p (experimental)"),
         EndModel::Global => format!("{backend}; end model: global (experimental)"),
     }
 }
@@ -2806,7 +2808,7 @@ mod tests {
             .collect()
     }
 
-    const END_MODELS: [EndModel; 3] = [EndModel::EndsFree, EndModel::EndFreeOnly, EndModel::Global];
+    const END_MODELS: [EndModel; 3] = [EndModel::EndsFree, EndModel::Free3p, EndModel::Global];
 
     /// Vectorized and scalar NW find the same optimum under every end model
     /// (issue #289), banded and unbanded.
@@ -2907,10 +2909,10 @@ mod tests {
             score_ends(&[buf.al0.clone(), buf.al1.clone()], -8, ends)
         };
         assert_eq!(score(&lead_del, EndModel::EndsFree), 255);
-        assert_eq!(score(&lead_del, EndModel::EndFreeOnly), 247);
+        assert_eq!(score(&lead_del, EndModel::Free3p), 247);
         assert_eq!(score(&lead_del, EndModel::Global), 247);
         assert_eq!(score(&trail_del, EndModel::EndsFree), 255);
-        assert_eq!(score(&trail_del, EndModel::EndFreeOnly), 255);
+        assert_eq!(score(&trail_del, EndModel::Free3p), 255);
         assert_eq!(score(&trail_del, EndModel::Global), 247);
     }
 

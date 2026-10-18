@@ -75,7 +75,7 @@ runs trade memory for speed (e.g. `k = 7`); see the
 
 R's alignment frees end gaps at both ends (`nwalign_endsfree`). dada2-rs matches
 that by default and offers two opt-in models for primer-trimmed amplicons:
-`end-free-only` (leading gaps penalised) and `global` (no free end gaps). See
+`free-3p` (leading gaps penalised) and `global` (no free end gaps). See
 [`dada`](commands/dada.md#experimental) and
 [issue #289](https://github.com/HPCBio/dada2-rs/issues/289).
 

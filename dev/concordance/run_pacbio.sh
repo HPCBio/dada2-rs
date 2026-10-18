@@ -44,7 +44,7 @@ THREADS="${THREADS:-${6:-2}}"
 ALIGN_BACKEND="${ALIGN_BACKEND:-}"
 backend_arg=()
 [ -n "$ALIGN_BACKEND" ] && backend_arg=(--align-backend "$ALIGN_BACKEND")
-# Optional alignment end model (#289): ends-free (R, the default), end-free-only
+# Optional alignment end model (#289): ends-free (R, the default), free-3p
 # or global. Denoising steps only; remove-bimera-denovo has no such flag.
 END_MODEL="${END_MODEL:-}"
 end_arg=()

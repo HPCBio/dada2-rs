@@ -1086,9 +1086,8 @@ mod tests {
         use crate::nwalign::EndModel;
         let p: LearnedErrParams = serde_json::from_str("{}").unwrap();
         assert_eq!(p.end_model, EndModel::EndsFree);
-        let p: LearnedErrParams =
-            serde_json::from_str(r#"{"end_model": "end-free-only"}"#).unwrap();
-        assert_eq!(p.end_model, EndModel::EndFreeOnly);
+        let p: LearnedErrParams = serde_json::from_str(r#"{"end_model": "free-3p"}"#).unwrap();
+        assert_eq!(p.end_model, EndModel::Free3p);
 
         let src = LearnedErrParams {
             end_model: EndModel::Global,

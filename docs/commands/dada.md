@@ -281,11 +281,11 @@ an interior gap.
 | value | leading (5') gaps | trailing (3') gaps | use for |
 | --- | --- | --- | --- |
 | `ends-free` | free | free | anything; R DADA2's model |
-| `end-free-only` | penalised | free | reads that start right after a trimmed primer and end at an arbitrary point |
+| `free-3p` | penalised | free | reads that start right after a trimmed primer and end at an arbitrary point |
 | `global` | penalised | penalised | reads trimmed of *both* primers, so both ends sit at fixed biological positions |
 
-`ends-free` and `end-free-only` differ only at the 5' end. `ends-free` lets one
-read start later than the other at no cost. `end-free-only` assumes primer
+`ends-free` and `free-3p` differ only at the 5' end. `ends-free` lets one
+read start later than the other at no cost. `free-3p` assumes primer
 removal has put every read's first base at the same position, so a leading gap
 must be a real indel and is charged as one.
 
@@ -296,7 +296,7 @@ falls at different biological positions whenever an indel sits between them. A
 trailing overhang there is expected, and `global` would charge it as gaps or
 force mismatches near the 3' end, which then count as errors in the error model.
 Forward and reverse reads are denoised separately, before merging, so the same
-applies to both. Use `end-free-only` for these reads. `global` fits only when a
+applies to both. Use `free-3p` for these reads. `global` fits only when a
 read spans the whole amplicon and both primers are removed, as with full-length
 PacBio 16S, or with short amplicons whose reverse primer and read-through are
 trimmed (for example by `cutadapt`).

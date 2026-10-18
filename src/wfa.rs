@@ -296,15 +296,15 @@ fn align_with<const N: usize>(
     } else {
         (s1.len() as i32, s2.len() as i32)
     };
-    // Penalised ends (issue #289): global is end-to-end; end-free-only frees
+    // Penalised ends (issue #289): global is end-to-end; free-3p frees
     // trailing gaps only. With a free end the match reward changes which
-    // alignment is best, so end-free-only relies on the corrected mode and the
+    // alignment is best, so free-3p relies on the corrected mode and the
     // real reward (HPCBio/wfa2lib-rs#31); global ranks alike either way.
     match ends {
         EndModel::Global => {
             aligner.align_end2end(s1, s2);
         }
-        EndModel::EndFreeOnly => {
+        EndModel::Free3p => {
             aligner.set_alignment_free_ends(0, p_free, 0, t_free);
             aligner.align_endsfree(s1, s2);
         }

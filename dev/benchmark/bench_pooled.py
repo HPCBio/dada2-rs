@@ -1441,7 +1441,7 @@ def main():
                         "alignment step when --align-backend wfa2. 0 = unbounded. "
                         "Default: leave the binary's own default (50). Only meaningful "
                         "with wfa2.")
-    p.add_argument("--end-model", choices=["ends-free", "end-free-only", "global"],
+    p.add_argument("--end-model", choices=["ends-free", "free-3p", "global"],
                    default=None,
                    help="dada2-rs alignment end model (issue #289), passed to learn-errors "
                         "and the dada steps. Default: the binary's own (ends-free, R's). "
