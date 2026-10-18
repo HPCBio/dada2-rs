@@ -268,7 +268,9 @@ by the `nw` backend.
 
 Internally an edit budget `E` maps to a WFA cost of `E·|gap_p|` — e.g. 50·8 =
 400 with default scoring. The `DADA2RS_WFA_MAX_STEPS` environment override is
-specified in those raw cost units, not edits.
+specified in those raw cost units, not edits. `DADA2RS_WFA_LINEAR=1` runs WFA
+with gap-linear penalties instead of affine with gap opening 0: the same scores
+with one wavefront instead of three, for benchmarking (#51).
 
 ## See also
 
