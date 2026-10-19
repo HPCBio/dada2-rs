@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0, so
 minor versions may carry breaking changes).
 
 
+## [Unreleased]
+
 ## [0.5.0] - 2026-10-19
 
 The headline of this release: fidelity to R DADA2 results
@@ -400,6 +402,7 @@ output are marked **BREAKING** below.
   `remove-bimera-denovo`, `assign-taxonomy` / `assign-species`, sequence-table
   helpers).
 
+[Unreleased]: https://github.com/HPCBio/dada2-rs/compare/v0.5.0...HEAD
 [0.5.0]: https://github.com/HPCBio/dada2-rs/compare/v0.2.0...v0.5.0
 [0.2.0]: https://github.com/HPCBio/dada2-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/HPCBio/dada2-rs/releases/tag/v0.1.0
