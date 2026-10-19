@@ -56,8 +56,8 @@ Run `dada2-rs <subcommand> --help` for full parameter documentation.
   paired-end, end-to-end.
 - **[PacBio HiFi walkthrough](walkthroughs/walkthrough-pacbio.md)** — single-end, 
   with primer removal and PacBio-tuned parameters.
-- Binned quality analysis for **[Illumina](walkthroughs/walkthrough-illumina.md)**  
-  paired-end and **[PacBio](walkthroughs/walkthrough-pacbio.md)** single-end.
+- Binned quality analysis for **[Illumina](walkthroughs/walkthrough-illumina-binned.md)**  
+  paired-end and **[PacBio](walkthroughs/walkthrough-pacbio-binned.md)** single-end.
 - **[Performance & Benchmarking](benchmarking.md)** — the tooling, log output,
   and metrics for evaluating performance and running head-to-head comparisons
   against R DADA2.

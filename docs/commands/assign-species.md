@@ -1,7 +1,7 @@
 # `assign-species`
 
 Fill in the Species column of an [`assign-taxonomy`](assign-taxonomy.md) JSON by
-exact match. Mirrors R DADA2's `addSpecies()`.
+exact substring match. Mirrors R DADA2's `addSpecies()`.
 
 ```bash
 dada2-rs assign-species tax.json --ref-fasta silva_species_assignment.fa.gz -o tax.species.json
@@ -9,7 +9,9 @@ dada2-rs assign-species tax.json --ref-fasta silva_species_assignment.fa.gz -o t
 
 Reads an `assign-taxonomy` JSON, runs exact-match species assignment against
 `--ref-fasta`, and writes a JSON file with the same shape. The `Species` level
-is appended, or replaced if already present.
+is appended, or replaced if already present. A reference matches when it
+contains the query exactly, as in R (`vcountPDict`), so full-length 16S
+references match sub-region amplicons (#200).
 
 Species is only filled when the reference's genus matches the query's assigned
 Genus level (where one is present), using R's `matchGenera` rules: exact match,

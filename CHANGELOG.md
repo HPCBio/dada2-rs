@@ -8,6 +8,11 @@ minor versions may carry breaking changes).
 
 ## [Unreleased]
 
+### Fixed
+- `assign-species --help` and its docs page say the match is an exact
+  *substring* match, as it has been since #200; "exact match" read as
+  full-sequence equality, the behaviour #200 removed.
+
 ## [0.5.0] - 2026-10-19
 
 The headline of this release: fidelity to R DADA2 results
