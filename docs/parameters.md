@@ -71,6 +71,14 @@ runs trade memory for speed (e.g. `k = 7`); see the
 [PacBio walkthrough](walkthroughs/walkthrough-pacbio.md). This is the one place dada2-rs goes
 *beyond* R's parameter surface.
 
+## Beyond `setDadaOpt()`: `--end-model` (experimental)
+
+R's alignment frees end gaps at both ends (`nwalign_endsfree`). dada2-rs matches
+that by default and offers two opt-in models for primer-trimmed amplicons:
+`free-3p` (leading gaps penalised) and `global` (no free end gaps). See
+[`dada`](commands/dada.md#experimental) and
+[issue #289](https://github.com/HPCBio/dada2-rs/issues/289).
+
 ## Experimental: WFA alignment backend
 
 !!! warning "Experimental — developer build only"

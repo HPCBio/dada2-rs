@@ -268,7 +268,56 @@ by the `nw` backend.
 
 Internally an edit budget `E` maps to a WFA cost of `E·|gap_p|` — e.g. 50·8 =
 400 with default scoring. The `DADA2RS_WFA_MAX_STEPS` environment override is
-specified in those raw cost units, not edits.
+specified in those raw cost units, not edits. `DADA2RS_WFA_LINEAR=1` runs WFA
+with gap-linear penalties instead of affine with gap opening 0: the same scores
+with one wavefront instead of three, for benchmarking (#51).
+
+**`--end-model`** (default `ends-free`) — which alignment end gaps are free
+([#289](https://github.com/HPCBio/dada2-rs/issues/289)). An end gap is a run of
+gaps at the start or end of an alignment, where one sequence overhangs the other.
+A free end gap costs nothing; a penalised one costs `--gap-p` per column, like
+an interior gap.
+
+| value | leading (5') gaps | trailing (3') gaps | use for |
+| --- | --- | --- | --- |
+| `ends-free` | free | free | anything; R DADA2's model |
+| `free-3p` | penalised | free | reads that start right after a trimmed primer and end at an arbitrary point |
+| `global` | penalised | penalised | reads trimmed of *both* primers, so both ends sit at fixed biological positions |
+
+`ends-free` and `free-3p` differ only at the 5' end. `ends-free` lets one
+read start later than the other at no cost. `free-3p` assumes primer
+removal has put every read's first base at the same position, so a leading gap
+must be a real indel and is charged as one.
+
+**Why not `global` for Illumina or other paired-end data.** Each read is
+anchored only at its own primer. Its 3' end is set by the number of sequencing
+cycles or by `--trunc-len`, not by the amplicon, so the last base of two reads
+falls at different biological positions whenever an indel sits between them. A
+trailing overhang there is expected, and `global` would charge it as gaps or
+force mismatches near the 3' end, which then count as errors in the error model.
+Forward and reverse reads are denoised separately, before merging, so the same
+applies to both. Use `free-3p` for these reads. `global` fits only when
+*every* read spans the whole amplicon and both primers are removed: full-length
+PacBio 16S, or short amplicons whose reads all run through to the reverse
+primer. Amplicons of variable length, such as ITS2, mix reads that run through
+with reads that do not, so their 3' ends are not consistently anchored; use
+`free-3p` there.
+
+**Ragged 5' ends.** A read that keeps part of a primer, or loses a few bases
+past it, is charged a leading gap under `free-3p` and `global` that `ends-free`
+leaves free. This does not change the ASVs: a read's error probability (λ) is
+computed from substitutions only, as in R, so a read that differs from its
+centre only by a leading gap is absorbed the same way under every model. On the
+MSA-1003 mock, giving 1–20% of reads a ragged start (±1–3 bases), or leaving
+the full forward primer on 1–5% of them, gave the same ASVs under all three
+models (#289).
+
+Both backends honour the setting; chimera detection keeps R's model. The value
+is recorded in the error model, and `dada` warns when its own differs. Against
+truth (MiSeq SOP Mock, PacBio MSA-1003) neither opt-in model changes ASV calls;
+`free-3p` gives a byte-identical table on the MiSeq SOP. `global` on truncated
+Illumina reads raises reverse-read error rates by up to 24%, which is the 3'
+mismatch effect described above (#289).
 
 ## See also
 

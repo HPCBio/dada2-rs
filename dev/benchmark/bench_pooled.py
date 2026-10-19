@@ -360,6 +360,12 @@ ALIGN_BACKEND = "nw"
 # injected alongside the wfa2 backend.
 WFA_MAX_EDITS = None
 
+# Set from --end-model in main(). The alignment end model (issue #289); None =
+# leave the binary's default (ends-free, R's). Injected into the denoising
+# steps only: chimera detection keeps R's model and has no such flag.
+END_MODEL = None
+RS_END_MODEL_SUBCMDS = {"learn-errors", "dada", "dada-pooled", "dada-pseudo"}
+
 # dada2-rs subcommands that actually align (and accept --align-backend /
 # --wfa-max-edits). Note the chimera step (remove-bimera-denovo) aligns too, on
 # its own path, so it's here.
@@ -379,6 +385,8 @@ def maybe_align_backend(cmd):
         cmd = [*cmd, "--align-backend", ALIGN_BACKEND]
         if WFA_MAX_EDITS is not None:
             cmd = [*cmd, "--wfa-max-edits", str(WFA_MAX_EDITS)]
+    if END_MODEL is not None and len(cmd) > 1 and str(cmd[1]) in RS_END_MODEL_SUBCMDS:
+        cmd = [*cmd, "--end-model", END_MODEL]
     return cmd
 
 R_STEPS = {
@@ -1433,6 +1441,11 @@ def main():
                         "alignment step when --align-backend wfa2. 0 = unbounded. "
                         "Default: leave the binary's own default (50). Only meaningful "
                         "with wfa2.")
+    p.add_argument("--end-model", choices=["ends-free", "free-3p", "global"],
+                   default=None,
+                   help="dada2-rs alignment end model (issue #289), passed to learn-errors "
+                        "and the dada steps. Default: the binary's own (ends-free, R's). "
+                        "R always runs ends-free, so --run-r compares against R's model.")
     p.add_argument("--wfa-max-edits-sweep", default=None, metavar="N,N,...",
                    help="run the FULL pipeline once as an NW reference plus once per "
                         "WFA cap value, reporting end-to-end wall / cores / peak RSS "
@@ -1493,11 +1506,12 @@ def main():
     p.add_argument("--max-n", type=int, default=0)
     args = p.parse_args()
 
-    global VERBOSE, ALIGN_BACKEND, WFA_MAX_EDITS, INFER_KDIST, LEARN_KDIST
+    global VERBOSE, ALIGN_BACKEND, WFA_MAX_EDITS, END_MODEL, INFER_KDIST, LEARN_KDIST
     global LOESS_SURFACE, ERRFUN_ARM
     VERBOSE = args.verbose
     ALIGN_BACKEND = args.align_backend
     WFA_MAX_EDITS = args.wfa_max_edits
+    END_MODEL = args.end_model
     INFER_KDIST = args.kdist_cutoff
     LEARN_KDIST = args.learn_kdist_cutoff
     LOESS_SURFACE = args.loess_surface

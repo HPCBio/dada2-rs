@@ -114,6 +114,13 @@ target/release/dada2-rs --version
 You should see the list of [subcommands](index.md#whats-implemented). Run
 `dada2-rs <subcommand> --help` for the full parameter set of any step.
 
+The version is `<release>-<commit>` for an untagged build, followed by a tag for
+each non-default build option, so outputs record how their binary was built:
+`+wfa` (the experimental WFA backend), `+native` or `+cpu=<name>` (an explicit
+`-C target-cpu`), and the Cargo profile when it is not `release`, e.g.
+`0.2.0-33fb7efb+wfa+native+release-native`. A default `cargo build --release`
+carries no tags.
+
 ## Next steps
 
 - [Illumina MiSeq walkthrough](walkthroughs/walkthrough-illumina.md)

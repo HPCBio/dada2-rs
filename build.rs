@@ -67,10 +67,46 @@ fn link_r_for_rmath_ppois() -> &'static str {
     "+rmath-ppois"
 }
 
+/// Build tags appended to the version, so a run records how its binary was
+/// built: `+wfa` for the experimental backend, then the CPU target and the
+/// profile when either is not the default (e.g. `+wfa+native+release-native`).
+/// Timings and some kernels depend on all three (#51, #289).
+fn build_tags() -> String {
+    let mut tags = String::new();
+    if std::env::var_os("CARGO_FEATURE_WFA").is_some() {
+        tags.push_str("+wfa");
+    }
+    // The effective rustflags (env or .cargo config), \x1f-separated.
+    let flags = std::env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+    let flags: Vec<&str> = flags.split('\x1f').collect();
+    let cpu = flags.iter().enumerate().find_map(|(i, f)| {
+        let f = if *f == "-C" {
+            flags.get(i + 1).copied()?
+        } else {
+            f.strip_prefix("-C")?
+        };
+        f.strip_prefix("target-cpu=")
+    });
+    match cpu {
+        Some("native") => tags.push_str("+native"),
+        Some(c) => tags.push_str(&format!("+cpu={c}")),
+        None => {}
+    }
+    // The profile is the target-dir component above build/<pkg>/out.
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap_or_default());
+    if let Some(profile) = out.ancestors().nth(3).and_then(|p| p.file_name()) {
+        let profile = profile.to_string_lossy();
+        if profile != "release" && profile != "debug" {
+            tags.push_str(&format!("+{profile}"));
+        }
+    }
+    tags
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     watch_git_state();
-    let arm = link_r_for_rmath_ppois();
+    let arm = format!("{}{}", link_r_for_rmath_ppois(), build_tags());
     // Allow callers to inject the version (e.g. Docker builds without .git).
     println!("cargo:rerun-if-env-changed=DADA2_RS_VERSION_FULL");
 

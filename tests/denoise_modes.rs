@@ -9,7 +9,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{asv_set, err_model, fasta_seqs, fixture, run, scratch};
+use common::{BIN, asv_set, err_model, fasta_seqs, fixture, normalized, run, scratch};
 
 #[test]
 fn dada_pseudo_matches_manual_recipe() {
@@ -426,4 +426,46 @@ fn pool_tiebreak_records_order_and_rule() {
         assert_eq!(v["params"]["pool_tiebreak"], "first-seen");
         assert_eq!(v["pool_input_index"], index);
     }
+}
+
+/// `--end-model` is opt-in (issue #289): naming the default changes nothing,
+/// and a model the error model was not learned with is named in a warning.
+#[test]
+fn end_model_default_unchanged_and_mismatch_warned() {
+    let dir = scratch("end_model");
+    let err = err_model();
+    let inp = fixture("sam1F.fastq.gz");
+    let dada = |extra: &[&str], out: &Path| {
+        let mut args = vec![
+            "dada",
+            inp.to_str().unwrap(),
+            "--error-model",
+            err.to_str().unwrap(),
+            "--threads",
+            "1",
+            "-o",
+            out.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        let o = std::process::Command::new(BIN)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+
+    let default = dir.join("default.json");
+    let named = dir.join("named.json");
+    let global = dir.join("global.json");
+    let quiet = dada(&[], &default);
+    dada(&["--end-model", "ends-free"], &named);
+    assert_eq!(normalized(&default), normalized(&named));
+    assert!(!quiet.contains("end_model"), "{quiet}");
+
+    let warned = dada(&["--end-model", "global"], &global);
+    assert!(
+        warned.contains("end_model = Global (err model: EndsFree)"),
+        "{warned}"
+    );
 }

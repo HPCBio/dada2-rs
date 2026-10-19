@@ -53,7 +53,7 @@ libc = "0.2"
 # NOTE: crates.io rejects git dependencies even when optional, so this line must
 # be removed/commented for a `cargo publish` of the NW-only crate; enabling WFA is
 # a source-checkout developer build (`--features wfa`). See issue #63.
-wfa2lib-rs = { git = "https://github.com/HPCBio/wfa2lib-rs", rev = "4cfeda86a3e1", default-features = false, optional = true }
+wfa2lib-rs = { git = "https://github.com/HPCBio/wfa2lib-rs", rev = "96c1f23", default-features = false, optional = true }
 
 [features]
 # Experimental wavefront-alignment (WFA) backend (issues #49/#51/#63). Off by

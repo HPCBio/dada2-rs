@@ -44,6 +44,11 @@ THREADS="${THREADS:-${6:-2}}"
 ALIGN_BACKEND="${ALIGN_BACKEND:-}"
 backend_arg=()
 [ -n "$ALIGN_BACKEND" ] && backend_arg=(--align-backend "$ALIGN_BACKEND")
+# Optional alignment end model (#289): ends-free (R, the default), free-3p
+# or global. Denoising steps only; remove-bimera-denovo has no such flag.
+END_MODEL="${END_MODEL:-}"
+end_arg=()
+[ -n "$END_MODEL" ] && end_arg=(--end-model "$END_MODEL")
 
 # Optional pre-alignment screen backend (kmer|minimizer), experimental. Applied
 # ONLY to the screening subcommands -- unlike ALIGN_BACKEND, remove-bimera-denovo
@@ -257,7 +262,7 @@ echo "==> learn-errors (pacbio errfun, k=$KMER)"
 run_step learn-errors "$BIN" learn-errors "${trains[@]}" --nbases "$NBASES" --errfun pacbio \
     ${errfun_extra[@]+"${errfun_extra[@]}"} \
     --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
-    ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} \
+    ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} \
     ${verbose_arg[@]+"${verbose_arg[@]}"} -o "$OUT/err.json"
 fi
 
@@ -267,7 +272,7 @@ if [ "$POOL" = "true" ]; then
   [ -n "$METRICS" ] && metrics_arg=(--metrics-json "$OUT/dada-pooled.metrics.json")
   run_step dada-pooled "$BIN" dada-pooled "${filts[@]}" --error-model "$OUT/err.json" \
       -o "$OUT/dada" --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
-      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} \
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} \
       ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"} \
       ${trace_arg[@]+"${trace_arg[@]}"}
 else
@@ -276,7 +281,7 @@ else
   [ -n "$METRICS" ] && metrics_arg=(--metrics-json "$OUT/dada.metrics.json")
   run_step dada "$BIN" dada "${filts[@]}" --error-model "$OUT/err.json" \
       --output-dir "$OUT/dada" --band "$BAND" --kmer-size "$KMER" --threads "$THREADS" \
-      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} \
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} \
       ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"} \
       ${trace_arg[@]+"${trace_arg[@]}"}
 fi

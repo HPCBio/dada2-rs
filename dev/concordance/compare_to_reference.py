@@ -1,19 +1,29 @@
 #!/usr/bin/env python3
 """compare_to_reference.py — concordance guardrail: dada2-rs vs an R DADA2 reference.
 
-CI sanity check (NOT an exact-match test). Compares a dada2-rs post-chimera
-sequence table against a *static* R DADA2 reference CSV (checked into the repo,
-produced once by `write_reference.R`; CI never runs R) on two axes:
+CI concordance gate. Compares a dada2-rs post-chimera sequence table against a
+*static* R DADA2 reference CSV (checked into the repo, produced once by
+`write_reference.R`; CI never runs R). Two gate styles:
+
+  * `--exact`: every (sample, ASV) count must equal R's. For configurations that
+    reproduce R exactly; any difference is a bug or a deliberate departure from
+    R that should be decided, not absorbed by a threshold.
+  * thresholds (`--min-recall`, `--min-precision`, `--max-reads-moved[-frac]`,
+    `--min-count-corr`): for configurations that legitimately differ a little
+    (a k-mer size R does not use, the WFA backend's equal-score ties).
+
+Reported on two axes:
 
   1. ASV-set agreement — recall (fraction of R's ASVs that dada2-rs also found),
      precision (fraction of dada2-rs ASVs that R also found), and Jaccard.
   2. Per-ASV count agreement — Pearson correlation of log10 total counts over the
      shared ASVs, plus the fraction of shared ASVs whose counts agree within 2×.
 
-These will never be exactly equal (different alignment kernels, tie-breaks,
-floating point), so the gate is threshold-based and meant to catch *regressions /
-divergence*, not enforce identity. Defaults are warn-only (always exit 0); pass
-`--gate` to fail when a metric falls below its threshold.
+  3. Per-cell agreement — (sample, ASV) cells that differ and reads moved
+     (half the summed absolute cell differences), over all cells, ignoring
+     `--min-abundance`. Sample names match after stripping FASTQ extensions.
+
+Defaults are warn-only (always exit 0); pass `--gate` to fail when a check fails.
 
 Inputs:
   --rs PATH         dada2-rs seqtab JSON (make-sequence-table or, preferred, the
@@ -99,6 +109,70 @@ def load_reference_csv(path):
     if not out:
         sys.exit(f"{path}: reference CSV produced no ASVs")
     return out
+
+
+FASTQ_EXTS = (".fastq.gz", ".fq.gz", ".fastq", ".fq")
+
+
+def sample_key(name):
+    """Sample name with any FASTQ extension removed (R keeps it, dada2-rs not)."""
+    for ext in FASTQ_EXTS:
+        if name.endswith(ext):
+            return name[: -len(ext)]
+    return name
+
+
+def load_rs_cells(path):
+    """dada2-rs seqtab JSON -> {(sample, SEQUENCE): count}."""
+    with _open(path) as fh:
+        d = json.load(fh)
+    out = {}
+    for i, sample in enumerate(d.get("samples", [])):
+        for j, seq in enumerate(d.get("sequences", [])):
+            c = d["counts"][i][j]
+            if c:
+                k = (sample_key(sample), seq.upper())
+                out[k] = out.get(k, 0) + c
+    return out
+
+
+def load_reference_cells(path):
+    """R reference CSV -> {(sample, SEQUENCE): count}."""
+    out = {}
+    with _open(path) as fh:
+        reader = csv.DictReader(fh)
+        cols = {c.lower(): c for c in (reader.fieldnames or [])}
+        if "sample" not in cols:
+            sys.exit(f"{path}: per-cell checks need a 'sample' column")
+        for r in reader:
+            seq = (r.get(cols["sequence"]) or "").strip().upper()
+            c = float(r.get(cols["count"]) or 0)
+            if seq and c > 0:
+                k = (sample_key(r[cols["sample"]].strip()), seq)
+                out[k] = out.get(k, 0) + c
+    return out
+
+
+def compare_cells(rs, ref, n_examples=10):
+    """Per-(sample, ASV) differences; ASVs named by their rank in R's totals."""
+    keys = set(rs) | set(ref)
+    diff = sorted((k for k in keys if rs.get(k, 0) != ref.get(k, 0)),
+                  key=lambda k: (-abs(rs.get(k, 0) - ref.get(k, 0)), k))
+    moved = sum(abs(rs.get(k, 0) - ref.get(k, 0)) for k in keys) / 2
+    total = sum(ref.values())
+    rs_samples = {k[0] for k in rs}
+    ref_samples = {k[0] for k in ref}
+    examples = [{"sample": k[0], "asv_len": len(k[1]), "asv_prefix": k[1][:12],
+                 "rs": rs.get(k, 0), "ref": ref.get(k, 0)} for k in diff[:n_examples]]
+    return {
+        "cells": len(keys),
+        "cells_differ": len(diff),
+        "reads_moved": moved,
+        "reads_moved_frac": moved / total if total else 0.0,
+        "samples_only_rs": sorted(rs_samples - ref_samples),
+        "samples_only_ref": sorted(ref_samples - rs_samples),
+        "examples": examples,
+    }
 
 
 def filter_min_abund(m, min_abundance):
@@ -227,7 +301,7 @@ def fmt(v):
     return "n/a" if v is None else f"{v:.3f}"
 
 
-def render(c, thresholds, gate):
+def render(c, thresholds, gate, cells=None, exact=False, max_moved=None):
     lines = []
     lines.append(f"ASVs: dada2-rs {c['rs_asvs']}  vs  R {c['ref_asvs']}  "
                  f"(shared {c['shared']}, only-rs {c['only_rs']}, only-R {c['only_ref']})")
@@ -249,6 +323,27 @@ def render(c, thresholds, gate):
         lines.append(f"  {label}: {fmt(val)}  (>= {thr:.2f})  [{mark}]")
     lines.append(f"  within-2x count agreement: {fmt(c['within_2x_frac'])}  (advisory)")
     lines.append(f"  jaccard: {fmt(c['jaccard'])}  (advisory)")
+    if cells is not None:
+        cd = cells
+        line = (f"  cells: {cd['cells_differ']}/{cd['cells']} differ, "
+                f"{cd['reads_moved']:.0f} reads moved ({cd['reads_moved_frac'] * 100:.3f}%)")
+        if exact:
+            passed = (cd["cells_differ"] == 0 and not cd["samples_only_rs"]
+                      and not cd["samples_only_ref"])
+            ok = ok and passed
+            line += f"  (exact)  [{'PASS' if passed else 'FAIL'}]"
+        elif max_moved is not None:
+            passed = cd["reads_moved"] <= max_moved and not cd["samples_only_rs"] \
+                and not cd["samples_only_ref"]
+            ok = ok and passed
+            line += f"  (<= {max_moved:.0f} reads)  [{'PASS' if passed else 'FAIL'}]"
+        lines.append(line)
+        for side, title in (("samples_only_rs", "only in dada2-rs"), ("samples_only_ref", "only in R")):
+            if cd[side]:
+                lines.append(f"  samples {title}: {', '.join(cd[side])}")
+        for e in cd["examples"]:
+            lines.append(f"    {e['sample']}: ASV {e['asv_prefix']}… ({e['asv_len']} bp) "
+                         f"dada2-rs {e['rs']:.0f} vs R {e['ref']:.0f}")
 
     # Explainability: characterize the differing ASVs so a difference is
     # self-documenting as benign (low-abundance / Hamming-1 from a shared ASV)
@@ -284,6 +379,13 @@ def main(argv=None):
                    help="threshold: fraction of dada2-rs ASVs that R also found")
     p.add_argument("--min-count-corr", type=float, default=None,
                    help="threshold: Pearson r of log10 total counts over shared ASVs")
+    p.add_argument("--exact", action="store_true",
+                   help="require every (sample, ASV) count to equal R's")
+    p.add_argument("--max-reads-moved", type=float, default=None,
+                   help="threshold: reads moved between cells (absolute); the limit is "
+                        "the larger of this and --max-reads-moved-frac")
+    p.add_argument("--max-reads-moved-frac", type=float, default=None,
+                   help="threshold: reads moved as a fraction of R's total reads")
     p.add_argument("--gate", action="store_true",
                    help="exit non-zero when a thresholded metric fails (default: "
                         "warn-only, always exit 0)")
@@ -301,7 +403,18 @@ def main(argv=None):
         "precision": args.min_precision,
         "count_corr": args.min_count_corr,
     }
-    body, ok = render(c, thresholds, args.gate)
+    want_cells = args.exact or args.max_reads_moved is not None \
+        or args.max_reads_moved_frac is not None
+    cells = (compare_cells(load_rs_cells(args.rs), load_reference_cells(args.reference))
+             if want_cells else None)
+    max_moved = None
+    if cells is not None and not args.exact:
+        limits = [args.max_reads_moved or 0.0]
+        if args.max_reads_moved_frac is not None:
+            limits.append(args.max_reads_moved_frac * sum(load_reference_cells(args.reference).values()))
+        max_moved = max(limits)
+    thresholds.update({"exact": args.exact, "max_reads_moved": max_moved})
+    body, ok = render(c, thresholds, args.gate, cells, args.exact, max_moved)
     header = (f"Concordance vs R DADA2 — {args.label}"
               + (f"  [min_abundance={args.min_abundance}]" if args.min_abundance > 1 else ""))
     print(header)
@@ -314,7 +427,8 @@ def main(argv=None):
     if args.json:
         Path(args.json).write_text(json.dumps(
             {"label": args.label, "min_abundance": args.min_abundance,
-             "thresholds": thresholds, "gate": args.gate, "metrics": c}, indent=2))
+             "thresholds": thresholds, "gate": args.gate, "metrics": c,
+             "cells": cells}, indent=2))
 
     if args.gate and not ok:
         sys.exit(1)

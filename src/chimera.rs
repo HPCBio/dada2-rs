@@ -10,7 +10,7 @@
 use rayon::prelude::*;
 
 use crate::nwalign::{
-    AlignBackend, AlignBuffers, VectorizedAlignScores, align_vectorized_with_buf,
+    AlignBackend, AlignBuffers, EndModel, VectorizedAlignScores, align_vectorized_with_buf,
 };
 use crate::wfa::{align_wfa_endsfree_with_buf, wfa_cost_cap};
 
@@ -35,6 +35,8 @@ fn bimera_align(
             scores.mismatch as i32,
             scores.gap_p as i32,
             scores.band,
+            // Chimera detection keeps R's ends-free model (issue #289 scope).
+            EndModel::EndsFree,
             max_steps,
             buf,
         ),
@@ -235,6 +237,7 @@ pub fn is_bimera_with_buf(
         match_score,
         mismatch,
         gap_p,
+        begin_gap_p: 0,
         end_gap_p: 0,
         band: max_shift,
     };
@@ -337,6 +340,7 @@ pub fn table_bimera2(
         match_score,
         mismatch,
         gap_p,
+        begin_gap_p: 0,
         end_gap_p: 0,
         band: max_shift,
     };
@@ -539,6 +543,7 @@ pub fn pooled_diagnostics(
         match_score,
         mismatch,
         gap_p,
+        begin_gap_p: 0,
         end_gap_p: 0,
         band: max_shift,
     };
