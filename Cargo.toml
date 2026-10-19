@@ -1,6 +1,6 @@
 [package]
 name = "dada2-rs"
-version = "0.2.0"
+version = "0.5.0"
 edition = "2024"
 # Raised from 1.87 to 1.91 by the experimental WFA backend (wfa2lib-rs MSRV).
 # Revisit if the WFA backend is dropped.
@@ -13,20 +13,25 @@ authors = ["Chris Fields <cjfields@illinois.edu>"]
 keywords = ["bioinformatics", "amplicon", "dada2", "metagenomics", "asv"]
 categories = ["science", "command-line-utilities"]
 # Keep the published crate lean: development, benchmarking, concordance data
-# (multi-MB PacBio FASTQs), examples, notes, and CI/infra files are not needed by
-# `cargo install` consumers. `data/`, `tmp/` are already gitignored.
+# (multi-MB PacBio FASTQs), examples, notes, the mkdocs site sources (published on
+# Read the Docs), and CI/infra files are not needed by `cargo install` consumers.
+# `data/`, `tmp/` are already gitignored.
 exclude = [
     "**/__pycache__/",
     "*.pyc",
     "/dev",
     "/examples",
     "/notes",
+    "/docs",
+    "/site",
+    "/mkdocs.yml",
     "/data",
     "/tmp",
     "/.github",
     "/.githooks",
     "/.readthedocs.yaml",
     "/AGENTS.md",
+    "/CLAUDE.md",
     "/Cross.toml",
 ]
 
