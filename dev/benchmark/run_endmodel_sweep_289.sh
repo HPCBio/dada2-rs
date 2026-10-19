@@ -51,14 +51,17 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
 mkdir -p "$OUT"
 
+# Appended, so a rerun into the same directory (which skips finished arms)
+# keeps the record of every invocation.
 {
+    echo "=== $(date -u +%FT%TZ)"
     echo "binary: $("$BIN" --version)"
     echo "platform: $PLATFORM  input: $IN"
     echo "backends: $BACKENDS  end models: $END_MODELS  reps: $REPS"
     echo "threads: $THREADS  numa: $NUMA  pool: $POOL  wfa_max_edits: ${WFA_MAX_EDITS:-default}"
     echo "bench extra: ${BENCH_EXTRA[*]:-}"
-    echo "host: $(hostname)  date: $(date -u +%FT%TZ)"
-} | tee "$OUT/sweep_env.txt"
+    echo "host: $(hostname)"
+} | tee -a "$OUT/sweep_env.txt"
 
 for rep in $(seq 1 "$REPS"); do
     for backend in $BACKENDS; do
