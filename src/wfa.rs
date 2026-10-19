@@ -302,6 +302,9 @@ fn align_with<const N: usize>(
     // real reward (HPCBio/wfa2lib-rs#31); global ranks alike either way.
     match ends {
         EndModel::Global => {
+            // align_end2end keeps begin-free limits left by an earlier
+            // ends-free call on this cached aligner; clear them.
+            aligner.set_alignment_free_ends(0, 0, 0, 0);
             aligner.align_end2end(s1, s2);
         }
         EndModel::Free3p => {

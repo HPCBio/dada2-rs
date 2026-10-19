@@ -2949,6 +2949,48 @@ mod tests {
         }
     }
 
+    /// The cached per-thread WFA aligner must not carry free-end limits from
+    /// one end model into the next: after ends-free calls, `global` must still
+    /// find NW's global optimum (#289).
+    #[test]
+    #[cfg(feature = "wfa")]
+    fn end_model_global_after_ends_free_same_thread() {
+        let pairs = random_pairs(300, 0x1EA7);
+        let mut nw = AlignBuffers::new();
+        let mut wf = AlignBuffers::new();
+        for (s1, s2) in &pairs {
+            align_wfa_endsfree_with_buf(
+                s1,
+                s2,
+                MATCH,
+                MM,
+                GAP,
+                BAND,
+                EndModel::EndsFree,
+                i32::MAX,
+                &mut wf,
+            );
+            align_ends_with_buf(s1, s2, MATCH, MM, GAP, BAND, EndModel::Global, &mut nw);
+            align_wfa_endsfree_with_buf(
+                s1,
+                s2,
+                MATCH,
+                MM,
+                GAP,
+                BAND,
+                EndModel::Global,
+                i32::MAX,
+                &mut wf,
+            );
+            let a = [nw.al0.clone(), nw.al1.clone()];
+            let w = [wf.al0.clone(), wf.al1.clone()];
+            assert_eq!(
+                score_ends(&a, GAP, EndModel::Global),
+                score_ends(&w, GAP, EndModel::Global)
+            );
+        }
+    }
+
     /// C WFA2-lib ends-free misses that the adapter's corrected mode fixes
     /// (`Compat::Corrected`, HPCBio/wfa2lib-rs#32). C `3282f83` scores these
     /// below the optimum, and the port does too in its default C mode:
