@@ -20,7 +20,7 @@ breakdown labels them so.
 
 | File | Role |
 |---|---|
-| `compare_to_reference.py` | Diffs a dada2-rs seqtab JSON vs the R reference CSV — recall, precision, log-count correlation. Pure stdlib. Warn-only by default; `--gate` to fail. |
+| `compare_to_reference.py` | Diffs a dada2-rs seqtab JSON vs the R reference CSV: recall, precision, log-count correlation, and per-cell differences (`--exact`, `--max-reads-moved[-frac]`). Pure stdlib. Warn-only by default; `--gate` to fail. |
 | `run_illumina.sh` | dada2-rs paired-end pipeline → `seqtab.nochim.json`. `POOL=pseudo` switches denoising to `dada-pseudo` and enforces a positive control (below). |
 | `run_pacbio.sh` | dada2-rs single-end PacBio pipeline → `seqtab.nochim.json` (k=5, to match R). |
 | `train_pin.sh` | Sourced by both runners. `TRAIN_SAMPLES=<manifest>` pins the error-model training set (one sample name per line, as `write_reference.R --train-samples` and `pick_training_subset.py`); the run stops if `NBASES` would truncate it. `NBASES` accepts `1e8`-style values. Defaults: Illumina 1e8, PacBio 2e8, provisional ([training-set notes](../../docs/error-model-training.md)). |
@@ -80,12 +80,20 @@ the reference CSVs (and the PacBio fixture) are committed. To enable it:
 > the same truncation/filter/error settings and `pool=FALSE`. If you change one,
 > change both and regenerate the reference.
 
-## Tuning and turning on the gatekeeper
+## Gates
 
-The workflow is **warn-only**: it prints metrics (and a job summary) but stays
-green. Once a few runs show stable numbers, edit the thresholds in
-`concordance.yml` (`MIN_RECALL` / `MIN_PRECISION` / `MIN_COUNT_CORR`) and add
-`--gate` to the compare steps to make divergence fail the build.
+Every compare step in `concordance.yml` runs with `--gate`, at one of two levels:
+
+- `--exact` for arms that reproduce R (Illumina NW, both pseudo arms, PacBio
+  k=5 NW): any differing sample × ASV count fails, and the differing cells are
+  listed.
+- **near** for arms that legitimately differ a little (PacBio k=7, WFA):
+  `--min-recall 1 --min-precision 1 --max-reads-moved "$TOL_READS"
+  --max-reads-moved-frac "$TOL_FRAC"` (10 reads or 0.1%, whichever is larger).
+
+Sample names are matched after stripping FASTQ extensions, since R keeps them.
+If a deliberate change moves an exact arm away from R, record why before
+relaxing its gate.
 
 ## Local use
 

@@ -4,10 +4,9 @@ name: Concordance (vs R DADA2)
 # the post-chimera ASVs + per-ASV counts against a STATIC R DADA2 reference CSV
 # (committed under dev/concordance/reference/; CI never runs R).
 #
-# GATING: the compare steps run with --gate, so a metric below its threshold
-# fails the build. Thresholds are deliberately generous (the calibrated baseline
-# is recall/precision = 1.000, count_corr ~0.994 on both platforms) so the gate
-# catches real regressions without flaking on cross-implementation noise.
+# GATING: the compare steps run with --gate. Arms that reproduce R are gated
+# EXACT (every sample x ASV count); arms that legitimately differ a little are
+# gated NEAR (same ASV set, few reads moved). See the env block below.
 #
 # Triggers: pull requests, pushes to non-main branches, and manual dispatch
 # (the intended way to run it against main).
@@ -24,18 +23,19 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Gating thresholds (generous vs the 1.000/1.000/~0.994 baseline → catch real
-  # regressions, not cross-implementation noise). Tune here.
-  MIN_RECALL: "0.85"
-  MIN_PRECISION: "0.80"
-  MIN_COUNT_CORR: "0.95"
+  # Two gate tiers (compare_to_reference.py):
+  #  - EXACT: every (sample, ASV) count equals R's. For the arms that reproduce
+  #    R (Illumina NW, both pseudo arms, PacBio k=5 NW). A failure is a bug or a
+  #    deliberate departure from R, to be decided rather than absorbed.
+  #  - NEAR: same ASV set as R, and at most max(TOL_READS, TOL_FRAC x reads)
+  #    moved between cells. For arms that legitimately differ slightly: PacBio
+  #    k=7 (R's screen is fixed at k=5) and WFA (equal-score ties). Measured on
+  #    the fixtures: 3 reads (k=7), 1 (PacBio WFA), 0 (Illumina WFA).
+  # The old gate (recall 0.85 / precision 0.80 / count corr 0.95) passed a run
+  # that lost one of 93 ASVs and moved 18 reads; both tiers fail it.
   MIN_ABUNDANCE: "2"
-  # Pseudo arm only. Measured on the committed fixture: recall 0.974, precision
-  # 0.993 against the R pseudo reference, the gap being R's between-round
-  # error-model re-fit (issue #100), which we deliberately do not do. Set below
-  # measured so the known gap passes but a real regression does not.
-  PSEUDO_MIN_RECALL: "0.93"
-  PSEUDO_MIN_PRECISION: "0.95"
+  TOL_READS: "10"
+  TOL_FRAC: "0.001"
 
 jobs:
   concordance:
@@ -84,8 +84,7 @@ jobs:
           python3 dev/concordance/compare_to_reference.py \
               --rs work/illumina/seqtab.nochim.json --reference "$ref" \
               --label illumina --min-abundance "$MIN_ABUNDANCE" \
-              --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
-              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --exact --gate \
               --summary "$GITHUB_STEP_SUMMARY" --json work/illumina_report.json
 
       # -------- Illumina with the experimental WFA backend (issue #49) ---------
@@ -119,8 +118,8 @@ jobs:
           python3 dev/concordance/compare_to_reference.py \
               --rs work/illumina_wfa/seqtab.nochim.json --reference "$ref" \
               --label illumina-wfa --min-abundance "$MIN_ABUNDANCE" \
-              --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
-              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --min-recall 1 --min-precision 1 \
+              --max-reads-moved "$TOL_READS" --max-reads-moved-frac "$TOL_FRAC" --gate \
               --summary "$GITHUB_STEP_SUMMARY" --json work/illumina_wfa_report.json
 
       # -------- Illumina, pseudo-pooling (issue #100) --------------------------
@@ -164,9 +163,7 @@ jobs:
           python3 dev/concordance/compare_to_reference.py \
               --rs work/illumina_pseudo/seqtab.nochim.json --reference "$ref" \
               --label illumina-pseudo --min-abundance "$MIN_ABUNDANCE" \
-              --min-recall "$PSEUDO_MIN_RECALL" \
-              --min-precision "$PSEUDO_MIN_PRECISION" \
-              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --exact --gate \
               --summary "$GITHUB_STEP_SUMMARY" --json work/illumina_pseudo_report.json
 
       # Our DEFAULT pseudo semantics: one error model across both rounds,
@@ -188,9 +185,7 @@ jobs:
           python3 dev/concordance/compare_to_reference.py \
               --rs work/illumina_pseudo_fixederr/seqtab.nochim.json --reference "$ref" \
               --label illumina-pseudo-fixed-err --min-abundance "$MIN_ABUNDANCE" \
-              --min-recall "$PSEUDO_MIN_RECALL" \
-              --min-precision "$PSEUDO_MIN_PRECISION" \
-              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --exact --gate \
               --summary "$GITHUB_STEP_SUMMARY" --json work/illumina_pseudo_fixederr_report.json
 
       # ---------------- PacBio (committed subsampled fixture) -----------------
@@ -222,14 +217,13 @@ jobs:
           python3 dev/concordance/compare_to_reference.py \
               --rs work/pacbio/seqtab.nochim.json --reference "$ref" \
               --label pacbio-k5 --min-abundance "$MIN_ABUNDANCE" \
-              --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
-              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --exact --gate \
               --summary "$GITHUB_STEP_SUMMARY" --json work/pacbio_k5_report.json
           python3 dev/concordance/compare_to_reference.py \
               --rs work/pacbio_k7/seqtab.nochim.json --reference "$ref" \
               --label pacbio-k7 --min-abundance "$MIN_ABUNDANCE" \
-              --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
-              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --min-recall 1 --min-precision 1 \
+              --max-reads-moved "$TOL_READS" --max-reads-moved-frac "$TOL_FRAC" --gate \
               --summary "$GITHUB_STEP_SUMMARY" --json work/pacbio_k7_report.json
 
       # -------- PacBio with the experimental WFA backend (issue #51) ----------
@@ -266,8 +260,8 @@ jobs:
           python3 dev/concordance/compare_to_reference.py \
               --rs work/pacbio_wfa/seqtab.nochim.json --reference "$ref" \
               --label pacbio-k5-wfa --min-abundance "$MIN_ABUNDANCE" \
-              --min-recall "$MIN_RECALL" --min-precision "$MIN_PRECISION" \
-              --min-count-corr "$MIN_COUNT_CORR" --gate \
+              --min-recall 1 --min-precision 1 \
+              --max-reads-moved "$TOL_READS" --max-reads-moved-frac "$TOL_FRAC" --gate \
               --summary "$GITHUB_STEP_SUMMARY" --json work/pacbio_wfa_report.json
 
       - name: Upload reports

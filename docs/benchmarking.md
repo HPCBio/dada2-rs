@@ -382,24 +382,23 @@ against R, independent of timing:
 
 ### What CI actually gates on
 
-`.github/workflows/concordance.yml` runs the comparison with `--gate`, so a
-metric below its threshold fails the build. Three metrics, not one — **counts are
-checked, by correlation**:
+`.github/workflows/concordance.yml` runs the comparison with `--gate`, at one of
+two levels per arm:
 
-| metric | threshold | observed baseline |
+| arm | gate | observed on the fixture |
 |---|---|---|
-| recall | 0.85 | 1.000 both platforms |
-| precision | 0.80 | 1.000 both platforms |
-| **`count_corr`** | **0.95** | Illumina 1.000, **PacBio 0.994** |
+| Illumina, NW | **exact**: every sample × ASV count equals R's | 0 of 15 cells differ |
+| Illumina pseudo-pooling (both arms) | **exact** | 0 of 389 / 385 cells differ |
+| PacBio k=5, NW | **exact** | 0 of 95 cells differ |
+| PacBio k=7, NW | **near**: same ASVs as R, ≤ max(10 reads, 0.1%) moved | 3 reads moved |
+| WFA, Illumina and PacBio k=5 | **near** | 0 and 1 reads moved |
 
-(`dada-pseudo` runs tighter: recall 0.93, precision 0.95.) Thresholds are
-deliberately generous against those baselines, to catch a real regression
-without flaking.
-
-Two things worth reading off that table. Count agreement **is** gated, so a
-change that preserves the ASV set while moving abundances will be caught. And
-PacBio has never been at 1.000 — count-level agreement with R is close rather
-than exact there, and always has been.
+An exact failure lists the differing cells. It is either a bug or a deliberate
+departure from R, and either way needs a decision. The near arms differ for
+known reasons: R's k-mer screen is fixed at k=5, and WFA can choose a different
+alignment of equal score. The earlier thresholds (recall 0.85, precision 0.80,
+count correlation 0.95) passed a PacBio run that lost one of R's 93 ASVs and
+moved 18 reads; both levels fail it (#289).
 
 What the gate does not instrument is **per-stage read accounting**: the
 intermediate counts that never reach the sequence table, such as the denoised
