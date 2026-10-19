@@ -21,6 +21,9 @@
 #                              reads that all run through the reverse primer)
 #   REPS=2  THREADS=22  NUMA=interleave  POOL=true
 #   WFA_MAX_EDITS=             WFA cap; unset = the binary's default (50)
+#   VERBOSE=0                  1 passes --verbose, which also turns on per-
+#                              comparison timing (MeasureLevel::Attribution) and
+#                              slows every arm; leave off for timing runs
 #
 # Run on an exclusive node, from node-local scratch, and never time two arms
 # concurrently (#281).
@@ -46,6 +49,7 @@ THREADS="${THREADS:-22}"
 NUMA="${NUMA:-interleave}"
 POOL="${POOL:-true}"
 WFA_MAX_EDITS="${WFA_MAX_EDITS:-}"
+VERBOSE="${VERBOSE:-0}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
@@ -58,7 +62,7 @@ mkdir -p "$OUT"
     echo "binary: $("$BIN" --version)"
     echo "platform: $PLATFORM  input: $IN"
     echo "backends: $BACKENDS  end models: $END_MODELS  reps: $REPS"
-    echo "threads: $THREADS  numa: $NUMA  pool: $POOL  wfa_max_edits: ${WFA_MAX_EDITS:-default}"
+    echo "threads: $THREADS  numa: $NUMA  pool: $POOL  wfa_max_edits: ${WFA_MAX_EDITS:-default}  verbose: $VERBOSE"
     echo "bench extra: ${BENCH_EXTRA[*]:-}"
     echo "host: $(hostname)"
 } | tee -a "$OUT/sweep_env.txt"
@@ -73,7 +77,8 @@ for rep in $(seq 1 "$REPS"); do
                 continue
             fi
             args=(--dada2rs "$BIN" --outdir "$dir" --pool "$POOL" --threads "$THREADS"
-                  --numa "$NUMA" --verbose --end-model "$model")
+                  --numa "$NUMA" --end-model "$model")
+            [ "$VERBOSE" = 1 ] && args+=(--verbose)
             envs=()
             case "$backend" in
                 nw) ;;
