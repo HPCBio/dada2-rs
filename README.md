@@ -15,11 +15,17 @@ Rust ports of:
   | Dereplication | `derepFastq` | `derep` |
   | Error models | `learnErrors` | `learn-errors` |
   | Denoising | `dada` | `dada` |
+  | Denoising, pooled | `dada(pool = TRUE)` | `dada-pooled` |
+  | Denoising, pseudo-pooled | `dada(pool = "pseudo")` | `dada-pseudo` |
   | Merging | `mergePairs` | `merge-pairs` |
   | Chimera removal | `removeBimeraDenovo` | `remove-bimera-denovo` |
   | RDP taxonomic classifier | `assignTaxonomy` + `assignSpecies` | `assign-taxonomy` + `assign-species` |
   | Merging sequence tables | `mergeSequenceTables` | `make-sequence-table` (accepts multiple inputs) |
   | Making sequence tables from multiple inputs | `makeSequenceTable` | `make-sequence-table` |
+
+Denoising reproduces R DADA2's ASV tables cell for cell on the CI concordance
+fixtures; see [benchmarking](docs/benchmarking.md) and the
+[changelog](CHANGELOG.md).
 
 - Current error models:
   - `loessErrfun`
@@ -35,9 +41,8 @@ Rust ports of:
   - Experimental sub-sampling function for input FASTQ (`sample`) and related error model function (`errors-from-sample`) that mirrors `learn-errors` (can be used for bootstrapping)
   - Intermediate outputs (in JSON) - can be evaluated for debugging purposes or for plotting in R, Python, etc.
   - Experimental [wavefront-alignment (WFA) backend](docs/parameters.md#experimental-wfa-alignment-backend) (`--align-backend wfa2`), a developer build gated behind `--features wfa` (not in the published crate)
+  - Per-position quality summaries, with binned-quality detection (`summary`, `summary-merge`)
   - Dedicated Docker builds available
-- In progress
-  - Summary FASTQ metrics and plots
 
 ## Building & installing
 
@@ -66,27 +71,23 @@ For the native (`-C target-cpu=native`) build and Docker, see
 
 ## Subcommands
 
-| Subcommand | Description |
-|---|---|
-| `filter-and-trim` | Filter and trim FASTQ reads (mirrors `filterAndTrim`) |
-| `derep` | Dereplicate a FASTQ file |
-| `sample` | Dereplicate and subsample FASTQ files, one JSON per sample |
-| `errors-from-sample` | Learn error model from derep JSON files |
-| `learn-errors` | Learn error model from FASTQ or derep/sample JSON files |
-| `dada` | Denoise a sample using a learned error model |
-| `merge-pairs` | Merge denoised forward and reverse reads |
-| `make-sequence-table` | Build a sample × sequence count table |
-| `remove-bimera-denovo` | Remove chimeric sequences |
-| `summary` | Per-position quality metrics from a FASTQ |
+Grouped as in `dada2-rs --help`; each subcommand has a page under
+[`docs/commands/`](docs/commands/index.md).
 
-Run `dada2-rs <subcommand> --help` for full parameter documentation.
+| Group | Subcommands |
+|---|---|
+| Workflow | `remove-primers`, `filter-and-trim`, `derep`, `learn-errors`, `dada`, `dada-pooled`, `dada-pseudo`, `merge-pairs`, `make-sequence-table`, `remove-bimera-denovo`, `assign-taxonomy`, `assign-species` |
+| Quality control | `summary`, `summary-merge` |
+| Export | `seq-table-to-tsv`, `seq-table-to-fasta`, `tax-to-tsv` |
+| Diagnostics | `sample`, `errors-from-sample`, `chimera-diagnostics`, `kdist-calibrate`, `reference-eval` |
 
 ## Usage & walkthroughs
 
 End-to-end examples live in the documentation:
 
-- **[Illumina MiSeq walkthrough](docs/walkthrough-illumina.md)** (paired-end)
-- **[PacBio HiFi walkthrough](docs/walkthrough-pacbio.md)** (single-end, primer removal + PacBio-tuned params)
+- **[Illumina MiSeq walkthrough](docs/walkthroughs/walkthrough-illumina.md)** (paired-end)
+- **[PacBio HiFi walkthrough](docs/walkthroughs/walkthrough-pacbio.md)** (single-end, primer removal + PacBio-tuned params)
+- Binned quality scores: **[Illumina](docs/walkthroughs/walkthrough-illumina-binned.md)** and **[PacBio](docs/walkthroughs/walkthrough-pacbio-binned.md)**
 
 Run `dada2-rs <subcommand> --help` for the full parameter set of any step.
 

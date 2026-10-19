@@ -193,7 +193,7 @@ pub enum Commands {
     #[command(after_help = docs_link!("assign-taxonomy"))]
     AssignTaxonomy(AssignTaxonomyArgs),
 
-    /// Fill in the Species column of an assign-taxonomy JSON by exact match
+    /// Fill in the Species column of an assign-taxonomy JSON by exact substring match
     #[command(after_help = docs_link!("assign-species"))]
     AssignSpecies(AssignSpeciesArgs),
 
