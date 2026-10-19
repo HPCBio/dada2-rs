@@ -107,7 +107,7 @@ See **[the project overview](docs/about.md)** for the project's origins and goal
 
 This tool was written with the assistance of AI coding agents, specifically Claude Code, using Sonnet and Opus LLMs. All commits using AI assistance are openly noted.
 
-Correctness is validated by comparing output against DADA2 v1.36 on a suite of real sequencing datasets - not by manual code review alone. 
+Correctness is validated by comparing output against R DADA2 on a suite of real sequencing datasets - not by manual code review alone. Most of that testing used DADA2 v1.36.0 (R v4.5.1) on the cluster; local comparisons use DADA2 v1.40.0 (R v4.6.0).
 AI generated the implementation; humans defined the validation criteria, made some key coding updates, and verified results. 
 
 ## Citation
