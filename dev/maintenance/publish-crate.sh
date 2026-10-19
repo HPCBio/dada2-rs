@@ -17,17 +17,27 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 MANIFEST="Cargo.toml"
+LOCKFILE="Cargo.lock"
 BACKUP="$(mktemp)"
+LOCK_BACKUP="$(mktemp)"
 
+# Restore the lockfile too: packaging re-resolves against the stripped manifest
+# and drops the wfa2lib-rs entries from Cargo.lock.
 restore() {
     if [ -f "$BACKUP" ]; then
         cp "$BACKUP" "$MANIFEST"
         rm -f "$BACKUP"
         echo "==> Restored original $MANIFEST"
     fi
+    if [ -f "$LOCK_BACKUP" ]; then
+        cp "$LOCK_BACKUP" "$LOCKFILE"
+        rm -f "$LOCK_BACKUP"
+        echo "==> Restored original $LOCKFILE"
+    fi
 }
 trap restore EXIT
 cp "$MANIFEST" "$BACKUP"
+cp "$LOCKFILE" "$LOCK_BACKUP"
 
 echo "==> Stripping the experimental WFA git dependency + feature, and the rmath-ppois diagnostic feature"
 python3 - "$MANIFEST" <<'PY'
@@ -49,6 +59,9 @@ s = re.sub(r'(?m)^rmath-ppois\s*=\s*\[.*\]\s*\n', '', s)
 if s == after_wfa:
     sys.exit("ERROR: expected the rmath-ppois feature line was not found; "
              "manifest layout may have changed — update publish-crate.sh.")
+# `/examples` is excluded from the package, so cargo's example auto-discovery
+# would warn once per example. The published crate ships no examples.
+s = re.sub(r'(?m)^(\[package\]\n)', r'\1autoexamples = false\n', s, count=1)
 open(path, "w").write(s)
 PY
 
