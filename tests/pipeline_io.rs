@@ -165,6 +165,324 @@ fn dada_failed_uniques_matches_map_nulls() {
     }
 }
 
+/// An indel TSV without its `#` run-identity header.
+fn tsv_body(path: impl AsRef<Path>) -> String {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+/// `--indel-events` / `--indel-opportunities` (issue #291) must not change the
+/// dada JSON, and the `sub_q` table must reproduce `trans` from `--aux-outputs`:
+/// both are read-weighted counts over the same final-subs pass.
+#[test]
+fn dada_indel_tables_leave_output_unchanged_and_match_trans() {
+    let dir = scratch("indel_events");
+    let err = err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+    let s1 = s1.to_str().unwrap();
+    let err = err.to_str().unwrap();
+
+    let plain = dir.join("plain.json");
+    run(&[
+        "dada",
+        s1,
+        "--error-model",
+        err,
+        "--aux-outputs",
+        "-o",
+        plain.to_str().unwrap(),
+    ]);
+    let with = dir.join("with.json");
+    let events = dir.join("events.tsv");
+    let opp = dir.join("opp.tsv");
+    run(&[
+        "dada",
+        s1,
+        "--error-model",
+        err,
+        "--aux-outputs",
+        "-o",
+        with.to_str().unwrap(),
+        "--indel-events",
+        events.to_str().unwrap(),
+        "--indel-opportunities",
+        opp.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        std::fs::read(&plain).unwrap(),
+        std::fs::read(&with).unwrap(),
+        "indel tables changed the dada JSON",
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&with).unwrap()).unwrap();
+    let trans: Vec<u64> = v["aux"]["transitions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_u64().unwrap())
+        .collect();
+    let ncol = v["aux"]["transitions_ncol"].as_u64().unwrap() as usize;
+    let total: u64 = trans.iter().sum();
+    let subs: u64 = (0..16)
+        .filter(|t| t / 4 != t % 4)
+        .map(|t| trans[t * ncol..(t + 1) * ncol].iter().sum::<u64>())
+        .sum();
+
+    let tsv = tsv_body(&opp);
+    let mut lines = tsv.lines();
+    assert_eq!(
+        lines.next().unwrap(),
+        "sample\ttable\tkey\topportunities\tevents"
+    );
+    let (mut opp_sum, mut ev_sum) = (0u64, 0u64);
+    for row in lines {
+        let c: Vec<&str> = row.split('\t').collect();
+        if c[1] == "sub_q" {
+            opp_sum += c[3].parse::<u64>().unwrap();
+            ev_sum += c[4].parse::<u64>().unwrap();
+        }
+    }
+    assert_eq!((opp_sum, ev_sum), (total, subs), "sub_q must equal trans");
+
+    let ev = std::fs::read_to_string(&events).unwrap();
+    assert!(ev.starts_with("# dada2_rs_command: dada\n# dada2_rs_version: "));
+    assert!(ev.contains("\n# error_matrix: err_out\n"));
+    assert!(tsv_body(&events).starts_with("sample\tcluster\tcenter_len\tunique\t"));
+}
+
+/// `dada-pooled` indel tables: per-sample outputs unchanged, events attributed
+/// to the samples a merged unique occurs in, rate tables pool-level. On one
+/// input the pool is that sample, so the tables must equal `dada`'s.
+#[test]
+fn dada_pooled_indel_tables() {
+    let dir = scratch("indel_pooled");
+    let err = err_model();
+    let err = err.to_str().unwrap();
+    let (f1, f2) = (fixture("sam1F.fastq.gz"), fixture("sam2F.fastq.gz"));
+    let (f1, f2) = (f1.to_str().unwrap(), f2.to_str().unwrap());
+    let p = |name: &str| dir.join(name).to_str().unwrap().to_string();
+
+    run(&[
+        "dada-pooled",
+        f1,
+        f2,
+        "--error-model",
+        err,
+        "--output-dir",
+        &p("plain"),
+    ]);
+    run(&[
+        "dada-pooled",
+        f1,
+        f2,
+        "--error-model",
+        err,
+        "--output-dir",
+        &p("with"),
+        "--indel-events",
+        &p("events.tsv"),
+        "--indel-opportunities",
+        &p("opp.tsv"),
+    ]);
+    for s in ["sam1F", "sam2F"] {
+        assert_eq!(
+            std::fs::read(dir.join("plain").join(format!("{s}.json"))).unwrap(),
+            std::fs::read(dir.join("with").join(format!("{s}.json"))).unwrap(),
+            "indel tables changed {s}.json",
+        );
+    }
+    assert!(
+        std::fs::read_to_string(p("events.tsv"))
+            .unwrap()
+            .starts_with("# dada2_rs_command: dada-pooled\n")
+    );
+    let events = tsv_body(p("events.tsv"));
+    let samples: std::collections::BTreeSet<&str> = events
+        .lines()
+        .skip(1)
+        .map(|l| l.split('\t').next().unwrap())
+        .collect();
+    assert_eq!(samples, ["sam1F", "sam2F"].into_iter().collect());
+    let opp = tsv_body(p("opp.tsv"));
+    assert!(opp.lines().skip(1).all(|l| l.starts_with("pooled\t")));
+
+    // One input: pooled tables == dada's, up to the sample label.
+    run(&[
+        "dada-pooled",
+        f1,
+        "--error-model",
+        err,
+        "--output-dir",
+        &p("one"),
+        "--indel-events",
+        &p("one_ev.tsv"),
+        "--indel-opportunities",
+        &p("one_opp.tsv"),
+    ]);
+    run(&[
+        "dada",
+        f1,
+        "--error-model",
+        err,
+        "-o",
+        &p("d.json"),
+        "--indel-events",
+        &p("d_ev.tsv"),
+        "--indel-opportunities",
+        &p("d_opp.tsv"),
+    ]);
+    assert_eq!(tsv_body(p("one_ev.tsv")), tsv_body(p("d_ev.tsv")),);
+    assert_eq!(
+        tsv_body(p("one_opp.tsv")).replace("pooled\t", "sam1F\t"),
+        tsv_body(p("d_opp.tsv")),
+    );
+}
+
+/// Per-sample modes collect each sample's indel tables into one file sorted by
+/// sample: multi-input `dada` must equal the single-input runs concatenated,
+/// and `dada-pseudo` (round 2) must leave its per-sample JSON unchanged.
+#[test]
+fn per_sample_modes_indel_tables() {
+    let dir = scratch("indel_per_sample");
+    let err = err_model();
+    let err = err.to_str().unwrap();
+    let (f1, f2) = (fixture("sam1F.fastq.gz"), fixture("sam2F.fastq.gz"));
+    let (f1, f2) = (f1.to_str().unwrap(), f2.to_str().unwrap());
+    let p = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    let read = |name: &str| std::fs::read_to_string(p(name)).unwrap();
+    let read_tsv = |name: &str| tsv_body(p(name));
+
+    let flags = |ev: &str, op: &str| {
+        [
+            "--indel-events".to_string(),
+            p(ev),
+            "--indel-opportunities".to_string(),
+            p(op),
+        ]
+    };
+    let mut expect_ev = String::new();
+    let mut expect_op = String::new();
+    for (i, f) in [f1, f2].into_iter().enumerate() {
+        let [a, b, c, d] = flags(&format!("ev{i}.tsv"), &format!("op{i}.tsv"));
+        run(&[
+            "dada",
+            f,
+            "--error-model",
+            err,
+            "-o",
+            &p(&format!("d{i}.json")),
+            &a,
+            &b,
+            &c,
+            &d,
+        ]);
+        let (ev, op) = (
+            read_tsv(&format!("ev{i}.tsv")),
+            read_tsv(&format!("op{i}.tsv")),
+        );
+        let skip = |t: &str| {
+            if i == 0 {
+                t.to_string()
+            } else {
+                t.split_once('\n').unwrap().1.to_string()
+            }
+        };
+        expect_ev += &skip(&ev);
+        expect_op += &skip(&op);
+    }
+    let [a, b, c, d] = flags("multi_ev.tsv", "multi_op.tsv");
+    run(&[
+        "dada",
+        f1,
+        f2,
+        "--error-model",
+        err,
+        "--output-dir",
+        &p("multi"),
+        "--threads",
+        "2",
+        &a,
+        &b,
+        &c,
+        &d,
+    ]);
+    assert_eq!(read_tsv("multi_ev.tsv"), expect_ev);
+    assert_eq!(read_tsv("multi_op.tsv"), expect_op);
+
+    run(&[
+        "dada-pseudo",
+        f1,
+        f2,
+        "--error-model",
+        err,
+        "--output-dir",
+        &p("ps_plain"),
+    ]);
+    let [a, b, c, d] = flags("ps_ev.tsv", "ps_op.tsv");
+    run(&[
+        "dada-pseudo",
+        f1,
+        f2,
+        "--error-model",
+        err,
+        "--output-dir",
+        &p("ps_with"),
+        &a,
+        &b,
+        &c,
+        &d,
+    ]);
+    for s in ["sam1F", "sam2F"] {
+        assert_eq!(
+            read(&format!("ps_plain/{s}.json")),
+            read(&format!("ps_with/{s}.json")),
+            "indel tables changed pseudo {s}.json",
+        );
+    }
+    let header = read("ps_ev.tsv");
+    assert!(header.starts_with("# dada2_rs_command: dada-pseudo\n"));
+    assert!(header.contains("\n# round: 2\n# reestimated_err_between_rounds: false\n"));
+    for t in ["ps_ev.tsv", "ps_op.tsv"] {
+        let samples: std::collections::BTreeSet<String> = read_tsv(t)
+            .lines()
+            .skip(1)
+            .map(|l| l.split('\t').next().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            samples,
+            ["sam1F", "sam2F"].map(String::from).into_iter().collect(),
+            "{t}"
+        );
+    }
+
+    // R re-estimates the error model between rounds; round 1 feeds the refit,
+    // so the tables must not disturb it either.
+    let re = "--reestimate-err-between-rounds";
+    let base = [
+        "dada-pseudo",
+        f1,
+        f2,
+        "--error-model",
+        err,
+        re,
+        "--output-dir",
+    ];
+    run(&[&base[..], &[&p("re_plain")]].concat());
+    run(&[&base[..], &[&p("re_with"), &a, &b, &c, &d]].concat());
+    for s in ["sam1F", "sam2F"] {
+        assert_eq!(
+            read(&format!("re_plain/{s}.json")),
+            read(&format!("re_with/{s}.json")),
+            "{re} changed {s}.json",
+        );
+    }
+    assert!(read("ps_op.tsv").contains("\n# reestimated_err_between_rounds: true\n"));
+}
+
 /// dada-pseudo output must be accepted by the downstream consumers that key off
 /// the `dada2_rs_command` tag (merge-pairs and make-sequence-table). This is the
 /// path that broke in benchmarking: those readers allowlisted only "dada" /

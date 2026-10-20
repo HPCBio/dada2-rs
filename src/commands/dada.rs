@@ -10,8 +10,8 @@ use std::{
 use flate2::read::MultiGzDecoder;
 
 use dada2_rs::{
-    cli, cluster_trace, containers, dada, derep, error_models, failed_uniques, learn_errors,
-    metrics, minimizers, misc, nwalign, sequence_table,
+    cli, cluster_trace, containers, dada, derep, error_models, failed_uniques, indel_events,
+    learn_errors, metrics, minimizers, misc, nwalign, sequence_table,
 };
 
 use containers::BirthType;
@@ -50,6 +50,8 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         output,
         output_dir,
         failed_uniques: failed_uniques_path,
+        indel_events,
+        indel_opportunities,
         compact,
         gzip,
         metrics_json,
@@ -112,7 +114,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         let prior_set = prior.as_deref().map(read_prior_set).transpose()?;
 
         // Resolve parameters once (shared across samples).
-        let resolved = resolve_dada_params(
+        let mut resolved = resolve_dada_params(
             &error_model,
             use_err_in,
             inherit_err_params,
@@ -125,6 +127,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
             experimental,
         )?;
 
+        resolved.params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
         let jobs = concurrent_samples(sample_jobs, threads, input.len());
         if verbose {
             eprintln!(
@@ -169,6 +172,11 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         })?;
         sink.finish(
             failed_uniques_path.as_deref(),
+            IndelRequest {
+                events: indel_events.as_deref(),
+                opportunities: indel_opportunities.as_deref(),
+                meta: &indel_meta("dada", &error_model, use_err_in),
+            },
             metrics_json.as_deref(),
             t_start,
             measure_level,
@@ -202,7 +210,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
     }
 
     // ---- Load error model + resolve parameters (shared helper) ----
-    let resolved = resolve_dada_params(
+    let mut resolved = resolve_dada_params(
         &error_model,
         use_err_in,
         inherit_err_params,
@@ -214,6 +222,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         denoise,
         experimental,
     )?;
+    resolved.params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
     let sample = sample_label(sample_name, identity.sample, input);
     let trace = cluster_trace.as_deref().map(|path| TraceRequest {
         path,
@@ -222,7 +231,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
             min_abund: trace_min_abund,
         },
     });
-    let (json, failed, run_metrics) = denoise_and_serialize(
+    let (json, failed, run_metrics, indels) = denoise_and_serialize(
         "dada",
         &sample,
         &file_basename(input),
@@ -240,6 +249,14 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
 
     if let Some(ref fu_path) = failed_uniques_path {
         write_failed_uniques("dada", fu_path, failed, verbose)?;
+    }
+    if let Some(report) = indels {
+        let req = IndelRequest {
+            events: indel_events.as_deref(),
+            opportunities: indel_opportunities.as_deref(),
+            meta: &indel_meta("dada", &error_model, use_err_in),
+        };
+        write_indel_tables("dada", req, vec![(sample.clone(), report)], verbose)?;
     }
     if let (Some(mpath), Some(m)) = (metrics_json.as_ref(), run_metrics) {
         write_run_metrics(
@@ -275,6 +292,8 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         experimental,
         failed_uniques: failed_uniques_path,
         pooled_record,
+        indel_events,
+        indel_opportunities,
         cluster_trace,
         trace_no_members,
         trace_min_abund,
@@ -428,7 +447,8 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         denoise,
         experimental,
     )?;
-    let dada_params = resolved.params;
+    let mut dada_params = resolved.params;
+    dada_params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
     let mut run_params = resolved.run;
     run_params.n_prior = raw_inputs.iter().filter(|r| r.prior).count();
     run_params.pool_tiebreak = Some(pool_tiebreak);
@@ -484,6 +504,48 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
             compact,
             verbose,
         )?;
+    }
+
+    // ---- Indel tables (issue #291; diagnostics, do not affect ASVs) ----
+    // Events are attributed to every sample a merged unique occurs in, as
+    // --failed-uniques does; the rate tables are pool-level, the weights dada
+    // used.
+    if let Some(report) = result.indels.take() {
+        let meta = indel_meta("dada-pooled", &error_model, use_err_in);
+        if let Some(ref path) = indel_events {
+            let wanted: std::collections::HashSet<u32> =
+                report.uniques.iter().map(|u| u.unique).collect();
+            let mut occurs: std::collections::HashMap<u32, Vec<(String, u32)>> =
+                std::collections::HashMap::new();
+            for (s, sample_name) in sample_names.iter().enumerate() {
+                for (lu, &mu) in local_to_merged[s].iter().enumerate() {
+                    if wanted.contains(&(mu as u32)) {
+                        occurs
+                            .entry(mu as u32)
+                            .or_default()
+                            .push((sample_name.clone(), sample_unique_counts[s][lu]));
+                    }
+                }
+            }
+            let attribution =
+                |u: &indel_events::UniqueEvents| occurs.get(&u.unique).cloned().unwrap_or_default();
+            let n = indel_events::write_events_tsv(path, &meta, &[(&report, &attribution)])?;
+            if verbose {
+                eprintln!(
+                    "[dada-pooled] wrote {n} indel event(s) to {}",
+                    path.display()
+                );
+            }
+        }
+        if let Some(ref path) = indel_opportunities {
+            indel_events::write_opportunities_tsv(path, &meta, &[("pooled", &report)])?;
+            if verbose {
+                eprintln!(
+                    "[dada-pooled] wrote indel rate tables to {}",
+                    path.display()
+                );
+            }
+        }
     }
 
     // ---- Per-sample output ----
@@ -721,6 +783,8 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
         denoise,
         experimental,
         failed_uniques: failed_uniques_path,
+        indel_events,
+        indel_opportunities,
         compact,
         gzip,
         metrics_json,
@@ -1008,6 +1072,8 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
     }
     // Round 1's extra alignment pass is done with; do not pay for it again.
     resolved.params.aux_outputs = false;
+    // Indel tables describe the final partition, so round 2 only (#291).
+    resolved.params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
 
     // ---- Round 2: re-denoise each sample with the priors flagged ----
     if verbose {
@@ -1063,6 +1129,21 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
     })?;
     sink.finish(
         failed_uniques_path.as_deref(),
+        IndelRequest {
+            events: indel_events.as_deref(),
+            opportunities: indel_opportunities.as_deref(),
+            meta: &[
+                indel_meta("dada-pseudo", &error_model, use_err_in),
+                vec![
+                    ("round", "2".to_string()),
+                    (
+                        "reestimated_err_between_rounds",
+                        reestimate_err_between_rounds.to_string(),
+                    ),
+                ],
+            ]
+            .concat(),
+        },
         metrics_json.as_deref(),
         t_start,
         measure_level,
@@ -1883,6 +1964,7 @@ type SampleOutput = (
     String,
     Vec<failed_uniques::Row>,
     Option<metrics::RunMetrics>,
+    Option<indel_events::IndelReport>,
 );
 
 /// The outputs of a run that denoises samples independently (`dada` with
@@ -1897,6 +1979,7 @@ struct SampleSink<'a> {
     /// The metrics `round` every sample is recorded under.
     round: Option<u8>,
     failed: Mutex<Vec<failed_uniques::Row>>,
+    indels: Mutex<Vec<(String, indel_events::IndelReport)>>,
     // Samples finish out of order under `--sample-jobs`, so this is sorted
     // before it is written.
     metrics: Mutex<Vec<MetricRun>>,
@@ -1917,13 +2000,24 @@ impl<'a> SampleSink<'a> {
             verbose,
             round,
             failed: Mutex::new(Vec::new()),
+            indels: Mutex::new(Vec::new()),
             metrics: Mutex::new(Vec::new()),
         }
     }
 
     /// Keep one sample's failed rows and metrics, and write its JSON.
-    fn write(&self, sample: &str, (json, failed, run_metrics): SampleOutput) -> io::Result<()> {
+    fn write(
+        &self,
+        sample: &str,
+        (json, failed, run_metrics, indels): SampleOutput,
+    ) -> io::Result<()> {
         self.failed.lock().unwrap().extend(failed);
+        if let Some(report) = indels {
+            self.indels
+                .lock()
+                .unwrap()
+                .push((sample.to_string(), report));
+        }
         if let Some(m) = run_metrics {
             self.metrics
                 .lock()
@@ -1942,10 +2036,12 @@ impl<'a> SampleSink<'a> {
         Ok(())
     }
 
-    /// Write the run-level failed-uniques TSV and metrics document, if asked.
+    /// Write the run-level failed-uniques TSV, indel tables and metrics
+    /// document, if asked.
     fn finish(
         self,
         failed_uniques: Option<&Path>,
+        indels: IndelRequest,
         metrics_json: Option<&Path>,
         t_start: std::time::Instant,
         measure_level: MeasureLevel,
@@ -1953,6 +2049,10 @@ impl<'a> SampleSink<'a> {
         if let Some(path) = failed_uniques {
             let rows = self.failed.into_inner().unwrap();
             write_failed_uniques(self.tag, path, rows, self.verbose)?;
+        }
+        let reports = self.indels.into_inner().unwrap();
+        if !reports.is_empty() {
+            write_indel_tables(self.tag, indels, reports, self.verbose)?;
         }
         if let Some(path) = metrics_json {
             let mut runs = self.metrics.into_inner().unwrap();
@@ -2017,6 +2117,66 @@ fn mark_round2_priors(
             raws.len(),
         );
     }
+}
+
+/// Where to write the `--indel-events` / `--indel-opportunities` TSVs (#291),
+/// and the run identity for their `#` header.
+#[derive(Clone, Copy)]
+struct IndelRequest<'a> {
+    events: Option<&'a Path>,
+    opportunities: Option<&'a Path>,
+    meta: indel_events::Meta<'a>,
+}
+
+/// The `#` header of the indel TSVs. The error model is named by path until
+/// it carries an identity of its own (#297).
+fn indel_meta(tag: &str, error_model: &Path, use_err_in: bool) -> Vec<(&'static str, String)> {
+    vec![
+        ("dada2_rs_command", tag.to_string()),
+        ("dada2_rs_version", misc::DADA2_RS_VERSION.to_string()),
+        ("error_model", error_model.display().to_string()),
+        (
+            "error_matrix",
+            if use_err_in { "err_in" } else { "err_out" }.to_string(),
+        ),
+    ]
+}
+
+/// Write the indel tables of per-sample runs, sorted by sample so concurrent
+/// runs are deterministic.
+fn write_indel_tables(
+    tag: &str,
+    req: IndelRequest,
+    mut reports: Vec<(String, indel_events::IndelReport)>,
+    verbose: bool,
+) -> io::Result<()> {
+    reports.sort_by(|a, b| a.0.cmp(&b.0));
+    if let Some(path) = req.events {
+        let attributions: Vec<_> = reports
+            .iter()
+            .map(|(sample, _)| {
+                move |u: &indel_events::UniqueEvents| vec![(sample.clone(), u.reads)]
+            })
+            .collect();
+        let parts: Vec<(&indel_events::IndelReport, indel_events::Attribution)> = reports
+            .iter()
+            .zip(&attributions)
+            .map(|((_, r), f)| (r, f as indel_events::Attribution))
+            .collect();
+        let n = indel_events::write_events_tsv(path, req.meta, &parts)?;
+        if verbose {
+            eprintln!("[{tag}] wrote {n} indel event(s) to {}", path.display());
+        }
+    }
+    if let Some(path) = req.opportunities {
+        let parts: Vec<(&str, &indel_events::IndelReport)> =
+            reports.iter().map(|(s, r)| (s.as_str(), r)).collect();
+        indel_events::write_opportunities_tsv(path, req.meta, &parts)?;
+        if verbose {
+            eprintln!("[{tag}] wrote indel rate tables to {}", path.display());
+        }
+    }
+    Ok(())
 }
 
 /// A `--cluster-trace` request: where to write it and what to include.
@@ -2179,6 +2339,7 @@ fn denoise_and_serialize(
             tag, t, sample, raw_inputs, &result, params, compact, verbose,
         )?;
     }
+    let indels = result.indels.take();
 
     let total_reads: u32 = result.clusters.iter().map(|c| c.abundance).sum();
     let asvs: Vec<AsvEntry> = result
@@ -2227,6 +2388,7 @@ fn denoise_and_serialize(
         to_json(&Tagged::new(tag, out), compact)?,
         failed,
         run_metrics,
+        indels,
     ))
 }
 

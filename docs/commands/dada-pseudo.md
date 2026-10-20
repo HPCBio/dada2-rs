@@ -98,6 +98,11 @@ See [Run metrics](metrics-json.md) for the schema and the two levels.
 
 **`--verbose`**, **`--failed-uniques`** — as in [`dada`](dada.md#diagnostics).
 
+**`--indel-events`**, **`--indel-opportunities`** (experimental) — as in
+[`dada`](dada.md#diagnostics), from round 2, the final partition. With
+`--reestimate-err-between-rounds` that partition is denoised with the
+re-fitted model; round 1 and the re-fit are unaffected.
+
 ## Experimental
 
 Identical in meaning to [`dada`'s experimental flags](dada.md#experimental).

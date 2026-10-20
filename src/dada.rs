@@ -116,6 +116,9 @@ pub struct DadaParams {
     /// matrix. Defaults to `false` — the pass costs roughly one alignment per
     /// raw against its cluster center.
     pub aux_outputs: bool,
+    /// Tabulate indel events against final centres (issue #291). Shares the
+    /// final-subs pass with `aux_outputs`; does not change the partition.
+    pub indel_events: bool,
 }
 
 /// The denoising options R exposes through `setDadaOpt`.
@@ -180,6 +183,7 @@ impl DadaParams {
             measure,
             greedy,
             aux_outputs: false,
+            indel_events: false,
         }
     }
 }
@@ -304,6 +308,9 @@ pub struct DadaResult {
     /// for any. Reaches the user through `--metrics-json`; nothing serializes
     /// it into a subcommand's own output (issue #162).
     pub metrics: Option<RunMetrics>,
+    /// Indel events and rate tables. `Some` only when
+    /// `DadaParams::indel_events` was true.
+    pub indels: Option<crate::indel_events::IndelReport>,
 }
 
 // ---------------------------------------------------------------------------
@@ -642,11 +649,14 @@ pub fn dada_uniques_cached(
 
     // ---- Aux outputs (R DADA2 parity: $clustering, $birth_subs, $subqual,
     //      $clusterquals) ----
-    let aux = if params.aux_outputs {
-        Some(compute_aux(&b, params, has_quals))
-    } else {
-        None
-    };
+    let final_subs = (params.aux_outputs || params.indel_events)
+        .then(|| compute_final_subs(&b, &final_subs_align(params)));
+    let aux = params
+        .aux_outputs
+        .then(|| compute_aux(&b, params, final_subs.as_deref().unwrap(), has_quals));
+    let indels = params
+        .indel_events
+        .then(|| crate::indel_events::tabulate(&b, final_subs.as_deref().unwrap()));
 
     // The abundance p-value's Bonferroni divisor is the unique count `b.raws`
     // used by the bud scan; it must equal the input count (no raws are dropped,
@@ -663,6 +673,7 @@ pub fn dada_uniques_cached(
         omega_a: params.omega_a,
         omega_p: params.omega_p,
         metrics: b.metrics.take(),
+        indels,
     };
 
     // Reclaim Raws for the caller to pass back on the next iteration.
@@ -734,34 +745,36 @@ fn extend_err_for_quals(
 // Aux-output computation
 // ---------------------------------------------------------------------------
 
-/// Compute the R-DADA2-parity outputs (`DadaAux`).
-///
-/// Re-aligns every Raw against its cluster center (final-subs pass) and each
-/// cluster center against its parent (birth-subs pass), both with the k-mer
-/// screen disabled (`use_kmers=false, kdist_cutoff=1.0`) so every comparison
-/// produces a Sub. Mirrors the `FinalSubsParallel` block in C++ `Rmain.cpp`.
-fn compute_aux(b: &B, params: &DadaParams, has_quals: bool) -> DadaAux {
-    // Final-subs alignment params: no kmer screen.
-    let final_align = AlignParams {
+/// Final-subs alignment params: the k-mer screen disabled
+/// (`use_kmers=false, kdist_cutoff=1.0`) so every comparison produces a Sub.
+fn final_subs_align(params: &DadaParams) -> AlignParams {
+    AlignParams {
         use_kmers: false,
         kdist_cutoff: 1.0,
         ..params.align
-    };
+    }
+}
+
+/// Compute the R-DADA2-parity outputs (`DadaAux`).
+///
+/// Takes the final-subs pass (every Raw against its cluster center) and runs
+/// the birth-subs pass (each cluster center against its parent). Mirrors the
+/// `FinalSubsParallel` block in C++ `Rmain.cpp`.
+fn compute_aux(b: &B, params: &DadaParams, final_subs: &[Option<Sub>], has_quals: bool) -> DadaAux {
     // Birth-subs alignment params: keep kmer use, no kdist screen.
     let birth_align = AlignParams {
         kdist_cutoff: 1.0,
         ..params.align
     };
 
-    let final_subs = compute_final_subs(b, &final_align);
     let birth_subs = compute_birth_subs(b, &birth_align);
 
-    let cluster_stats_v = cluster_stats(b, &final_subs, &birth_subs, has_quals);
+    let cluster_stats_v = cluster_stats(b, final_subs, &birth_subs, has_quals);
     let maxlen = b.raws.iter().map(|r| r.seq.len()).max().unwrap_or(0);
-    let cluster_quality_v = cluster_quality(b, &final_subs, has_quals, maxlen);
+    let cluster_quality_v = cluster_quality(b, final_subs, has_quals, maxlen);
     let birth_records = birth_sub_records(&birth_subs, has_quals);
     let ncol = if has_quals { params.err_ncol } else { 1 };
-    let transitions = transition_counts(b, &final_subs, has_quals, ncol);
+    let transitions = transition_counts(b, final_subs, has_quals, ncol);
 
     DadaAux {
         cluster_stats: cluster_stats_v,

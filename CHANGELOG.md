@@ -8,6 +8,14 @@ minor versions may carry breaking changes).
 
 ## [Unreleased]
 
+### Added
+- `--indel-events` and `--indel-opportunities` (Diagnostics, experimental) on
+  `dada`, `dada-pooled` and `dada-pseudo` (#291): indel events of every unique
+  against its final centre, and read-weighted substitution, insertion and
+  deletion rate tables, from the same alignments as `trans`. Denoising output
+  is unchanged. `dev/indel_spikein.py` spikes known indel variants into a real
+  run for evaluating indel-aware denoising.
+
 ### Fixed
 - `assign-species --help` and its docs page say the match is an exact
   *substring* match, as it has been since #200; "exact match" read as

@@ -92,6 +92,13 @@ denoising runs once on the merged unique table, "failed" is a *global* property
 (`map == null` on the merged index); for each failed merged unique a row is
 emitted per sample it appears in, carrying that sample's read count.
 
+**`--indel-events`**, **`--indel-opportunities`** (experimental) — the indel
+tables described under [`dada`](dada.md#diagnostics), from the pooled
+partition. `cluster`, `unique` (merged index), `correct` and `p` are global;
+each event is emitted per sample its merged unique appears in, with that
+sample's `reads`. The rate tables are pool-level (`sample` is `pooled`),
+weighted by pooled reads as dada weighs them.
+
 **`--pooled-record`** — write a self-contained pooled record (merged uniques
 with pooled abundance, the global map, global ASVs, and the inputs in pooled
 order) for
