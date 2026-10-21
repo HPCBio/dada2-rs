@@ -700,6 +700,14 @@ pub struct DadaArgs {
     #[arg(long, help_heading = H_DIAG)]
     pub failed_uniques: Option<PathBuf>,
 
+    /// Write a TSV of indel events against final centres (experimental)
+    #[arg(long, help_heading = H_DIAG)]
+    pub indel_events: Option<PathBuf>,
+
+    /// Write a TSV of indel and substitution rate tables (experimental)
+    #[arg(long, help_heading = H_DIAG)]
+    pub indel_opportunities: Option<PathBuf>,
+
     #[command(flatten)]
     pub experimental: ExperimentalArgs,
 }
@@ -777,6 +785,14 @@ pub struct DadaPooledArgs {
     /// Write a self-contained pooled record here, for `kdist-calibrate`
     #[arg(long, help_heading = H_DIAG)]
     pub pooled_record: Option<PathBuf>,
+
+    /// Write a TSV of indel events against final centres (experimental)
+    #[arg(long, help_heading = H_DIAG)]
+    pub indel_events: Option<PathBuf>,
+
+    /// Write a TSV of indel and substitution rate tables (experimental)
+    #[arg(long, help_heading = H_DIAG)]
+    pub indel_opportunities: Option<PathBuf>,
 
     /// Write a full cluster trace (clusters.json) to this file
     #[arg(long, help_heading = H_DIAG)]
@@ -879,6 +895,14 @@ pub struct DadaPseudoArgs {
     /// Write a TSV of uniques that failed to denoise to this file
     #[arg(long, help_heading = H_DIAG)]
     pub failed_uniques: Option<PathBuf>,
+
+    /// Write a TSV of indel events against final centres (experimental)
+    #[arg(long, help_heading = H_DIAG)]
+    pub indel_events: Option<PathBuf>,
+
+    /// Write a TSV of indel and substitution rate tables (experimental)
+    #[arg(long, help_heading = H_DIAG)]
+    pub indel_opportunities: Option<PathBuf>,
 
     #[command(flatten)]
     pub experimental: ExperimentalArgs,

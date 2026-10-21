@@ -214,6 +214,38 @@ p-value < `omega_c`, `map == null`). Tidy long format with a header —
 appears in. This answers "what failed to denoise, and how many reads did it
 cost?" without hand-joining `map` back to the derep uniques.
 
+**`--indel-events`**, **`--indel-opportunities`** (experimental) — tabulate
+the insertions and deletions DADA2's error model ignores, from the same final
+unique-to-centre alignments that give `trans`
+([#291](https://github.com/HPCBio/dada2-rs/issues/291)). Neither changes the
+denoising output.
+
+- `--indel-events`: one row per indel event per unique, for every cluster
+  member (`correct` 1 or 0). Columns: `sample`, `cluster`, `center_len`,
+  `unique` (input index), `reads`, `correct`, `p`, `nsubs`, `n_internal`
+  (non-terminal events in this unique), `type` (`I`/`D`), `center_pos`, `len`,
+  `bases`, `hp_len`, `terminal`, `qual_min`, `qual_mean` (inserted bases),
+  `qual_left`, `qual_right` (flanking unique bases). `hp_len` is the centre
+  length of the homopolymer run the event lengthens or shortens; 0 when the
+  bases are mixed or match neither flanking base. `terminal` gaps lie outside
+  the first and last aligned centre positions.
+- `--indel-opportunities`: read-weighted rate tables over `correct` members and
+  internal positions, as `sample`, `table`, `key`, `opportunities`, `events`.
+  `sub_q` and `ins_q` are keyed by quality (aligned unique bases and
+  substitutions; all unique bases and inserted bases); `del_hp` by centre run
+  length (bases and deleted bases); `ins_hp` by centre run length (runs and
+  insertions lengthening them). `sub_q` sums to `trans`.
+
+Qualities are the unique's per-position mean, as in `trans`. With several
+inputs, each file holds every sample's rows, sorted by sample.
+
+Both files open with `# key: value` lines naming the run: `dada2_rs_command`,
+`dada2_rs_version`, `error_model` (the path given), `error_matrix` (`err_out`,
+or `err_in` under `--use-err-in`), and for `dada-pseudo` also `round` and
+`reestimated_err_between_rounds`. Read them with `comment = "#"` (pandas) or
+`comment.char = "#"` (R). Fuller provenance is tracked in
+[#297](https://github.com/HPCBio/dada2-rs/issues/297).
+
 ## Experimental
 
 These flags are unstable and off by default. They are not drop-in replacements
