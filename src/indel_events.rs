@@ -87,6 +87,17 @@ pub struct Opportunities {
     /// geometric length factor.
     pub ins_len: Table,
     pub del_len: Table,
+    /// `ins_q` split by whether the insertion lengthens a run (`ins_q_run`)
+    /// or adds a base matching neither neighbour (`ins_q_novel`); both carry
+    /// the full per-quality denominators.
+    pub ins_q_novel: Table,
+    pub ins_q_run: Table,
+    /// `del_fq` within each centre run-length class 1..5 (5 = 5 or more), the
+    /// joint table for a deletion fit in run length and flanking quality.
+    pub del_fq_run: [Table; 5],
+    /// `del_hp` and `ins_hp` split by the run's base (A, C, G, T).
+    pub del_hp_base: [Table; 4],
+    pub ins_hp_base: [Table; 4],
 }
 
 /// A unique with at least one indel, and its events.
@@ -248,14 +259,28 @@ pub fn pair_events(
             let j0 = map[ev.center_pos] as usize + 1;
             inserted[j0..j0 + ev.bases.len()].fill(true);
         }
+        let mut lengthens = vec![false; raw.len()];
+        for ev in events
+            .iter()
+            .filter(|e| e.kind == Kind::Insertion && !e.terminal && e.hp_len > 0)
+        {
+            let j0 = map[ev.center_pos] as usize + 1;
+            lengthens[j0..j0 + ev.bases.len()].fill(true);
+        }
         for (j, &ins) in inserted.iter().enumerate().take(ql + 1).skip(q0) {
             opp.ins_q.add(qk(j), w, if ins { w } else { 0 });
+            let (run, novel) = (ins && lengthens[j], ins && !lengthens[j]);
+            opp.ins_q_run.add(qk(j), w, if run { w } else { 0 });
+            opp.ins_q_novel.add(qk(j), w, if novel { w } else { 0 });
         }
+        let base = |i: usize| (center[i].saturating_sub(1) as usize).min(3);
         for i in first..=last {
             let deleted = map[i] == GAP_GLYPH;
             opp.del_hp.add(runs[i], w, if deleted { w } else { 0 });
+            opp.del_hp_base[base(i)].add(runs[i], w, if deleted { w } else { 0 });
             if i == 0 || center[i] != center[i - 1] {
                 opp.ins_hp.add(runs[i], w, 0);
+                opp.ins_hp_base[base(i)].add(runs[i], w, 0);
             }
         }
         for ev in events
@@ -264,6 +289,13 @@ pub fn pair_events(
         {
             if ev.hp_len > 0 {
                 opp.ins_hp.add(ev.hp_len, 0, w);
+                let b = match ev.bases[0] {
+                    b'A' => 0,
+                    b'C' => 1,
+                    b'G' => 2,
+                    _ => 3,
+                };
+                opp.ins_hp_base[b].add(ev.hp_len, 0, w);
             }
         }
         // Flanking quality of each internal centre base: the nearest aligned
@@ -288,6 +320,11 @@ pub fn pair_events(
             if let (Some(l), Some(r)) = (left[i], right[i]) {
                 let deleted = map[i] == GAP_GLYPH;
                 opp.del_fq.add(l.min(r), w, if deleted { w } else { 0 });
+                opp.del_fq_run[runs[i].clamp(1, 5) - 1].add(
+                    l.min(r),
+                    w,
+                    if deleted { w } else { 0 },
+                );
             }
         }
         for ev in events.iter().filter(|e| !e.terminal) {
@@ -431,7 +468,7 @@ pub fn write_opportunities_tsv(
     let mut n = 0;
     for (sample, report) in parts {
         let o = &report.opportunities;
-        for (name, t) in [
+        let mut tables: Vec<(String, &Table)> = [
             ("sub_q", &o.sub_q),
             ("ins_q", &o.ins_q),
             ("del_hp", &o.del_hp),
@@ -439,7 +476,20 @@ pub fn write_opportunities_tsv(
             ("del_fq", &o.del_fq),
             ("ins_len", &o.ins_len),
             ("del_len", &o.del_len),
-        ] {
+            ("ins_q_novel", &o.ins_q_novel),
+            ("ins_q_run", &o.ins_q_run),
+        ]
+        .into_iter()
+        .map(|(n, t)| (n.to_string(), t))
+        .collect();
+        for (k, t) in o.del_fq_run.iter().enumerate() {
+            tables.push((format!("del_fq_L{}", k + 1), t));
+        }
+        for (b, n) in ["A", "C", "G", "T"].iter().enumerate() {
+            tables.push((format!("del_hp_{n}"), &o.del_hp_base[b]));
+            tables.push((format!("ins_hp_{n}"), &o.ins_hp_base[b]));
+        }
+        for (name, t) in tables {
             for (k, (&opp, &ev)) in t.opportunities.iter().zip(&t.events).enumerate() {
                 if opp > 0 || ev > 0 {
                     writeln!(w, "{sample}\t{name}\t{k}\t{opp}\t{ev}")?;
@@ -550,5 +600,33 @@ mod tests {
     #[test]
     fn run_lengths_by_position() {
         assert_eq!(run_lengths(&enc("AACGGG")), vec![2, 2, 1, 3, 3, 3]);
+    }
+
+    #[test]
+    fn split_tables_sum_to_their_parents() {
+        let sum =
+            |t: &Table| -> (u64, u64) { (t.opportunities.iter().sum(), t.events.iter().sum()) };
+        let add = |a: (u64, u64), b: (u64, u64)| (a.0 + b.0, a.1 + b.1);
+        // A run-lengthening insertion, a novel insertion, and two deletions.
+        let qual = [30u8; 14];
+        let (_, opp) = run("CGTT-ACAA-CGAAC", "CGTTTACAAGC-AAC", Some(&qual));
+        assert_eq!(
+            sum(&opp.ins_q_run).1 + sum(&opp.ins_q_novel).1,
+            sum(&opp.ins_q).1
+        );
+        assert_eq!(sum(&opp.ins_q_run).1, 10, "the T lengthens TT");
+        assert_eq!(sum(&opp.ins_q_novel).1, 10, "the G is novel");
+        assert_eq!(
+            sum(&opp.ins_q_run).0,
+            sum(&opp.ins_q).0,
+            "full denominators in both"
+        );
+        let fq = opp.del_fq_run.iter().map(sum).fold((0, 0), add);
+        assert_eq!(fq, sum(&opp.del_fq));
+        let hp = opp.del_hp_base.iter().map(sum).fold((0, 0), add);
+        assert_eq!(hp, sum(&opp.del_hp));
+        let ihp = opp.ins_hp_base.iter().map(sum).fold((0, 0), add);
+        assert_eq!(ihp, sum(&opp.ins_hp));
+        assert_eq!(opp.ins_hp_base[3].events[2], 10, "T lengthening a run of 2");
     }
 }

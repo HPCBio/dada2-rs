@@ -101,3 +101,33 @@ barely sees.
 
 Other options: `--out`, `--width`, `--height`, `--title`, and `--nti` / `--ntj`
 to restrict which from/to nucleotides are drawn. `--help` lists the full set.
+
+
+## `plot_indel_errors.R`
+
+The indel counterpart of `plot_errors.R`, for the experimental indel-aware λ
+([#291](https://github.com/HPCBio/dada2-rs/issues/291)). It plots the observed
+rates in the table that
+[`dada --indel-opportunities`](../commands/dada.md#diagnostics) writes, as a
+three-page PDF:
+
+1. **Insertions:** rate per base by the inserted base's quality, one panel for
+   bases matching neither neighbour and one for bases lengthening a homopolymer
+   run.
+2. **Deletions:** rate per centre base by the lower quality of the read bases
+   either side, one panel per centre run length (1–4, 5+).
+3. **Indel lengths:** read-weighted events by length, deletions negative and
+   insertions positive.
+
+Point area scales with the opportunities behind each point, as `plot_errors.R`
+weights by observation mass. The dashed red line is the Phred rate, for scale
+only.
+
+```bash
+dada2-rs dada sample.fastq.gz --error-model err.json -o sample.json \
+    --indel-opportunities sample.indel_opp.tsv
+Rscript scripts/plot_indel_errors.R sample.indel_opp.tsv indel_errors.pdf
+Rscript scripts/plot_indel_errors.R --help
+```
+
+`--sample` plots one sample of a multi-sample table; by default rows are summed.
