@@ -11,7 +11,7 @@ use flate2::read::MultiGzDecoder;
 
 use dada2_rs::{
     cli, cluster_trace, containers, dada, derep, error_models, failed_uniques, indel_events,
-    learn_errors, metrics, minimizers, misc, nwalign, sequence_table,
+    indel_model, learn_errors, metrics, minimizers, misc, nwalign, sequence_table,
 };
 
 use containers::BirthType;
@@ -43,6 +43,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         sample_jobs,
         denoise,
         experimental,
+        indel_lambda,
         aux_outputs,
         cluster_trace,
         trace_no_members,
@@ -125,6 +126,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
             measure_level,
             denoise,
             experimental,
+            &indel_lambda,
         )?;
 
         resolved.params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
@@ -221,6 +223,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         measure_level,
         denoise,
         experimental,
+        &indel_lambda,
     )?;
     resolved.params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
     let sample = sample_label(sample_name, identity.sample, input);
@@ -290,6 +293,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         denoise,
         pool_tiebreak,
         experimental,
+        indel_lambda,
         failed_uniques: failed_uniques_path,
         pooled_record,
         indel_events,
@@ -446,6 +450,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         measure_level,
         denoise,
         experimental,
+        &indel_lambda,
     )?;
     let mut dada_params = resolved.params;
     dada_params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
@@ -606,7 +611,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
                 nalign: result.nalign,
                 nshroud: result.nshroud,
             },
-            params: run_params,
+            params: run_params.clone(),
             map,
             aux: None,
             pool_input_index: Some(s),
@@ -782,6 +787,7 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
         cache_samples,
         denoise,
         experimental,
+        indel_lambda,
         failed_uniques: failed_uniques_path,
         indel_events,
         indel_opportunities,
@@ -827,6 +833,7 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
         measure_level,
         denoise,
         experimental,
+        &indel_lambda,
     )?;
 
     // ---- Validate the re-estimation request up front ----
@@ -1157,7 +1164,16 @@ fn is_default_screen(b: &ScreenBackend) -> bool {
     *b == ScreenBackend::Kmer
 }
 
-#[derive(Serialize, Copy, Clone)]
+/// The experimental indel-aware λ's settings (#291), as recorded in `params`.
+#[derive(Serialize, Clone)]
+struct IndelLambdaRecord {
+    rates: String,
+    hp_ceiling: serde_json::Value,
+    pair_window: usize,
+    end_zone: usize,
+}
+
+#[derive(Serialize, Clone)]
 struct DadaRunParams {
     omega_a: f64,
     omega_c: f64,
@@ -1208,6 +1224,10 @@ struct DadaRunParams {
     /// How `dada-pooled` ordered tied uniques (#260); pooled runs only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pool_tiebreak: Option<derep::PoolTiebreak>,
+    /// The experimental indel-aware λ, when `--indel-rates` turned it on (#291);
+    /// omitted otherwise, keeping R-parity output byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    indel_lambda: Option<IndelLambdaRecord>,
 }
 
 /// `true` when `path` looks like a JSON file (`.json` or `.json.gz`).
@@ -1284,6 +1304,7 @@ fn resolve_dada_params(
     measure: MeasureLevel,
     denoise: cli::DadaDenoiseArgs,
     experimental: cli::ExperimentalArgs,
+    indel_lambda: &cli::IndelLambdaArgs,
 ) -> io::Result<ResolvedDada> {
     let cli::DadaDenoiseArgs {
         omega_a,
@@ -1505,7 +1526,7 @@ fn resolve_dada_params(
 
     // `progress_tag` stays unset here: the concurrent paths set it per sample
     // (see denoise_and_serialize).
-    let params = dada::DadaParams {
+    let mut params = dada::DadaParams {
         aux_outputs,
         ..dada::DadaParams::new(
             align_params,
@@ -1562,7 +1583,27 @@ fn resolve_dada_params(
         // Set only by dada-pseudo, after round 1, if the re-fit actually ran.
         reestimated_err_between_rounds: false,
         pool_tiebreak: None,
+        indel_lambda: None,
     };
+    let mut run = run;
+    if let Some(path) = &indel_lambda.indel_rates {
+        let settings = indel_model::IndelSettings {
+            hp_ceiling: indel_lambda.hp_ceiling,
+            pair_window: indel_lambda.indel_pair_window,
+            end_zone: indel_lambda.indel_end_zone,
+        };
+        let model = indel_model::IndelModel::from_tsv(path, settings).with_path(path)?;
+        params.indel_model = Some(std::sync::Arc::new(model));
+        run.indel_lambda = Some(IndelLambdaRecord {
+            rates: path.display().to_string(),
+            hp_ceiling: match settings.hp_ceiling {
+                indel_model::HpCeiling::Fixed(p) => serde_json::json!(p),
+                indel_model::HpCeiling::Off => serde_json::json!("off"),
+            },
+            pair_window: settings.pair_window,
+            end_zone: settings.end_zone,
+        });
+    }
 
     Ok(ResolvedDada {
         params,
@@ -2348,7 +2389,7 @@ fn denoise_and_serialize(
         .map(|c| asv_entry_from_cluster(c, c.abundance))
         .collect();
 
-    let mut run_params = *run_params;
+    let mut run_params = run_params.clone();
     run_params.n_prior = raw_inputs.iter().filter(|r| r.prior).count();
 
     let failed = if collect_failed {

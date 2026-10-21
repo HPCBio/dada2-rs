@@ -80,6 +80,13 @@ pub struct Opportunities {
     pub del_hp: Table,
     /// Centre runs of length L; events = insertions lengthening that run.
     pub ins_hp: Table,
+    /// Centre bases by the lower quality of the nearest aligned unique bases
+    /// either side; events = deleted bases.
+    pub del_fq: Table,
+    /// Insertion and deletion events by length (events only), for the
+    /// geometric length factor.
+    pub ins_len: Table,
+    pub del_len: Table,
 }
 
 /// A unique with at least one indel, and its events.
@@ -259,6 +266,38 @@ pub fn pair_events(
                 opp.ins_hp.add(ev.hp_len, 0, w);
             }
         }
+        // Flanking quality of each internal centre base: the nearest aligned
+        // unique base on each side, the same flanks a deletion there would have.
+        let mut left = vec![None; center.len()];
+        let mut right = vec![None; center.len()];
+        let mut last_q = None;
+        for i in first..=last {
+            left[i] = last_q;
+            if map[i] != GAP_GLYPH {
+                last_q = Some(qk(map[i] as usize));
+            }
+        }
+        last_q = None;
+        for i in (first..=last).rev() {
+            right[i] = last_q;
+            if map[i] != GAP_GLYPH {
+                last_q = Some(qk(map[i] as usize));
+            }
+        }
+        for i in first..=last {
+            if let (Some(l), Some(r)) = (left[i], right[i]) {
+                let deleted = map[i] == GAP_GLYPH;
+                opp.del_fq.add(l.min(r), w, if deleted { w } else { 0 });
+            }
+        }
+        for ev in events.iter().filter(|e| !e.terminal) {
+            let t = if ev.kind == Kind::Insertion {
+                &mut opp.ins_len
+            } else {
+                &mut opp.del_len
+            };
+            t.add(ev.bases.len(), 0, w);
+        }
     }
     events
 }
@@ -397,6 +436,9 @@ pub fn write_opportunities_tsv(
             ("ins_q", &o.ins_q),
             ("del_hp", &o.del_hp),
             ("ins_hp", &o.ins_hp),
+            ("del_fq", &o.del_fq),
+            ("ins_len", &o.ins_len),
+            ("del_len", &o.del_len),
         ] {
             for (k, (&opp, &ev)) in t.opportunities.iter().zip(&t.events).enumerate() {
                 if opp > 0 || ev > 0 {
@@ -460,6 +502,9 @@ mod tests {
         assert_eq!((e.qual_left, e.qual_right), (Some(31), Some(32)));
         assert_eq!(opp.del_hp.events[4], 10);
         assert_eq!(opp.del_hp.opportunities[4], 40);
+        // Flanks of the deleted A are the unique's G (Q31) and A (Q32).
+        assert_eq!(opp.del_fq.events[31], 10);
+        assert_eq!(opp.del_len.events[1], 10);
     }
 
     #[test]
