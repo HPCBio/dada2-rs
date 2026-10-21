@@ -222,7 +222,8 @@ denoising output.
 
 - `--indel-events`: one row per indel event per unique, for every cluster
   member (`correct` 1 or 0). Columns: `sample`, `cluster`, `center_len`,
-  `unique` (input index), `reads`, `correct`, `p`, `nsubs`, `n_internal`
+  `unique` (input index), `reads`, `correct`, `p`, `lambda` and
+  `cluster_reads` (the inputs of `p`), `nsubs`, `n_internal`
   (non-terminal events in this unique), `type` (`I`/`D`), `center_pos`, `len`,
   `bases`, `hp_len`, `terminal`, `qual_min`, `qual_mean` (inserted bases),
   `qual_left`, `qual_right` (flanking unique bases). `hp_len` is the centre
