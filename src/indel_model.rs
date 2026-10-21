@@ -138,10 +138,33 @@ impl IndelModel {
                 parse(4)?,
             );
         }
+        Self::from_counts(&tables, settings)
+    }
+
+    /// Fit rates from in-memory tables, as `learn-errors` does each iteration.
+    pub fn from_opportunities(
+        opp: &crate::indel_events::Opportunities,
+        settings: IndelSettings,
+    ) -> io::Result<Self> {
+        let mut tables: std::collections::HashMap<String, Counts> = Default::default();
+        for (name, t) in opp.named_tables() {
+            let c = tables.entry(name).or_default();
+            for (k, (&o, &e)) in t.opportunities.iter().zip(&t.events).enumerate() {
+                c.add(k, o, e);
+            }
+        }
+        Self::from_counts(&tables, settings)
+    }
+
+    fn from_counts(
+        tables: &std::collections::HashMap<String, Counts>,
+        settings: IndelSettings,
+    ) -> io::Result<Self> {
         let need = |t: &str| {
             tables.get(t).filter(|c| !c.opp.is_empty()).ok_or_else(|| {
                 invalid(format!(
-                    "no `{t}` table; write rates with --indel-opportunities from this version"
+                    "no `{t}` table, or no events in it; write rates with --indel-opportunities \
+                     from this version"
                 ))
             })
         };
@@ -167,6 +190,30 @@ impl IndelModel {
             r_del: del_len.length_factor(),
             settings,
         })
+    }
+
+    /// Largest relative change in any fitted rate between two models, for
+    /// tracking whether an iterated fit is settling.
+    pub fn max_rel_change(&self, other: &IndelModel) -> f64 {
+        let rel = |a: f64, b: f64| {
+            let m = a.abs().max(b.abs());
+            if m > 0.0 { (a - b).abs() / m } else { 0.0 }
+        };
+        let vecs = |a: &[f64], b: &[f64]| {
+            a.iter()
+                .zip(b)
+                .map(|(&x, &y)| rel(x, y))
+                .fold(0.0f64, f64::max)
+        };
+        [
+            vecs(&self.p_ins, &other.p_ins),
+            vecs(&self.p_del, &other.p_del),
+            vecs(&self.del_fq, &other.del_fq),
+            rel(self.r_ins, other.r_ins),
+            rel(self.r_del, other.r_del),
+        ]
+        .into_iter()
+        .fold(0.0, f64::max)
     }
 
     fn at(v: &[f64], k: usize) -> f64 {
@@ -432,5 +479,40 @@ mod tests {
         std::fs::write(&path, t.replace("del_fq", "del_old")).unwrap();
         let e = IndelModel::from_tsv(&path, ALL_ON).unwrap_err().to_string();
         assert!(e.contains("no `del_fq` table"), "{e}");
+    }
+
+    #[test]
+    fn tables_in_memory_and_through_tsv_fit_the_same_model() {
+        use crate::indel_events::{
+            IndelReport, Opportunities, pair_events, write_opportunities_tsv,
+        };
+        let (a0, a1) = (enc("ACGTAC-GTACGAAATCC"), enc("A-GTACTGTACG-AATCC"));
+        let sub = al2subs(&a0, &a1);
+        let c: Vec<u8> = a0.iter().copied().filter(|&b| b != b'-').collect();
+        let r: Vec<u8> = a1.iter().copied().filter(|&b| b != b'-').collect();
+        let mut opp = Opportunities::default();
+        pair_events(
+            &c,
+            &r,
+            Some(&vec![35u8; r.len()]),
+            &sub,
+            Some((&mut opp, 50)),
+        );
+        let report = IndelReport {
+            uniques: Vec::new(),
+            opportunities: opp.clone(),
+        };
+        let dir =
+            std::env::temp_dir().join(format!("dada2rs_indel_model_rt_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("opp.tsv");
+        write_opportunities_tsv(&path, &[], &[("s", &report)]).unwrap();
+        let a = IndelModel::from_opportunities(&opp, ALL_ON).unwrap();
+        let b = IndelModel::from_tsv(&path, ALL_ON).unwrap();
+        assert_eq!(a.max_rel_change(&b), 0.0);
+        assert_eq!(
+            (a.p_ins.len(), a.p_del.len()),
+            (b.p_ins.len(), b.p_del.len())
+        );
     }
 }

@@ -59,6 +59,23 @@ pub struct Table {
 }
 
 impl Table {
+    /// Add `other`'s counts key by key (tables from different samples or runs).
+    pub fn merge(&mut self, other: &Table) {
+        for (k, (&o, &e)) in other.opportunities.iter().zip(&other.events).enumerate() {
+            self.add(k, o, e);
+        }
+    }
+
+    /// Equal counts, ignoring trailing zero keys (vectors grow on demand).
+    pub fn same_counts(&self, other: &Table) -> bool {
+        let n = self.opportunities.len().max(other.opportunities.len());
+        let at = |v: &[u64], k: usize| v.get(k).copied().unwrap_or(0);
+        (0..n).all(|k| {
+            at(&self.opportunities, k) == at(&other.opportunities, k)
+                && at(&self.events, k) == at(&other.events, k)
+        })
+    }
+
     fn add(&mut self, key: usize, opp: u64, ev: u64) {
         if self.opportunities.len() <= key {
             self.opportunities.resize(key + 1, 0);
@@ -98,6 +115,70 @@ pub struct Opportunities {
     /// `del_hp` and `ins_hp` split by the run's base (A, C, G, T).
     pub del_hp_base: [Table; 4],
     pub ins_hp_base: [Table; 4],
+}
+
+impl Opportunities {
+    /// Every table with the name it is written under.
+    pub fn named_tables(&self) -> Vec<(String, &Table)> {
+        let mut tables: Vec<(String, &Table)> = [
+            ("sub_q", &self.sub_q),
+            ("ins_q", &self.ins_q),
+            ("del_hp", &self.del_hp),
+            ("ins_hp", &self.ins_hp),
+            ("del_fq", &self.del_fq),
+            ("ins_len", &self.ins_len),
+            ("del_len", &self.del_len),
+            ("ins_q_novel", &self.ins_q_novel),
+            ("ins_q_run", &self.ins_q_run),
+        ]
+        .into_iter()
+        .map(|(n, t)| (n.to_string(), t))
+        .collect();
+        for (k, t) in self.del_fq_run.iter().enumerate() {
+            tables.push((format!("del_fq_L{}", k + 1), t));
+        }
+        for (b, n) in ["A", "C", "G", "T"].iter().enumerate() {
+            tables.push((format!("del_hp_{n}"), &self.del_hp_base[b]));
+            tables.push((format!("ins_hp_{n}"), &self.ins_hp_base[b]));
+        }
+        tables
+    }
+
+    fn tables_mut(&mut self) -> Vec<&mut Table> {
+        let mut v: Vec<&mut Table> = vec![
+            &mut self.sub_q,
+            &mut self.ins_q,
+            &mut self.del_hp,
+            &mut self.ins_hp,
+            &mut self.del_fq,
+            &mut self.ins_len,
+            &mut self.del_len,
+            &mut self.ins_q_novel,
+            &mut self.ins_q_run,
+        ];
+        v.extend(self.del_fq_run.iter_mut());
+        for (d, i) in self.del_hp_base.iter_mut().zip(self.ins_hp_base.iter_mut()) {
+            v.push(d);
+            v.push(i);
+        }
+        v
+    }
+
+    /// Add `other`'s counts table by table.
+    pub fn merge(&mut self, other: &Opportunities) {
+        let theirs: Vec<&Table> = other.named_tables().into_iter().map(|(_, t)| t).collect();
+        for (mine, t) in self.tables_mut().into_iter().zip(theirs) {
+            mine.merge(t);
+        }
+    }
+
+    /// Equal counts in every table.
+    pub fn same_counts(&self, other: &Opportunities) -> bool {
+        self.named_tables()
+            .iter()
+            .zip(other.named_tables())
+            .all(|((_, a), (_, b))| a.same_counts(b))
+    }
 }
 
 /// A unique with at least one indel, and its events.
@@ -467,28 +548,7 @@ pub fn write_opportunities_tsv(
     writeln!(w, "sample\ttable\tkey\topportunities\tevents")?;
     let mut n = 0;
     for (sample, report) in parts {
-        let o = &report.opportunities;
-        let mut tables: Vec<(String, &Table)> = [
-            ("sub_q", &o.sub_q),
-            ("ins_q", &o.ins_q),
-            ("del_hp", &o.del_hp),
-            ("ins_hp", &o.ins_hp),
-            ("del_fq", &o.del_fq),
-            ("ins_len", &o.ins_len),
-            ("del_len", &o.del_len),
-            ("ins_q_novel", &o.ins_q_novel),
-            ("ins_q_run", &o.ins_q_run),
-        ]
-        .into_iter()
-        .map(|(n, t)| (n.to_string(), t))
-        .collect();
-        for (k, t) in o.del_fq_run.iter().enumerate() {
-            tables.push((format!("del_fq_L{}", k + 1), t));
-        }
-        for (b, n) in ["A", "C", "G", "T"].iter().enumerate() {
-            tables.push((format!("del_hp_{n}"), &o.del_hp_base[b]));
-            tables.push((format!("ins_hp_{n}"), &o.ins_hp_base[b]));
-        }
+        let tables = report.opportunities.named_tables();
         for (name, t) in tables {
             for (k, (&opp, &ev)) in t.opportunities.iter().zip(&t.events).enumerate() {
                 if opp > 0 || ev > 0 {
@@ -628,5 +688,22 @@ mod tests {
         let ihp = opp.ins_hp_base.iter().map(sum).fold((0, 0), add);
         assert_eq!(ihp, sum(&opp.ins_hp));
         assert_eq!(opp.ins_hp_base[3].events[2], 10, "T lengthening a run of 2");
+    }
+
+    #[test]
+    fn merge_adds_counts_and_same_counts_ignores_trailing_zeros() {
+        let (_, a) = run("CGTT-ACAA-CGAAC", "CGTTTACAAGC-AAC", Some(&[30u8; 14]));
+        let mut b = Opportunities::default();
+        b.merge(&a);
+        assert!(b.same_counts(&a));
+        b.merge(&a);
+        assert!(!b.same_counts(&a));
+        assert_eq!(
+            b.del_hp.events.iter().sum::<u64>(),
+            2 * a.del_hp.events.iter().sum::<u64>()
+        );
+        let mut c = a.clone();
+        c.ins_q.add(90, 0, 0);
+        assert!(c.same_counts(&a), "a trailing zero key is not a difference");
     }
 }

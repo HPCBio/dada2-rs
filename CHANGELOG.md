@@ -20,6 +20,11 @@ minor versions may carry breaking changes).
   from a prior run's `--indel-opportunities` table, with `--hp-ceiling`,
   `--indel-pair-window` and `--indel-end-zone`. Off by default; R-parity output
   is unchanged. `--indel-opportunities` gains `del_fq`, `ins_len` and `del_len`.
+- `learn-errors --indel-rates-out` (Experimental) learns the indel rates for
+  `dada --indel-rates` in a second self-consistency loop after the
+  substitution model, which stays R's; `--indel-history` keeps every
+  iteration's tables (#291). `--indel-opportunities` gains context, joint and
+  per-base tables, and `scripts/plot_indel_errors.R` plots observed indel rates.
 
 ### Fixed
 - `remove-primers` `--rc-primer-rev`, `--trim-fwd`, `--trim-rev`, `--orient`

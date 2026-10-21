@@ -444,6 +444,35 @@ pub struct IndelLambdaArgs {
     pub indel_end_zone: usize,
 }
 
+/// Learning indel rates for the experimental indel-aware λ (issue #291), on
+/// `learn-errors`, after the substitution model has converged.
+#[derive(Args)]
+pub struct LearnIndelArgs {
+    /// EXPERIMENTAL: learn indel rates and write them here, for `dada --indel-rates`
+    #[arg(long, help_heading = H_EXP)]
+    pub indel_rates_out: Option<PathBuf>,
+
+    /// EXPERIMENTAL: write every indel-learning iteration's tables here
+    #[arg(long, requires = "indel_rates_out", help_heading = H_EXP)]
+    pub indel_history: Option<PathBuf>,
+
+    /// EXPERIMENTAL: maximum indel-learning iterations
+    #[arg(long, default_value_t = 10, requires = "indel_rates_out", help_heading = H_EXP)]
+    pub indel_max_iter: usize,
+
+    /// EXPERIMENTAL: homopolymer-length indel probability while learning (as on `dada`)
+    #[arg(long = "hp-ceiling", default_value = "0.05", value_parser = parse_hp_ceiling, requires = "indel_rates_out", help_heading = H_EXP)]
+    pub hp_ceiling: crate::indel_model::HpCeiling,
+
+    /// EXPERIMENTAL: indel pair window while learning (as on `dada`)
+    #[arg(long, default_value_t = 5, requires = "indel_rates_out", help_heading = H_EXP)]
+    pub indel_pair_window: usize,
+
+    /// EXPERIMENTAL: 3'-end zone while learning (as on `dada`)
+    #[arg(long, default_value_t = 10, requires = "indel_rates_out", help_heading = H_EXP)]
+    pub indel_end_zone: usize,
+}
+
 fn parse_hp_ceiling(v: &str) -> Result<crate::indel_model::HpCeiling, String> {
     if v == "off" {
         return Ok(crate::indel_model::HpCeiling::Off);
@@ -1738,6 +1767,9 @@ pub struct LearnErrorsArgs {
 
     #[command(flatten)]
     pub experimental: ExperimentalArgs,
+
+    #[command(flatten)]
+    pub indel: LearnIndelArgs,
 }
 
 /// Arguments for [`Commands::KdistCalibrate`].

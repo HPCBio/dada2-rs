@@ -246,6 +246,27 @@ Identical in meaning to [`dada`'s experimental flags](dada.md#experimental):
 `--screen-backend`, `--minimizer-k`, `--minimizer-w`, `--screen-audit`,
 `--wfa-max-edits`, `--end-model`.
 
+**`--indel-rates-out`**, **`--indel-history`**, **`--indel-max-iter`** (default
+10), **`--hp-ceiling`**, **`--indel-pair-window`**, **`--indel-end-zone`** —
+learn rates for `dada`'s experimental indel-aware λ
+([#291](https://github.com/HPCBio/dada2-rs/issues/291)). Learning is staged:
+the substitution model is learned first exactly as without these flags, so the
+error-model JSON is unchanged, and then held fixed while a second loop learns
+the indel rates. Its iteration 0 tabulates indels against the
+substitution-only partition; each later iteration denoises the training
+samples with the rates from the one before and re-tabulates, stopping when the
+tables repeat a previous iteration exactly (as the substitution loop does) or
+after `--indel-max-iter`.
+
+`--indel-rates-out` receives the final tables, the input for
+`dada --indel-rates`. `--indel-history` receives every iteration's tables, one
+`iter<N>` per `sample` value, with a `#` line per iteration giving its cluster
+count and the largest relative change in a fitted rate;
+[`plot_indel_errors.R --sample iter<N>`](../scripts/plotting.md#plot_indel_errorsr)
+plots any one of them. The model settings mean what they do on
+[`dada`](dada.md#experimental) and should match the ones the rates will be used
+with.
+
 ## See also
 
 - `errors-from-sample` — fit a model from a single pre-sampled input

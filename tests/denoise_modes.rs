@@ -557,3 +557,59 @@ fn indel_lambda_is_opt_in_and_spares_homopolymer_changes() {
         "with `off` it is scored at the run-of-4 rate: {off:?}"
     );
 }
+
+/// `learn-errors --indel-rates-out` (#291) learns indel rates after the
+/// substitution model: the error-model JSON stays byte-identical (the
+/// substitution model is still R's), the loop stops on a repeat, and `dada
+/// --indel-rates` accepts the learned rates.
+#[test]
+fn learn_errors_learns_indel_rates_without_touching_the_error_model() {
+    let dir = scratch("learn_indels");
+    let (f1, f2) = (fixture("sam1F.fastq.gz"), fixture("sam2F.fastq.gz"));
+    let (f1, f2) = (f1.to_str().unwrap(), f2.to_str().unwrap());
+    let p = |n: &str| dir.join(n).to_str().unwrap().to_string();
+    run(&["learn-errors", f1, f2, "-o", &p("plain.json")]);
+    run(&[
+        "learn-errors",
+        f1,
+        f2,
+        "-o",
+        &p("with.json"),
+        "--indel-rates-out",
+        &p("rates.tsv"),
+        "--indel-history",
+        &p("history.tsv"),
+    ]);
+    assert_eq!(
+        normalized(&dir.join("plain.json")),
+        normalized(&dir.join("with.json")),
+        "indel learning changed the error model",
+    );
+    let history = std::fs::read_to_string(p("history.tsv")).unwrap();
+    assert!(
+        history.contains("# indel_converged: true"),
+        "{}",
+        &history[..400.min(history.len())]
+    );
+    let iterations: std::collections::BTreeSet<&str> = history
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.starts_with("sample\t"))
+        .map(|l| l.split('\t').next().unwrap())
+        .collect();
+    assert!(
+        iterations.len() >= 2 && iterations.contains("iter0"),
+        "{iterations:?}"
+    );
+    let rates = std::fs::read_to_string(p("rates.tsv")).unwrap();
+    assert!(rates.lines().any(|l| l.starts_with("learned\tdel_fq\t")));
+    run(&[
+        "dada",
+        f1,
+        "--error-model",
+        &p("with.json"),
+        "--indel-rates",
+        &p("rates.tsv"),
+        "-o",
+        &p("d.json"),
+    ]);
+}
