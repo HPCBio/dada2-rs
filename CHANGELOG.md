@@ -17,6 +17,13 @@ minor versions may carry breaking changes).
   run for evaluating indel-aware denoising.
 
 ### Fixed
+- `remove-primers` `--rc-primer-rev`, `--trim-fwd`, `--trim-rev`, `--orient`
+  and `--compress`, and `filter-and-trim --compress`, can now be turned off
+  with `=false` (#296). They defaulted to true but took no value, so none could
+  be disabled, and the documented `--rc-primer-rev false` was a parse error.
+  A reverse primer given in R's read orientation was therefore
+  reverse-complemented twice and every read discarded. The bare flag still
+  means true; defaults and output are unchanged.
 - `assign-species --help` and its docs page say the match is an exact
   *substring* match, as it has been since #200; "exact match" read as
   full-sequence equality, the behaviour #200 removed.

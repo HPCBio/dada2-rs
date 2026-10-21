@@ -1008,7 +1008,16 @@ pub struct RemovePrimersArgs {
     pub primer_rev: Option<String>,
 
     /// Reverse-complement --primer-rev before matching
-    #[arg(long, default_value_t = true, help_heading = H_PRIMER)]
+    #[arg(
+        long,
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_name = "BOOL",
+        help_heading = H_PRIMER
+    )]
     pub rc_primer_rev: bool,
 
     /// Maximum mismatches allowed when matching each primer
@@ -1020,15 +1029,42 @@ pub struct RemovePrimersArgs {
     pub allow_indels: bool,
 
     /// Trim the forward primer from the 5' end of each read
-    #[arg(long, default_value_t = true, help_heading = H_PRIMER)]
+    #[arg(
+        long,
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_name = "BOOL",
+        help_heading = H_PRIMER
+    )]
     pub trim_fwd: bool,
 
     /// Trim the reverse primer from the 3' end of each read
-    #[arg(long, default_value_t = true, help_heading = H_PRIMER)]
+    #[arg(
+        long,
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_name = "BOOL",
+        help_heading = H_PRIMER
+    )]
     pub trim_rev: bool,
 
     /// Flip reads that match primers only in the reverse complement
-    #[arg(long, default_value_t = true, help_heading = H_PRIMER)]
+    #[arg(
+        long,
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_name = "BOOL",
+        help_heading = H_PRIMER
+    )]
     pub orient: bool,
 
     /// Truncate reads at the first Phred score <= this value
@@ -1084,7 +1120,16 @@ pub struct RemovePrimersArgs {
     pub fout: PathBuf,
 
     /// Gzip-compress the output FASTQ file
-    #[arg(long, default_value_t = true, help_heading = H_OUTPUT)]
+    #[arg(
+        long,
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_name = "BOOL",
+        help_heading = H_OUTPUT
+    )]
     pub compress: bool,
 
     /// Write JSON stats here instead of stdout
@@ -1176,7 +1221,16 @@ pub struct FilterAndTrimArgs {
     pub filt_rev: Option<PathBuf>,
 
     /// Gzip-compress output files
-    #[arg(long, default_value_t = true, help_heading = H_OUTPUT)]
+    #[arg(
+        long,
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_name = "BOOL",
+        help_heading = H_OUTPUT
+    )]
     pub compress: bool,
 
     /// Write JSON summary here instead of stdout

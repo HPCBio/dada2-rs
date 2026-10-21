@@ -278,3 +278,120 @@ fn dada_homo_gap_defaults_to_gap_penalty() {
     assert_eq!(param_i64(&posh, "gap_p"), -4);
     assert_eq!(param_i64(&posh, "homo_gap_p"), -1);
 }
+
+/// Boolean flags that default to true must accept `=false` and keep accepting
+/// the bare flag (#296). Before the fix they were clap `SetTrue` flags: the
+/// bare flag was a no-op and `--flag false` was a parse error, so none could
+/// be turned off — a `--primer-rev` given in R's read orientation was
+/// reverse-complemented a second time and every read was discarded.
+#[test]
+fn true_default_bool_flags_accept_false() {
+    let dir = scratch("bool_flags");
+    let fwd = "AGAGTTTGATCCTGGCTCAG";
+    let rev = "GGTTACCTTGTTACGACTT";
+    let rc = |s: &str| -> String {
+        s.chars()
+            .rev()
+            .map(|c| match c {
+                'A' => 'T',
+                'C' => 'G',
+                'G' => 'C',
+                _ => 'A',
+            })
+            .collect()
+    };
+    let body = "ACGTTGCAGGCTAACCGTAGCATCGGATCCTAGGCTTAACGTCAGTCAGGATCCATGCAAGT";
+    let read = format!("{fwd}{body}{}", rc(rev));
+    let fq = dir.join("in.fq");
+    let rec = |id: &str, s: &str| format!("@{id}\n{s}\n+\n{}\n", "I".repeat(s.len()));
+    std::fs::write(&fq, rec("f", &read) + &rec("r", &rc(&read))).unwrap();
+    let fq = fq.to_str().unwrap();
+
+    // Output reads of a remove-primers run with extra flags.
+    let reads = |name: &str, extra: &[&str]| -> Vec<String> {
+        let out = dir.join(format!("{name}.fq"));
+        let json = dir.join(format!("{name}.json"));
+        let base = [
+            "remove-primers",
+            fq,
+            "--primer-fwd",
+            fwd,
+            "--compress=false",
+            "--fout",
+            out.to_str().unwrap(),
+            "-o",
+            json.to_str().unwrap(),
+        ];
+        run(&[&base[..], extra].concat());
+        // No reads out writes no FASTQ.
+        let text = std::fs::read_to_string(out).unwrap_or_default();
+        text.lines().skip(1).step_by(4).map(String::from).collect()
+    };
+    let default = reads("default", &["--primer-rev", rev]);
+    assert_eq!(default, vec![body.to_string(), body.to_string()]);
+    let bare = reads(
+        "bare",
+        &[
+            "--orient",
+            "--trim-fwd",
+            "--trim-rev",
+            "--rc-primer-rev",
+            "--primer-rev",
+            rev,
+        ],
+    );
+    assert_eq!(bare, default, "bare flags keep their true default");
+
+    let r_orientation = rc(rev);
+    assert!(reads("double_rc", &["--primer-rev", &r_orientation]).is_empty());
+    assert_eq!(
+        reads(
+            "r_conv",
+            &["--primer-rev", &r_orientation, "--rc-primer-rev=false"]
+        ),
+        default,
+    );
+    assert_eq!(
+        reads("no_orient", &["--primer-rev", rev, "--orient=false"]).len(),
+        1
+    );
+    assert_eq!(
+        reads("no_trim_fwd", &["--primer-rev", rev, "--trim-fwd=false"])[0],
+        format!("{fwd}{body}")
+    );
+    assert_eq!(
+        reads("no_trim_rev", &["--primer-rev", rev, "--trim-rev=false"])[0],
+        format!("{body}{}", rc(rev))
+    );
+
+    // --compress: remove-primers and filter-and-trim, both directions.
+    let gz = |p: &Path| std::fs::read(p).unwrap().starts_with(&[0x1f, 0x8b]);
+    assert!(!gz(&dir.join("default.fq")));
+    let rp_gz = dir.join("rp_gz.fq.gz");
+    run(&[
+        "remove-primers",
+        fq,
+        "--primer-fwd",
+        fwd,
+        "--fout",
+        rp_gz.to_str().unwrap(),
+        "-o",
+        "/dev/null",
+    ]);
+    assert!(gz(&rp_gz), "remove-primers compresses by default");
+    for (flag, want) in [(None, true), (Some("--compress=false"), false)] {
+        let filt = dir.join(format!("ft_{want}.fq"));
+        let mut args = vec![
+            "filter-and-trim",
+            "--fwd",
+            fq,
+            "--filt",
+            filt.to_str().unwrap(),
+            "-o",
+            "/dev/null",
+        ];
+        args.extend(flag);
+        run(&args);
+        assert_eq!(gz(&filt), want, "filter-and-trim {flag:?}");
+    }
+}

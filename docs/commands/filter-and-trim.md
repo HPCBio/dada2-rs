@@ -86,7 +86,8 @@ richness falls below this value.
 
 **`--filt-rev`** — reverse (R2) output FASTQ; required when `--rev` is given.
 
-**`--compress`** (default true) — gzip-compress output files.
+**`--compress`** (default true) — gzip-compress output files;
+`--compress=false` writes plain FASTQ.
 
 **`--output` / `-o`** — write the JSON summary here instead of stdout.
 
