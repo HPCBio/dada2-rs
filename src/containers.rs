@@ -340,6 +340,9 @@ pub struct B {
     /// only through `--metrics-json` (issue #162).
     pub metrics: Option<crate::metrics::RunMetrics>,
     pub minimizer_index_decision: Option<crate::minimizers::IndexDecision>,
+    /// Experimental indel-aware λ (issue #291); `None` keeps R DADA2's
+    /// substitution-only λ.
+    pub indel_model: Option<std::sync::Arc<crate::indel_model::IndelModel>>,
     /// `DADA2RS_MINIMIZER_INDEX`, read once at construction. `Some(_)` makes the
     /// probe report its measurement but obey the override.
     pub minimizer_index_forced: Option<bool>,
@@ -439,6 +442,7 @@ impl B {
             minimizer_index: index,
             metrics: None,
             minimizer_index_decision: decision,
+            indel_model: None,
             minimizer_index_forced: forced,
             minimizer_probe: Default::default(),
             screen_shared: Vec::new(),
