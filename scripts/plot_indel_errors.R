@@ -133,10 +133,16 @@ print(rate_plot(ins, "quality of the inserted base",
                 "Insertions; ticks on the axis mark qualities with no insertions"))
 print(rate_plot(del, "lower quality of the read bases either side",
                 "Deletions, by centre homopolymer run length"))
-print(ggplot(lens, aes(length, events, fill = type)) +
-        geom_col(width = 0.8) +
+# Stems from below 1 so single events stay visible on the log axis.
+print(ggplot(lens, aes(length, events, colour = type)) +
+        geom_segment(aes(xend = length, y = 0.5, yend = events), linewidth = 1.2) +
+        geom_point(size = 2) +
         scale_y_log10() +
-        scale_fill_manual(values = c(deletion = "#b2182b", insertion = "#2166ac")) +
+        scale_x_continuous(breaks = function(l) {
+          b <- scales::breaks_extended()(l)
+          unique(round(b[b == round(b)]))
+        }) +
+        scale_colour_manual(values = c(deletion = "#b2182b", insertion = "#2166ac")) +
         labs(x = sprintf("indel length (deletions < 0; lengths beyond %d pooled)", opt$max_len),
              y = "read-weighted events", title = title, subtitle = "Indel length distribution") +
         theme_bw())
