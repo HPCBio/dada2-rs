@@ -51,8 +51,16 @@ detection.
 **`--rc-primer-rev`** (default true) — reverse-complement `--primer-rev` before
 matching. Primers are conventionally written 5′→3′, and the reverse primer must
 be reverse-complemented to match the orientation it actually appears in reads.
-Pass `--rc-primer-rev false` only when you are supplying `--primer-rev` already
+Pass `--rc-primer-rev=false` only when you are supplying `--primer-rev` already
 reverse-complemented.
+
+!!! warning "The opposite of R's convention"
+    R's `removePrimers()` expects `primer.rev` already reverse-complemented
+    (its PacBio tutorial passes `rc(R1492)`). Here `--primer-rev` takes the
+    catalog orientation. A primer copied from an R script is therefore
+    reverse-complemented twice, matches nothing, and every read is discarded
+    as primerless; add `--rc-primer-rev=false`, or give the catalog sequence
+    ([#296](https://github.com/HPCBio/dada2-rs/issues/296)).
 
 **`--max-mismatch`** (default 2) — maximum mismatches allowed when matching each
 primer.
@@ -66,6 +74,10 @@ primer from the 5′ / 3′ end.
 
 **`--orient`** (default true) — detect and correct read orientation: reads that
 match primers only in the reverse complement are flipped before trimming.
+
+These four flags, and `--compress` below, are on by default as in R. The bare
+flag keeps them on; turn one off with `=false`, e.g. `--orient=false`. The `=`
+is required, so `--orient false` is an error.
 
 ## Trimming and Filtering
 
@@ -88,7 +100,8 @@ compression. Values above 1 switch the output to bgzf.
 
 **`--fout` / `-f`** (required) — output FASTQ file.
 
-**`--compress`** (default true) — gzip-compress the output FASTQ.
+**`--compress`** (default true) — gzip-compress the output FASTQ;
+`--compress=false` writes plain FASTQ.
 
 **`--output` / `-o`** — write JSON stats here instead of stdout.
 
