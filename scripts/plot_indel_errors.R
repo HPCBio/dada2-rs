@@ -35,6 +35,9 @@ opt_list <- list(
               help = "Output path [default: <input_stem>_indel_errors.pdf]"),
   make_option("--sample", type = "character", default = NULL, metavar = "NAME",
               help = "Plot one sample [default: all rows summed]"),
+  make_option("--overlay", type = "character", default = NULL, metavar = "A,B",
+              help = paste("Overlay several samples, coloured by sample, e.g.",
+                           "iter0,iter3 from a learn-errors --indel-history table")),
   make_option("--title", type = "character", default = NULL, metavar = "TEXT",
               help = "Title prefix [default: the input file name]"),
   make_option("--min-opp", type = "double", default = 100, metavar = "N",
@@ -83,7 +86,17 @@ if (!is.null(opt$sample)) {
   d <- d[d$sample == opt$sample, ]
   if (nrow(d) == 0) stop("no rows for sample ", opt$sample)
 }
-d <- aggregate(cbind(opportunities, events) ~ table + key, data = d, FUN = sum)
+overlay <- !is.null(opt$overlay)
+if (overlay) {
+  keep <- trimws(strsplit(opt$overlay, ",", fixed = TRUE)[[1]])
+  missing <- setdiff(keep, unique(d$sample))
+  if (length(missing) > 0) stop("no rows for sample(s): ", paste(missing, collapse = ", "))
+  d <- d[d$sample %in% keep, ]
+  d$sample <- factor(d$sample, levels = keep)
+} else {
+  d$sample <- "all"
+}
+d <- aggregate(cbind(opportunities, events) ~ sample + table + key, data = d, FUN = sum)
 have <- unique(d$table)
 for (t in c("ins_q_novel", "ins_q_run", paste0("del_fq_L", 1:5), "ins_len", "del_len")) {
   if (!t %in% have) stop(tsv, ": no `", t, "` table; rerun dada with this dada2-rs version")
@@ -100,8 +113,9 @@ phred <- function(q) 10^(-q / 10)
 rate_plot <- function(x, xlab, subtitle) {
   pos <- x[x$events > 0, ]
   zero <- x[x$events == 0, ]
-  p <- ggplot(pos, aes(key, rate)) +
+  p <- ggplot(pos, aes(key, rate, colour = sample)) +
     geom_point(aes(size = opportunities), alpha = 0.6) +
+    scale_colour_brewer(palette = "Dark2", guide = if (overlay) "legend" else "none") +
     facet_wrap(~panel, nrow = 1) +
     scale_y_log10(labels = scales::label_math(10^.x, format = log10)) +
     scale_size_area(trans = "log10", max_size = 4, name = "opportunities") +
@@ -125,7 +139,7 @@ del <- rates(paste0("del_fq_L", 1:5), c("run 1", "run 2", "run 3", "run 4", "run
 lens <- d[d$table %in% c("ins_len", "del_len") & d$events > 0, ]
 lens$length <- ifelse(lens$table == "del_len", -lens$key, lens$key)
 lens$length <- pmax(pmin(lens$length, opt$max_len), -opt$max_len)
-lens <- aggregate(events ~ length + table, data = lens, FUN = sum)
+lens <- aggregate(events ~ sample + length + table, data = lens, FUN = sum)
 lens$type <- ifelse(lens$table == "del_len", "deletion", "insertion")
 
 pdf(out, width = opt$width, height = opt$height)
@@ -134,15 +148,23 @@ print(rate_plot(ins, "quality of the inserted base",
 print(rate_plot(del, "lower quality of the read bases either side",
                 "Deletions, by centre homopolymer run length"))
 # Stems from below 1 so single events stay visible on the log axis.
-print(ggplot(lens, aes(length, events, colour = type)) +
-        geom_segment(aes(xend = length, y = 0.5, yend = events), linewidth = 1.2) +
-        geom_point(size = 2) +
+len_plot <- if (overlay) {
+  # Dodge iterations side by side; colour by sample, shape by type.
+  ggplot(lens, aes(length, events, colour = sample, shape = type)) +
+    geom_point(size = 2.2, position = position_dodge(width = 0.6)) +
+    scale_colour_brewer(palette = "Dark2")
+} else {
+  ggplot(lens, aes(length, events, colour = type)) +
+    geom_segment(aes(xend = length, y = 0.5, yend = events), linewidth = 1.2) +
+    geom_point(size = 2) +
+    scale_colour_manual(values = c(deletion = "#b2182b", insertion = "#2166ac"))
+}
+print(len_plot +
         scale_y_log10() +
         scale_x_continuous(breaks = function(l) {
           b <- scales::breaks_extended()(l)
           unique(round(b[b == round(b)]))
         }) +
-        scale_colour_manual(values = c(deletion = "#b2182b", insertion = "#2166ac")) +
         labs(x = sprintf("indel length (deletions < 0; lengths beyond %d pooled)", opt$max_len),
              y = "read-weighted events", title = title, subtitle = "Indel length distribution") +
         theme_bw())

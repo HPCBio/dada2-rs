@@ -131,3 +131,8 @@ Rscript scripts/plot_indel_errors.R --help
 ```
 
 `--sample` plots one sample of a multi-sample table; by default rows are summed.
+`--overlay A,B` plots several samples on the same axes, coloured by sample. With
+a [`learn-errors --indel-history`](../commands/learn-errors.md#experimental)
+table, whose samples are the learning iterations, `--overlay iter0,iter3`
+shows how the rates moved between the substitution-only partition and the
+learned one.
