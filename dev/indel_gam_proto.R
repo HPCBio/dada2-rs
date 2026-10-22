@@ -13,6 +13,10 @@
 #                varying:      ev ~ L + s(Q, by = L)
 #                hierarchical: ev ~ L + s(Q) + s(Q, L, bs = "fs", m = 1)   shared curve +
 #                              penalised run-length deviations
+#                surface:      ev ~ te(Q, L)          L numeric: neighbouring run lengths
+#                              borrow from each other (also on log L)
+#                monotone:     scam, s(Q, L, bs = "tesmi2")  surface constrained to rise with L only
+#                pooled:       per-cell pooling within each run length (the native fit)
 #   base         ev ~ L + s(base, bs = "re") [+ s(L:base, bs = "re")]   shrinkable base terms
 #
 # All with offset(log(opportunities)) in the formula (mgcv's predict ignores an
@@ -24,6 +28,7 @@
 #   (samples: comma lists or "-" for all rows)
 
 suppressPackageStartupMessages(library(mgcv))
+have_scam <- requireNamespace("scam", quietly = TRUE)
 a <- commandArgs(trailingOnly = TRUE)
 if (length(a) < 2) stop("usage: indel_gam_proto.R train.tsv test.tsv [train_samples] [test_samples] [cap_q]")
 pick <- function(i) if (length(a) >= i && a[i] != "-") a[i] else NULL
@@ -72,7 +77,30 @@ for (tab in c("ins_q_novel", "ins_q_run")) {
 joint <- function(d) {
   x <- d[grepl("^del_fq_L", d$table) & d$opportunities > 0, ]
   x$L <- factor(substring(x$table, nchar(x$table)))
+  x$Ln <- as.numeric(as.character(x$L))
+  x$lL <- log(x$Ln)
   x
+}
+# Native pooling: widen a window over neighbouring keys until it holds 20 events.
+pool_pred <- function(tr, te) {
+  out <- numeric(nrow(te))
+  for (L in unique(te$L)) {
+    x <- tr[tr$L == L, ]
+    n <- max(x$key) + 1
+    o <- e <- numeric(n); o[x$key + 1] <- x$opportunities; e[x$key + 1] <- x$events
+    r <- sapply(seq_len(n), function(k) {
+      w <- 0
+      repeat {
+        lo <- max(1, k - w); hi <- min(n, k + w)
+        if (sum(e[lo:hi]) >= 20 || (lo == 1 && hi == n))
+          return(if (sum(o[lo:hi]) > 0) sum(e[lo:hi]) / sum(o[lo:hi]) else 0)
+        w <- w + 1
+      }
+    })
+    s <- te$L == L
+    out[s] <- te$opportunities[s] * r[pmin(te$key[s], n - 1) + 1]
+  }
+  out
 }
 cat("== deletions (run length x flanking Q), REML\n")
 tr <- joint(train); te <- joint(test)
@@ -84,12 +112,23 @@ forms <- list(additive = events ~ L + s(key, k = 12) + offset(log(opportunities)
               varying = events ~ L + s(key, by = L, k = 10) + offset(log(opportunities)),
               hierarchical = events ~ L + s(key, k = 12) + s(key, L, bs = "fs", m = 1, k = 8) +
                 offset(log(opportunities)))
-for (name in names(forms)) {
-  m <- gam(forms[[name]], family = poisson, data = tr, method = "REML")
-  pred <- as.numeric(predict(m, newdata = te, type = "response"))
-  cat(sprintf("   %-9s edf=%5s dev/event=%7.3f   %s\n", name, edf(m), dev_per_event(te$events, pred),
+kL <- min(5, nlevels(tr$L))
+forms$surface <- events ~ te(key, Ln, k = c(10, kL)) + offset(log(opportunities))
+forms$surface_logL <- events ~ te(key, lL, k = c(10, kL)) + offset(log(opportunities))
+report <- function(name, pred, edf_s) {
+  cat(sprintf("   %-13s edf=%5s dev/event=%7.3f   %s\n", name, edf_s, dev_per_event(te$events, pred),
               calib(te$events, pred, paste0("L", te$L), paste0("L", levels(te$L)))))
 }
+for (name in names(forms)) {
+  m <- gam(forms[[name]], family = poisson, data = tr, method = "REML")
+  report(name, as.numeric(predict(m, newdata = te, type = "response")), edf(m))
+}
+if (have_scam) {
+  m <- tryCatch(scam::scam(events ~ s(key, Ln, bs = "tesmi2", k = c(10, kL)) + offset(log(opportunities)),
+                           family = poisson, data = tr), error = function(e) { cat("   monotone: ", conditionMessage(e), "\n"); NULL })
+  if (!is.null(m)) report("monotone", as.numeric(predict(m, newdata = te, type = "response")), edf(m))
+}
+report("pooled", pool_pred(tr, te), "cells")
 
 base_long <- function(d, kind) {
   x <- d[grepl(paste0("^", kind, "_[ACGT]$"), d$table) & d$opportunities > 0, ]
