@@ -136,3 +136,6 @@ a [`learn-errors --indel-history`](../commands/learn-errors.md#experimental)
 table, whose samples are the learning iterations, `--overlay iter0,iter3`
 shows how the rates moved between the substitution-only partition and the
 learned one.
+`--fit pooled=rates.tsv,gam=gam_rates.tsv` draws fitted rates
+(`learn-errors --indel-rates-out`) as lines over the observed points, one colour
+per fit; it cannot be combined with `--overlay`.

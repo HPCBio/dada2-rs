@@ -14,6 +14,9 @@
 #   3. Indel lengths: events by length, deletions negative and insertions
 #      positive, as in variant-calling length spectra.
 #
+# --fit overlays fitted rates (`learn-errors --indel-rates-out`, or an
+# `--indel-fit-cmd` output) as lines, one colour per fit, on pages 1 and 2.
+#
 # Point area scales with the opportunities at that quality (log10), as
 # plot_errors.R scales by observation mass, so points backed by little data are
 # visibly small. The dashed red line is the Phred rate 10^(-Q/10), for scale
@@ -38,6 +41,9 @@ opt_list <- list(
   make_option("--overlay", type = "character", default = NULL, metavar = "A,B",
               help = paste("Overlay several samples, coloured by sample, e.g.",
                            "iter0,iter3 from a learn-errors --indel-history table")),
+  make_option("--fit", type = "character", default = NULL, metavar = "NAME=TSV,...",
+              help = paste("Overlay fitted rates as lines, e.g.",
+                           "pooled=rates.tsv,gam=gam_rates.tsv")),
   make_option("--title", type = "character", default = NULL, metavar = "TEXT",
               help = "Title prefix [default: the input file name]"),
   make_option("--min-opp", type = "double", default = 100, metavar = "N",
@@ -97,6 +103,19 @@ if (overlay) {
   d$sample <- "all"
 }
 d <- aggregate(cbind(opportunities, events) ~ sample + table + key, data = d, FUN = sum)
+fits <- NULL
+if (!is.null(opt$fit)) {
+  if (overlay) stop("--fit and --overlay both use colour; pick one")
+  for (spec in trimws(strsplit(opt$fit, ",", fixed = TRUE)[[1]])) {
+    kv <- strsplit(spec, "=", fixed = TRUE)[[1]]
+    if (length(kv) != 2) stop("--fit expects NAME=TSV, got `", spec, "`")
+    f <- read.delim(kv[2], comment.char = "#", stringsAsFactors = FALSE)
+    if (!identical(names(f), c("table", "key", "rate"))) stop(kv[2], ": not a fitted-rates table")
+    f$fit <- kv[1]
+    fits <- rbind(fits, f)
+  }
+  fits$fit <- factor(fits$fit, levels = unique(fits$fit))
+}
 have <- unique(d$table)
 for (t in c("ins_q_novel", "ins_q_run", paste0("del_fq_L", 1:5), "ins_len", "del_len")) {
   if (!t %in% have) stop(tsv, ": no `", t, "` table; rerun dada with this dada2-rs version")
@@ -110,12 +129,28 @@ rates <- function(tables, labels) {
 }
 phred <- function(q) 10^(-q / 10)
 
-rate_plot <- function(x, xlab, subtitle) {
+rate_plot <- function(x, xlab, subtitle, tables, labels) {
   pos <- x[x$events > 0, ]
   zero <- x[x$events == 0, ]
-  p <- ggplot(pos, aes(key, rate, colour = sample)) +
-    geom_point(aes(size = opportunities), alpha = 0.6) +
-    scale_colour_brewer(palette = "Dark2", guide = if (overlay) "legend" else "none") +
+  p <- if (is.null(fits)) {
+    ggplot(pos, aes(key, rate, colour = sample)) +
+      geom_point(aes(size = opportunities), alpha = 0.6) +
+      scale_colour_brewer(palette = "Dark2", guide = if (overlay) "legend" else "none")
+  } else {
+    # Fitted lines span the qualities shown for each panel.
+    fl <- fits[fits$table %in% tables, ]
+    fl$panel <- factor(labels[match(fl$table, tables)], levels = labels)
+    rng <- aggregate(key ~ panel, data = x, FUN = range)
+    lo <- rng$key[, 1][match(fl$panel, rng$panel)]
+    hi <- rng$key[, 2][match(fl$panel, rng$panel)]
+    fl <- fl[!is.na(lo) & fl$key >= lo & fl$key <= hi & fl$rate > 0, ]
+    ggplot(pos, aes(key, rate)) +
+      geom_point(aes(size = opportunities), colour = "grey40", alpha = 0.5) +
+      geom_line(data = fl, aes(key, rate, colour = fit), linewidth = 0.8) +
+      scale_colour_brewer(palette = "Dark2", name = "fit") +
+      guides(colour = guide_legend(override.aes = list(linewidth = 1.2, size = 0)))
+  }
+  p <- p +
     facet_wrap(~panel, nrow = 1) +
     scale_y_log10(labels = scales::label_math(10^.x, format = log10)) +
     scale_size_area(trans = "log10", max_size = 4, name = "opportunities") +
@@ -133,8 +168,10 @@ rate_plot <- function(x, xlab, subtitle) {
   p
 }
 
-ins <- rates(c("ins_q_novel", "ins_q_run"), c("novel base", "lengthens a run"))
-del <- rates(paste0("del_fq_L", 1:5), c("run 1", "run 2", "run 3", "run 4", "run 5+"))
+ins_t <- c("ins_q_novel", "ins_q_run"); ins_l <- c("novel base", "lengthens a run")
+del_t <- paste0("del_fq_L", 1:5); del_l <- c("run 1", "run 2", "run 3", "run 4", "run 5+")
+ins <- rates(ins_t, ins_l)
+del <- rates(del_t, del_l)
 
 lens <- d[d$table %in% c("ins_len", "del_len") & d$events > 0, ]
 lens$length <- ifelse(lens$table == "del_len", -lens$key, lens$key)
@@ -144,9 +181,9 @@ lens$type <- ifelse(lens$table == "del_len", "deletion", "insertion")
 
 pdf(out, width = opt$width, height = opt$height)
 print(rate_plot(ins, "quality of the inserted base",
-                "Insertions; ticks on the axis mark qualities with no insertions"))
+                "Insertions; ticks on the axis mark qualities with no insertions", ins_t, ins_l))
 print(rate_plot(del, "lower quality of the read bases either side",
-                "Deletions, by centre homopolymer run length"))
+                "Deletions, by centre homopolymer run length", del_t, del_l))
 # Stems from below 1 so single events stay visible on the log axis.
 len_plot <- if (overlay) {
   # Dodge iterations side by side; colour by sample, shape by type.
