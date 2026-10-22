@@ -115,6 +115,16 @@ pub struct Opportunities {
     /// `del_hp` and `ins_hp` split by the run's base (A, C, G, T).
     pub del_hp_base: [Table; 4],
     pub ins_hp_base: [Table; 4],
+    /// `del_fq`'s centre bases by the centre's own quality there (the mean
+    /// over the centre unique's reads) instead of the unique's flanking
+    /// quality; same opportunities and events. Overall and per run-length
+    /// class, to compare the two covariates.
+    pub del_cq: Table,
+    pub del_cq_run: [Table; 5],
+    /// Both covariates jointly per run-length class, keyed
+    /// `flanking quality * 128 + centre quality`, so fits on either covariate
+    /// can be scored on the same cells.
+    pub del_fqcq_run: [Table; 5],
 }
 
 impl Opportunities {
@@ -141,6 +151,13 @@ impl Opportunities {
             tables.push((format!("del_hp_{n}"), &self.del_hp_base[b]));
             tables.push((format!("ins_hp_{n}"), &self.ins_hp_base[b]));
         }
+        tables.push(("del_cq".to_string(), &self.del_cq));
+        for (k, t) in self.del_cq_run.iter().enumerate() {
+            tables.push((format!("del_cq_L{}", k + 1), t));
+        }
+        for (k, t) in self.del_fqcq_run.iter().enumerate() {
+            tables.push((format!("del_fqcq_L{}", k + 1), t));
+        }
         tables
     }
 
@@ -161,6 +178,9 @@ impl Opportunities {
             v.push(d);
             v.push(i);
         }
+        v.push(&mut self.del_cq);
+        v.extend(self.del_cq_run.iter_mut());
+        v.extend(self.del_fqcq_run.iter_mut());
         v
     }
 
@@ -227,6 +247,7 @@ pub fn pair_events(
     center: &[u8],
     raw: &[u8],
     qual: Option<&[u8]>,
+    center_qual: Option<&[u8]>,
     sub: &Sub,
     opp: Option<(&mut Opportunities, u64)>,
 ) -> Vec<Event> {
@@ -406,6 +427,16 @@ pub fn pair_events(
                     w,
                     if deleted { w } else { 0 },
                 );
+                if let Some(cq) = center_qual {
+                    let k = cq[i] as usize;
+                    opp.del_cq.add(k, w, if deleted { w } else { 0 });
+                    opp.del_cq_run[runs[i].clamp(1, 5) - 1].add(k, w, if deleted { w } else { 0 });
+                    opp.del_fqcq_run[runs[i].clamp(1, 5) - 1].add(
+                        l.min(r) * 128 + k,
+                        w,
+                        if deleted { w } else { 0 },
+                    );
+                }
             }
         }
         for ev in events.iter().filter(|e| !e.terminal) {
@@ -436,7 +467,14 @@ pub fn tabulate(b: &B, subs: &[Option<Sub>]) -> IndelReport {
                 continue;
             };
             let weight = raw.correct.then_some((&mut opp, raw.reads as u64));
-            let events = pair_events(&center.seq, &raw.seq, raw.qual.as_deref(), sub, weight);
+            let events = pair_events(
+                &center.seq,
+                &raw.seq,
+                raw.qual.as_deref(),
+                center.qual.as_deref(),
+                sub,
+                weight,
+            );
             if !events.is_empty() {
                 uniques.push(UniqueEvents {
                     cluster: ci,
@@ -585,9 +623,38 @@ mod tests {
         let sub = al2subs(&a0, &a1);
         let center: Vec<u8> = a0.iter().copied().filter(|&b| b != b'-').collect();
         let raw: Vec<u8> = a1.iter().copied().filter(|&b| b != b'-').collect();
+        // Centre qualities 20, 21, ... so a table key names its centre position.
+        let cq: Vec<u8> = (0..center.len()).map(|i| 20 + i as u8).collect();
         let mut opp = Opportunities::default();
-        let ev = pair_events(&center, &raw, qual, &sub, Some((&mut opp, 10)));
+        let ev = pair_events(
+            &center,
+            &raw,
+            qual,
+            qual.map(|_| &cq[..]),
+            &sub,
+            Some((&mut opp, 10)),
+        );
         (ev, opp)
+    }
+
+    #[test]
+    fn centre_quality_table_mirrors_flanking_quality_table() {
+        // C at centre position 1 deleted; quality 30 everywhere in the unique.
+        let (_, opp) = run("ACGTACGT", "A-GTACGT", Some(&[30; 7]));
+        let sum = |t: &Table| {
+            (
+                t.opportunities.iter().sum::<u64>(),
+                t.events.iter().sum::<u64>(),
+            )
+        };
+        assert_eq!(sum(&opp.del_cq), sum(&opp.del_fq));
+        assert_eq!(opp.del_cq.events[21], 10);
+        assert_eq!(sum(&opp.del_cq_run[0]), sum(&opp.del_fq_run[0]));
+        assert_eq!(sum(&opp.del_fqcq_run[0]), sum(&opp.del_fq_run[0]));
+        assert_eq!(opp.del_fqcq_run[0].events[30 * 128 + 21], 10);
+        // Without unique qualities there are no flanks, so no centre table either.
+        let (_, opp) = run("ACGTACGT", "A-GTACGT", None);
+        assert_eq!(sum(&opp.del_cq), (0, 0));
     }
 
     #[test]

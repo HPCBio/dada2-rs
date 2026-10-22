@@ -74,8 +74,8 @@ for (tab in c("ins_q_novel", "ins_q_run")) {
               dev_per_event(te$events, pred), calib(te$events, pred, qband(te$key), unique(qband(te$key)))))
 }
 
-joint <- function(d) {
-  x <- d[grepl("^del_fq_L", d$table) & d$opportunities > 0, ]
+joint <- function(d, prefix = "del_fq_L") {
+  x <- d[grepl(paste0("^", prefix), d$table) & d$opportunities > 0, ]
   x$L <- factor(substring(x$table, nchar(x$table)))
   x$Ln <- as.numeric(as.character(x$L))
   x$lL <- log(x$Ln)
@@ -129,6 +129,45 @@ if (have_scam) {
   if (!is.null(m)) report("monotone", as.numeric(predict(m, newdata = te, type = "response")), edf(m))
 }
 report("pooled", pool_pred(tr, te), "cells")
+
+# Deletion covariate: the unique's lower flanking quality (fq) against the
+# centre's own mean quality at the deleted base (cq). Every model is scored on
+# the joint fq x cq x run-length cells (del_fqcq_L*, key fq * 128 + cq), so
+# deviances compare even though the two covariates span different ranges.
+if (any(grepl("^del_fqcq_L", train$table)) && any(grepl("^del_fqcq_L", test$table))) {
+  cat("== deletion covariate on joint cells: flanking quality (fq) vs centre quality (cq)\n")
+  jj <- function(d) {
+    x <- joint(d, "del_fqcq_L")
+    x$fq <- x$key %/% 128; x$cq <- x$key %% 128
+    x
+  }
+  tr <- jj(train); te <- jj(test)
+  te <- te[te$fq >= min(tr$fq) & te$fq <= max(tr$fq) & te$cq >= min(tr$cq) & te$cq <= max(tr$cq) &
+             te$L %in% levels(tr$L), ]
+  te$L <- factor(te$L, levels = levels(tr$L))
+  cat(sprintf("   train cells %d, test cells %d, test events %d; fq %d-%d, cq %d-%d\n", nrow(tr), nrow(te),
+              sum(te$events), min(tr$fq), max(tr$fq), min(tr$cq), max(tr$cq)))
+  off <- "offset(log(opportunities))"
+  forms <- list(
+    fq = paste("events ~ L + s(fq, k = 12) + s(fq, L, bs = 'fs', m = 1, k = 8) +", off),
+    cq = paste("events ~ L + s(cq, k = 12) + s(cq, L, bs = 'fs', m = 1, k = 8) +", off),
+    `fq+cq` = paste("events ~ L + s(fq, k = 12) + s(cq, k = 12) + s(cq, L, bs = 'fs', m = 1, k = 8) +", off),
+    `te(fq,cq)` = paste("events ~ L + te(fq, cq, k = c(8, 8)) +", off))
+  for (name in names(forms)) {
+    m <- tryCatch(gam(as.formula(forms[[name]]), family = poisson, data = tr, method = "REML"),
+                  error = function(e) NULL)
+    if (is.null(m)) { cat("   ", name, "failed\n"); next }
+    p <- as.numeric(predict(m, newdata = te, type = "response"))
+    report(paste("GAM", name), p, edf(m))
+  }
+  # Native pooling on one covariate, applied to the joint cells.
+  for (cov in c("fq", "cq")) {
+    mt <- aggregate(cbind(opportunities, events) ~ L + k, data = transform(tr, k = tr[[cov]]), FUN = sum)
+    names(mt)[2] <- "key"
+    tt <- transform(te, key = te[[cov]])
+    report(paste("pooled", cov), pool_pred(mt, tt), "cells")
+  }
+}
 
 base_long <- function(d, kind) {
   x <- d[grepl(paste0("^", kind, "_[ACGT]$"), d$table) & d$opportunities > 0, ]

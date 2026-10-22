@@ -424,7 +424,7 @@ impl IndelModel {
             return (1.0, 0);
         }
         let s = &self.settings;
-        let mut events: Vec<Event> = pair_events(center, raw, qual, sub, None)
+        let mut events: Vec<Event> = pair_events(center, raw, qual, None, sub, None)
             .into_iter()
             .filter(|e| !e.terminal && center.len() - e.center_pos > s.end_zone)
             .collect();
@@ -722,6 +722,7 @@ mod tests {
             &c,
             &r,
             Some(&vec![35u8; r.len()]),
+            None,
             &sub,
             Some((&mut opp, 50)),
         );

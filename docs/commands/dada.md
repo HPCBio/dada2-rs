@@ -237,7 +237,13 @@ denoising output.
   length (bases and deleted bases); `ins_hp` by centre run length (runs and
   insertions lengthening them); `del_fq` by the lower quality of the aligned
   unique bases either side (centre bases and deleted bases); `ins_len` and
-  `del_len` by event length (events only). `sub_q` sums to `trans`.
+  `del_len` by event length (events only). `sub_q` sums to `trans`. Further
+  tables split these: `ins_q_novel` and `ins_q_run` (insertions matching
+  neither neighbour, or lengthening a run), `del_fq_L1`…`del_fq_L5` (`del_fq`
+  per centre run length, 5 = 5 or more), `del_hp_A`…`ins_hp_T` (per run base),
+  `del_cq` and `del_cq_L<n>` (as `del_fq`, keyed by the centre's own mean
+  quality at the base instead), and `del_fqcq_L<n>` (both, keyed
+  `flanking × 128 + centre`).
 
 Qualities are the unique's per-position mean, as in `trans`. With several
 inputs, each file holds every sample's rows, sorted by sample.
