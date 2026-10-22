@@ -456,6 +456,10 @@ pub struct LearnIndelArgs {
     #[arg(long, requires = "indel_rates_out", help_heading = H_EXP)]
     pub indel_history: Option<PathBuf>,
 
+    /// EXPERIMENTAL: command that fits indel rates; counts/rates paths are appended
+    #[arg(long, requires = "indel_rates_out", help_heading = H_EXP)]
+    pub indel_fit_cmd: Option<String>,
+
     /// EXPERIMENTAL: maximum indel-learning iterations
     #[arg(long, default_value_t = 10, requires = "indel_rates_out", help_heading = H_EXP)]
     pub indel_max_iter: usize,

@@ -593,6 +593,7 @@ fn learn_and_write_indels(
             err_out,
             settings,
             args.indel_max_iter,
+            args.indel_fit_cmd.as_deref(),
             verbose,
         )
     })?;
@@ -605,12 +606,14 @@ fn learn_and_write_indels(
         ("dada2_rs_version", misc::DADA2_RS_VERSION.to_string()),
         ("indel_iterations", learned.history.len().to_string()),
         ("indel_converged", learned.converged.to_string()),
+        (
+            "indel_fit",
+            args.indel_fit_cmd
+                .clone()
+                .unwrap_or_else(|| "pooled".to_string()),
+        ),
     ];
-    let report = indel_events::IndelReport {
-        uniques: Vec::new(),
-        opportunities: last.opportunities.clone(),
-    };
-    indel_events::write_opportunities_tsv(rates_out, &meta, &[("learned", &report)])?;
+    last.model.write_rates_tsv(rates_out, &meta)?;
     if verbose {
         eprintln!(
             "[{tag}] wrote learned indel rates ({} iteration(s), converged: {}) to {}",

@@ -1056,6 +1056,8 @@ pub struct IndelIteration {
     pub iteration: usize,
     /// Tables summed over the training samples.
     pub opportunities: crate::indel_events::Opportunities,
+    /// Rates fitted from `opportunities`.
+    pub model: crate::indel_model::IndelModel,
     /// Clusters (ASVs) summed over the training samples.
     pub clusters: usize,
     /// Largest relative change in a fitted rate from the previous iteration.
@@ -1074,7 +1076,8 @@ pub struct IndelLearnResult {
 /// substitution-only partition; each later iteration denoises with the rates
 /// fitted from the one before and re-tabulates. Stops when the tables repeat
 /// a previous iteration's exactly, as R's loop does for `trans`, or after
-/// `max_iter` iterations. Every iteration's tables are kept, to see whether
+/// `max_iter` iterations. Rates are fitted natively by pooling, or by
+/// `fit_cmd` when given (see [`crate::indel_model::IndelModel::fit_external`]). Every iteration's tables are kept, to see whether
 /// the fit settles.
 pub fn learn_indels(
     all_inputs: &[Vec<RawInput>],
@@ -1082,6 +1085,7 @@ pub fn learn_indels(
     err: &[f64],
     settings: crate::indel_model::IndelSettings,
     max_iter: usize,
+    fit_cmd: Option<&str>,
     verbose: bool,
 ) -> io::Result<IndelLearnResult> {
     dada_params.err_ncol = err.len() / 16;
@@ -1109,7 +1113,10 @@ pub fn learn_indels(
                 opp.merge(&report.opportunities);
             }
         }
-        let model = crate::indel_model::IndelModel::from_opportunities(&opp, settings)?;
+        let model = match fit_cmd {
+            Some(cmd) => crate::indel_model::IndelModel::fit_external(&opp, settings, cmd)?,
+            None => crate::indel_model::IndelModel::from_opportunities(&opp, settings)?,
+        };
         let max_rel_change = prev_model.as_ref().map(|p| model.max_rel_change(p));
         let repeat = history.iter().any(|h| h.opportunities.same_counts(&opp));
         if verbose {
@@ -1128,6 +1135,7 @@ pub fn learn_indels(
         history.push(IndelIteration {
             iteration,
             opportunities: opp,
+            model: model.clone(),
             clusters,
             max_rel_change,
         });

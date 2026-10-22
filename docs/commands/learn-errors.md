@@ -247,7 +247,8 @@ Identical in meaning to [`dada`'s experimental flags](dada.md#experimental):
 `--wfa-max-edits`, `--end-model`.
 
 **`--indel-rates-out`**, **`--indel-history`**, **`--indel-max-iter`** (default
-10), **`--hp-ceiling`**, **`--indel-pair-window`**, **`--indel-end-zone`** —
+10), **`--indel-fit-cmd`**, **`--hp-ceiling`**, **`--indel-pair-window`**,
+**`--indel-end-zone`** —
 learn rates for `dada`'s experimental indel-aware λ
 ([#291](https://github.com/HPCBio/dada2-rs/issues/291)). Learning is staged:
 the substitution model is learned first exactly as without these flags, so the
@@ -258,8 +259,18 @@ samples with the rates from the one before and re-tabulates, stopping when the
 tables repeat a previous iteration exactly (as the substitution loop does) or
 after `--indel-max-iter`.
 
-`--indel-rates-out` receives the final tables, the input for
-`dada --indel-rates`. `--indel-history` receives every iteration's tables, one
+Each iteration fits rates from its tables. By default the fit pools each
+quality with its neighbours until it holds 20 events, per insertion context
+(novel or run-lengthening) and per centre run length for deletions.
+`--indel-fit-cmd` hands the fit to a command instead, as `--errfun-cmd` does for
+substitutions: the paths of the counts (the `--indel-opportunities` layout) and
+of the rates it must write (`table`, `key`, `rate`) are appended.
+[`examples/external_indel_fit/indel_gam.R`](https://github.com/HPCBio/dada2-rs/tree/main/examples/external_indel_fit)
+fits penalised GAMs with R's mgcv, the best fit on #291's held-out comparisons.
+
+`--indel-rates-out` receives the final fitted rates, the input for
+`dada --indel-rates`, with the fit recorded as `# indel_fit`.
+`--indel-history` receives every iteration's tables, one
 `iter<N>` per `sample` value, with a `#` line per iteration giving its cluster
 count and the largest relative change in a fitted rate;
 [`plot_indel_errors.R --sample iter<N>`](../scripts/plotting.md#plot_indel_errorsr)

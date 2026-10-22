@@ -25,6 +25,13 @@ minor versions may carry breaking changes).
   substitution model, which stays R's; `--indel-history` keeps every
   iteration's tables (#291). `--indel-opportunities` gains context, joint and
   per-base tables, and `scripts/plot_indel_errors.R` plots observed indel rates.
+- Indel rates are fitted per insertion context and on a joint surface of run
+  length and flanking quality for deletions (#291). `learn-errors
+  --indel-rates-out` now writes fitted rates (`table`, `key`, `rate`), which
+  `dada --indel-rates` uses as given; it still accepts an
+  `--indel-opportunities` table. `learn-errors --indel-fit-cmd` (Experimental)
+  hands the fit to a command, and `examples/external_indel_fit/indel_gam.R`
+  fits penalised GAMs with mgcv.
 
 ### Fixed
 - `remove-primers` `--rc-primer-rev`, `--trim-fwd`, `--trim-rev`, `--orient`
