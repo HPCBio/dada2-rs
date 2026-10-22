@@ -427,7 +427,7 @@ pub struct ExperimentalArgs {
 /// `dada-pseudo`. Off unless `--indel-rates` is given; R DADA2 ignores indels.
 #[derive(Args)]
 pub struct IndelLambdaArgs {
-    /// EXPERIMENTAL: indel-aware λ from a prior run's --indel-opportunities TSV
+    /// EXPERIMENTAL: indel-aware λ from learn-errors --indel-rates-out
     #[arg(long, help_heading = H_EXP)]
     pub indel_rates: Option<PathBuf>,
 
