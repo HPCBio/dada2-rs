@@ -57,11 +57,13 @@ names=$(IFS=,; echo "${samples[*]}")
 # (Plain loops and copies throughout: macOS ships bash 3.2, without mapfile.)
 set_inputs() { if [ "$1" = fwd ]; then in=("${fwd[@]}"); else in=("${rev[@]}"); fi; }
 
-# Wall time and peak memory: GNU time on Linux, BSD time on macOS.
+# Wall time and peak memory: GNU time on Linux, BSD time on macOS; untimed
+# (with a note in the log) where /usr/bin/time is missing.
 timed() {
   local log=$1; shift
   if /usr/bin/time -v true 2> /dev/null; then /usr/bin/time -v -o "$log" "$@"
-  else /usr/bin/time -l "$@" 2> >(tee "$log" >&2); fi
+  elif /usr/bin/time -l true 2> /dev/null; then /usr/bin/time -l "$@" 2> >(tee "$log" >&2)
+  else echo "no /usr/bin/time: untimed" > "$log"; "$@"; fi
 }
 
 mkdir -p "$OUT/learn"
