@@ -1,10 +1,13 @@
 //! Error models: `learn-errors`, `errors-from-sample`, `kdist-calibrate`.
 
-use std::{io, path::PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 use dada2_rs::{
-    cli, cluster_trace, dada, error_models, kdist_calibrate, learn_errors, metrics, minimizers,
-    misc, nwalign,
+    cli, cluster_trace, dada, error_models, indel_events, indel_model, kdist_calibrate,
+    learn_errors, metrics, minimizers, misc, nwalign,
 };
 
 use learn_errors::{
@@ -34,6 +37,7 @@ pub(crate) fn run_learn_errors(args: cli::LearnErrorsArgs) -> io::Result<()> {
         compact,
         diag,
         verbose,
+        indel,
     } = args;
     check_input_paths("input", &input)?;
     let resolved = resolve_learn_params(&fit, denoise, experimental, threads, verbose)?;
@@ -63,6 +67,7 @@ pub(crate) fn run_learn_errors(args: cli::LearnErrorsArgs) -> io::Result<()> {
         verbose,
         compact,
         output,
+        Some(&indel),
     )
 }
 
@@ -106,6 +111,7 @@ pub(crate) fn run_errors_from_sample(args: cli::ErrorsFromSampleArgs) -> io::Res
         verbose,
         compact,
         output,
+        None,
     )
 }
 
@@ -176,6 +182,7 @@ fn learn_and_write(
     verbose: bool,
     compact: bool,
     output: Option<PathBuf>,
+    indel: Option<&cli::LearnIndelArgs>,
 ) -> io::Result<()> {
     if let Some(ref dir) = diag.diag_dir {
         std::fs::create_dir_all(dir)?;
@@ -192,9 +199,10 @@ fn learn_and_write(
         min_abund: diag.trace_min_abund,
     };
 
+    let indel_params = dada_params.clone();
     let result = pool.install(|| {
         learn_errors(
-            all_inputs,
+            &all_inputs,
             &err_fun,
             dada_params,
             max_consist,
@@ -206,6 +214,21 @@ fn learn_and_write(
             },
         )
     })?;
+
+    if let Some(args) = indel
+        && let Some(rates_out) = &args.indel_rates_out
+    {
+        learn_and_write_indels(
+            tag,
+            args,
+            rates_out,
+            &all_inputs,
+            indel_params,
+            &result.err_out,
+            pool,
+            verbose,
+        )?;
+    }
 
     // Serialize: represent the three matrices as Vec<Vec<T>> (16 rows × nq cols).
     #[derive(Serialize)]
@@ -543,4 +566,91 @@ fn resolve_learn_params(
         },
     );
     Ok((err_fun, align_params, dada_params))
+}
+
+/// Learn indel rates after the substitution model (issue #291) and write the
+/// final rates and, if asked, every iteration's tables.
+#[allow(clippy::too_many_arguments)]
+fn learn_and_write_indels(
+    tag: &str,
+    args: &cli::LearnIndelArgs,
+    rates_out: &Path,
+    all_inputs: &[Vec<dada::RawInput>],
+    dada_params: dada::DadaParams,
+    err_out: &[f64],
+    pool: &rayon::ThreadPool,
+    verbose: bool,
+) -> io::Result<()> {
+    let settings = indel_model::IndelSettings {
+        hp_ceiling: args.hp_ceiling,
+        pair_window: args.indel_pair_window,
+        end_zone: args.indel_end_zone,
+    };
+    let learned = pool.install(|| {
+        learn_errors::learn_indels(
+            all_inputs,
+            dada_params,
+            err_out,
+            settings,
+            args.indel_max_iter,
+            args.indel_fit_cmd.as_deref(),
+            verbose,
+        )
+    })?;
+    let last = learned
+        .history
+        .last()
+        .expect("at least one indel iteration");
+    let mut meta: Vec<(&'static str, String)> = vec![
+        ("dada2_rs_command", tag.to_string()),
+        ("dada2_rs_version", misc::DADA2_RS_VERSION.to_string()),
+        ("indel_iterations", learned.history.len().to_string()),
+        ("indel_converged", learned.converged.to_string()),
+        (
+            "indel_fit",
+            args.indel_fit_cmd
+                .clone()
+                .unwrap_or_else(|| "pooled".to_string()),
+        ),
+    ];
+    last.model.write_rates_tsv(rates_out, &meta)?;
+    if verbose {
+        eprintln!(
+            "[{tag}] wrote learned indel rates ({} iteration(s), converged: {}) to {}",
+            learned.history.len(),
+            learned.converged,
+            rates_out.display()
+        );
+    }
+    if let Some(path) = &args.indel_history {
+        for h in &learned.history {
+            meta.push((
+                "iteration",
+                format!(
+                    "{} clusters={} max_rate_change={}",
+                    h.iteration,
+                    h.clusters,
+                    h.max_rel_change
+                        .map_or("NA".to_string(), |c| format!("{c:.3e}"))
+                ),
+            ));
+        }
+        let reports: Vec<(String, indel_events::IndelReport)> = learned
+            .history
+            .iter()
+            .map(|h| {
+                (
+                    format!("iter{}", h.iteration),
+                    indel_events::IndelReport {
+                        uniques: Vec::new(),
+                        opportunities: h.opportunities.clone(),
+                    },
+                )
+            })
+            .collect();
+        let parts: Vec<(&str, &indel_events::IndelReport)> =
+            reports.iter().map(|(n, r)| (n.as_str(), r)).collect();
+        indel_events::write_opportunities_tsv(path, &meta, &parts)?;
+    }
+    Ok(())
 }
