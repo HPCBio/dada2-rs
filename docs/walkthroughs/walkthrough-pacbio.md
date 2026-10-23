@@ -1,17 +1,19 @@
 # PacBio HiFi (single-end) workflow
 
-PacBio HiFi 16S reads are long (~1.5 kb), single-end, and dominated by
-homopolymer indels rather than substitution errors. The workflow therefore
-differs from [Illumina](walkthrough-illumina.md) in a few key ways:
+PacBio HiFi 16S reads are long (~1.5 kb) and single-end. Reads from this
+platform can have both residual 'hot-spot' homopolymer indels as well as
+substitution errors.  The workflow therefore differs from [Illumina](walkthrough-illumina.md) 
+in a few key ways:
 
 - **Primers are removed, reads oriented, and quality/length filtered in one
   step** — see step 1 below.
 - **No reverse reads and no merge step** — denoised ASVs go straight into the
   table.
 - **`--errfun pacbio`** is used instead of `loess`.
-- The `dada` step uses PacBio-tuned alignment parameters: a wider band
-  (`--band 32`), a relaxed homopolymer gap penalty (`--homo-gap-p -1`), and a
-  larger k-mer screen (`--kmer-size 7`).
+- The `dada` step uses PacBio-tuned alignment parameters: a wider
+  band (`--band 32`) and a larger k-mer screen (`--kmer-size 7`). One can use
+  a relaxed homopolymer gap penalty (`--homo-gap-p -1`), but this isn't typically
+  included.
 
 !!! warning "Do not use k=5 on HiFi reads"
     On ~1.5 kb reads the Illumina default `--kmer-size 5` makes the
@@ -60,7 +62,7 @@ are discarded.
 
 ```bash
 dada2-rs learn-errors filtered/*.fastq.gz \
-  --nbases 100000000 --errfun pacbio --band 32 --homo-gap-p -1 --kmer-size 7 \
+  --nbases 100000000 --errfun pacbio --band 32 --kmer-size 7 \
   -o errors_pacbio.json --verbose
 ```
 
@@ -69,7 +71,7 @@ dada2-rs learn-errors filtered/*.fastq.gz \
 ```bash
 dada2-rs dada filtered/sample.fastq.gz \
   --error-model errors_pacbio.json \
-  --band 32 --homo-gap-p -1 --kmer-size 7 \
+  --band 32 --kmer-size 7 \
   -o dada/sample.json --verbose
 ```
 
