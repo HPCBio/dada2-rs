@@ -28,7 +28,7 @@
 # Writes <out-dir>/learn/ (error models, indel rates and history) and
 # <out-dir>/<arm>/ (per-sample JSON, seqtab.json, nochim.json, logs, and
 # time_*.txt with wall time and peak memory). Then:
-#   python3 dev/indel_ab_compare.py --binary <binary> <out-dir>
+#   python3 dev/indels/indel_ab_compare.py --binary <binary> <out-dir>
 set -euo pipefail
 
 BIN="${1:?usage: run_indel_ab.sh <binary> <out-dir> <manifest.tsv>}"

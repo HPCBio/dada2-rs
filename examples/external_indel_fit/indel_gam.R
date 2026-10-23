@@ -29,7 +29,7 @@
 #
 # `cap` is an indicator for a capped top quality (PacBio HiFi's Q93), fitted
 # apart from the smooth; it is used when the top key is 90 or more. These won
-# the held-out comparisons on #291 (dev/indel_gam_proto.R): REML lets the fit
+# the held-out comparisons on #291 (dev/indels/indel_gam_proto.R): REML lets the fit
 # be flexible where events are plentiful (PacBio) and close to flat where they
 # are sparse (Illumina). Tables too small to fit fall back to pooled rates.
 #
