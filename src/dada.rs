@@ -119,6 +119,8 @@ pub struct DadaParams {
     /// Tabulate indel events against final centres (issue #291). Shares the
     /// final-subs pass with `aux_outputs`; does not change the partition.
     pub indel_events: bool,
+    /// Experimental indel-aware λ (issue #291). `None` is R DADA2.
+    pub indel_model: Option<std::sync::Arc<crate::indel_model::IndelModel>>,
 }
 
 /// The denoising options R exposes through `setDadaOpt`.
@@ -184,6 +186,7 @@ impl DadaParams {
             greedy,
             aux_outputs: false,
             indel_events: false,
+            indel_model: None,
         }
     }
 }
@@ -1002,6 +1005,7 @@ fn print_screen_occupancy(occ: &crate::metrics::ScreenOccupancy, nr: usize) {
 pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     use std::time::{Duration, Instant};
     let mut bb = B::new(raws, params.omega_a, params.omega_p, params.use_quals);
+    bb.indel_model = params.indel_model.clone();
 
     // Cumulative phase timers. Only `b_compare_parallel` is multithreaded;
     // shuffle/bud/p_update are serial, so their share quantifies the Amdahl

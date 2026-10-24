@@ -21,6 +21,7 @@ pub mod filter;
 pub mod filter_trim;
 pub mod gates;
 pub mod indel_events;
+pub mod indel_model;
 pub mod kdist_calibrate;
 pub mod kmers;
 pub mod learn_errors;

@@ -15,6 +15,11 @@ minor versions may carry breaking changes).
   deletion rate tables, from the same alignments as `trans`. Denoising output
   is unchanged. `dev/indel_spikein.py` spikes known indel variants into a real
   run for evaluating indel-aware denoising.
+- An indel-aware λ (Experimental) on `dada`, `dada-pooled` and `dada-pseudo`
+  (#291): `--indel-rates` scores each indel between a unique and its centre
+  from a prior run's `--indel-opportunities` table, with `--hp-ceiling`,
+  `--indel-pair-window` and `--indel-end-zone`. Off by default; R-parity output
+  is unchanged. `--indel-opportunities` gains `del_fq`, `ins_len` and `del_len`.
 
 ### Fixed
 - `remove-primers` `--rc-primer-rev`, `--trim-fwd`, `--trim-rev`, `--orient`

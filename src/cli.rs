@@ -423,6 +423,39 @@ pub struct ExperimentalArgs {
     pub end_model: Option<EndModel>,
 }
 
+/// The experimental indel-aware λ (issue #291), on `dada`, `dada-pooled` and
+/// `dada-pseudo`. Off unless `--indel-rates` is given; R DADA2 ignores indels.
+#[derive(Args)]
+pub struct IndelLambdaArgs {
+    /// EXPERIMENTAL: indel-aware λ from a prior run's --indel-opportunities TSV
+    #[arg(long, help_heading = H_EXP)]
+    pub indel_rates: Option<PathBuf>,
+
+    /// EXPERIMENTAL: probability for homopolymer-length indels; 1 never splits, off uses rates
+    #[arg(long, default_value = "0.05", value_parser = parse_hp_ceiling, requires = "indel_rates", help_heading = H_EXP)]
+    pub hp_ceiling: crate::indel_model::HpCeiling,
+
+    /// EXPERIMENTAL: score an insertion and deletion this close as substitutions; 0 = off
+    #[arg(long, default_value_t = 5, requires = "indel_rates", help_heading = H_EXP)]
+    pub indel_pair_window: usize,
+
+    /// EXPERIMENTAL: ignore indels this close to the read's 3' end; 0 = off
+    #[arg(long, default_value_t = 10, requires = "indel_rates", help_heading = H_EXP)]
+    pub indel_end_zone: usize,
+}
+
+fn parse_hp_ceiling(v: &str) -> Result<crate::indel_model::HpCeiling, String> {
+    if v == "off" {
+        return Ok(crate::indel_model::HpCeiling::Off);
+    }
+    match v.parse::<f64>() {
+        Ok(p) if p > 0.0 && p <= 1.0 => Ok(crate::indel_model::HpCeiling::Fixed(p)),
+        _ => Err(format!(
+            "expected a probability in (0, 1] or `off`, got `{v}`"
+        )),
+    }
+}
+
 /// Error-function and self-consistency flags shared by `learn-errors` and
 /// `errors-from-sample`.
 #[derive(Args)]
@@ -710,6 +743,9 @@ pub struct DadaArgs {
 
     #[command(flatten)]
     pub experimental: ExperimentalArgs,
+
+    #[command(flatten)]
+    pub indel_lambda: IndelLambdaArgs,
 }
 
 /// Arguments for [`Commands::DadaPooled`].
@@ -808,6 +844,9 @@ pub struct DadaPooledArgs {
 
     #[command(flatten)]
     pub experimental: ExperimentalArgs,
+
+    #[command(flatten)]
+    pub indel_lambda: IndelLambdaArgs,
 }
 
 /// Arguments for [`Commands::DadaPseudo`].
@@ -906,6 +945,9 @@ pub struct DadaPseudoArgs {
 
     #[command(flatten)]
     pub experimental: ExperimentalArgs,
+
+    #[command(flatten)]
+    pub indel_lambda: IndelLambdaArgs,
 }
 
 /// Arguments for [`Commands::MergePairs`].

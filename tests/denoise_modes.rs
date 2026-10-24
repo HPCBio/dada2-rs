@@ -469,3 +469,91 @@ fn end_model_default_unchanged_and_mismatch_warned() {
         "{warned}"
     );
 }
+
+/// The experimental indel-aware λ (#291) is off by default: an indel-only
+/// variant is absorbed however abundant, as in R. With `--indel-rates` a 3-nt
+/// deletion splits, while a homopolymer-length deletion stays absorbed under
+/// the default ceiling and splits only with `--hp-ceiling off`.
+#[test]
+fn indel_lambda_is_opt_in_and_spares_homopolymer_changes() {
+    let dir = scratch("indel_lambda");
+    let err = err_model();
+    let err = err.to_str().unwrap();
+    // A centre with no long runs except one A4, and two indel-only variants.
+    let unit = "ACGTTGCAGGCTAACCGTAGCATCGGATCCTAGGCTTAACGTCAGTCAGGATCCATGCAAGT";
+    let centre = format!("{unit}{}AAAA{}", &unit[..40], &unit[10..60]);
+    let del3 = format!("{}{}", &centre[..30], &centre[33..]);
+    let a4 = centre.find("AAAA").unwrap();
+    let hp_del = format!("{}{}", &centre[..a4], &centre[a4 + 1..]);
+    assert!(
+        !centre[..33].contains("AAAA"),
+        "deleted bases must not be a run"
+    );
+    let mut fq = String::new();
+    for (i, (s, n)) in [(&centre, 300), (&del3, 40), (&hp_del, 40)]
+        .iter()
+        .enumerate()
+    {
+        for k in 0..*n {
+            fq += &format!("@r{i}_{k}\n{s}\n+\n{}\n", "I".repeat(s.len()));
+        }
+    }
+    let fq_path = dir.join("in.fastq");
+    std::fs::write(&fq_path, fq).unwrap();
+    let fq_path = fq_path.to_str().unwrap();
+    // Low indel rates, high enough deletion rate in runs of 4 to split with `off`.
+    let mut rates = String::from("sample\ttable\tkey\topportunities\tevents\n");
+    rates += "x\tins_q\t40\t10000000\t10\nx\tdel_hp\t1\t10000000\t10\nx\tdel_hp\t4\t100000\t1\n";
+    rates += "x\tdel_fq\t40\t10000000\t10\nx\tins_len\t1\t0\t100\nx\tdel_len\t1\t0\t95\nx\tdel_len\t3\t0\t5\n";
+    let rates_path = dir.join("rates.tsv");
+    std::fs::write(&rates_path, rates).unwrap();
+    let rates_path = rates_path.to_str().unwrap();
+
+    let asvs = |name: &str, extra: &[&str]| -> (Vec<String>, serde_json::Value) {
+        let out = dir.join(format!("{name}.json"));
+        let base = [
+            "dada",
+            fq_path,
+            "--error-model",
+            err,
+            "-o",
+            out.to_str().unwrap(),
+            "--threads",
+            "1",
+        ];
+        run(&[&base[..], extra].concat());
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+        let seqs = v["asvs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["sequence"].as_str().unwrap().to_string())
+            .collect();
+        (seqs, v["params"].clone())
+    };
+    let (default, params) = asvs("default", &[]);
+    assert_eq!(
+        default,
+        vec![centre.clone()],
+        "R parity: indel-only variants are absorbed"
+    );
+    assert!(
+        params.get("indel_lambda").is_none(),
+        "default output must not change"
+    );
+
+    let (on, params) = asvs("on", &["--indel-rates", rates_path]);
+    assert!(on.contains(&del3), "the 3-nt deletion splits: {on:?}");
+    assert!(
+        !on.contains(&hp_del),
+        "the homopolymer change stays under the ceiling"
+    );
+    assert_eq!(params["indel_lambda"]["hp_ceiling"], 0.05);
+    assert_eq!(params["indel_lambda"]["pair_window"], 5);
+
+    let (off, _) = asvs("off", &["--indel-rates", rates_path, "--hp-ceiling", "off"]);
+    assert!(
+        off.contains(&hp_del),
+        "with `off` it is scored at the run-of-4 rate: {off:?}"
+    );
+}
