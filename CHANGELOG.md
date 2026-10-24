@@ -13,13 +13,25 @@ minor versions may carry breaking changes).
   `dada`, `dada-pooled` and `dada-pseudo` (#291): indel events of every unique
   against its final centre, and read-weighted substitution, insertion and
   deletion rate tables, from the same alignments as `trans`. Denoising output
-  is unchanged. `dev/indel_spikein.py` spikes known indel variants into a real
+  is unchanged. `dev/indels/indel_spikein.py` spikes known indel variants into a real
   run for evaluating indel-aware denoising.
 - An indel-aware λ (Experimental) on `dada`, `dada-pooled` and `dada-pseudo`
   (#291): `--indel-rates` scores each indel between a unique and its centre
   from a prior run's `--indel-opportunities` table, with `--hp-ceiling`,
   `--indel-pair-window` and `--indel-end-zone`. Off by default; R-parity output
   is unchanged. `--indel-opportunities` gains `del_fq`, `ins_len` and `del_len`.
+- `learn-errors --indel-rates-out` (Experimental) learns the indel rates for
+  `dada --indel-rates` in a second self-consistency loop after the
+  substitution model, which stays R's; `--indel-history` keeps every
+  iteration's tables (#291). `--indel-opportunities` gains context, joint and
+  per-base tables, and `scripts/plot_indel_errors.R` plots observed indel rates.
+- Indel rates are fitted per insertion context and on a joint surface of run
+  length and flanking quality for deletions (#291). `learn-errors
+  --indel-rates-out` now writes fitted rates (`table`, `key`, `rate`), which
+  `dada --indel-rates` uses as given; it still accepts an
+  `--indel-opportunities` table. `learn-errors --indel-fit-cmd` (Experimental)
+  hands the fit to a command, and `examples/external_indel_fit/indel_gam.R`
+  fits penalised GAMs with mgcv.
 
 ### Fixed
 - `remove-primers` `--rc-primer-rev`, `--trim-fwd`, `--trim-rev`, `--orient`

@@ -14,6 +14,7 @@ rather than explaining it, so there is one place to keep current.
 | [`plot_complexity.R`](plotting.md#plot_complexityr) | R | read-complexity histogram, R's `plotComplexity()` |
 | [`plot_expected_error.R`](plotting.md#plot_expected_errorr) | R | cumulative expected error along the read |
 | [`plot_errors.R`](plotting.md#plot_errorsr) | R | error-model panel, R's `plotErrors()` |
+| [`plot_indel_errors.R`](plotting.md#plot_indel_errorsr) | R | observed indel error rates and length spectrum (experimental) |
 | [`learnerrors_to_dada2rs.R`](pipeline-helpers.md#learnerrors_to_dada2rsr) | R | R `learnErrors()` `.rds` → dada2-rs error model |
 | [`track_reads.py`](pipeline-helpers.md#track_readspy) | Python | per-sample read counts across every step |
 | [`examples/import_mia.R`](pipeline-helpers.md#examplesimport_miar) | R | template for loading the final tables into `mia` |
@@ -53,11 +54,12 @@ dada2-rs-plot-errors err.json errors.pdf
 | `plot_complexity.R` | `dada2-rs-plot-complexity` |
 | `plot_expected_error.R` | `dada2-rs-plot-expected-error` |
 | `plot_errors.R` | `dada2-rs-plot-errors` |
+| `plot_indel_errors.R` | `dada2-rs-plot-indel-errors` |
 | `learnerrors_to_dada2rs.R` | `dada2-rs-learnerrors-to-dada2rs` |
 | `track_reads.py` | `dada2-rs-track-reads` |
 
 The published crate **does carry these scripts** — `scripts/` is not in
-`Cargo.toml`'s `exclude` list, so all six ship in the `.crate` tarball. But
+`Cargo.toml`'s `exclude` list, so all seven ship in the `.crate` tarball. But
 `cargo install` only places *binary targets* on `PATH`; it has no mechanism for
 data files. So after `cargo install dada2-rs` they exist, unpacked, under
 `~/.cargo/registry/src/<index>/dada2-rs-<version>/scripts/` and you invoke them

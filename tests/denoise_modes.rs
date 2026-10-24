@@ -503,8 +503,9 @@ fn indel_lambda_is_opt_in_and_spares_homopolymer_changes() {
     let fq_path = fq_path.to_str().unwrap();
     // Low indel rates, high enough deletion rate in runs of 4 to split with `off`.
     let mut rates = String::from("sample\ttable\tkey\topportunities\tevents\n");
-    rates += "x\tins_q\t40\t10000000\t10\nx\tdel_hp\t1\t10000000\t10\nx\tdel_hp\t4\t100000\t1\n";
-    rates += "x\tdel_fq\t40\t10000000\t10\nx\tins_len\t1\t0\t100\nx\tdel_len\t1\t0\t95\nx\tdel_len\t3\t0\t5\n";
+    rates += "x\tins_q_novel\t40\t10000000\t10\nx\tins_q_run\t40\t10000000\t10\n";
+    rates += "x\tdel_fq_L1\t40\t10000000\t10\nx\tdel_fq_L4\t40\t100000\t1\n";
+    rates += "x\tins_len\t1\t0\t100\nx\tdel_len\t1\t0\t95\nx\tdel_len\t3\t0\t5\n";
     let rates_path = dir.join("rates.tsv");
     std::fs::write(&rates_path, rates).unwrap();
     let rates_path = rates_path.to_str().unwrap();
@@ -556,4 +557,133 @@ fn indel_lambda_is_opt_in_and_spares_homopolymer_changes() {
         off.contains(&hp_del),
         "with `off` it is scored at the run-of-4 rate: {off:?}"
     );
+}
+
+/// `learn-errors --indel-rates-out` (#291) learns indel rates after the
+/// substitution model: the error-model JSON stays byte-identical (the
+/// substitution model is still R's), the loop stops on a repeat, and `dada
+/// --indel-rates` accepts the learned rates.
+#[test]
+fn learn_errors_learns_indel_rates_without_touching_the_error_model() {
+    let dir = scratch("learn_indels");
+    let (f1, f2) = (fixture("sam1F.fastq.gz"), fixture("sam2F.fastq.gz"));
+    let (f1, f2) = (f1.to_str().unwrap(), f2.to_str().unwrap());
+    let p = |n: &str| dir.join(n).to_str().unwrap().to_string();
+    run(&["learn-errors", f1, f2, "-o", &p("plain.json")]);
+    run(&[
+        "learn-errors",
+        f1,
+        f2,
+        "-o",
+        &p("with.json"),
+        "--indel-rates-out",
+        &p("rates.tsv"),
+        "--indel-history",
+        &p("history.tsv"),
+    ]);
+    assert_eq!(
+        normalized(&dir.join("plain.json")),
+        normalized(&dir.join("with.json")),
+        "indel learning changed the error model",
+    );
+    let history = std::fs::read_to_string(p("history.tsv")).unwrap();
+    assert!(
+        history.contains("# indel_converged: true"),
+        "{}",
+        &history[..400.min(history.len())]
+    );
+    let iterations: std::collections::BTreeSet<&str> = history
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.starts_with("sample\t"))
+        .map(|l| l.split('\t').next().unwrap())
+        .collect();
+    assert!(
+        iterations.len() >= 2 && iterations.contains("iter0"),
+        "{iterations:?}"
+    );
+    let rates = std::fs::read_to_string(p("rates.tsv")).unwrap();
+    assert!(
+        rates.contains("# indel_fit: pooled\ntable\tkey\trate\n"),
+        "{rates}"
+    );
+    assert!(rates.lines().any(|l| l.starts_with("del_fq_L1\t")));
+    run(&[
+        "dada",
+        f1,
+        "--error-model",
+        &p("with.json"),
+        "--indel-rates",
+        &p("rates.tsv"),
+        "-o",
+        &p("d.json"),
+    ]);
+}
+
+/// `learn-errors --indel-fit-cmd` hands each iteration's counts to a command
+/// and reads its fitted rates back, as `--errfun-cmd` does for substitutions;
+/// a failing command's stderr reaches the user.
+#[test]
+fn learn_errors_fits_indel_rates_with_an_external_command() {
+    let dir = scratch("learn_indels_external");
+    let f1 = fixture("sam1F.fastq.gz");
+    let f1 = f1.to_str().unwrap();
+    let p = |n: &str| dir.join(n).to_str().unwrap().to_string();
+    // A stand-in fit: flat rates, and a copy of the counts it was given.
+    let mut rates = String::from("table\tkey\trate\n");
+    for t in [
+        "ins_q_novel",
+        "ins_q_run",
+        "del_fq_L1",
+        "del_fq_L2",
+        "del_fq_L3",
+        "del_fq_L4",
+        "del_fq_L5",
+    ] {
+        rates += &format!("{t}\t0\t1e-4\n");
+    }
+    rates += "ins_r\t0\t0.1\ndel_r\t0\t0.1\n";
+    std::fs::write(p("flat.tsv"), &rates).unwrap();
+    std::fs::write(
+        p("fit.sh"),
+        format!("cp \"$1\" {}\ncp {} \"$2\"\n", p("seen.tsv"), p("flat.tsv")),
+    )
+    .unwrap();
+    let fit = format!("sh {}", p("fit.sh"));
+    run(&[
+        "learn-errors",
+        f1,
+        "-o",
+        &p("err.json"),
+        "--indel-rates-out",
+        &p("rates.tsv"),
+        "--indel-max-iter",
+        "2",
+        "--indel-fit-cmd",
+        &fit,
+    ]);
+    let seen = std::fs::read_to_string(p("seen.tsv")).unwrap();
+    assert!(
+        seen.lines().any(|l| l.starts_with("learned\tdel_fq_L1\t")),
+        "{seen}"
+    );
+    let out = std::fs::read_to_string(p("rates.tsv")).unwrap();
+    assert!(out.contains(&format!("# indel_fit: {fit}\n")), "{out}");
+    assert!(out.lines().any(|l| l == "ins_r\t0\t1e-1"), "{out}");
+
+    std::fs::write(p("fail.sh"), "echo 'mgcv is missing' >&2\nexit 3\n").unwrap();
+    let o = std::process::Command::new(BIN)
+        .args([
+            "learn-errors",
+            f1,
+            "-o",
+            &p("err2.json"),
+            "--indel-rates-out",
+            &p("r2.tsv"),
+        ])
+        .args(["--indel-fit-cmd", &format!("sh {}", p("fail.sh"))])
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(e.contains("mgcv is missing"), "{e}");
 }

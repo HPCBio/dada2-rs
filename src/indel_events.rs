@@ -59,6 +59,23 @@ pub struct Table {
 }
 
 impl Table {
+    /// Add `other`'s counts key by key (tables from different samples or runs).
+    pub fn merge(&mut self, other: &Table) {
+        for (k, (&o, &e)) in other.opportunities.iter().zip(&other.events).enumerate() {
+            self.add(k, o, e);
+        }
+    }
+
+    /// Equal counts, ignoring trailing zero keys (vectors grow on demand).
+    pub fn same_counts(&self, other: &Table) -> bool {
+        let n = self.opportunities.len().max(other.opportunities.len());
+        let at = |v: &[u64], k: usize| v.get(k).copied().unwrap_or(0);
+        (0..n).all(|k| {
+            at(&self.opportunities, k) == at(&other.opportunities, k)
+                && at(&self.events, k) == at(&other.events, k)
+        })
+    }
+
     fn add(&mut self, key: usize, opp: u64, ev: u64) {
         if self.opportunities.len() <= key {
             self.opportunities.resize(key + 1, 0);
@@ -87,6 +104,101 @@ pub struct Opportunities {
     /// geometric length factor.
     pub ins_len: Table,
     pub del_len: Table,
+    /// `ins_q` split by whether the insertion lengthens a run (`ins_q_run`)
+    /// or adds a base matching neither neighbour (`ins_q_novel`); both carry
+    /// the full per-quality denominators.
+    pub ins_q_novel: Table,
+    pub ins_q_run: Table,
+    /// `del_fq` within each centre run-length class 1..5 (5 = 5 or more), the
+    /// joint table for a deletion fit in run length and flanking quality.
+    pub del_fq_run: [Table; 5],
+    /// `del_hp` and `ins_hp` split by the run's base (A, C, G, T).
+    pub del_hp_base: [Table; 4],
+    pub ins_hp_base: [Table; 4],
+    /// `del_fq`'s centre bases by the centre's own quality there (the mean
+    /// over the centre unique's reads) instead of the unique's flanking
+    /// quality; same opportunities and events. Overall and per run-length
+    /// class, to compare the two covariates.
+    pub del_cq: Table,
+    pub del_cq_run: [Table; 5],
+    /// Both covariates jointly per run-length class, keyed
+    /// `flanking quality * 128 + centre quality`, so fits on either covariate
+    /// can be scored on the same cells.
+    pub del_fqcq_run: [Table; 5],
+}
+
+impl Opportunities {
+    /// Every table with the name it is written under.
+    pub fn named_tables(&self) -> Vec<(String, &Table)> {
+        let mut tables: Vec<(String, &Table)> = [
+            ("sub_q", &self.sub_q),
+            ("ins_q", &self.ins_q),
+            ("del_hp", &self.del_hp),
+            ("ins_hp", &self.ins_hp),
+            ("del_fq", &self.del_fq),
+            ("ins_len", &self.ins_len),
+            ("del_len", &self.del_len),
+            ("ins_q_novel", &self.ins_q_novel),
+            ("ins_q_run", &self.ins_q_run),
+        ]
+        .into_iter()
+        .map(|(n, t)| (n.to_string(), t))
+        .collect();
+        for (k, t) in self.del_fq_run.iter().enumerate() {
+            tables.push((format!("del_fq_L{}", k + 1), t));
+        }
+        for (b, n) in ["A", "C", "G", "T"].iter().enumerate() {
+            tables.push((format!("del_hp_{n}"), &self.del_hp_base[b]));
+            tables.push((format!("ins_hp_{n}"), &self.ins_hp_base[b]));
+        }
+        tables.push(("del_cq".to_string(), &self.del_cq));
+        for (k, t) in self.del_cq_run.iter().enumerate() {
+            tables.push((format!("del_cq_L{}", k + 1), t));
+        }
+        for (k, t) in self.del_fqcq_run.iter().enumerate() {
+            tables.push((format!("del_fqcq_L{}", k + 1), t));
+        }
+        tables
+    }
+
+    fn tables_mut(&mut self) -> Vec<&mut Table> {
+        let mut v: Vec<&mut Table> = vec![
+            &mut self.sub_q,
+            &mut self.ins_q,
+            &mut self.del_hp,
+            &mut self.ins_hp,
+            &mut self.del_fq,
+            &mut self.ins_len,
+            &mut self.del_len,
+            &mut self.ins_q_novel,
+            &mut self.ins_q_run,
+        ];
+        v.extend(self.del_fq_run.iter_mut());
+        for (d, i) in self.del_hp_base.iter_mut().zip(self.ins_hp_base.iter_mut()) {
+            v.push(d);
+            v.push(i);
+        }
+        v.push(&mut self.del_cq);
+        v.extend(self.del_cq_run.iter_mut());
+        v.extend(self.del_fqcq_run.iter_mut());
+        v
+    }
+
+    /// Add `other`'s counts table by table.
+    pub fn merge(&mut self, other: &Opportunities) {
+        let theirs: Vec<&Table> = other.named_tables().into_iter().map(|(_, t)| t).collect();
+        for (mine, t) in self.tables_mut().into_iter().zip(theirs) {
+            mine.merge(t);
+        }
+    }
+
+    /// Equal counts in every table.
+    pub fn same_counts(&self, other: &Opportunities) -> bool {
+        self.named_tables()
+            .iter()
+            .zip(other.named_tables())
+            .all(|((_, a), (_, b))| a.same_counts(b))
+    }
 }
 
 /// A unique with at least one indel, and its events.
@@ -135,6 +247,7 @@ pub fn pair_events(
     center: &[u8],
     raw: &[u8],
     qual: Option<&[u8]>,
+    center_qual: Option<&[u8]>,
     sub: &Sub,
     opp: Option<(&mut Opportunities, u64)>,
 ) -> Vec<Event> {
@@ -248,14 +361,28 @@ pub fn pair_events(
             let j0 = map[ev.center_pos] as usize + 1;
             inserted[j0..j0 + ev.bases.len()].fill(true);
         }
+        let mut lengthens = vec![false; raw.len()];
+        for ev in events
+            .iter()
+            .filter(|e| e.kind == Kind::Insertion && !e.terminal && e.hp_len > 0)
+        {
+            let j0 = map[ev.center_pos] as usize + 1;
+            lengthens[j0..j0 + ev.bases.len()].fill(true);
+        }
         for (j, &ins) in inserted.iter().enumerate().take(ql + 1).skip(q0) {
             opp.ins_q.add(qk(j), w, if ins { w } else { 0 });
+            let (run, novel) = (ins && lengthens[j], ins && !lengthens[j]);
+            opp.ins_q_run.add(qk(j), w, if run { w } else { 0 });
+            opp.ins_q_novel.add(qk(j), w, if novel { w } else { 0 });
         }
+        let base = |i: usize| (center[i].saturating_sub(1) as usize).min(3);
         for i in first..=last {
             let deleted = map[i] == GAP_GLYPH;
             opp.del_hp.add(runs[i], w, if deleted { w } else { 0 });
+            opp.del_hp_base[base(i)].add(runs[i], w, if deleted { w } else { 0 });
             if i == 0 || center[i] != center[i - 1] {
                 opp.ins_hp.add(runs[i], w, 0);
+                opp.ins_hp_base[base(i)].add(runs[i], w, 0);
             }
         }
         for ev in events
@@ -264,6 +391,13 @@ pub fn pair_events(
         {
             if ev.hp_len > 0 {
                 opp.ins_hp.add(ev.hp_len, 0, w);
+                let b = match ev.bases[0] {
+                    b'A' => 0,
+                    b'C' => 1,
+                    b'G' => 2,
+                    _ => 3,
+                };
+                opp.ins_hp_base[b].add(ev.hp_len, 0, w);
             }
         }
         // Flanking quality of each internal centre base: the nearest aligned
@@ -288,6 +422,21 @@ pub fn pair_events(
             if let (Some(l), Some(r)) = (left[i], right[i]) {
                 let deleted = map[i] == GAP_GLYPH;
                 opp.del_fq.add(l.min(r), w, if deleted { w } else { 0 });
+                opp.del_fq_run[runs[i].clamp(1, 5) - 1].add(
+                    l.min(r),
+                    w,
+                    if deleted { w } else { 0 },
+                );
+                if let Some(cq) = center_qual {
+                    let k = cq[i] as usize;
+                    opp.del_cq.add(k, w, if deleted { w } else { 0 });
+                    opp.del_cq_run[runs[i].clamp(1, 5) - 1].add(k, w, if deleted { w } else { 0 });
+                    opp.del_fqcq_run[runs[i].clamp(1, 5) - 1].add(
+                        l.min(r) * 128 + k,
+                        w,
+                        if deleted { w } else { 0 },
+                    );
+                }
             }
         }
         for ev in events.iter().filter(|e| !e.terminal) {
@@ -318,7 +467,14 @@ pub fn tabulate(b: &B, subs: &[Option<Sub>]) -> IndelReport {
                 continue;
             };
             let weight = raw.correct.then_some((&mut opp, raw.reads as u64));
-            let events = pair_events(&center.seq, &raw.seq, raw.qual.as_deref(), sub, weight);
+            let events = pair_events(
+                &center.seq,
+                &raw.seq,
+                raw.qual.as_deref(),
+                center.qual.as_deref(),
+                sub,
+                weight,
+            );
             if !events.is_empty() {
                 uniques.push(UniqueEvents {
                     cluster: ci,
@@ -430,16 +586,8 @@ pub fn write_opportunities_tsv(
     writeln!(w, "sample\ttable\tkey\topportunities\tevents")?;
     let mut n = 0;
     for (sample, report) in parts {
-        let o = &report.opportunities;
-        for (name, t) in [
-            ("sub_q", &o.sub_q),
-            ("ins_q", &o.ins_q),
-            ("del_hp", &o.del_hp),
-            ("ins_hp", &o.ins_hp),
-            ("del_fq", &o.del_fq),
-            ("ins_len", &o.ins_len),
-            ("del_len", &o.del_len),
-        ] {
+        let tables = report.opportunities.named_tables();
+        for (name, t) in tables {
             for (k, (&opp, &ev)) in t.opportunities.iter().zip(&t.events).enumerate() {
                 if opp > 0 || ev > 0 {
                     writeln!(w, "{sample}\t{name}\t{k}\t{opp}\t{ev}")?;
@@ -475,9 +623,38 @@ mod tests {
         let sub = al2subs(&a0, &a1);
         let center: Vec<u8> = a0.iter().copied().filter(|&b| b != b'-').collect();
         let raw: Vec<u8> = a1.iter().copied().filter(|&b| b != b'-').collect();
+        // Centre qualities 20, 21, ... so a table key names its centre position.
+        let cq: Vec<u8> = (0..center.len()).map(|i| 20 + i as u8).collect();
         let mut opp = Opportunities::default();
-        let ev = pair_events(&center, &raw, qual, &sub, Some((&mut opp, 10)));
+        let ev = pair_events(
+            &center,
+            &raw,
+            qual,
+            qual.map(|_| &cq[..]),
+            &sub,
+            Some((&mut opp, 10)),
+        );
         (ev, opp)
+    }
+
+    #[test]
+    fn centre_quality_table_mirrors_flanking_quality_table() {
+        // C at centre position 1 deleted; quality 30 everywhere in the unique.
+        let (_, opp) = run("ACGTACGT", "A-GTACGT", Some(&[30; 7]));
+        let sum = |t: &Table| {
+            (
+                t.opportunities.iter().sum::<u64>(),
+                t.events.iter().sum::<u64>(),
+            )
+        };
+        assert_eq!(sum(&opp.del_cq), sum(&opp.del_fq));
+        assert_eq!(opp.del_cq.events[21], 10);
+        assert_eq!(sum(&opp.del_cq_run[0]), sum(&opp.del_fq_run[0]));
+        assert_eq!(sum(&opp.del_fqcq_run[0]), sum(&opp.del_fq_run[0]));
+        assert_eq!(opp.del_fqcq_run[0].events[30 * 128 + 21], 10);
+        // Without unique qualities there are no flanks, so no centre table either.
+        let (_, opp) = run("ACGTACGT", "A-GTACGT", None);
+        assert_eq!(sum(&opp.del_cq), (0, 0));
     }
 
     #[test]
@@ -550,5 +727,50 @@ mod tests {
     #[test]
     fn run_lengths_by_position() {
         assert_eq!(run_lengths(&enc("AACGGG")), vec![2, 2, 1, 3, 3, 3]);
+    }
+
+    #[test]
+    fn split_tables_sum_to_their_parents() {
+        let sum =
+            |t: &Table| -> (u64, u64) { (t.opportunities.iter().sum(), t.events.iter().sum()) };
+        let add = |a: (u64, u64), b: (u64, u64)| (a.0 + b.0, a.1 + b.1);
+        // A run-lengthening insertion, a novel insertion, and two deletions.
+        let qual = [30u8; 14];
+        let (_, opp) = run("CGTT-ACAA-CGAAC", "CGTTTACAAGC-AAC", Some(&qual));
+        assert_eq!(
+            sum(&opp.ins_q_run).1 + sum(&opp.ins_q_novel).1,
+            sum(&opp.ins_q).1
+        );
+        assert_eq!(sum(&opp.ins_q_run).1, 10, "the T lengthens TT");
+        assert_eq!(sum(&opp.ins_q_novel).1, 10, "the G is novel");
+        assert_eq!(
+            sum(&opp.ins_q_run).0,
+            sum(&opp.ins_q).0,
+            "full denominators in both"
+        );
+        let fq = opp.del_fq_run.iter().map(sum).fold((0, 0), add);
+        assert_eq!(fq, sum(&opp.del_fq));
+        let hp = opp.del_hp_base.iter().map(sum).fold((0, 0), add);
+        assert_eq!(hp, sum(&opp.del_hp));
+        let ihp = opp.ins_hp_base.iter().map(sum).fold((0, 0), add);
+        assert_eq!(ihp, sum(&opp.ins_hp));
+        assert_eq!(opp.ins_hp_base[3].events[2], 10, "T lengthening a run of 2");
+    }
+
+    #[test]
+    fn merge_adds_counts_and_same_counts_ignores_trailing_zeros() {
+        let (_, a) = run("CGTT-ACAA-CGAAC", "CGTTTACAAGC-AAC", Some(&[30u8; 14]));
+        let mut b = Opportunities::default();
+        b.merge(&a);
+        assert!(b.same_counts(&a));
+        b.merge(&a);
+        assert!(!b.same_counts(&a));
+        assert_eq!(
+            b.del_hp.events.iter().sum::<u64>(),
+            2 * a.del_hp.events.iter().sum::<u64>()
+        );
+        let mut c = a.clone();
+        c.ins_q.add(90, 0, 0);
+        assert!(c.same_counts(&a), "a trailing zero key is not a difference");
     }
 }

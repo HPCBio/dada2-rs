@@ -81,7 +81,9 @@ def hits(primer, seq, seed, max_mm, seed_at_end):
     return out
 
 
-def organism(path, first_header):
+def organism(path, first_header, from_file=False):
+    if from_file:
+        return re.sub(r"\.(fna|fa|fasta)(\.gz)?$", "", os.path.basename(path))
     words = first_header.split(None, 1)[1].split(",")[0].split() if " " in first_header else [os.path.basename(path)]
     return "_".join(w for w in words[:2]) if len(words) >= 2 else words[0]
 
@@ -95,6 +97,9 @@ def main():
     ap.add_argument("--seed", type=int, default=5, help="exact 3' bases required (default 5)")
     ap.add_argument("--min-len", type=int, default=100)
     ap.add_argument("--max-len", type=int, default=2000)
+    ap.add_argument("--name-from-file", action="store_true",
+                    help="name each organism by its file stem, not the header's genus and species "
+                         "(for mocks with several strains of one species)")
     ap.add_argument("--fasta", required=True)
     ap.add_argument("--tsv", required=True)
     a = ap.parse_args()
@@ -104,7 +109,7 @@ def main():
     for path in a.genomes:
         org = None
         for name, g in fasta(path):
-            org = org or organism(path, name)
+            org = org or organism(path, name, a.name_from_file)
             contig = name.split()[0]
             for strand, s in (("+", g), ("-", rc(g))):
                 fh = hits(fwd, s, a.seed, a.max_mismatch, True)
@@ -139,7 +144,7 @@ def main():
             fh.write(f"{org}\t{contig}\t{strand}\t{pos}\t{fmm}\t{rmm}\t{len(amp)}\t{names[(org, amp)]}\n")
 
     ncopy = collections.Counter(c[0] for c in copies)
-    seen = {organism(p, next(fasta(p))[0]) for p in a.genomes}
+    seen = {organism(p, next(fasta(p))[0], a.name_from_file) for p in a.genomes}
     for org in sorted(seen):
         mm = sorted({(c[4], c[5]) for c in copies if c[0] == org})
         print(f"{org:34s} copies={ncopy[org]:3d} alleles={per[org]:2d} primer mismatches F/R={mm}", file=sys.stderr)
