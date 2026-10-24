@@ -91,6 +91,10 @@ pub struct UniqueEvents {
     pub reads: u32,
     pub correct: bool,
     pub p: f64,
+    /// λ against the centre and the cluster's reads, the inputs of `p`
+    /// (`calc_pA(reads, lambda * cluster_reads)`).
+    pub lambda: f64,
+    pub cluster_reads: u32,
     pub nsubs: usize,
     pub events: Vec<Event>,
 }
@@ -284,6 +288,8 @@ pub fn tabulate(b: &B, subs: &[Option<Sub>]) -> IndelReport {
                     reads: raw.reads,
                     correct: raw.correct,
                     p: raw.p,
+                    lambda: raw.comp.lambda,
+                    cluster_reads: bi.reads,
                     nsubs: sub.nsubs(),
                     events,
                 });
@@ -334,7 +340,7 @@ pub fn write_events_tsv(
     write_meta(&mut w, meta)?;
     writeln!(
         w,
-        "sample\tcluster\tcenter_len\tunique\treads\tcorrect\tp\tnsubs\tn_internal\t\
+        "sample\tcluster\tcenter_len\tunique\treads\tcorrect\tp\tlambda\tcluster_reads\tnsubs\tn_internal\t\
          type\tcenter_pos\tlen\tbases\thp_len\tterminal\tqual_min\tqual_mean\tqual_left\tqual_right"
     )?;
     let mut n = 0;
@@ -345,12 +351,14 @@ pub fn write_events_tsv(
                 for e in &u.events {
                     writeln!(
                         w,
-                        "{sample}\t{}\t{}\t{}\t{reads}\t{}\t{:e}\t{}\t{n_internal}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        "{sample}\t{}\t{}\t{}\t{reads}\t{}\t{:e}\t{:e}\t{}\t{}\t{n_internal}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                         u.cluster,
                         u.center_len,
                         u.unique,
                         u.correct as u8,
                         u.p,
+                        u.lambda,
+                        u.cluster_reads,
                         u.nsubs,
                         if e.kind == Kind::Insertion { "I" } else { "D" },
                         e.center_pos,

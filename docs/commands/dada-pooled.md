@@ -94,7 +94,8 @@ emitted per sample it appears in, carrying that sample's read count.
 
 **`--indel-events`**, **`--indel-opportunities`** (experimental) — the indel
 tables described under [`dada`](dada.md#diagnostics), from the pooled
-partition. `cluster`, `unique` (merged index), `correct` and `p` are global;
+partition. `cluster`, `unique` (merged index), `correct`, `p`, `lambda` and
+`cluster_reads` are global;
 each event is emitted per sample its merged unique appears in, with that
 sample's `reads`. The rate tables are pool-level (`sample` is `pooled`),
 weighted by pooled reads as dada weighs them.
