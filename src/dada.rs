@@ -121,6 +121,10 @@ pub struct DadaParams {
     pub indel_events: bool,
     /// Experimental indel-aware λ (issue #291). `None` is R DADA2.
     pub indel_model: Option<std::sync::Arc<crate::indel_model::IndelModel>>,
+    /// Find each final cluster's nearest other cluster (issue #306), for the
+    /// ASV lineage fields of the `dada` outputs. Off for internal callers
+    /// such as `learn-errors`, which denoise repeatedly and discard it.
+    pub lineage: bool,
 }
 
 /// The denoising options R exposes through `setDadaOpt`.
@@ -186,6 +190,7 @@ impl DadaParams {
             greedy,
             aux_outputs: false,
             indel_events: false,
+            lineage: false,
             indel_model: None,
         }
     }
@@ -217,6 +222,16 @@ pub struct RawInput {
     /// approximate/length-collapsing dereplication is ever introduced, this
     /// representation must carry per-position counts too.
     pub quals: Option<Vec<u32>>,
+}
+
+/// A cluster's nearest other final cluster (issue #306): substitutions and
+/// internal indel events between the two centres; end overhangs are not
+/// counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Nearest {
+    pub cluster: u32,
+    pub hamming: u32,
+    pub indels: u32,
 }
 
 /// Per-cluster summary produced by `dada_uniques`.
@@ -251,6 +266,9 @@ pub struct ClusterSummary {
     /// Hamming distance from this cluster's center to its birth-parent's
     /// center at the time of budding (0 for the initial cluster).
     pub birth_hamming: u32,
+    /// The nearest other final cluster; `Some` only with
+    /// `DadaParams::lineage` and at least two clusters.
+    pub nearest: Option<Nearest>,
 }
 
 /// R DADA2 parity outputs computed when `DadaParams::aux_outputs` is set.
@@ -614,10 +632,12 @@ pub fn dada_uniques_cached(
     }
 
     // ---- Build cluster summaries ----
+    let nearest = params.lineage.then(|| nearest_clusters(&b, params));
     let clusters = b
         .clusters
         .iter()
-        .map(|bi| {
+        .enumerate()
+        .map(|(ci, bi)| {
             let members = bi.raws.clone();
             let mut member_hammings = Vec::with_capacity(members.len());
             let mut member_lambdas = Vec::with_capacity(members.len());
@@ -646,6 +666,7 @@ pub fn dada_uniques_cached(
                 birth_fold: bi.birth_fold,
                 birth_e: bi.birth_e,
                 birth_hamming: bi.birth_comp.hamming,
+                nearest: nearest.as_ref().and_then(|n| n[ci]),
             }
         })
         .collect();
@@ -750,6 +771,69 @@ fn extend_err_for_quals(
 
 /// Final-subs alignment params: the k-mer screen disabled
 /// (`use_kmers=false, kdist_cutoff=1.0`) so every comparison produces a Sub.
+/// Each final cluster's nearest other cluster (issue #306). A k-mer screen
+/// (k = 5) picks the closest few centres; one alignment each counts the
+/// substitutions and internal indel events, and the fewest edits wins (ties to
+/// the earlier cluster). A few alignments per cluster, after denoising.
+fn nearest_clusters(b: &B, params: &DadaParams) -> Vec<Option<Nearest>> {
+    const K: usize = 5;
+    const CANDIDATES: usize = 3;
+    let n = b.clusters.len();
+    if n < 2 {
+        return vec![None; n];
+    }
+    let centres: Vec<usize> = b
+        .clusters
+        .iter()
+        .map(|bi| bi.center.expect("final clusters have centres"))
+        .collect();
+    let kv: Vec<Vec<u16>> = centres
+        .par_iter()
+        .map(|&r| crate::kmers::assign_kmer(&b.raws[r].seq, K))
+        .collect();
+    let align = final_subs_align(params);
+    (0..n)
+        .into_par_iter()
+        .map_init(AlignBuffers::new, |buf, i| {
+            let ri = &b.raws[centres[i]];
+            let mut cand: Vec<(f64, usize)> = (0..n)
+                .filter(|&j| j != i)
+                .map(|j| {
+                    let rj = &b.raws[centres[j]];
+                    let d = crate::kmers::kmer_dist(&kv[i], ri.seq.len(), &kv[j], rj.seq.len(), K);
+                    (d, j)
+                })
+                .collect();
+            let m = CANDIDATES.min(cand.len());
+            cand.select_nth_unstable_by(m - 1, |a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            cand.truncate(m);
+            cand.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            let mut best: Option<Nearest> = None;
+            for &(_, j) in &cand {
+                let rj = &b.raws[centres[j]];
+                let Some(sub) = sub_new_with_buf(ri, rj, &align, buf) else {
+                    continue;
+                };
+                let indels =
+                    crate::indel_events::pair_events(&ri.seq, &rj.seq, None, None, &sub, None)
+                        .iter()
+                        .filter(|e| !e.terminal)
+                        .count() as u32;
+                let near = Nearest {
+                    cluster: j as u32,
+                    hamming: sub.nsubs() as u32,
+                    indels,
+                };
+                let edits = |x: &Nearest| x.hamming + x.indels;
+                if best.is_none_or(|b| (edits(&near), near.cluster) < (edits(&b), b.cluster)) {
+                    best = Some(near);
+                }
+            }
+            best
+        })
+        .collect()
+}
+
 fn final_subs_align(params: &DadaParams) -> AlignParams {
     AlignParams {
         use_kmers: false,
@@ -2001,6 +2085,48 @@ mod tests {
             input(&b1, 1),
         ];
         (inputs, [a, b, a1, b1])
+    }
+
+    /// Lineage (issue #306): each centre's nearest other centre, with its
+    /// substitutions and internal indels; only when asked for.
+    #[test]
+    fn lineage_reports_nearest_centre_with_substitutions_and_indels() {
+        let a = seq(6, 150);
+        let b = mutate(&a, &[5, 20, 35, 50, 65, 80, 95, 110, 125, 140]);
+        let c = mutate(&b, &[30, 60, 90]);
+        // A with one base deleted at 100, plus two substitutions to split on.
+        let d = mutate(&format!("{}{}", &a[..100], &a[101..]), &[15, 130]);
+        let inputs = vec![
+            input(&a, 1000),
+            input(&b, 600),
+            input(&c, 400),
+            input(&d, 300),
+        ];
+        let mut p = default_params();
+        p.lineage = true;
+        let r = dada_uniques(&inputs, &p).unwrap();
+        assert_eq!(r.clusters.len(), 4, "every centre splits");
+        let [ca, cb, cc, cd] = [&a, &b, &c, &d].map(|s| cluster_of(&r, s));
+        let near = |ci: usize| r.clusters[ci].nearest.expect("nearest with lineage on");
+        let n = |cluster: usize, hamming, indels| Nearest {
+            cluster: cluster as u32,
+            hamming,
+            indels,
+        };
+        assert_eq!(near(ca), n(cd, 2, 1));
+        assert_eq!(near(cb), n(cc, 3, 0));
+        assert_eq!(near(cc), n(cb, 3, 0));
+        assert_eq!(near(cd), n(ca, 2, 1));
+        assert!(matches!(r.clusters[ca].birth_type, BirthType::Initial));
+        for ci in [cb, cc, cd] {
+            assert!(
+                (r.clusters[ci].birth_from as usize) < r.clusters.len()
+                    && r.clusters[ci].birth_from as usize != ci
+            );
+        }
+        // Off by default: internal callers (learn-errors) never pay for it.
+        let r = dada_uniques(&inputs, &default_params()).unwrap();
+        assert!(r.clusters.iter().all(|c| c.nearest.is_none()));
     }
 
     #[test]

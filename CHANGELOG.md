@@ -9,6 +9,11 @@ minor versions may carry breaking changes).
 ## [Unreleased]
 
 ### Added
+
+- ASV lineage in the `dada`, `dada-pooled` and `dada-pseudo` JSON (#306): each
+  ASV's `cluster` id, the cluster it split from (`birth_from`), and its nearest
+  other ASV with substitutions and indel events (`nearest`, `nearest_hamming`,
+  `nearest_indels`). Additive; ASVs and abundances are unchanged.
 - `--indel-events` and `--indel-opportunities` (Diagnostics, experimental) on
   `dada`, `dada-pooled` and `dada-pseudo` (#291): indel events of every unique
   against its final centre, and read-weighted substitution, insertion and

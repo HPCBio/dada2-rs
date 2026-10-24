@@ -82,7 +82,8 @@ so the cache is pure overhead except in narrow cases.
 ## Output
 
 **`--output-dir` / `-o`** (required), **`--compact`**, **`--gzip`** — as in
-[`dada-pooled`](dada-pooled.md#output).
+[`dada-pooled`](dada-pooled.md#output). ASV records carry
+[lineage fields](dada.md#output), with cluster ids per sample.
 
 ## Diagnostics
 

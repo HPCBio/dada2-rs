@@ -165,6 +165,23 @@ sample, the same convention as `dada-pooled`. Created if absent.
 
 **`--gzip`** — gzip the per-sample files as `{sample}.json.gz`.
 
+**ASV lineage** ([#306](https://github.com/HPCBio/dada2-rs/issues/306)). Each
+record in `asvs` carries, beside its sequence, abundance and birth statistics:
+
+| field | meaning |
+| --- | --- |
+| `cluster` | the ASV's cluster id in this denoising result |
+| `birth_from` | the cluster it split from; `null` for the initial cluster |
+| `nearest` | the closest other ASV, by substitutions plus indel events |
+| `nearest_hamming`, `nearest_indels` | substitutions and internal indel events to it; end overhangs are not counted |
+
+`birth_from` is the lineage at the time of the split; centres move afterwards,
+so it need not be the final nearest ASV. Ids are per sample under `dada` and
+`dada-pseudo`, and pool-wide under `dada-pooled`, where a referenced ASV may be
+absent from a given sample's file. `nearest` is found after denoising (a k-mer
+screen, then one alignment per candidate) and is omitted when there is a single
+ASV.
+
 ## Diagnostics
 
 None of these change the ASVs.

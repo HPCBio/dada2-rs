@@ -687,3 +687,88 @@ fn learn_errors_fits_indel_rates_with_an_external_command() {
     let e = String::from_utf8_lossy(&o.stderr);
     assert!(e.contains("mgcv is missing"), "{e}");
 }
+
+/// ASV lineage (#306): every ASV carries its `cluster` id, `birth_from` (null
+/// only for the initial cluster) and its nearest other ASV, and `dada-pooled`
+/// numbers clusters pool-wide, so a sequence keeps its id across samples.
+#[test]
+fn dada_outputs_carry_asv_lineage() {
+    let dir = scratch("asv_lineage");
+    let (f1, f2) = (fixture("sam1F.fastq.gz"), fixture("sam2F.fastq.gz"));
+    let (f1, f2) = (f1.to_str().unwrap(), f2.to_str().unwrap());
+    let err = err_model();
+    let err = err.to_str().unwrap();
+    let p = |n: &str| dir.join(n).to_str().unwrap().to_string();
+    run(&["dada", f1, "--error-model", err, "-o", &p("one.json")]);
+    run(&[
+        "dada-pooled",
+        f1,
+        f2,
+        "--error-model",
+        err,
+        "--output-dir",
+        &p("pooled"),
+    ]);
+    run(&[
+        "dada-pseudo",
+        f1,
+        f2,
+        "--error-model",
+        err,
+        "--output-dir",
+        &p("pseudo"),
+    ]);
+
+    let asvs = |path: &str| -> Vec<serde_json::Value> {
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        v["asvs"].as_array().unwrap().clone()
+    };
+    let check = |path: &str, pool_wide: bool| {
+        let a = asvs(path);
+        assert!(a.len() > 1, "{path}: need several ASVs");
+        let ids: std::collections::BTreeSet<u64> =
+            a.iter().map(|x| x["cluster"].as_u64().unwrap()).collect();
+        for x in &a {
+            let id = x["cluster"].as_u64().unwrap();
+            let initial = x["birth_type"] == "Initial";
+            assert_eq!(x["birth_from"].is_null(), initial, "{path}: {x}");
+            let near = x["nearest"].as_u64().expect("nearest present");
+            assert_ne!(near, id, "{path}: nearest is itself");
+            if !pool_wide {
+                assert!(
+                    ids.contains(&near),
+                    "{path}: nearest {near} not in this file"
+                );
+            }
+            assert!(
+                x["nearest_hamming"].as_u64().unwrap() + x["nearest_indels"].as_u64().unwrap() > 0
+            );
+        }
+    };
+    check(&p("one.json"), false);
+    for d in ["pooled", "pseudo"] {
+        check(&p(&format!("{d}/sam1F.json")), d == "pooled");
+        check(&p(&format!("{d}/sam2F.json")), d == "pooled");
+    }
+    let id_of = |path: &str| -> std::collections::BTreeMap<String, u64> {
+        asvs(path)
+            .iter()
+            .map(|x| {
+                (
+                    x["sequence"].as_str().unwrap().to_string(),
+                    x["cluster"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let (s1, s2) = (
+        id_of(&p("pooled/sam1F.json")),
+        id_of(&p("pooled/sam2F.json")),
+    );
+    let shared: Vec<_> = s1.keys().filter(|s| s2.contains_key(*s)).collect();
+    assert!(!shared.is_empty());
+    for s in shared {
+        assert_eq!(s1[s], s2[s], "pooled cluster ids differ across samples");
+    }
+}

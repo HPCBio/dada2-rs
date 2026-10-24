@@ -79,6 +79,9 @@ floor that grows as a share of runtime as threads rise; see
 
 **`--gzip`** — write `{sample}.json.gz`.
 
+ASV records carry [lineage fields](dada.md#output); here cluster ids are
+pool-wide, the same in every sample's file.
+
 ## Diagnostics
 
 **`--verbose`** — the run's shape and results to stderr: CPU allocation,
