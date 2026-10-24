@@ -14,7 +14,9 @@ in others with the same context), e.g. the PacBio 95 hotspots: +G at
 `GCAGC|GGGGG` (site A, V1) and `GGC|GGGG|TAAC` (site B, V2).
 
 Reads must be prepped as for dada (primers trimmed, oriented), so an
-error-free read equals its ASV.
+error-free read equals its ASV. Reads truncated to one length (Illumina
+--trunc-len) are detected: an insertion read then lacks its last base and a
+deletion read carries one extra, so variants are matched at the read length.
 
 Inputs:
   --seqtab     chimera-free table (run_indel_ab.sh <out>/default/nochim.json)
@@ -25,7 +27,9 @@ Output (--out TSV), one row per parent x run x edit:
   parent, parent_reads (table), parent_exact (exact reads), family, genus,
   run_pos, base, run_len, edit (+1/-1), variant_reads, frac
   (variant / (variant + parent_exact)), samples (with the variant), site (A, B
-  or -), left, right (10 nt of context)
+  or -), left, right (10 nt of context), to_end (bases after the run). Under
+  fixed-length reads a run near the read end is unreliable: an insertion there
+  is the tail shifted by one, indistinguishable from 3'-end errors.
 
 Usage:
   hp_variant_counts.py --seqtab out/default/nochim.json --manifest out/manifest.tsv \\
@@ -65,11 +69,12 @@ def site_of(seq, pos):
 
 
 TARGETS = frozenset()
+DEL_PREFIXES = frozenset()
 
 
-def init(targets):
-    global TARGETS
-    TARGETS = targets
+def init(targets, del_prefixes):
+    global TARGETS, DEL_PREFIXES
+    TARGETS, DEL_PREFIXES = targets, del_prefixes
 
 
 def count_file(path):
@@ -81,7 +86,20 @@ def count_file(path):
                 s = line.rstrip("\n")
                 if s in TARGETS:
                     hits[s] += 1
+                elif DEL_PREFIXES and s[:-1] in DEL_PREFIXES:
+                    hits[s[:-1]] += 1
     return hits
+
+
+def fixed_length(parents, fastq, n=2000):
+    """The common length when every parent and the first reads share one."""
+    lens = {len(p) for p in parents}
+    if len(lens) != 1:
+        return None
+    opener = gzip.open if fastq.endswith(".gz") else open
+    with opener(fastq, "rt") as fh:
+        seen = {len(line.rstrip("\n")) for k, line in enumerate(fh) if k % 4 == 1 and k < 4 * n}
+    return lens.pop() if seen == lens else None
 
 
 def main():
@@ -105,7 +123,11 @@ def main():
     # Target string -> (parent index, run start, run length, edit). A string
     # reachable two ways (two parents, or two edits of one) is dropped: its
     # reads cannot be attributed.
-    owner, clash = {}, set()
+    samples = [l.rstrip("\n").split("\t")[:2] for l in open(a.manifest) if l.strip()]
+    fixed = fixed_length(parents, samples[0][1])
+    print(f"read lengths: {'fixed at ' + str(fixed) if fixed else 'variable'}", file=sys.stderr)
+
+    owner, clash, del_prefixes = {}, set(), set()
     def claim(s, key):
         if s in owner and owner[s] != key:
             clash.add(s)
@@ -113,18 +135,24 @@ def main():
     for pi, p in enumerate(parents):
         claim(p, (pi, None, None, 0))
         for pos, n in runs(p, a.min_run):
-            claim(p[:pos] + p[pos] + p[pos:], (pi, pos, n, +1))
-            claim(p[:pos] + p[pos + 1:], (pi, pos, n, -1))
+            ins, dele = p[:pos] + p[pos] + p[pos:], p[:pos] + p[pos + 1:]
+            if fixed:
+                # Truncated reads: the insertion loses its last base; the
+                # deletion gains an unknown one, matched as a prefix.
+                ins = ins[:fixed]
+                del_prefixes.add(dele)
+            claim(ins, (pi, pos, n, +1))
+            claim(dele, (pi, pos, n, -1))
     for s in clash:
         del owner[s]
     print(f"{len(parents)} parents with >= {a.min_reads} reads; {len(owner)} target sequences "
           f"({len(clash)} ambiguous dropped)", file=sys.stderr)
 
-    samples = [l.rstrip("\n").split("\t")[:2] for l in open(a.manifest) if l.strip()]
     targets = frozenset(owner)
+    prefixes = frozenset(d for d in del_prefixes if d in owner)
     total = collections.Counter()
     per_sample = collections.defaultdict(set)
-    with Pool(a.threads, initializer=init, initargs=(targets,)) as pool:
+    with Pool(a.threads, initializer=init, initargs=(targets, prefixes)) as pool:
         for (name, _), hits in zip(samples, pool.imap(count_file, [f for _, f in samples])):
             total.update(hits)
             for s in hits:
@@ -143,7 +171,8 @@ def main():
                          family=tx[4] if len(tx) > 4 else "", genus=tx[5] if len(tx) > 5 else "",
                          run_pos=pos, base=p[pos], run_len=n, edit=f"{edit:+d}", variant_reads=v,
                          frac=f"{v / (v + e):.4g}" if v + e else "nan", samples=len(per_sample[s]),
-                         site=site_of(p, pos), left=p[max(0, pos - 10):pos], right=p[pos + n:pos + n + 10]))
+                         site=site_of(p, pos), left=p[max(0, pos - 10):pos], right=p[pos + n:pos + n + 10],
+                         to_end=len(p) - pos - n))
     rows.sort(key=lambda r: (int(r["parent"][1:]), r["run_pos"], r["edit"]))
     with open(a.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]), delimiter="\t")
