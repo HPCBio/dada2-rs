@@ -16,5 +16,8 @@ which stays in `dev/` because it serves every mock (#166).
 | `run_indel_ab.sh` | Full-run A/B under `dada-pooled`: substitution-only λ against `--indel-rates` |
 | `indel_ab_compare.py` | Judge each indel-arm-only ASV by how it tracks its nearest default ASV across samples |
 | `hp_variant_counts.py` | Homopolymer slippage rate per run per parent, from exact read matches |
+| `hp_structure_features.py` | Structure covariates per run: Rfam consensus pairing (`cmalign`), local folding (`RNAplfold`, DNA parameters), inverted repeats |
+| `hp_structure_proto.R` | Held-out test of structure and sequence context as slippage covariates |
+| `flag_hp_artifacts.py` | Post-denoising flags for homopolymer-length artifacts, like chimera removal; written to move to `scripts/` |
 
 Each script's header documents its inputs, outputs and usage.

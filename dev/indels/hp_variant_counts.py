@@ -24,7 +24,8 @@ Inputs:
   --taxonomy   optional assign-taxonomy JSON for the table's sequences
 
 Output (--out TSV), one row per parent x run x edit:
-  parent, parent_reads (table), parent_exact (exact reads), family, genus,
+  parent, parent_md5 (of its sequence), parent_reads (table), parent_exact
+  (exact reads), family, genus,
   run_pos, base, run_len, edit (+1/-1), variant_reads, frac
   (variant / (variant + parent_exact)), samples (with the variant), site (A, B
   or -), left, right (10 nt of context), to_end (bases after the run). Under
@@ -40,6 +41,7 @@ import argparse
 import collections
 import csv
 import gzip
+import hashlib
 import json
 import re
 import sys
@@ -167,7 +169,8 @@ def main():
         p = parents[pi]
         v, e = total[s], exact.get(pi, 0)
         tx = tax.get(p, [""] * 6)
-        rows.append(dict(parent=f"p{pi + 1}", parent_reads=reads[p], parent_exact=e,
+        rows.append(dict(parent=f"p{pi + 1}", parent_md5=hashlib.md5(p.encode()).hexdigest(),
+                         parent_reads=reads[p], parent_exact=e,
                          family=tx[4] if len(tx) > 4 else "", genus=tx[5] if len(tx) > 5 else "",
                          run_pos=pos, base=p[pos], run_len=n, edit=f"{edit:+d}", variant_reads=v,
                          frac=f"{v / (v + e):.4g}" if v + e else "nan", samples=len(per_sample[s]),
