@@ -235,7 +235,15 @@ denoising output.
   `sub_q` and `ins_q` are keyed by quality (aligned unique bases and
   substitutions; all unique bases and inserted bases); `del_hp` by centre run
   length (bases and deleted bases); `ins_hp` by centre run length (runs and
-  insertions lengthening them). `sub_q` sums to `trans`.
+  insertions lengthening them); `del_fq` by the lower quality of the aligned
+  unique bases either side (centre bases and deleted bases); `ins_len` and
+  `del_len` by event length (events only). `sub_q` sums to `trans`. Further
+  tables split these: `ins_q_novel` and `ins_q_run` (insertions matching
+  neither neighbour, or lengthening a run), `del_fq_L1`…`del_fq_L5` (`del_fq`
+  per centre run length, 5 = 5 or more), `del_hp_A`…`ins_hp_T` (per run base),
+  `del_cq` and `del_cq_L<n>` (as `del_fq`, keyed by the centre's own mean
+  quality at the base instead), and `del_fqcq_L<n>` (both, keyed
+  `flanking × 128 + centre`).
 
 Qualities are the unique's per-position mean, as in `trans`. With several
 inputs, each file holds every sample's rows, sorted by sample.
@@ -304,6 +312,36 @@ Internally an edit budget `E` maps to a WFA cost of `E·|gap_p|` — e.g. 50·8 
 specified in those raw cost units, not edits. `DADA2RS_WFA_LINEAR=1` runs WFA
 with gap-linear penalties instead of affine with gap opening 0: the same scores
 with one wavefront instead of three, for benchmarking (#51).
+
+**`--indel-rates`**, **`--hp-ceiling`**, **`--indel-pair-window`**,
+**`--indel-end-zone`** — an indel-aware λ
+([#291](https://github.com/HPCBio/dada2-rs/issues/291)). R DADA2's λ scores
+substitutions only, so a variant that differs from its cluster centre only by
+indels is absorbed however abundant it is. Given `--indel-rates`, each indel
+event between a unique and its centre multiplies λ by its probability and
+counts toward `hamming`. The rates are either fitted rates from
+[`learn-errors --indel-rates-out`](learn-errors.md#experimental), used as given,
+or the `--indel-opportunities` table of a prior run on the same kind of data,
+fitted on load by pooling each quality with its neighbours until it holds 20
+events.
+
+| event | probability |
+| --- | --- |
+| insertion of k bases | rate per base at the inserted bases' lowest quality (novel and run-lengthening bases fitted apart) × r^(k−1) |
+| deletion of k bases | rate per base at the centre run length (1–4, 5+) and the lower flanking quality × r^(k−1) |
+| homopolymer-length change (largest run involved ≥ 2) | `--hp-ceiling` (default 0.05) |
+| insertion and deletion of equal length within `--indel-pair-window` (default 5) | the substitutions they stand for, from the error model |
+| terminal gaps; indels within `--indel-end-zone` (default 10) of the 3′ end | ignored |
+
+The homopolymer ceiling sits above the rate of recurring slippage hotspots
+(at most ~8% of the parent on PacBio HiFi, ~0.3% from PCR on Illumina), so those
+stay absorbed while a homopolymer-length variant far above it can split. Lower
+it for high-fidelity, low-cycle protocols; `1` never splits on homopolymer
+changes and `off` scores them at the measured rates. The end zone suits reads
+with a low-quality 3′ tail; set it to 0 where read ends are reliable, such as
+HiFi or recent Illumina chemistries. The settings are recorded under
+`params.indel_lambda`. The error model is unchanged: `learn-errors` still
+learns from R's partition. Evidence for each choice is on #291.
 
 **`--end-model`** (default `ends-free`) — which alignment end gaps are free
 ([#289](https://github.com/HPCBio/dada2-rs/issues/289)). An end gap is a run of

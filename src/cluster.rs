@@ -154,6 +154,15 @@ pub fn b_compare(
         };
 
         let lambda = compute_lambda(&b.raws[index], sub.as_ref(), err_mat, ncol, b.use_quals);
+        let (lambda, indel_hamming) = match (&b.indel_model, &sub) {
+            (Some(m), Some(s)) => {
+                let raw = &b.raws[index];
+                let qual = raw.qual.as_deref().filter(|_| b.use_quals);
+                let (f, h) = m.score(&b.raws[center_idx].seq, &raw.seq, qual, s, err_mat, ncol);
+                (lambda * f, h)
+            }
+            _ => (lambda, 0),
+        };
 
         if index == center_idx {
             b.clusters[i].self_ = lambda;
@@ -170,7 +179,7 @@ pub fn b_compare(
                 i: i as u32,
                 index: index as u32,
                 lambda,
-                hamming: sub.as_ref().map_or(0, |s| s.nsubs() as u32),
+                hamming: sub.as_ref().map_or(0, |s| s.nsubs() as u32) + indel_hamming,
             };
             b.clusters[i].comp.push(comp.clone());
             if update_raw {
@@ -317,6 +326,7 @@ pub fn b_compare_parallel(
     let center_reads = b.raws[center_idx].reads;
     let nraw = b.raws.len();
     let use_quals = b.use_quals;
+    let indel_model = b.indel_model.clone();
     // Minimizer index (exact): one scatter over the center's posting lists
     // yields every raw's shared-minimizer count, so the per-pair merge-join in
     // the map below becomes an array read. Charged to setup, which is where its
@@ -426,8 +436,15 @@ pub fn b_compare_parallel(
                         )
                     });
                     let sub = sub_new_with_screen(&raws[center_idx], raw, params, buf, screen_d);
-                    let lambda = compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
-                    let hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
+                    let mut lambda = compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
+                    let mut hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
+                    if let (Some(m), Some(s)) = (indel_model.as_deref(), sub.as_ref()) {
+                        let qual = raw.qual.as_deref().filter(|_| use_quals);
+                        let (f, h) =
+                            m.score(&raws[center_idx].seq, &raw.seq, qual, s, err_mat, ncol);
+                        lambda *= f;
+                        hamming += h;
+                    }
                     (lambda, hamming, false)
                 };
                 // A greedy skip runs neither half, so leave both at zero rather

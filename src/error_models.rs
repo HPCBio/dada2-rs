@@ -783,14 +783,15 @@ const EXTERNAL_ROW_LABELS: [&str; 16] = [
     "T2C", "T2G", "T2T",
 ];
 
-/// RAII temp-dir guard used by [`external_errfun`].  Cleaned up on drop.
-struct TempDir(std::path::PathBuf);
+/// RAII temp-dir guard used by [`external_errfun`] and the external indel fit.
+/// Cleaned up on drop.
+pub(crate) struct TempDir(pub(crate) std::path::PathBuf);
 
 use std::sync::atomic::{AtomicU64, Ordering};
 static TEMP_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl TempDir {
-    fn new(prefix: &str) -> io::Result<Self> {
+    pub(crate) fn new(prefix: &str) -> io::Result<Self> {
         let seq = TEMP_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("{prefix}-{}-{seq}", std::process::id()));
         std::fs::create_dir_all(&dir)?;

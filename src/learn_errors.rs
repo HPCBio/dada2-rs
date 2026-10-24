@@ -766,7 +766,7 @@ struct IterDiag {
 /// # Returns
 /// [`LearnErrorsResult`] with transition counts and error-rate matrices, or an I/O error.
 pub fn learn_errors(
-    all_inputs: Vec<Vec<RawInput>>,
+    all_inputs: &[Vec<RawInput>],
     errfun: &ErrFun,
     mut dada_params: DadaParams,
     max_consist: usize,
@@ -787,7 +787,7 @@ pub fn learn_errors(
 
     type SampleResults = Vec<(usize, Result<(Vec<u32>, crate::dada::DadaResult), String>)>;
 
-    let nq = detect_nq(&all_inputs);
+    let nq = detect_nq(all_inputs);
 
     if verbose {
         eprintln!(
@@ -816,7 +816,7 @@ pub fn learn_errors(
     // to 1.0. This produces iter-1's err_in with the same shape and
     // per-Q calibration that R uses.
     let mut err = run_init_pass(
-        &all_inputs,
+        all_inputs,
         &mut raw_cache,
         errfun,
         &mut dada_params,
@@ -1047,6 +1047,106 @@ pub fn learn_errors(
         iterations,
         stop_reason,
     })
+}
+
+/// One iteration of [`learn_indels`].
+pub struct IndelIteration {
+    /// 0 is the substitution-only partition; later iterations use the
+    /// previous iteration's indel rates in λ.
+    pub iteration: usize,
+    /// Tables summed over the training samples.
+    pub opportunities: crate::indel_events::Opportunities,
+    /// Rates fitted from `opportunities`.
+    pub model: crate::indel_model::IndelModel,
+    /// Clusters (ASVs) summed over the training samples.
+    pub clusters: usize,
+    /// Largest relative change in a fitted rate from the previous iteration.
+    pub max_rel_change: Option<f64>,
+}
+
+pub struct IndelLearnResult {
+    pub history: Vec<IndelIteration>,
+    /// The tables repeated a previous iteration's exactly.
+    pub converged: bool,
+}
+
+/// Learn indel rates for the experimental indel-aware λ (issue #291), staged
+/// after the substitution model: `err` (the converged `err_out`) stays fixed,
+/// so the substitution model is R's. Iteration 0 tabulates indels against the
+/// substitution-only partition; each later iteration denoises with the rates
+/// fitted from the one before and re-tabulates. Stops when the tables repeat
+/// a previous iteration's exactly, as R's loop does for `trans`, or after
+/// `max_iter` iterations. Rates are fitted natively by pooling, or by
+/// `fit_cmd` when given (see [`crate::indel_model::IndelModel::fit_external`]). Every iteration's tables are kept, to see whether
+/// the fit settles.
+pub fn learn_indels(
+    all_inputs: &[Vec<RawInput>],
+    mut dada_params: DadaParams,
+    err: &[f64],
+    settings: crate::indel_model::IndelSettings,
+    max_iter: usize,
+    fit_cmd: Option<&str>,
+    verbose: bool,
+) -> io::Result<IndelLearnResult> {
+    dada_params.err_ncol = err.len() / 16;
+    dada_params.err_mat = err.to_vec();
+    dada_params.indel_events = true;
+    dada_params.indel_model = None;
+    let mut history: Vec<IndelIteration> = Vec::new();
+    let mut prev_model: Option<crate::indel_model::IndelModel> = None;
+    let mut converged = false;
+    for iteration in 0..max_iter.max(1) {
+        let results: Vec<Result<crate::dada::DadaResult, String>> = all_inputs
+            .par_iter()
+            .map(|inputs| {
+                dada_uniques_cached(inputs, None, &dada_params)
+                    .map(|(r, _)| r)
+                    .map_err(|e| e.to_string())
+            })
+            .collect();
+        let mut opp = crate::indel_events::Opportunities::default();
+        let mut clusters = 0;
+        for r in results {
+            let r = r.map_err(|e| io::Error::other(format!("indel learning: dada failed: {e}")))?;
+            clusters += r.clusters.len();
+            if let Some(report) = &r.indels {
+                opp.merge(&report.opportunities);
+            }
+        }
+        let model = match fit_cmd {
+            Some(cmd) => crate::indel_model::IndelModel::fit_external(&opp, settings, cmd)?,
+            None => crate::indel_model::IndelModel::from_opportunities(&opp, settings)?,
+        };
+        let max_rel_change = prev_model.as_ref().map(|p| model.max_rel_change(p));
+        let repeat = history.iter().any(|h| h.opportunities.same_counts(&opp));
+        if verbose {
+            let ins: u64 = opp.ins_q.events.iter().sum();
+            let del: u64 = opp.del_hp.events.iter().sum();
+            eprintln!(
+                "[learn_errors] indel iter={iteration}: {clusters} cluster(s), {ins} inserted / {del} deleted bases{}{}",
+                max_rel_change.map_or(String::new(), |c| format!(", max rate change {c:.2e}")),
+                if repeat {
+                    ", tables repeat: converged"
+                } else {
+                    ""
+                },
+            );
+        }
+        history.push(IndelIteration {
+            iteration,
+            opportunities: opp,
+            model: model.clone(),
+            clusters,
+            max_rel_change,
+        });
+        if repeat {
+            converged = true;
+            break;
+        }
+        dada_params.indel_model = Some(std::sync::Arc::new(model.clone()));
+        prev_model = Some(model);
+    }
+    Ok(IndelLearnResult { history, converged })
 }
 
 #[cfg(test)]
