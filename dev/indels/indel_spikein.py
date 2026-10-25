@@ -11,7 +11,7 @@ Read -> ASV assignment is exact: `derep --show-map` (read -> unique) chained
 with the dada `map` (unique -> cluster). Run both on the same FASTQ.
 
 Design grid (one cell per variant):
-  plain  type {ins, del} x size x position {5p, mid, 3p} x fraction
+  plain  type {ins, del} x size x position {5p, mid, 3p, 5p:N, 3p:N} x fraction
          (sites chosen so the edit is not a homopolymer-length change)
   hp     type {ins, del}, size 1, the run of length >= --hp-min-run nearest
          mid-amplicon, x --hp-fractions: the controls that must NOT split
@@ -107,7 +107,11 @@ def random_insert(rng, k, left, right):
 def choose_site(rng, parent, kind, k, position, anchor):
     """Site s (0-based) and inserted bases for a plain (non-homopolymer) edit."""
     n = len(parent)
-    target = {"5p": 30, "mid": n // 2, "3p": n - 30 - k}[position]
+    if ":" in position:  # 5p:N / 3p:N, N bases from that end
+        end, dist = position.split(":")
+        target = int(dist) if end == "5p" else n - int(dist) - k
+    else:
+        target = {"5p": 30, "mid": n // 2, "3p": n - 30 - k}[position]
     lo, hi = anchor, n - anchor - k
     for d in range(0, n):
         for s in (target - d, target + d):
@@ -146,14 +150,17 @@ def apply_edit(parent, s, kind, bases):
     return parent[:s] + bases + parent[s:]
 
 
-def edit_read(seq, qual, parent, s, kind, bases, anchor):
-    """Apply the edit to one read via an exact anchor window; None if absent."""
+def edit_read(seq, qual, parent, s, kind, bases, flank):
+    """Apply the edit to one read via an exact window of up to `flank` parent
+    bases either side of the site (clipped at the ends); None unless the
+    window occurs exactly once in the read."""
     k = len(bases) if kind == "del" else 0
-    window = parent[s - anchor : s + k + anchor]
+    left = parent[max(0, s - flank) : s]
+    window = left + parent[s : s + k + flank]
     i = seq.find(window)
     if i < 0 or seq.find(window, i + 1) >= 0:
         return None
-    cut = i + anchor
+    cut = i + len(left)
     if kind == "del":
         return seq[:cut] + seq[cut + k :], qual[:cut] + qual[cut + k :]
     qi = min(qual[cut - 1], qual[cut])
@@ -171,11 +178,15 @@ def main():
     ap.add_argument("--prefix", default="spike")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--sizes", default="1,3,10,50,100")
-    ap.add_argument("--positions", default="5p,mid,3p")
+    ap.add_argument("--positions", default="5p,mid,3p",
+                    help="5p, mid, 3p (30 nt from an end), or 5p:N / 3p:N for N nt from that end "
+                         "(lower --anchor to reach within 20 nt)")
     ap.add_argument("--fractions", default="0.005,0.01,0.02,0.05,0.1")
     ap.add_argument("--hp-fractions", default="0.001,0.005,0.01,0.02")
     ap.add_argument("--hp-min-run", type=int, default=4)
-    ap.add_argument("--anchor", type=int, default=20)
+    ap.add_argument("--anchor", type=int, default=20, help="closest a site may be to either end")
+    ap.add_argument("--match-flank", type=int, default=20,
+                    help="parent bases either side of the site used to find it in each read")
     a = ap.parse_args()
     rng = random.Random(a.seed)
 
@@ -240,10 +251,10 @@ def main():
                 sys.exit(f"{name}: variant of ASV {parent_c} equals an existing ASV")
             pool = members[parent_c]
             want = max(1, round(f * len(pool)))
-            ok = [i for i in pool if edit_read(reads[i][1], reads[i][2], parent, s, kind, bases, a.anchor)]
+            ok = [i for i in pool if edit_read(reads[i][1], reads[i][2], parent, s, kind, bases, a.match_flank)]
             chosen = rng.sample(ok, min(want, len(ok)))
             for i in chosen:
-                edited[i] = edit_read(reads[i][1], reads[i][2], parent, s, kind, bases, a.anchor)
+                edited[i] = edit_read(reads[i][1], reads[i][2], parent, s, kind, bases, a.match_flank)
             vid = f"{name}_v{len(variants) + 1:02d}"
             variants.append((vid, variant))
             truth.append({
