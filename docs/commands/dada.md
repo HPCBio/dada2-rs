@@ -343,6 +343,16 @@ HiFi or recent Illumina chemistries. The settings are recorded under
 `params.indel_lambda`. The error model is unchanged: `learn-errors` still
 learns from R's partition. Evidence for each choice is on #291.
 
+For PacBio HiFi, use the default `--end-model ends-free` with
+`--indel-end-zone 0`. On indel spike-ins placed 3–25 bases from either end,
+the default end zone missed most indels within 8 bases of the 3′ end, and zone
+0 recovered them with no false splits. `ends-free` misses only indels in the
+first few 5′ bases, which a free leading gap absorbs. `--end-model global`
+recovers those too, but with the indel-aware λ it also splits reads truncated at
+one end: DADA2's gap penalty is linear, so a long end gap fragments into
+interior gaps that λ then scores
+([#309](https://github.com/HPCBio/dada2-rs/issues/309)).
+
 **`--end-model`** (default `ends-free`) — which alignment end gaps are free
 ([#289](https://github.com/HPCBio/dada2-rs/issues/289)). An end gap is a run of
 gaps at the start or end of an alignment, where one sequence overhangs the other.
