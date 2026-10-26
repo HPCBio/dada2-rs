@@ -130,6 +130,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         )?;
 
         resolved.params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
+        resolved.params.lineage = true;
         let jobs = concurrent_samples(sample_jobs, threads, input.len());
         if verbose {
             eprintln!(
@@ -226,6 +227,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         &indel_lambda,
     )?;
     resolved.params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
+    resolved.params.lineage = true;
     let sample = sample_label(sample_name, identity.sample, input);
     let trace = cluster_trace.as_deref().map(|path| TraceRequest {
         path,
@@ -454,6 +456,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
     )?;
     let mut dada_params = resolved.params;
     dada_params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
+    dada_params.lineage = true;
     let mut run_params = resolved.run;
     run_params.n_prior = raw_inputs.iter().filter(|r| r.prior).count();
     run_params.pool_tiebreak = Some(pool_tiebreak);
@@ -586,7 +589,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
                 continue;
             }
             global_to_local[c] = Some(asvs.len());
-            asvs.push(asv_entry_from_cluster(cluster, cluster_reads[c]));
+            asvs.push(asv_entry_from_cluster(c, cluster, cluster_reads[c]));
         }
 
         let total_reads: u32 = cluster_reads.iter().sum();
@@ -680,7 +683,8 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         let pooled_asvs: Vec<AsvEntry> = result
             .clusters
             .iter()
-            .map(|c| asv_entry_from_cluster(c, c.abundance))
+            .enumerate()
+            .map(|(ci, c)| asv_entry_from_cluster(ci, c, c.abundance))
             .collect();
         let record = PooledRecord {
             num_uniques: pooled_uniques.len(),
@@ -1081,6 +1085,7 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
     resolved.params.aux_outputs = false;
     // Indel tables describe the final partition, so round 2 only (#291).
     resolved.params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
+    resolved.params.lineage = true;
 
     // ---- Round 2: re-denoise each sample with the priors flagged ----
     if verbose {
@@ -2262,6 +2267,11 @@ fn write_cluster_trace(
 
 /// One ASV record in a dada-family output JSON. Shared by the single-input
 /// `dada`, `dada-pooled`, and the multi-sample `dada` / `dada-pseudo` paths.
+///
+/// The lineage fields (issue #306) refer to ASVs by `cluster`, the cluster's
+/// index in the denoising result: pool-wide under `dada-pooled`, so the same
+/// across its per-sample files, and per sample otherwise. A referenced ASV may
+/// be absent from a pooled sample's file.
 #[derive(Serialize)]
 struct AsvEntry {
     sequence: String,
@@ -2270,6 +2280,17 @@ struct AsvEntry {
     birth_pval: f64,
     birth_fold: f64,
     birth_e: f64,
+    cluster: usize,
+    /// The cluster this ASV split from; `null` for the initial cluster.
+    birth_from: Option<u32>,
+    /// The nearest other ASV, with substitutions and internal indel events
+    /// to it; absent when the result has a single ASV.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nearest: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nearest_hamming: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nearest_indels: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -2291,7 +2312,7 @@ fn birth_type_str(bt: &BirthType) -> &'static str {
 /// Build an [`AsvEntry`] from a cluster summary, decoding its center sequence.
 /// `abundance` is passed explicitly because the pooled per-sample path uses a
 /// recomputed per-sample read count rather than `cluster.reads`.
-fn asv_entry_from_cluster(cluster: &dada::ClusterSummary, abundance: u32) -> AsvEntry {
+fn asv_entry_from_cluster(ci: usize, cluster: &dada::ClusterSummary, abundance: u32) -> AsvEntry {
     AsvEntry {
         sequence: cluster
             .sequence
@@ -2303,6 +2324,12 @@ fn asv_entry_from_cluster(cluster: &dada::ClusterSummary, abundance: u32) -> Asv
         birth_pval: cluster.birth_pval,
         birth_fold: cluster.birth_fold,
         birth_e: cluster.birth_e,
+        cluster: ci,
+        birth_from: (!matches!(cluster.birth_type, BirthType::Initial))
+            .then_some(cluster.birth_from),
+        nearest: cluster.nearest.map(|n| n.cluster),
+        nearest_hamming: cluster.nearest.map(|n| n.hamming),
+        nearest_indels: cluster.nearest.map(|n| n.indels),
     }
 }
 
@@ -2386,7 +2413,8 @@ fn denoise_and_serialize(
     let asvs: Vec<AsvEntry> = result
         .clusters
         .iter()
-        .map(|c| asv_entry_from_cluster(c, c.abundance))
+        .enumerate()
+        .map(|(ci, c)| asv_entry_from_cluster(ci, c, c.abundance))
         .collect();
 
     let mut run_params = run_params.clone();
