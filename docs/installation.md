@@ -48,6 +48,7 @@ when building from a source checkout:
 
 ```bash
 cargo build --release --features wfa
+FEATURES=wfa just build-native   # or make build-native: the same, native-CPU
 ```
 
 !!! note "Caveats"
@@ -74,6 +75,9 @@ just build-native  # or: make build-native  → native-CPU build
 just check         # or: make check         → fmt-check + clippy + tests
 just --list        # or: make help          → list available tasks
 ```
+
+`FEATURES` adds Cargo features to the build, `clippy` and `test` tasks, comma-separated
+(`FEATURES=wfa just build-native`).
 
 ### Installing onto PATH
 

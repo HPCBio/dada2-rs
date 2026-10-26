@@ -38,6 +38,7 @@ Build and test it from a source checkout with:
 ```bash
 cargo build --features wfa
 cargo test  --features wfa --profile test-opt
+FEATURES=wfa just check   # or make check: fmt-check, clippy and tests with the feature
 ```
 
 The default (feature-off) build is Needleman-Wunsch only and must keep compiling
