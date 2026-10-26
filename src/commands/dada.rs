@@ -1339,6 +1339,7 @@ fn resolve_dada_params(
         screen_audit,
         wfa_max_edits,
         end_model,
+        gap_open_p,
     } = experimental;
     let em: ErrorModelJson = read_tagged_json(error_model, &["learn-errors", "errors-from-sample"])
         .with_path(error_model)?;
@@ -1421,6 +1422,8 @@ fn resolve_dada_params(
     // bound divergent non-error-copy pairs that slip past the k-mer screen.
     let wfa_max_edits = resolve!(wfa_max_edits, wfa_max_edits, WFA_MAX_EDITS_DEFAULT);
     let end_model = resolve!(end_model, end_model, EndModel::EndsFree);
+    let gap_open_p = resolve!(gap_open_p, gap_open_p, 0);
+    let gap_open_p = nwalign::resolve_gap_open_p(gap_open_p, gap_p, homo_gap_p)?;
 
     // ---- Consistency warnings (only when NOT inheriting) ----
     if !inherit_err_params && let Some(em_params) = p {
@@ -1454,6 +1457,7 @@ fn resolve_dada_params(
         check!("align_backend", backend, em_params.backend);
         check!("wfa_max_edits", wfa_max_edits, em_params.wfa_max_edits);
         check!("end_model", end_model, em_params.end_model);
+        check!("gap_open_p", gap_open_p, em_params.gap_open_p);
         // The screen gates which pairs reach build_trans_mat, so it shapes the
         // fitted model as surely as kdist_cutoff does -- up to 90.9% relative
         // difference in err_out on the MiSeq SOP. Applying a model across a
@@ -1496,6 +1500,7 @@ fn resolve_dada_params(
         match_score,
         mismatch,
         gap_p,
+        gap_open_p,
         homo_gap_p,
         use_kmers,
         kdist_cutoff,

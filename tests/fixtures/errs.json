@@ -30,6 +30,7 @@
     "backend": "nw",
     "wfa_max_edits": 50,
     "end_model": "ends-free",
+    "gap_open_p": 0,
     "screen_backend": "kmer",
     "minimizer_k": 8,
     "minimizer_w": 5,

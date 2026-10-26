@@ -216,6 +216,11 @@ pub struct LearnedErrParams {
     #[serde(default)]
     pub end_model: crate::nwalign::EndModel,
 
+    /// Affine gap-opening penalty the model was learned with (#309). Defaults
+    /// to 0 (linear, R's) for JSONs produced before this field existed.
+    #[serde(default)]
+    pub gap_open_p: i32,
+
     /// Pre-alignment screen the model was learned with (experimental).
     ///
     /// This is a genuine error-model parameter, not bookkeeping: `build_trans_mat`

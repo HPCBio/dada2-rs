@@ -34,8 +34,9 @@ fn bimera_align(
             scores.match_score as i32,
             scores.mismatch as i32,
             scores.gap_p as i32,
+            // Chimera detection keeps R's linear, ends-free model (#289, #309).
+            0,
             scores.band,
-            // Chimera detection keeps R's ends-free model (issue #289 scope).
             EndModel::EndsFree,
             max_steps,
             buf,

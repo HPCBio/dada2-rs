@@ -9,7 +9,8 @@
 //! ```text
 //!     match_        = -match_score   (≤ 0, e.g. -5)
 //!     mismatch      = -mismatch      (> 0, e.g.  4)
-//!     gap_extension = -gap_p         (> 0, e.g.  8)   gap_opening = 0  (linear gap)
+//!     gap_extension = -gap_p         (> 0, e.g.  8)
+//!     gap_opening   = -gap_open_p    (≥ 0; 0 = linear, R's; see #309)
 //! ```
 //!
 //! wfa2lib-rs's `new_affine` applies the Eizenga adjustment internally when
@@ -25,7 +26,9 @@
 
 use crate::nwalign::{AlignBuffers, EndModel};
 #[cfg(feature = "wfa")]
-use crate::nwalign::{VectorizedAlignScores, align_vectorized_with_buf, band_adjust};
+use crate::nwalign::{
+    VectorizedAlignScores, align_affine_with_buf, align_vectorized_with_buf, band_adjust,
+};
 
 #[cfg(feature = "wfa")]
 use std::cell::RefCell;
@@ -158,6 +161,7 @@ pub fn align_wfa_endsfree_with_buf(
     match_score: i32,
     mismatch: i32,
     gap_p: i32,
+    gap_open_p: i32,
     band: i32,
     ends: EndModel,
     max_steps: i32,
@@ -169,15 +173,20 @@ pub fn align_wfa_endsfree_with_buf(
     // must be `Send`. The aligner never moves between threads, so TLS is the
     // right home.
     //
-    // Cache key is (match, mismatch, gap_p, band) — all constant within a run.
-    type Key = (i32, i32, i32, i32);
+    // Cache key is (match, mismatch, gap_p, gap_open_p, band) — all constant
+    // within a run.
+    type Key = (i32, i32, i32, i32, i32);
     thread_local! {
         static WFA: RefCell<Option<(Key, AffineAligner)>> = const { RefCell::new(None) };
         static WFA_LIN: RefCell<Option<(Key, WavefrontAligner<1>)>> =
             const { RefCell::new(None) };
     }
-    let key = (match_score, mismatch, gap_p, band);
+    let key = (match_score, mismatch, gap_p, gap_open_p, band);
     if *WFA_LINEAR {
+        assert!(
+            gap_open_p == 0,
+            "DADA2RS_WFA_LINEAR=1 cannot honour --gap-open-p (affine gaps)"
+        );
         WFA_LIN.with(|cell| {
             let mut slot = cell.borrow_mut();
             if slot.as_ref().map(|(k, _)| *k) != Some(key) {
@@ -196,6 +205,7 @@ pub fn align_wfa_endsfree_with_buf(
                 match_score,
                 mismatch,
                 gap_p,
+                gap_open_p,
                 band,
                 ends,
                 max_steps,
@@ -210,7 +220,7 @@ pub fn align_wfa_endsfree_with_buf(
             let penalties = WavefrontPenalties::new_affine(AffinePenalties {
                 match_: -match_score,
                 mismatch: -mismatch,
-                gap_opening: 0,
+                gap_opening: -gap_open_p,
                 gap_extension: -gap_p,
             });
             *slot = Some((key, configure(AffineAligner::new(penalties))));
@@ -223,6 +233,7 @@ pub fn align_wfa_endsfree_with_buf(
             match_score,
             mismatch,
             gap_p,
+            gap_open_p,
             band,
             ends,
             max_steps,
@@ -256,6 +267,7 @@ fn align_with<const N: usize>(
     match_score: i32,
     mismatch: i32,
     gap_p: i32,
+    gap_open_p: i32,
     band: i32,
     ends: EndModel,
     max_steps: i32,
@@ -317,6 +329,20 @@ fn align_with<const N: usize>(
     // path under the same end model, so the pair still gets a valid alignment
     // (byte-identical to the pure-NW backend for exactly these capped pairs).
     if aligner.status() == AlignStatus::MaxStepsReached {
+        if gap_open_p != 0 {
+            align_affine_with_buf(
+                s1,
+                s2,
+                match_score,
+                mismatch,
+                gap_p,
+                gap_open_p,
+                band,
+                ends,
+                buf,
+            );
+            return;
+        }
         let (begin_free, end_free) = ends.free_ends();
         let edge = |free: bool| if free { 0 } else { gap_p as i16 };
         align_vectorized_with_buf(
@@ -351,6 +377,7 @@ pub fn align_wfa_endsfree_with_buf(
     _match_score: i32,
     _mismatch: i32,
     _gap_p: i32,
+    _gap_open_p: i32,
     _band: i32,
     _ends: EndModel,
     _max_steps: i32,
