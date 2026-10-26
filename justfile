@@ -10,8 +10,9 @@
 #   PREFIX=/opt/dada2 just install      binary + helper scripts onto PATH
 #   just check                          fmt-check + clippy + tests
 #   just test --test cli_contract       one test area (args pass to cargo test)
+#   FEATURES=wfa just build-native      Cargo features, comma-separated (build, clippy, test)
 #
-# Note the env-var form for overrides (PREFIX=... DESTDIR=...): it works
+# Note the env-var form for overrides (PREFIX=... DESTDIR=... FEATURES=...): it works
 # identically for both `just` and `make`, unlike make's `make install PREFIX=...`
 # trailing-arg form which `just` does not accept.
 #
@@ -21,6 +22,8 @@
 bin      := "dada2-rs"
 prefix   := env_var_or_default("PREFIX", "/usr/local")
 destdir  := env_var_or_default("DESTDIR", "")
+features := env_var_or_default("FEATURES", "")
+feat     := if features != "" { "--features " + features } else { "" }
 
 # list recipes (default)
 default:
@@ -28,15 +31,15 @@ default:
 
 # release binary
 build:
-    cargo build --release
+    cargo build --release {{feat}}
 
 # native-CPU build (cluster/in-house; non-portable binary)
 build-native:
-    RUSTFLAGS="-C target-cpu=native" cargo build --profile release-native
+    RUSTFLAGS="-C target-cpu=native" cargo build --profile release-native {{feat}}
 
 # cross-compile Linux ARM64 (requires `cross`)
 build-arm64:
-    cross build --release --target aarch64-unknown-linux-gnu
+    cross build --release --target aarch64-unknown-linux-gnu {{feat}}
 
 # copy binary + helper scripts onto PATH (scripts made executable)
 install: build
@@ -73,11 +76,11 @@ fmt-check:
     cargo fmt --check
 
 clippy:
-    cargo clippy --all-targets -- -D warnings
+    cargo clippy --all-targets {{feat}} -- -D warnings
 
 # tests on the test-opt profile; extra args pass through (just test --test cli_contract)
 test *args:
-    cargo test --profile test-opt {{args}}
+    cargo test --profile test-opt {{feat}} {{args}}
 
 # live-reload mkdocs site
 docs-serve:

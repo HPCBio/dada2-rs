@@ -10,12 +10,15 @@
 #   make install PREFIX=/opt/dada2   binary + helper scripts onto PATH
 #   make check                       fmt-check + clippy + tests
 #   make test ARGS="--test cli_contract"   one test area
+#   FEATURES=wfa make build-native   Cargo features, comma-separated (build, clippy, test)
 #
 # Helper R/Python scripts are installed namespaced as `dada2-rs-<name>` (e.g.
 # scripts/plot_errors.R -> dada2-rs-plot-errors) to avoid PATH collisions.
 
 PREFIX  ?= /usr/local
 DESTDIR ?=
+FEATURES ?=
+FEAT     = $(if $(FEATURES),--features $(FEATURES))
 BINDIR   = $(DESTDIR)$(PREFIX)/bin
 
 BIN     = dada2-rs
@@ -32,15 +35,15 @@ all: build
 
 ## build: release binary -> target/release/$(BIN)
 build:
-	cargo build --release
+	cargo build --release $(FEAT)
 
 ## build-native: native-CPU build (cluster/in-house; non-portable binary)
 build-native:
-	RUSTFLAGS="-C target-cpu=native" cargo build --profile release-native
+	RUSTFLAGS="-C target-cpu=native" cargo build --profile release-native $(FEAT)
 
 ## build-arm64: cross-compile Linux ARM64 (requires `cross`)
 build-arm64:
-	cross build --release --target aarch64-unknown-linux-gnu
+	cross build --release --target aarch64-unknown-linux-gnu $(FEAT)
 
 ## install: copy binary + helper scripts onto PATH (scripts made executable)
 install: build
@@ -73,11 +76,11 @@ fmt-check:
 	cargo fmt --check
 
 clippy:
-	cargo clippy --all-targets -- -D warnings
+	cargo clippy --all-targets $(FEAT) -- -D warnings
 
 ## test: tests on the test-opt profile; extra args via ARGS (make test ARGS="--test cli_contract")
 test:
-	cargo test --profile test-opt $(ARGS)
+	cargo test --profile test-opt $(FEAT) $(ARGS)
 
 ## docs-serve: live-reload mkdocs site
 docs-serve:
