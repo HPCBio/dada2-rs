@@ -10,11 +10,14 @@ the evidence that separates the two lies across the run:
   tracking     an artifact is drawn from its parent's molecules, so it is a
                near-constant fraction of the parent in every sample (Pearson
                dispersion ~1, no samples with the variant but not the parent)
-  recurrence   the same edit in the same sequence context recurs in other,
-               unrelated parents at a similar fraction
+  recurrence   an edit in the same direction at the same site (base, run
+               length and context) recurs in other, unrelated parents at a
+               similar or higher fraction; edit size is ignored, so a double
+               slip (+2) is explained by single slips (+1) at that site
   context rate the fraction is within what that context shows elsewhere in the
                run (--rates: per-run slippage table from hp_variant_counts.py,
-               which also counts variants the denoiser absorbed)
+               which also counts variants the denoiser absorbed; looked up
+               by site, like recurrence)
   fold         the parent is much more abundant than the variant
 
 Candidates are found without alignment: ASVs that differ only in run lengths
@@ -97,6 +100,11 @@ def tracking(v: list[int], p: list[int]) -> dict:
                 orphans=sum(1 for x, y in pairs if x >= 2 and y == 0))
 
 
+def site(key):
+    """An edit's site: direction, base, run length and context, not size."""
+    return (key[0][0],) + key[1:]
+
+
 def load_rates(path: Path, k: int, min_exact: int):
     """Context key -> [(parent md5, frac)] from an hp_variant_counts.py table."""
     rates = collections.defaultdict(list)
@@ -107,7 +115,7 @@ def load_rates(path: Path, k: int, min_exact: int):
             if r.get("to_end") and int(r["to_end"]) < 10:
                 continue
             key = (r["edit"], r["base"], int(r["run_len"]), r["left"][-k:], r["right"][:k])
-            rates[key].append((r.get("parent_md5", ""), float(r["frac"])))
+            rates[site(key)].append((r.get("parent_md5", ""), float(r["frac"])))
     return rates
 
 
@@ -172,14 +180,14 @@ def main() -> None:
             key = (f"{m - n:+d}", b, n, p[max(0, start - k):start], p[start + n:start + n + k])
             out.append(key)
         return out
-    within = collections.defaultdict(list)  # context key -> [(parent, frac)] among candidates
+    within = collections.defaultdict(list)  # site -> [(parent, frac)] among candidates
     info = {}
     for s, p, nd, diffs in cands:
         tr = tracking(counts[s], counts[p])
         keys = edits_of(p, diffs)
         info[s] = (p, nd, keys, tr)
         for key in keys:
-            within[key].append((p, tr["frac"]))
+            within[site(key)].append((p, tr["frac"]))
 
     rows = []
     for s, (p, nd, keys, tr) in info.items():
@@ -187,8 +195,8 @@ def main() -> None:
         ev = []
         explained_all, far_above = True, False
         for key in keys:
-            others = [f for q, f in within[key] if q != p]
-            ctx = [f for (q, f) in rates.get(key, []) if q != pmd5] if rates is not None else []
+            others = [f for q, f in within[site(key)] if q != p]
+            ctx = [f for (q, f) in rates.get(site(key), []) if q != pmd5] if rates is not None else []
             ctx_rate = statistics.median(ctx) if ctx else None
             explained = (len(others) >= 1 and max(others) * a.max_ratio >= tr["frac"]) or \
                         (ctx_rate is not None and len(ctx) >= 2 and tr["frac"] <= a.max_ratio * max(ctx_rate, 1e-6))

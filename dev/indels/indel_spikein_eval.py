@@ -97,7 +97,12 @@ def main():
     moved = ["1", "2-4", "5-19", "20-99", "100-499", ">=500"]
     print(f"plain variants recovered: {sum(t['recovered'] for t in plain)}/{len(plain)}")
     print("  by size:    ", table(plain, lambda t: int(t["size"])))
-    print("  by position:", table(plain, lambda t: t["position"], ["5p", "mid", "3p"]))
+    def pos_key(p):  # 5p labels by distance, then mid, then 3p labels from the end inwards
+        end, _, d = p.partition(":")
+        d = int(d) if d else 30
+        return (0, d) if end == "5p" else (1, 0) if end == "mid" else (2, -d)
+    positions = sorted({t["position"] for t in plain}, key=pos_key)
+    print("  by position:", table(plain, lambda t: t["position"], positions))
     print("  by type:    ", table(plain, lambda t: t["type"]))
     print("  by reads moved:", table(plain, lambda t: bins(int(t["reads_moved"])), moved))
     small = [t for t in plain if int(t["size"]) <= 10]

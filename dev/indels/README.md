@@ -19,5 +19,6 @@ which stays in `dev/` because it serves every mock (#166).
 | `hp_structure_features.py` | Structure covariates per run: Rfam consensus pairing (`cmalign`), local folding (`RNAplfold`, DNA parameters), inverted repeats |
 | `hp_structure_proto.R` | Held-out test of structure and sequence context as slippage covariates |
 | `flag_hp_artifacts.py` | Post-denoising flags for homopolymer-length artifacts, like chimera removal; written to move to `scripts/` |
+| `align_model_subs.py` | Where an alignment model moves substitutions: realigns a fixed partition under ends-free linear and global affine scoring and classifies the differences (#309; needs Biopython) |
 
 Each script's header documents its inputs, outputs and usage.
