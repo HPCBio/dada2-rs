@@ -53,6 +53,9 @@ const KNOWN: &[&str] = &[
     "DADA2RS_ALIGN_BACKEND",
     "DADA2RS_WFA_MAX_STEPS",
     "DADA2RS_WFA_LINEAR",
+    "DADA2RS_WFA_SPAN",
+    "DADA2RS_WFA_GAP_OPEN",
+    "DADA2RS_WFA_AFFINE2P",
     "DADA2RS_BENCH_THREADS",
     "DADA2RS_MINIMIZER_INDEX",
     "DADA2RS_GAPLESS_X86",
@@ -362,6 +365,49 @@ mod tests {
                 !KNOWN.contains(&a.old),
                 "retired spelling {} is still listed as known",
                 a.old
+            );
+        }
+    }
+
+    #[test]
+    fn every_gate_read_in_src_is_known() {
+        // A gate read in the code but missing from KNOWN works yet warns that
+        // it has no effect (#309: DADA2RS_WFA_GAP_OPEN, DADA2RS_WFA_SPAN).
+        fn scan(dir: &std::path::Path, found: &mut BTreeSet<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    scan(&path, found);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    for (i, _) in text.match_indices("env::var") {
+                        let rest = &text[i..];
+                        let Some(q) = rest.find('"') else { continue };
+                        // Only a literal argument: `env::var("NAME")` or `env::var_os("NAME")`.
+                        if !matches!(&rest[..q], "env::var(" | "env::var_os(") {
+                            continue;
+                        }
+                        let name = &rest[q + 1..];
+                        let name = &name[..name.find('"').unwrap()];
+                        if name.starts_with("DADA2RS_") || name.starts_with("DADA2_RS_") {
+                            found.insert(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        let mut found = BTreeSet::new();
+        scan(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut found,
+        );
+        assert!(found.contains("DADA2RS_WFA_GAP_OPEN"), "scan found nothing");
+        for name in &found {
+            assert!(
+                KNOWN.contains(&name.as_str())
+                    || ALIASES.iter().any(|a| a.old == name)
+                    || NOT_GATES.contains(&name.as_str()),
+                "{name} is read in src/ but is not in KNOWN"
             );
         }
     }
