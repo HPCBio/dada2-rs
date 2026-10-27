@@ -10,6 +10,17 @@ minor versions may carry breaking changes).
 
 ### Added
 
+- `--gap-open-p` (Experimental) on `learn-errors`, `errors-from-sample`,
+  `dada`, `dada-pooled` and `dada-pseudo` (#309): affine gaps, a gap of length
+  L costing `--gap-open-p` + L × `--gap-p`, so a truncated read or an inserted
+  block aligns as one gap instead of many. Default 0, R's linear model, with
+  output unchanged. Works with every `--end-model` and both alignment backends;
+  recorded in the error model (`params.gap_open_p`), and `dada` warns on a
+  mismatch.
+- The `dada`, `dada-pooled` and `dada-pseudo` JSON `params` record the
+  alignment model when it differs from R's: `end_model`, `align_backend` with
+  `wfa_max_edits`, and `gap_open_p` (#313).
+
 - ASV lineage in the `dada`, `dada-pooled` and `dada-pseudo` JSON (#306): each
   ASV's `cluster` id, the cluster it split from (`birth_from`), and its nearest
   other ASV with substitutions and indel events (`nearest`, `nearest_hamming`,

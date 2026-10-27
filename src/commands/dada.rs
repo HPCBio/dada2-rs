@@ -1169,6 +1169,14 @@ fn is_default_screen(b: &ScreenBackend) -> bool {
     *b == ScreenBackend::Kmer
 }
 
+fn is_default_end_model(m: &EndModel) -> bool {
+    *m == EndModel::EndsFree
+}
+
+fn is_zero_i32(v: &i32) -> bool {
+    *v == 0
+}
+
 /// The experimental indel-aware λ's settings (#291), as recorded in `params`.
 #[derive(Serialize, Clone)]
 struct IndelLambdaRecord {
@@ -1214,6 +1222,17 @@ struct DadaRunParams {
     minimizer_k: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     minimizer_w: Option<usize>,
+    /// The alignment model, recorded off R's defaults only so R-parity output
+    /// keeps its exact shape (#313): `end_model` unless ends-free, the WFA
+    /// backend and its edit cap, and the affine opening penalty unless linear.
+    #[serde(skip_serializing_if = "is_default_end_model")]
+    end_model: EndModel,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    align_backend: Option<AlignBackend>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wfa_max_edits: Option<i32>,
+    #[serde(skip_serializing_if = "is_zero_i32")]
+    gap_open_p: i32,
     /// Denoising mode: false = independent per-sample (`dada`), true = full
     /// pooling across samples (`dada-pooled`, R DADA2 pool=TRUE).
     pool: bool,
@@ -1339,6 +1358,7 @@ fn resolve_dada_params(
         screen_audit,
         wfa_max_edits,
         end_model,
+        gap_open_p,
     } = experimental;
     let em: ErrorModelJson = read_tagged_json(error_model, &["learn-errors", "errors-from-sample"])
         .with_path(error_model)?;
@@ -1421,6 +1441,8 @@ fn resolve_dada_params(
     // bound divergent non-error-copy pairs that slip past the k-mer screen.
     let wfa_max_edits = resolve!(wfa_max_edits, wfa_max_edits, WFA_MAX_EDITS_DEFAULT);
     let end_model = resolve!(end_model, end_model, EndModel::EndsFree);
+    let gap_open_p = resolve!(gap_open_p, gap_open_p, 0);
+    let gap_open_p = nwalign::resolve_gap_open_p(gap_open_p, gap_p, homo_gap_p)?;
 
     // ---- Consistency warnings (only when NOT inheriting) ----
     if !inherit_err_params && let Some(em_params) = p {
@@ -1454,6 +1476,7 @@ fn resolve_dada_params(
         check!("align_backend", backend, em_params.backend);
         check!("wfa_max_edits", wfa_max_edits, em_params.wfa_max_edits);
         check!("end_model", end_model, em_params.end_model);
+        check!("gap_open_p", gap_open_p, em_params.gap_open_p);
         // The screen gates which pairs reach build_trans_mat, so it shapes the
         // fitted model as surely as kdist_cutoff does -- up to 90.9% relative
         // difference in err_out on the MiSeq SOP. Applying a model across a
@@ -1496,6 +1519,7 @@ fn resolve_dada_params(
         match_score,
         mismatch,
         gap_p,
+        gap_open_p,
         homo_gap_p,
         use_kmers,
         kdist_cutoff,
@@ -1556,6 +1580,11 @@ fn resolve_dada_params(
     };
 
     let run = DadaRunParams {
+        end_model: align_params.end_model,
+        align_backend: (align_params.backend != AlignBackend::Nw).then_some(align_params.backend),
+        wfa_max_edits: (align_params.backend == AlignBackend::Wfa2)
+            .then_some(align_params.wfa_max_edits),
+        gap_open_p: align_params.gap_open_p,
         screen_backend: align_params.screen_backend,
         minimizer_k: match align_params.screen_backend {
             ScreenBackend::Minimizer => Some(align_params.minimizer_k),

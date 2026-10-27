@@ -404,6 +404,7 @@ fn build_learned_err_params(
         gapless: ap.gapless,
         backend: ap.backend,
         end_model: ap.end_model,
+        gap_open_p: ap.gap_open_p,
         wfa_max_edits: ap.wfa_max_edits,
         screen_backend: ap.screen_backend,
         minimizer_k: ap.minimizer_k,
@@ -449,6 +450,7 @@ fn resolve_learn_params(
         screen_audit,
         wfa_max_edits,
         end_model,
+        gap_open_p,
     } = experimental;
     // R's HOMOPOLYMER_GAP_PENALTY = NULL tracks GAP_PENALTY. R also
     // normalizes a positive penalty to negative before comparing them
@@ -462,6 +464,7 @@ fn resolve_learn_params(
         homo_gap_p
     };
     note_homopolymer_gapping(verbose, gap_p, homo_gap_p);
+    let gap_open_p = nwalign::resolve_gap_open_p(gap_open_p.unwrap_or(0), gap_p, homo_gap_p)?;
     let greedy = greedy.unwrap_or(true);
     let use_quals = use_quals.unwrap_or(true);
     let loess_config = resolve_loess_config(
@@ -526,6 +529,7 @@ fn resolve_learn_params(
         match_score,
         mismatch,
         gap_p,
+        gap_open_p,
         homo_gap_p,
         use_kmers: !no_kmer_screen,
         kdist_cutoff,

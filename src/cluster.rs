@@ -2007,6 +2007,7 @@ mod compare_fold_tests {
             match_score: 5,
             mismatch: -4,
             gap_p: -8,
+            gap_open_p: 0,
             homo_gap_p: -1,
             use_kmers: true,
             kdist_cutoff: 0.42,

@@ -421,6 +421,10 @@ pub struct ExperimentalArgs {
     /// EXPERIMENTAL: free alignment ends; R is `ends-free` [default: ends-free]
     #[arg(long, value_enum, help_heading = H_EXP)]
     pub end_model: Option<EndModel>,
+
+    /// EXPERIMENTAL: affine gap-opening penalty; 0 = linear gaps, R's [default: 0]
+    #[arg(long, allow_hyphen_values = true, help_heading = H_EXP)]
+    pub gap_open_p: Option<i32>,
 }
 
 /// The experimental indel-aware λ (issue #291), on `dada`, `dada-pooled` and

@@ -148,6 +148,10 @@ pub struct AlignParams {
     pub match_score: i32,
     pub mismatch: i32,
     pub gap_p: i32,
+    /// Affine gap-opening penalty (#309): a gap of length `L` costs
+    /// `gap_open_p + L * gap_p`. `0` is R's linear model and selects the
+    /// existing kernels unchanged.
+    pub gap_open_p: i32,
     pub homo_gap_p: i32,
     pub use_kmers: bool,
     pub kdist_cutoff: f64,
@@ -221,6 +225,16 @@ pub struct AlignBuffers {
     // Scalar DP (align_endsfree, align_endsfree_homo, align_standard).
     d32: Vec<i32>,
     p32: Vec<u8>,
+    // Affine scalar DP (align_affine_with_buf): in-place H and F rows.
+    aff_h: Vec<i32>,
+    aff_f: Vec<i32>,
+    // Affine vectorized DP: rolling anti-diagonals (H: d-2, d-1, d; E and F:
+    // d-1, d), and the padded sequences (s1 reversed).
+    aff_h16: [Vec<i16>; 3],
+    aff_e16: [Vec<i16>; 2],
+    aff_f16: [Vec<i16>; 2],
+    aff_s1r: Vec<u8>,
+    aff_s2p: Vec<u8>,
     // Vectorized DP (align_vectorized).
     d16: Vec<i16>,
     // Traceback pointers hold only 0..=3, so `u8` halves this matrix's
@@ -549,6 +563,597 @@ pub fn align_ends_with_buf(
         &mut buf.al0,
         &mut buf.al1,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Affine-gap NW (Gotoh), opt-in via --gap-open-p (#309)
+// ---------------------------------------------------------------------------
+
+/// Long-read guard: the vectorized kernels use i16 DP tables. With the default
+/// DADA2 scoring (match=5, mismatch=-4, gap_p=-8) cumulative scores can
+/// approach ±8·N, so longer inputs take the i32 path before overflow can
+/// distort the optimum. 3500 bp leaves ~10% headroom in i16 range.
+const VECTORIZED_MAX_LEN: usize = 3500;
+
+/// Score floor for cells outside the band or unreachable states. Far enough
+/// from `i32::MIN` that adding any penalty cannot wrap.
+const AFF_NEG: i32 = i32::MIN / 4;
+
+/// NW with affine gaps under `p`'s scoring, band and end model: the dispatch
+/// target for `gap_open_p != 0`, and the WFA backend's fallback for capped pairs.
+pub(crate) fn align_nw_affine_with_buf(
+    s1: &[u8],
+    s2: &[u8],
+    p: &AlignParams,
+    buf: &mut AlignBuffers,
+) {
+    let (lb, rb) = if p.band >= 0 {
+        let (l, r) = band_adjust(s1.len(), s2.len(), p.band);
+        (l as usize, r as usize)
+    } else {
+        (s1.len(), s2.len())
+    };
+    let vectorized = p.vectorized
+        && s1.len().max(s2.len()) <= VECTORIZED_MAX_LEN
+        && affine16_fits(
+            s1.len(),
+            s2.len(),
+            lb,
+            rb,
+            p.match_score,
+            p.mismatch,
+            p.gap_p,
+            p.gap_open_p,
+        );
+    let kernel = if vectorized {
+        align_affine_vectorized_with_buf
+    } else {
+        align_affine_with_buf
+    };
+    kernel(
+        s1,
+        s2,
+        p.match_score,
+        p.mismatch,
+        p.gap_p,
+        p.gap_open_p,
+        p.band,
+        p.end_model,
+        buf,
+    );
+}
+
+/// Resolve `--gap-open-p`: a positive value means the same penalty, as for
+/// `--gap-p`. Affine gaps have no homopolymer variant, so a distinct
+/// `--homo-gap-p` is rejected rather than silently ignored.
+pub fn resolve_gap_open_p(gap_open_p: i32, gap_p: i32, homo_gap_p: i32) -> std::io::Result<i32> {
+    let gap_open_p = -gap_open_p.abs();
+    if gap_open_p != 0 && homo_gap_p != gap_p {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "--gap-open-p (affine gaps) cannot be combined with a --homo-gap-p \
+             different from --gap-p",
+        ));
+    }
+    Ok(gap_open_p)
+}
+
+/// Traceback byte of the affine kernels: bits 0-1 give the source of H
+/// (1 diagonal, 2 E, 3 F); the flags say whether E or F at this cell extended
+/// a gap rather than opening one. Shared with the vectorized kernel so both
+/// trace back through the same code.
+const AFF_H_MASK: u8 = 3;
+const AFF_E_EXT: u8 = 4;
+const AFF_F_EXT: u8 = 8;
+
+/// Banded Needleman-Wunsch with affine gaps (Gotoh): a gap of length `L` costs
+/// `gap_open_p + L * gap_p`, both `<= 0`. States are H (ends in a match or
+/// mismatch, or the best of all three), E (gap in `s1`, consuming `s2`) and F
+/// (gap in `s2`, consuming `s1`). Ends follow `ends` as in
+/// [`align_ends_with_buf`]: a free end costs nothing, opening included.
+///
+/// Ties: H prefers F, then E, then the diagonal, as the linear kernels do; E
+/// and F prefer extending a gap to opening one, which keeps gaps contiguous.
+/// The vectorized kernel follows the same rules and must match this one.
+#[allow(clippy::too_many_arguments)]
+pub fn align_affine_with_buf(
+    s1: &[u8],
+    s2: &[u8],
+    match_score: i32,
+    mismatch: i32,
+    gap_p: i32,
+    gap_open_p: i32,
+    band: i32,
+    ends: EndModel,
+    buf: &mut AlignBuffers,
+) {
+    let (begin_free, end_free) = ends.free_ends();
+    let len1 = s1.len();
+    let len2 = s2.len();
+    let ncol = len2 + 1;
+    let nrow = len1 + 1;
+    let (lband, rband) = band_adjust(len1, len2, band);
+    let edge = |n: usize| {
+        if begin_free {
+            0
+        } else {
+            gap_open_p + n as i32 * gap_p
+        }
+    };
+
+    reset_buf(&mut buf.p32, nrow * ncol, 0u8);
+    reset_buf(&mut buf.aff_h, ncol + 1, AFF_NEG);
+    reset_buf(&mut buf.aff_f, ncol + 1, AFF_NEG);
+    {
+        let p = &mut buf.p32[..nrow * ncol];
+        // In-place rows: before row i they hold row i-1, after it row i.
+        let h = &mut buf.aff_h[..ncol + 1];
+        let f = &mut buf.aff_f[..ncol + 1];
+
+        // Row 0: leading gaps in s1 (E state).
+        h[0] = 0;
+        let r0 = if band >= 0 {
+            (rband.max(0) as usize).min(len2)
+        } else {
+            len2
+        };
+        for j in 1..=len2 {
+            if j <= r0 {
+                h[j] = edge(j);
+            }
+            p[j] = 2 | if j > 1 { AFF_E_EXT } else { 0 };
+        }
+
+        for i in 1..=len1 {
+            let (l, r) = if band >= 0 {
+                (
+                    (i as i32 - lband).max(1) as usize,
+                    (i as i32 + rband).min(len2 as i32) as usize,
+                )
+            } else {
+                (1, len2)
+            };
+            p[i * ncol] = 3 | if i > 1 { AFF_F_EXT } else { 0 };
+            // Column l-1 of this row: the leading-gap edge while column 0 is
+            // inside the band (j - i >= -lband), otherwise outside it.
+            let mut diag = h[l - 1];
+            let left_val = if l == 1 && (band < 0 || i as i32 <= lband) {
+                edge(i)
+            } else {
+                AFF_NEG
+            };
+            h[l - 1] = left_val;
+            f[l - 1] = left_val;
+            let mut h_left = left_val;
+            let mut e = AFF_NEG;
+            let last_row = i == len1;
+            for j in l..=r {
+                let up = h[j];
+                // E: gap in s1 (move left). Free in the last row if the end is free.
+                let (e_open, e_ext) = if end_free && last_row {
+                    (h_left, e)
+                } else {
+                    (h_left + gap_open_p + gap_p, e + gap_p)
+                };
+                let (e_new, e_flag) = if e_ext >= e_open {
+                    (e_ext, AFF_E_EXT)
+                } else {
+                    (e_open, 0)
+                };
+                // F: gap in s2 (move up). Free in the last column if the end is free.
+                let (f_open, f_ext) = if end_free && j == len2 {
+                    (up, f[j])
+                } else {
+                    (up + gap_open_p + gap_p, f[j] + gap_p)
+                };
+                let (f_new, f_flag) = if f_ext >= f_open {
+                    (f_ext, AFF_F_EXT)
+                } else {
+                    (f_open, 0)
+                };
+                let d = diag
+                    + if s1[i - 1] == s2[j - 1] {
+                        match_score
+                    } else {
+                        mismatch
+                    };
+                let (h_new, src) = if f_new >= d && f_new >= e_new {
+                    (f_new, 3)
+                } else if e_new >= d {
+                    (e_new, 2)
+                } else {
+                    (d, 1)
+                };
+                p[i * ncol + j] = src | e_flag | f_flag;
+                diag = up;
+                h[j] = h_new;
+                f[j] = f_new;
+                h_left = h_new;
+                e = e_new;
+            }
+            // The next row reads `up` one column further right.
+            if r < len2 {
+                h[r + 1] = AFF_NEG;
+                f[r + 1] = AFF_NEG;
+            }
+        }
+    }
+    affine_traceback_into(
+        |i, j| buf.p32[i * ncol + j],
+        s1,
+        s2,
+        &mut buf.al0,
+        &mut buf.al1,
+    );
+}
+
+/// Score floor of the `i16` affine kernel. Real cell scores stay above
+/// [`AFF16_REAL_MIN`] (checked per pair by [`affine16_fits`]), so a floor-derived
+/// value never wins a comparison, exactly as `AFF_NEG` never does in the scalar
+/// kernel; saturating adds keep it from wrapping.
+const AFF16_NEG: i16 = -30000;
+const AFF16_REAL_MIN: i32 = -28000;
+
+/// Whether every in-band score of this pair fits the `i16` kernel. Each in-band
+/// cell `(i, j)` is reached by `min(i, j)` diagonal steps and one gap run of
+/// `|i - j| <= max(lband, rband)` columns (plus a leading edge gap when
+/// penalised), which bounds its score from below; matches bound it from above.
+#[allow(clippy::too_many_arguments)]
+fn affine16_fits(
+    len1: usize,
+    len2: usize,
+    lband: usize,
+    rband: usize,
+    match_score: i32,
+    mismatch: i32,
+    gap_p: i32,
+    gap_open_p: i32,
+) -> bool {
+    let n = len1.min(len2) as i64;
+    let w = lband.max(rband) as i64;
+    let worst_cell = mismatch.min(0).abs().max(match_score.min(0).abs()) as i64;
+    let gap_run = gap_open_p.abs() as i64 + gap_p.abs() as i64 * w;
+    let low = worst_cell * n + 2 * gap_run;
+    let high = match_score.max(0) as i64 * n;
+    -low > AFF16_REAL_MIN as i64 && high < i16::MAX as i64 - 1000
+}
+
+/// One cell of the affine recurrence, shared by the vectorized kernel's lanes and
+/// its free-end fix-ups so both resolve ties identically (and as
+/// [`align_affine_with_buf`] does). `eo`/`ee` are the costs of opening and
+/// extending E, `fo`/`fe` of F; a free end passes zeros. Returns `(h, e, f, ptr)`.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn aff_cell16(
+    hl: i16,
+    el: i16,
+    hu: i16,
+    fu: i16,
+    hd: i16,
+    sc: i16,
+    eo: i16,
+    ee: i16,
+    fo: i16,
+    fe: i16,
+) -> (i16, i16, i16, u8) {
+    let e_open = hl.saturating_add(eo);
+    let e_ext = el.saturating_add(ee);
+    let e_is_ext = e_ext >= e_open;
+    let e = if e_is_ext { e_ext } else { e_open };
+    let f_open = hu.saturating_add(fo);
+    let f_ext = fu.saturating_add(fe);
+    let f_is_ext = f_ext >= f_open;
+    let f = if f_is_ext { f_ext } else { f_open };
+    let d = hd.saturating_add(sc);
+    // F over E over the diagonal on ties, as in the scalar kernel.
+    let f_wins = f >= e;
+    let gap = if f_wins { f } else { e };
+    let gap_src = if f_wins { 3u8 } else { 2u8 };
+    let (h, src) = if gap >= d { (gap, gap_src) } else { (d, 1u8) };
+    let ptr = src | if e_is_ext { AFF_E_EXT } else { 0 } | if f_is_ext { AFF_F_EXT } else { 0 };
+    (h, e, f, ptr)
+}
+
+/// Inputs of one anti-diagonal's lanes, all of the same length.
+struct AffLanesIn<'a> {
+    hl: &'a [i16],
+    el: &'a [i16],
+    hu: &'a [i16],
+    fu: &'a [i16],
+    hd: &'a [i16],
+    a: &'a [u8],
+    b: &'a [u8],
+}
+
+/// The lanes of one anti-diagonal. A separate function so the output slices
+/// arrive as `&mut` parameters, which LLVM knows cannot alias the inputs; inline,
+/// it guards each vectorized run with overlap checks that cost more than the
+/// lanes on a band-32 anti-diagonal. `k = [match, mismatch, open+extend, extend]`.
+#[inline(never)]
+fn aff_lanes16(
+    i: AffLanesIn,
+    ho: &mut [i16],
+    eo: &mut [i16],
+    fo: &mut [i16],
+    po: &mut [u8],
+    k: [i16; 4],
+) {
+    let n = ho.len();
+    let [m, mm, og, g] = k;
+    let (hl, el, hu, fu, hd, a, b) = (
+        &i.hl[..n],
+        &i.el[..n],
+        &i.hu[..n],
+        &i.fu[..n],
+        &i.hd[..n],
+        &i.a[..n],
+        &i.b[..n],
+    );
+    let (eo, fo, po) = (&mut eo[..n], &mut fo[..n], &mut po[..n]);
+    for x in 0..n {
+        let sc = if a[x] == b[x] { m } else { mm };
+        let (hv, ev, fv, pv) = aff_cell16(hl[x], el[x], hu[x], fu[x], hd[x], sc, og, g, og, g);
+        ho[x] = hv;
+        eo[x] = ev;
+        fo[x] = fv;
+        po[x] = pv;
+    }
+}
+
+/// [`align_affine_with_buf`] over anti-diagonals with `i16` scores: same
+/// alignments, byte for byte (`affine_vectorized_matches_scalar`).
+///
+/// Anti-diagonal `d = i + j` holds the band's cells by offset `k = j - i` at slot
+/// `t = (k + lband - par) / 2`, `par = (d + lband) % 2`. A cell's neighbours are
+/// then fixed slot offsets into the previous two anti-diagonals (diagonal: `d-2`,
+/// `t`; up: `d-1`, `t + par`; left: `d-1`, `t + par - 1`), so each anti-diagonal is
+/// one contiguous, dependency-free loop. Slots carry one pad on each side.
+/// Callers check [`affine16_fits`] first.
+#[allow(clippy::too_many_arguments)]
+pub fn align_affine_vectorized_with_buf(
+    s1: &[u8],
+    s2: &[u8],
+    match_score: i32,
+    mismatch: i32,
+    gap_p: i32,
+    gap_open_p: i32,
+    band: i32,
+    ends: EndModel,
+    buf: &mut AlignBuffers,
+) {
+    let (begin_free, end_free) = ends.free_ends();
+    let (len1, len2) = (s1.len(), s2.len());
+    let (lb, rb) = if band >= 0 {
+        let (l, r) = band_adjust(len1, len2, band);
+        (l as usize, r as usize)
+    } else {
+        (len1, len2)
+    };
+    let nslot = (lb + rb) / 2 + 1;
+    let width = nslot + 2;
+    let ndiag = len1 + len2 + 1;
+    let (m, mm, g, og) = (
+        match_score as i16,
+        mismatch as i16,
+        gap_p as i16,
+        (gap_open_p + gap_p) as i16,
+    );
+    let edge = |n: usize| -> i16 {
+        if begin_free {
+            0
+        } else {
+            (gap_open_p + n as i32 * gap_p) as i16
+        }
+    };
+
+    // Every pointer slot is written below, so the matrix is not cleared.
+    if buf.p8.len() < ndiag * nslot {
+        buf.p8.resize(ndiag * nslot, 0);
+    }
+    // Both sequences padded by `pad` on each side and s1 reversed, so every
+    // anti-diagonal reads one full-width slice of each, in range or not.
+    let pad = lb + rb + 4;
+    buf.aff_s1r.clear();
+    buf.aff_s1r.resize(pad, 0);
+    buf.aff_s1r.extend(s1.iter().rev());
+    buf.aff_s1r.resize(len1 + 2 * pad, 0);
+    buf.aff_s2p.clear();
+    buf.aff_s2p.resize(pad, 0);
+    buf.aff_s2p.extend_from_slice(s2);
+    buf.aff_s2p.resize(len2 + 2 * pad, 0);
+    let mut h = std::mem::take(&mut buf.aff_h16);
+    let mut e = std::mem::take(&mut buf.aff_e16);
+    let mut f = std::mem::take(&mut buf.aff_f16);
+    for v in h.iter_mut().chain(e.iter_mut()).chain(f.iter_mut()) {
+        reset_buf(v, width, AFF16_NEG);
+    }
+    {
+        let p = &mut buf.p8[..ndiag * nslot];
+        let (s1r, s2p) = (&buf.aff_s1r[..], &buf.aff_s2p[..]);
+        let (lbi, padi) = (lb as isize, pad as isize);
+        for d in 0..ndiag {
+            let di = d as isize;
+            let par = (d + lb) % 2;
+            let base = -lbi + par as isize;
+            let slot = |k: isize| ((k - base) / 2) as usize;
+            // h/e/f are [row d-2, d-1, d] / [d-1, d] / [d-1, d].
+            let [h0, h1, h2] = &mut h;
+            let [e0, e1] = &mut e;
+            let [f0, f1] = &mut f;
+            let prow = &mut p[d * nslot..(d + 1) * nslot];
+
+            // Every slot, in a fixed-width loop: slot t is cell
+            // (i_top - t, j_top + t). Slots that are not interior cells are
+            // overwritten below.
+            let i_top = (di - base) / 2;
+            let j_top = (di + base) / 2;
+            let xa = (len1 as isize - i_top + padi) as usize;
+            let xb = (j_top - 1 + padi) as usize;
+            aff_lanes16(
+                AffLanesIn {
+                    hl: &h1[par..par + nslot],
+                    el: &e0[par..par + nslot],
+                    hu: &h1[par + 1..par + 1 + nslot],
+                    fu: &f0[par + 1..par + 1 + nslot],
+                    hd: &h0[1..1 + nslot],
+                    a: &s1r[xa..xa + nslot],
+                    b: &s2p[xb..xb + nslot],
+                },
+                &mut h2[1..1 + nslot],
+                &mut e1[1..1 + nslot],
+                &mut f1[1..1 + nslot],
+                prow,
+                [m, mm, og, g],
+            );
+
+            // Interior cells (i, j >= 1) on this anti-diagonal: slots [lo, hi).
+            let (lo, hi) = if d >= 2 {
+                let mut kmin = (-lbi).max(-(di - 2)).max(di - 2 * len1 as isize);
+                let mut kmax = (rb as isize).min(di - 2).min(2 * len2 as isize - di);
+                if (kmin - base).rem_euclid(2) == 1 {
+                    kmin += 1;
+                }
+                if (kmax - base).rem_euclid(2) == 1 {
+                    kmax -= 1;
+                }
+                if kmin <= kmax {
+                    (slot(kmin), slot(kmax) + 1)
+                } else {
+                    (0, 0)
+                }
+            } else {
+                (0, 0)
+            };
+            for t in (0..lo).chain(hi..nslot) {
+                h2[t + 1] = AFF16_NEG;
+                e1[t + 1] = AFF16_NEG;
+                f1[t + 1] = AFF16_NEG;
+            }
+
+            // Edges: row 0 (gap in s1) and column 0 (gap in s2), when in band.
+            if d == 0 {
+                h2[slot(0) + 1] = 0;
+            } else {
+                if d <= len2 && d <= rb {
+                    let t = slot(di);
+                    h2[t + 1] = edge(d);
+                    prow[t] = 2 | if d > 1 { AFF_E_EXT } else { 0 };
+                }
+                if d <= len1 && d <= lb {
+                    let t = slot(-di);
+                    h2[t + 1] = edge(d);
+                    prow[t] = 3 | if d > 1 { AFF_F_EXT } else { 0 };
+                }
+            }
+
+            // Free trailing ends: E costs nothing in the last row, F in the last
+            // column. At most two cells per anti-diagonal.
+            if end_free && lo < hi {
+                for k in [di - 2 * len1 as isize, 2 * len2 as isize - di] {
+                    let t = slot(k);
+                    if (k - base).rem_euclid(2) != 0 || k < base || t < lo || t >= hi {
+                        continue;
+                    }
+                    let (i, j) = (((di - k) / 2) as usize, ((di + k) / 2) as usize);
+                    let (eo, ee) = if i == len1 { (0, 0) } else { (og, g) };
+                    let (fo, fe) = if j == len2 { (0, 0) } else { (og, g) };
+                    let sc = if s1[i - 1] == s2[j - 1] { m } else { mm };
+                    let (hv, ev, fv, pv) = aff_cell16(
+                        h1[t + par],
+                        e0[t + par],
+                        h1[t + par + 1],
+                        f0[t + par + 1],
+                        h0[t + 1],
+                        sc,
+                        eo,
+                        ee,
+                        fo,
+                        fe,
+                    );
+                    h2[t + 1] = hv;
+                    e1[t + 1] = ev;
+                    f1[t + 1] = fv;
+                    prow[t] = pv;
+                }
+            }
+            h.rotate_left(1);
+            e.rotate_left(1);
+            f.rotate_left(1);
+        }
+    }
+    buf.aff_h16 = h;
+    buf.aff_e16 = e;
+    buf.aff_f16 = f;
+    let p = &buf.p8[..ndiag * nslot];
+    affine_traceback_into(
+        |i, j| {
+            let d = i + j;
+            let par = (d + lb) % 2;
+            let t = ((j as isize - i as isize) + lb as isize - par as isize) / 2;
+            p[d * nslot + t as usize]
+        },
+        s1,
+        s2,
+        &mut buf.al0,
+        &mut buf.al1,
+    );
+}
+
+/// Trace back an affine alignment from the packed pointers (see
+/// [`AFF_H_MASK`]), starting in H at the bottom-right cell.
+fn affine_traceback_into(
+    ptr: impl Fn(usize, usize) -> u8,
+    s1: &[u8],
+    s2: &[u8],
+    al0: &mut Vec<u8>,
+    al1: &mut Vec<u8>,
+) {
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        H,
+        E,
+        F,
+    }
+    al0.clear();
+    al1.clear();
+    al0.reserve(s1.len() + s2.len());
+    al1.reserve(s1.len() + s2.len());
+    let (mut i, mut j) = (s1.len(), s2.len());
+    let mut state = State::H;
+    while i > 0 || j > 0 {
+        let v = ptr(i, j);
+        match state {
+            State::H => match v & AFF_H_MASK {
+                1 => {
+                    al0.push(s1[i - 1]);
+                    al1.push(s2[j - 1]);
+                    i -= 1;
+                    j -= 1;
+                }
+                2 => state = State::E,
+                3 => state = State::F,
+                _ => panic!("affine traceback: invalid pointer {v} at ({i},{j})"),
+            },
+            State::E => {
+                al0.push(b'-');
+                al1.push(s2[j - 1]);
+                j -= 1;
+                if v & AFF_E_EXT == 0 {
+                    state = State::H;
+                }
+            }
+            State::F => {
+                al0.push(s1[i - 1]);
+                al1.push(b'-');
+                i -= 1;
+                if v & AFF_F_EXT == 0 {
+                    state = State::H;
+                }
+            }
+        }
+    }
+    al0.reverse();
+    al1.reverse();
 }
 
 // ---------------------------------------------------------------------------
@@ -1305,7 +1910,15 @@ pub fn backend_repr(p: &AlignParams) -> String {
             format!("alignment backend: wfa2 (experimental WFA; {cap})")
         }
     };
-    // Named only off the default, so R-parity runs read as before (issue #289).
+    // Named only off the default, so R-parity runs read as before (#289, #309).
+    let backend = if p.gap_open_p != 0 {
+        format!(
+            "{backend}; affine gaps: open {}, extend {} (experimental)",
+            p.gap_open_p, p.gap_p
+        )
+    } else {
+        backend
+    };
     match p.end_model {
         EndModel::EndsFree => backend,
         EndModel::Free3p => format!("{backend}; end model: free-3p (experimental)"),
@@ -1711,9 +2324,10 @@ fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers)
             p.match_score,
             p.mismatch,
             p.gap_p,
+            p.gap_open_p,
             p.band,
             p.end_model,
-            wfa_cost_cap(p.wfa_max_edits, p.gap_p),
+            wfa_cost_cap(p.wfa_max_edits, p.gap_p + p.gap_open_p),
             buf,
         );
         return Some(());
@@ -1728,18 +2342,20 @@ fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers)
             p.match_score,
             p.mismatch,
             p.gap_p,
+            p.gap_open_p,
             p.band,
             p.end_model,
-            wfa_cost_cap(p.wfa_max_edits, p.gap_p),
+            wfa_cost_cap(p.wfa_max_edits, p.gap_p + p.gap_open_p),
             buf,
         );
         return Some(());
     }
-    // Long-read guard: align_vectorized uses i16 DP tables. With the default
-    // DADA2 scoring (match=5, mismatch=-4, gap_p=-8) cumulative scores can
-    // approach ±8·N, so we must fall back to the i32 path before overflow
-    // can distort the optimum. 3500 bp leaves ~10% headroom in i16 range.
-    const VECTORIZED_MAX_LEN: usize = 3500;
+    // Affine gaps (#309), opt-in; `resolve_gap_open_p` keeps them apart from
+    // homopolymer gapping.
+    if p.gap_open_p != 0 {
+        align_nw_affine_with_buf(&raw1.seq, &raw2.seq, p, buf);
+        return Some(());
+    }
     let too_long = raw1.len() > VECTORIZED_MAX_LEN || raw2.len() > VECTORIZED_MAX_LEN;
     if p.vectorized && !too_long && !use_homo {
         let (begin_free, end_free) = p.end_model.free_ends();
@@ -2322,6 +2938,7 @@ mod tests {
             MATCH,
             MM,
             GAP,
+            0,
             BAND,
             EndModel::EndsFree,
             i32::MAX,
@@ -2424,6 +3041,7 @@ mod tests {
             MATCH,
             MM,
             GAP,
+            0,
             BAND,
             EndModel::EndsFree,
             cap,
@@ -2460,6 +3078,7 @@ mod tests {
             MATCH,
             MM,
             GAP,
+            0,
             BAND,
             EndModel::EndsFree,
             cap,
@@ -2471,6 +3090,7 @@ mod tests {
             MATCH,
             MM,
             GAP,
+            0,
             BAND,
             EndModel::EndsFree,
             i32::MAX,
@@ -2586,6 +3206,7 @@ mod tests {
                 5,
                 -4,
                 -8,
+                0,
                 -1,
                 EndModel::EndsFree,
                 i32::MAX,
@@ -2640,6 +3261,7 @@ mod tests {
                 5,
                 -4,
                 -8,
+                0,
                 -1,
                 EndModel::EndsFree,
                 i32::MAX,
@@ -2685,6 +3307,7 @@ mod tests {
             5,
             -4,
             -8,
+            0,
             -1,
             EndModel::EndsFree,
             i32::MAX,
@@ -2738,6 +3361,7 @@ mod tests {
             5,
             -4,
             -8,
+            0,
             BAND,
             EndModel::EndsFree,
             i32::MAX,
@@ -2870,6 +3494,7 @@ mod tests {
                 match_score: MATCH,
                 mismatch: MM,
                 gap_p: GAP,
+                gap_open_p: 0,
                 homo_gap_p: GAP,
                 use_kmers: false,
                 kdist_cutoff: 0.42,
@@ -2932,6 +3557,7 @@ mod tests {
                         MATCH,
                         MM,
                         GAP,
+                        0,
                         band,
                         ends,
                         i32::MAX,
@@ -2965,6 +3591,7 @@ mod tests {
                 MATCH,
                 MM,
                 GAP,
+                0,
                 BAND,
                 EndModel::EndsFree,
                 i32::MAX,
@@ -2977,6 +3604,7 @@ mod tests {
                 MATCH,
                 MM,
                 GAP,
+                0,
                 BAND,
                 EndModel::Global,
                 i32::MAX,
@@ -3023,6 +3651,7 @@ mod tests {
                 5,
                 -4,
                 -8,
+                0,
                 -1,
                 EndModel::EndsFree,
                 i32::MAX,
@@ -3081,6 +3710,7 @@ mod tests {
                 5,
                 -4,
                 -8,
+                0,
                 -1,
                 EndModel::EndsFree,
                 i32::MAX,
@@ -3913,6 +4543,7 @@ mod tests {
             match_score: 5,
             mismatch: -4,
             gap_p: -8,
+            gap_open_p: 0,
             homo_gap_p: -1,
             use_kmers: true,
             kdist_cutoff: 0.42,
@@ -3985,6 +4616,7 @@ mod tests {
             match_score: 5,
             mismatch: -4,
             gap_p: -8,
+            gap_open_p: 0,
             homo_gap_p: -8,
             use_kmers: true,
             kdist_cutoff: 0.42,
@@ -4054,5 +4686,432 @@ mod tests {
         crate::kmers::raw_assign_kmers(&mut r3, 5);
         assert!(pair_is_gapless_with(&r1, &r3, 5, &mut scratch, false));
         assert!(pair_is_gapless_with(&r1, &r3, 5, &mut scratch, true));
+    }
+}
+
+#[cfg(test)]
+mod affine_tests {
+    use super::*;
+
+    const MATCH: i32 = 5;
+    const MM: i32 = -4;
+    const GAP: i32 = -8;
+    const END_MODELS: [EndModel; 3] = [EndModel::EndsFree, EndModel::Free3p, EndModel::Global];
+
+    fn lcg(seed: u64) -> impl FnMut(usize) -> usize {
+        let mut st = seed;
+        move |m: usize| {
+            st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((st >> 33) as usize) % m
+        }
+    }
+
+    /// Whether a gap column is free: a leading gap before either sequence has
+    /// started, or a trailing one after it has ended, when that end is free.
+    fn gap_free(in_s1: bool, i: usize, j: usize, len1: usize, len2: usize, ends: EndModel) -> bool {
+        let (bf, ef) = ends.free_ends();
+        // A gap in s1 (E) consumes s2 and sits on row i; a gap in s2 (F) on column j.
+        let (pos, len) = if in_s1 { (i, len1) } else { (j, len2) };
+        (bf && pos == 0) || (ef && pos == len)
+    }
+
+    /// Affine score of an alignment, independent of the kernel.
+    fn score(al0: &[u8], al1: &[u8], open: i32, ends: EndModel) -> i32 {
+        let len1 = al0.iter().filter(|&&c| c != b'-').count();
+        let len2 = al1.iter().filter(|&&c| c != b'-').count();
+        let (mut i, mut j, mut prev, mut s) = (0, 0, 0u8, 0i32);
+        for (&a, &b) in al0.iter().zip(al1) {
+            if a != b'-' && b != b'-' {
+                s += if a == b { MATCH } else { MM };
+                i += 1;
+                j += 1;
+                prev = 0;
+            } else {
+                let kind = if a == b'-' { 1 } else { 2 };
+                if !gap_free(kind == 1, i, j, len1, len2, ends) {
+                    s += GAP + if prev != kind { open } else { 0 };
+                }
+                prev = kind;
+                if kind == 1 { j += 1 } else { i += 1 }
+            }
+        }
+        s
+    }
+
+    /// Best affine score over every alignment, by exhaustive recursion.
+    fn brute(s1: &[u8], s2: &[u8], open: i32, ends: EndModel) -> i32 {
+        fn go(
+            s1: &[u8],
+            s2: &[u8],
+            i: usize,
+            j: usize,
+            prev: u8,
+            open: i32,
+            ends: EndModel,
+        ) -> i32 {
+            let (n1, n2) = (s1.len(), s2.len());
+            if i == n1 && j == n2 {
+                return 0;
+            }
+            let mut best = i32::MIN / 2;
+            if i < n1 && j < n2 {
+                let m = if s1[i] == s2[j] { MATCH } else { MM };
+                best = best.max(m + go(s1, s2, i + 1, j + 1, 0, open, ends));
+            }
+            for kind in [1u8, 2] {
+                let ok = if kind == 1 { j < n2 } else { i < n1 };
+                if !ok {
+                    continue;
+                }
+                let c = if gap_free(kind == 1, i, j, n1, n2, ends) {
+                    0
+                } else {
+                    GAP + if prev != kind { open } else { 0 }
+                };
+                let (ni, nj) = if kind == 1 { (i, j + 1) } else { (i + 1, j) };
+                best = best.max(c + go(s1, s2, ni, nj, kind, open, ends));
+            }
+            best
+        }
+        go(s1, s2, 0, 0, 0, open, ends)
+    }
+
+    fn ungap(al: &[u8]) -> Vec<u8> {
+        al.iter().copied().filter(|&c| c != b'-').collect()
+    }
+
+    fn gap_runs(al: &[u8]) -> usize {
+        al.split(|&c| c != b'-').filter(|r| !r.is_empty()).count()
+    }
+
+    /// The kernel finds the exhaustive optimum on every small pair, under every
+    /// end model and opening cost, and its alignment spells both inputs.
+    #[test]
+    fn affine_matches_exhaustive_optimum() {
+        let mut rng = lcg(0xAFF1);
+        let mut buf = AlignBuffers::new();
+        for _ in 0..1500 {
+            let alpha = 2 + rng(3);
+            let s1: Vec<u8> = (0..rng(7)).map(|_| 1 + rng(alpha) as u8).collect();
+            let s2: Vec<u8> = (0..rng(7)).map(|_| 1 + rng(alpha) as u8).collect();
+            for ends in END_MODELS {
+                for open in [0, -1, -3, -8, -20] {
+                    align_affine_with_buf(&s1, &s2, MATCH, MM, GAP, open, -1, ends, &mut buf);
+                    assert_eq!(ungap(&buf.al0), s1);
+                    assert_eq!(ungap(&buf.al1), s2);
+                    assert_eq!(
+                        score(&buf.al0, &buf.al1, open, ends),
+                        brute(&s1, &s2, open, ends),
+                        "{s1:?} vs {s2:?}, open {open}, {ends:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// At opening 0 the affine kernel reaches the linear kernel's optimum.
+    #[test]
+    fn affine_open_zero_scores_as_linear() {
+        let mut rng = lcg(0x11AE);
+        let mut buf = AlignBuffers::new();
+        for _ in 0..300 {
+            let s1: Vec<u8> = (0..40 + rng(120)).map(|_| 1 + rng(4) as u8).collect();
+            let mut s2 = s1.clone();
+            for _ in 0..rng(10) {
+                let p = rng(s2.len());
+                match rng(3) {
+                    0 => s2[p] = 1 + rng(4) as u8,
+                    1 => s2.insert(p, 1 + rng(4) as u8),
+                    _ => {
+                        s2.remove(p);
+                    }
+                }
+            }
+            for ends in END_MODELS {
+                align_ends_with_buf(&s1, &s2, MATCH, MM, GAP, -1, ends, &mut buf);
+                let lin = score(&buf.al0, &buf.al1, 0, ends);
+                align_affine_with_buf(&s1, &s2, MATCH, MM, GAP, 0, -1, ends, &mut buf);
+                assert_eq!(score(&buf.al0, &buf.al1, 0, ends), lin);
+            }
+        }
+    }
+
+    /// A block difference aligns as one gap under global with an opening cost:
+    /// the #309 truncation (a missing prefix) and an IVS-like insertion.
+    #[test]
+    fn affine_global_keeps_block_gaps_whole() {
+        let mut rng = lcg(0xB10C);
+        let mut buf = AlignBuffers::new();
+        for _ in 0..50 {
+            let s1: Vec<u8> = (0..300).map(|_| 1 + rng(4) as u8).collect();
+            let trunc = s1[60..].to_vec();
+            let mut ins = s1.clone();
+            let block: Vec<u8> = (0..80).map(|_| 1 + rng(4) as u8).collect();
+            ins.splice(150..150, block);
+            for (s2, gaps_in_s1) in [(&trunc, false), (&ins, true)] {
+                align_affine_with_buf(&s1, s2, MATCH, MM, GAP, -1, 32, EndModel::Global, &mut buf);
+                let (al_gapped, al_other) = if gaps_in_s1 {
+                    (&buf.al0, &buf.al1)
+                } else {
+                    (&buf.al1, &buf.al0)
+                };
+                assert_eq!(gap_runs(al_gapped), 1, "one block");
+                assert_eq!(gap_runs(al_other), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn gap_open_p_resolution() {
+        assert_eq!(resolve_gap_open_p(0, -8, -8).unwrap(), 0);
+        assert_eq!(resolve_gap_open_p(1, -8, -8).unwrap(), -1);
+        assert_eq!(resolve_gap_open_p(-3, -8, -8).unwrap(), -3);
+        // Linear gaps still allow a homopolymer penalty; affine ones do not.
+        assert_eq!(resolve_gap_open_p(0, -8, -1).unwrap(), 0);
+        assert!(resolve_gap_open_p(-1, -8, -1).is_err());
+    }
+
+    /// NW and WFA reach the same affine optimum under every end model, so the
+    /// two backends stay interchangeable with `--gap-open-p` (#309).
+    #[cfg(feature = "wfa")]
+    #[test]
+    fn affine_nw_and_wfa_agree_on_score() {
+        let mut rng = lcg(0x3FA1);
+        let (mut nw, mut wf) = (AlignBuffers::new(), AlignBuffers::new());
+        for _ in 0..400 {
+            let s1: Vec<u8> = (0..40 + rng(160)).map(|_| 1 + rng(4) as u8).collect();
+            let mut s2 = s1.clone();
+            for _ in 0..rng(12) {
+                let p = rng(s2.len());
+                match rng(3) {
+                    0 => s2[p] = 1 + rng(4) as u8,
+                    1 => s2.insert(p, 1 + rng(4) as u8),
+                    _ => {
+                        s2.remove(p);
+                    }
+                }
+            }
+            if rng(4) == 0 {
+                s2.drain(..rng(30));
+            }
+            for ends in END_MODELS {
+                for open in [-1, -3, -8] {
+                    for band in [32, -1] {
+                        align_affine_with_buf(&s1, &s2, MATCH, MM, GAP, open, band, ends, &mut nw);
+                        crate::wfa::align_wfa_endsfree_with_buf(
+                            &s1,
+                            &s2,
+                            MATCH,
+                            MM,
+                            GAP,
+                            open,
+                            band,
+                            ends,
+                            i32::MAX,
+                            &mut wf,
+                        );
+                        assert_eq!(ungap(&wf.al0), s1);
+                        assert_eq!(ungap(&wf.al1), s2);
+                        assert_eq!(
+                            score(&wf.al0, &wf.al1, open, ends),
+                            score(&nw.al0, &nw.al1, open, ends),
+                            "open {open}, band {band}, {ends:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Pairs for the kernel-parity tests: random lengths, substitutions,
+    /// indels, end truncations and inserted blocks.
+    fn varied_pairs(n: usize, seed: u64) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut rng = lcg(seed);
+        (0..n)
+            .map(|_| {
+                let s1: Vec<u8> = (0..rng(600)).map(|_| 1 + rng(4) as u8).collect();
+                let mut s2 = s1.clone();
+                for _ in 0..rng(25) {
+                    if s2.is_empty() {
+                        break;
+                    }
+                    let p = rng(s2.len());
+                    match rng(4) {
+                        0 => s2[p] = 1 + rng(4) as u8,
+                        1 => s2.insert(p, 1 + rng(4) as u8),
+                        2 => {
+                            s2.remove(p);
+                        }
+                        _ => {
+                            let block: Vec<u8> = (0..rng(60)).map(|_| 1 + rng(4) as u8).collect();
+                            s2.splice(p..p, block);
+                        }
+                    }
+                }
+                match rng(5) {
+                    0 => {
+                        let k = rng(s2.len() + 1);
+                        s2.drain(..k.min(200));
+                    }
+                    1 => {
+                        let k = rng(s2.len() + 1).min(200);
+                        s2.truncate(s2.len() - k);
+                    }
+                    _ => {}
+                }
+                (s1, s2)
+            })
+            .collect()
+    }
+
+    /// The vectorized kernel produces the scalar kernel's alignment byte for
+    /// byte, on tiny pairs with frequent ties and on varied realistic ones,
+    /// under every end model, opening and band.
+    #[test]
+    fn affine_vectorized_matches_scalar() {
+        let (mut sc, mut ve) = (AlignBuffers::new(), AlignBuffers::new());
+        let mut rng = lcg(0x7EC7);
+        let mut tiny: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for _ in 0..2000 {
+            let alpha = 2 + rng(3);
+            tiny.push((
+                (0..rng(8)).map(|_| 1 + rng(alpha) as u8).collect(),
+                (0..rng(8)).map(|_| 1 + rng(alpha) as u8).collect(),
+            ));
+        }
+        let mut n = 0;
+        for (s1, s2) in tiny.iter().chain(varied_pairs(400, 0x5EED).iter()) {
+            for ends in END_MODELS {
+                for open in [-1, -3, -8, -20] {
+                    for band in [0, 4, 16, 32, -1] {
+                        align_affine_with_buf(s1, s2, MATCH, MM, GAP, open, band, ends, &mut sc);
+                        align_affine_vectorized_with_buf(
+                            s1, s2, MATCH, MM, GAP, open, band, ends, &mut ve,
+                        );
+                        assert!(
+                            sc.al0 == ve.al0 && sc.al1 == ve.al1,
+                            "{s1:?} vs {s2:?}, open {open}, band {band}, {ends:?}"
+                        );
+                        n += 1;
+                    }
+                }
+            }
+        }
+        assert!(n > 40_000);
+    }
+
+    /// Per-pair kernel timing on PacBio-length pairs (#309). Run explicitly:
+    /// `cargo test --release --lib affine_kernel_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn affine_kernel_timing() {
+        let mut rng = lcg(0x71AE);
+        let pairs: Vec<(Vec<u8>, Vec<u8>)> = (0..200)
+            .map(|_| {
+                let s1: Vec<u8> = (0..1450).map(|_| 1 + rng(4) as u8).collect();
+                let mut s2 = s1.clone();
+                for _ in 0..rng(12) {
+                    let p = rng(s2.len());
+                    match rng(3) {
+                        0 => s2[p] = 1 + rng(4) as u8,
+                        1 => s2.insert(p, 1 + rng(4) as u8),
+                        _ => {
+                            s2.remove(p);
+                        }
+                    }
+                }
+                (s1, s2)
+            })
+            .collect();
+        let reps = 20;
+        type Kernel<'a> = dyn FnMut(&[u8], &[u8], &mut AlignBuffers) + 'a;
+        let time = |name: &str, f: &mut Kernel| {
+            let mut b = AlignBuffers::new();
+            let t = std::time::Instant::now();
+            for _ in 0..reps {
+                for (s1, s2) in &pairs {
+                    f(s1, s2, &mut b);
+                }
+            }
+            let us = t.elapsed().as_secs_f64() * 1e6 / (reps * pairs.len()) as f64;
+            println!("{name:28} {us:8.1} us/pair");
+        };
+        let scores = VectorizedAlignScores {
+            match_score: MATCH as i16,
+            mismatch: MM as i16,
+            gap_p: GAP as i16,
+            begin_gap_p: GAP as i16,
+            end_gap_p: GAP as i16,
+            band: 32,
+        };
+        // Each band twice; the first pass warms the CPU and the buffers.
+        for band in [8usize, 32, 128, 8, 32, 128] {
+            let nd = 2900.0 * (band + 1) as f64;
+            let t = std::time::Instant::now();
+            let mut b2 = AlignBuffers::new();
+            for (s1, s2) in &pairs {
+                align_affine_vectorized_with_buf(
+                    s1,
+                    s2,
+                    MATCH,
+                    MM,
+                    GAP,
+                    -1,
+                    band as i32,
+                    EndModel::Global,
+                    &mut b2,
+                );
+            }
+            let s = t.elapsed().as_secs_f64() / pairs.len() as f64;
+            let sc = VectorizedAlignScores {
+                band: band as i32,
+                ..scores
+            };
+            let t = std::time::Instant::now();
+            for (s1, s2) in &pairs {
+                align_vectorized_with_buf(s1, s2, &sc, &mut b2);
+            }
+            let l = t.elapsed().as_secs_f64() / pairs.len() as f64;
+            println!(
+                "band {band:3}: affine {:.2} ns/cell, linear {:.2} ns/cell",
+                s * 1e9 / nd,
+                l * 1e9 / nd
+            );
+        }
+        time("linear vectorized", &mut |a, b, bf| {
+            align_vectorized_with_buf(a, b, &scores, bf)
+        });
+        time("linear scalar", &mut |a, b, bf| {
+            align_ends_with_buf(a, b, MATCH, MM, GAP, 32, EndModel::Global, bf)
+        });
+        time("affine scalar", &mut |a, b, bf| {
+            align_affine_with_buf(a, b, MATCH, MM, GAP, -1, 32, EndModel::Global, bf)
+        });
+        time("affine vectorized", &mut |a, b, bf| {
+            align_affine_vectorized_with_buf(a, b, MATCH, MM, GAP, -1, 32, EndModel::Global, bf)
+        });
+    }
+
+    /// Banding never beats the unbanded optimum, and a band wider than both
+    /// sequences changes nothing.
+    #[test]
+    fn affine_band_bounds() {
+        let mut rng = lcg(0xBA4D);
+        let mut buf = AlignBuffers::new();
+        for _ in 0..300 {
+            let s1: Vec<u8> = (0..20 + rng(80)).map(|_| 1 + rng(4) as u8).collect();
+            let s2: Vec<u8> = (0..20 + rng(80)).map(|_| 1 + rng(4) as u8).collect();
+            for ends in END_MODELS {
+                align_affine_with_buf(&s1, &s2, MATCH, MM, GAP, -2, -1, ends, &mut buf);
+                let (u0, u1) = (buf.al0.clone(), buf.al1.clone());
+                let full = score(&u0, &u1, -2, ends);
+                align_affine_with_buf(&s1, &s2, MATCH, MM, GAP, -2, 4, ends, &mut buf);
+                assert_eq!(ungap(&buf.al0), s1);
+                assert_eq!(ungap(&buf.al1), s2);
+                assert!(score(&buf.al0, &buf.al1, -2, ends) <= full);
+                align_affine_with_buf(&s1, &s2, MATCH, MM, GAP, -2, 200, ends, &mut buf);
+                assert_eq!((&buf.al0, &buf.al1), (&u0, &u1));
+            }
+        }
     }
 }

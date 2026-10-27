@@ -79,6 +79,13 @@ that by default and offers two opt-in models for primer-trimmed amplicons:
 [`dada`](commands/dada.md#experimental) and
 [issue #289](https://github.com/HPCBio/dada2-rs/issues/289).
 
+## Beyond `setDadaOpt()`: `--gap-open-p` (experimental)
+
+R's gap penalty is linear (`GAP_PENALTY` per column). `--gap-open-p` adds an
+opening cost, so a gap of length *L* costs `--gap-open-p` + *L* × `--gap-p`;
+`0`, the default, is R's model. See [`dada`](commands/dada.md#experimental) and
+[issue #309](https://github.com/HPCBio/dada2-rs/issues/309).
+
 ## Experimental: WFA alignment backend
 
 !!! warning "Experimental — developer build only"

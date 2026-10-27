@@ -368,7 +368,9 @@ first few 5′ bases, which a free leading gap absorbs. `--end-model global`
 recovers those too, but with the indel-aware λ it also splits reads truncated at
 one end: DADA2's gap penalty is linear, so a long end gap fragments into
 interior gaps that λ then scores
-([#309](https://github.com/HPCBio/dada2-rs/issues/309)).
+([#309](https://github.com/HPCBio/dada2-rs/issues/309)). `--gap-open-p`
+(below) removes that; whether `global` with it should replace this
+recommendation is being measured on full runs (#309).
 
 **`--end-model`** (default `ends-free`) — which alignment end gaps are free
 ([#289](https://github.com/HPCBio/dada2-rs/issues/289)). An end gap is a run of
@@ -416,6 +418,35 @@ truth (MiSeq SOP Mock, PacBio MSA-1003) neither opt-in model changes ASV calls;
 `free-3p` gives a byte-identical table on the MiSeq SOP. `global` on truncated
 Illumina reads raises reverse-read error rates by up to 24%, which is the 3'
 mismatch effect described above (#289).
+
+**`--gap-open-p`** (default `0`) — affine gaps: a gap of length *L* costs
+`--gap-open-p` + *L* × `--gap-p`. `0` is R's linear model and leaves every
+output unchanged; a positive value means the same penalty, as for `--gap-p`.
+
+With linear gaps, one long gap and the same number of scattered gaps cost the
+same, so a read truncated at one end, or an inserted block such as a 16S
+intervening sequence, can align as dozens of scattered gaps that hide its
+substitutions or, with the indel-aware λ, count as dozens of indels
+([#309](https://github.com/HPCBio/dada2-rs/issues/309)). An opening cost makes
+the single block the best alignment. Keep it small:
+
+| `--end-model global` | learned substitutions vs `ends-free`: Zymo / BEI / PacBio 95 | reads truncated at one end, with `--indel-rates` |
+| --- | --- | --- |
+| `--gap-open-p 0` | +0.1% / +0.05% / −0.15% | split off as ASVs |
+| `--gap-open-p -1` | +0.5% / +0.2% / +0.9% | absorbed |
+| `--gap-open-p -8` | +11.5% / +4.7% / +13% | absorbed |
+
+A large opening cost re-describes nearby insertion–deletion pairs as
+substitutions, which the error model then learns. On the near-end spike-ins
+above, `global` with `--gap-open-p -1` and `--indel-end-zone 0` recovered 176
+of 192 on Zymo and 128 on BEI, against 167 and 119 for `ends-free`, with no
+false splits.
+
+It works with every end model and both backends, and cannot be combined with a
+`--homo-gap-p` different from `--gap-p`. The value is recorded in the error
+model and the output `params`, and `dada` warns when its own differs. Each
+affine alignment costs about 1.3× a linear one (learn-errors on the PacBio mocks
+took 1.1–1.2× as long).
 
 ## See also
 
