@@ -20,19 +20,20 @@ the evidence that separates the two lies across the run:
                by site, like recurrence)
   fold         the parent is much more abundant than the variant
 
-Candidates are found without alignment: ASVs that differ only in run lengths
-have the same sequence once every run is collapsed to one base. Within such a
-group each ASV's parent is the most abundant ASV within --max-edits run-length
-changes of it: the dominant sequence an artifact would come from. A base
-changed to match its neighbour (TGG -> TTG) also leaves the collapsed sequence
-unchanged, as +1 and -1 on adjacent runs; such pairs are substitutions, and
-so is a +1/-1 pair within --pair-window bases (a base moved between two runs
-of it); those ASVs are not candidates, nor are ASVs with other substitutions.
-
-Limitation: an artifact family founded by a non-homopolymer indel (e.g. an
-inserted A between Gs) has a different collapsed sequence from its true
-parent, so its members are judged against each other; they come out
-unresolved or real-candidate (kept), never artifact.
+Candidates are found without alignment, on each ASV's run-collapsed sequence
+(every run reduced to one base):
+  run lengths  ASVs that differ only in run lengths share a collapsed sequence.
+  one new run  ASVs whose collapsed sequences are one insertion apart differ by
+               one indel outside a run (an A inserted between Gs: GGGG -> GGAGG)
+               plus any run-length changes. Found by hashing every one-base
+               deletion of each collapsed sequence; a deletion that joins two
+               equal neighbours (GAG -> G) is collapsed again.
+Each ASV's parent is the most abundant ASV, from either search, within
+--max-edits edited bases of it: the dominant sequence an artifact would come
+from. Edits of opposite sign within --pair-window bases are a substitution
+(TGG -> TTG is +1/-1 on adjacent runs; a base moved between two runs of it
+likewise), so such pairs are not candidates, nor are ASVs with other
+substitutions. A new run's site is keyed like a run's, with run length 0.
 
 Labels (provisional; every piece of evidence is a column):
   artifact        parent >= --min-fold more abundant, every edit's context
@@ -100,6 +101,45 @@ def tracking(v: list[int], p: list[int]) -> dict:
                 orphans=sum(1 for x, y in pairs if x >= 2 and y == 0))
 
 
+def collapsed(r: list[tuple[str, int, int]]) -> str:
+    return "".join(b for b, _, _ in r)
+
+
+_MOD = (1 << 61) - 1
+_BASE = 1_000_003
+
+
+def prefix_hashes(c: str) -> list[int]:
+    h = [0] * (len(c) + 1)
+    for i, ch in enumerate(c):
+        h[i + 1] = (h[i] * _BASE + ord(ch)) % _MOD
+    return h
+
+
+def one_insertion_pairs(collapsed_of: dict[str, str]) -> list[tuple[str, str, int, int]]:
+    """(longer, shorter, i, j) for ASV pairs whose collapsed sequences differ
+    by one inserted character: removing longer[i:j] (j = i + 2 when the removed
+    character's neighbours are equal and join) leaves shorter."""
+    by_hash = collections.defaultdict(list)
+    for s, c in collapsed_of.items():
+        by_hash[prefix_hashes(c)[-1], len(c)].append(s)
+    maxlen = max((len(c) for c in collapsed_of.values()), default=0)
+    pw = [1] * (maxlen + 2)
+    for i in range(1, len(pw)):
+        pw[i] = pw[i - 1] * _BASE % _MOD
+    out = []
+    for s, c in collapsed_of.items():
+        h, n = prefix_hashes(c), len(c)
+        for i in range(n):
+            j = i + 2 if 0 < i < n - 1 and c[i - 1] == c[i + 1] else i + 1
+            tail = (h[n] - h[j] * pw[n - j]) % _MOD
+            key = ((h[i] * pw[n - j] + tail) % _MOD, n - (j - i))
+            for q in by_hash.get(key, ()):
+                if collapsed_of[q] == c[:i] + c[j:]:
+                    out.append((s, q, i, j))
+    return out
+
+
 def site(key):
     """An edit's site: direction, base, run length and context, not size."""
     return (key[0][0],) + key[1:]
@@ -147,38 +187,82 @@ def main() -> None:
     rates = load_rates(a.rates, a.context, a.min_exact) if a.rates else None
 
     groups = collections.defaultdict(list)
-    rl = {}
+    rl, col = {}, {}
     for s in seqs:
-        r = runs(s)
-        rl[s] = r
-        groups["".join(b for b, _, _ in r)].append(s)
+        rl[s] = runs(s)
+        col[s] = collapsed(rl[s])
+        groups[col[s]].append(s)
 
-    cands = []
+    def substitution_like(edits_pos):
+        """Edits of opposite sign within --pair-window bases."""
+        return any(d1 * d2 < 0 and abs(p1 - p2) <= a.pair_window
+                   for x, (p1, d1) in enumerate(edits_pos) for (p2, d2) in edits_pos[x + 1:])
+
+    # Per child, every qualifying parent: (parent, edited bases, edits). An edit
+    # is (parent run, child run) for a run-length change, or
+    # ("ins"|"del", position in the parent, bases) for a new run.
+    options = collections.defaultdict(list)
     for members in groups.values():
         if len(members) < 2:
             continue
-        members.sort(key=lambda s: -total[s])
-        for i, s in enumerate(members[1:], 1):
-            for p in members[:i]:  # most abundant first
+        for s in members:
+            for p in members:
                 if total[p] <= total[s]:
                     continue
                 idx = [j for j, (pr, sr) in enumerate(zip(rl[p], rl[s])) if pr[2] != sr[2]]
-                delta = {j: rl[s][j][2] - rl[p][j][2] for j in idx}
-                if any(delta[i] * delta[j] < 0 and abs(rl[p][j][1] - rl[p][i][1]) <= a.pair_window
-                       for i in idx for j in idx if i < j):
-                    continue  # a +1/-1 pair close together: substitutions
-                nd = sum(abs(d) for d in delta.values())
+                if substitution_like([(rl[p][j][1], rl[s][j][2] - rl[p][j][2]) for j in idx]):
+                    continue
+                nd = sum(abs(rl[s][j][2] - rl[p][j][2]) for j in idx)
                 if nd <= a.max_edits:
-                    cands.append((s, p, nd, [(rl[p][j], rl[s][j]) for j in idx]))
-                    break
+                    options[s].append((p, nd, [(rl[p][j], rl[s][j]) for j in idx]))
+    for lng, sht, i, j in one_insertion_pairs(col):
+        split = j == i + 2  # the new run sits inside a run of the shorter sequence
+        if split and rl[lng][i - 1][2] + rl[lng][i + 1][2] != rl[sht][i - 1][2]:
+            continue  # ...which also changed length: where is ambiguous
+        # Where the new run sits, in the shorter sequence's coordinates.
+        if split:
+            at_sht = rl[sht][i - 1][1] + rl[lng][i - 1][2]
+        else:
+            at_sht = rl[sht][i][1] if i < len(rl[sht]) else len(sht)
+        new = rl[lng][i]
+        # Run-length changes on the runs the two share, as (short run, long run).
+        shared = []
+        for ks in range(len(rl[sht])):
+            if split and ks == i - 1:
+                continue
+            kl = ks if ks < i else ks + (2 if split else 1)
+            if rl[lng][kl][2] != rl[sht][ks][2]:
+                shared.append((rl[sht][ks], rl[lng][kl]))
+        for child, parent in ((lng, sht), (sht, lng)):
+            if total[parent] <= total[child]:
+                continue
+            if child == lng:  # the child has an inserted run
+                edits = [(pr, cr) for pr, cr in shared] + [("ins", at_sht, new[0] * new[2])]
+                pos = [(pr[1], cr[2] - pr[2]) for pr, cr in shared] + [(at_sht, new[2])]
+            else:  # the child lacks one of the parent's runs
+                edits = [(cr, pr) for pr, cr in shared] + [("del", new[1], new[0] * new[2])]
+                pos = [(cr[1], pr[2] - cr[2]) for pr, cr in shared] + [(new[1], -new[2])]
+            nd = sum(abs(d) for _, d in pos)
+            if nd <= a.max_edits and not substitution_like(pos):
+                options[child].append((parent, nd, edits))
+    cands = []
+    for s, opts in options.items():
+        p, nd, diffs = max(opts, key=lambda o: (total[o[0]], -o[1]))
+        cands.append((s, p, nd, diffs))
 
     # Context of each edit, keyed on the parent sequence.
     k = a.context
     def edits_of(p, diffs):
         out = []
-        for (b, start, n), (_, _, m) in diffs:
-            key = (f"{m - n:+d}", b, n, p[max(0, start - k):start], p[start + n:start + n + k])
-            out.append(key)
+        for d in diffs:
+            if d[0] in ("ins", "del"):  # a new run: length 0 in the parent's terms
+                kind, at, bases = d
+                end = at if kind == "ins" else at + len(bases)
+                sign = "+" if kind == "ins" else "-"
+                out.append((f"{sign}{len(bases)}", bases, 0, p[max(0, at - k):at], p[end:end + k]))
+                continue
+            (b, start, n), (_, _, m) = d
+            out.append((f"{m - n:+d}", b, n, p[max(0, start - k):start], p[start + n:start + n + k]))
         return out
     within = collections.defaultdict(list)  # site -> [(parent, frac)] among candidates
     info = {}
@@ -228,7 +312,7 @@ def main() -> None:
         w.writeheader()
         w.writerows(rows)
     by = collections.Counter(r["label"] for r in rows)
-    print(f"{len(seqs)} ASVs, {len(rows)} homopolymer-length candidates: " +
+    print(f"{len(seqs)} ASVs, {len(rows)} candidates: " +
           ", ".join(f"{k} {n} ({sum(r['reads'] for r in rows if r['label'] == k)} reads)" for k, n in by.most_common()) +
           ("" if multi else "; one sample, so no tracking evidence"), file=sys.stderr)
 
