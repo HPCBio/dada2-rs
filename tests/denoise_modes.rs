@@ -772,3 +772,43 @@ fn dada_outputs_carry_asv_lineage() {
         assert_eq!(s1[s], s2[s], "pooled cluster ids differ across samples");
     }
 }
+
+/// The dada `params` name the alignment model off R's defaults, and only then,
+/// so R-parity output keeps its shape (#313).
+#[test]
+fn dada_params_record_the_alignment_model() {
+    let dir = scratch("align_params");
+    let err = err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+    let params = |name: &str, extra: &[&str]| -> serde_json::Value {
+        let out = dir.join(format!("{name}.json"));
+        let base = [
+            "dada",
+            s1.to_str().unwrap(),
+            "--error-model",
+            err.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--threads",
+            "1",
+        ];
+        run(&[&base[..], extra].concat());
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+        v["params"].clone()
+    };
+    let default = params("default", &[]);
+    for key in ["end_model", "align_backend", "wfa_max_edits", "gap_open_p"] {
+        assert!(default.get(key).is_none(), "default output gained {key}");
+    }
+    let affine = params("affine", &["--end-model", "global", "--gap-open-p", "1"]);
+    assert_eq!(affine["end_model"], "global");
+    assert_eq!(affine["gap_open_p"], -1);
+    assert!(affine.get("align_backend").is_none());
+
+    #[cfg(feature = "wfa")]
+    {
+        let wfa = params("wfa", &["--align-backend", "wfa2", "--wfa-max-edits", "0"]);
+        assert_eq!(wfa["align_backend"], "wfa2");
+        assert_eq!(wfa["wfa_max_edits"], 0);
+    }
+}

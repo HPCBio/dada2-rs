@@ -1169,6 +1169,14 @@ fn is_default_screen(b: &ScreenBackend) -> bool {
     *b == ScreenBackend::Kmer
 }
 
+fn is_default_end_model(m: &EndModel) -> bool {
+    *m == EndModel::EndsFree
+}
+
+fn is_zero_i32(v: &i32) -> bool {
+    *v == 0
+}
+
 /// The experimental indel-aware λ's settings (#291), as recorded in `params`.
 #[derive(Serialize, Clone)]
 struct IndelLambdaRecord {
@@ -1214,6 +1222,17 @@ struct DadaRunParams {
     minimizer_k: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     minimizer_w: Option<usize>,
+    /// The alignment model, recorded off R's defaults only so R-parity output
+    /// keeps its exact shape (#313): `end_model` unless ends-free, the WFA
+    /// backend and its edit cap, and the affine opening penalty unless linear.
+    #[serde(skip_serializing_if = "is_default_end_model")]
+    end_model: EndModel,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    align_backend: Option<AlignBackend>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wfa_max_edits: Option<i32>,
+    #[serde(skip_serializing_if = "is_zero_i32")]
+    gap_open_p: i32,
     /// Denoising mode: false = independent per-sample (`dada`), true = full
     /// pooling across samples (`dada-pooled`, R DADA2 pool=TRUE).
     pool: bool,
@@ -1561,6 +1580,11 @@ fn resolve_dada_params(
     };
 
     let run = DadaRunParams {
+        end_model: align_params.end_model,
+        align_backend: (align_params.backend != AlignBackend::Nw).then_some(align_params.backend),
+        wfa_max_edits: (align_params.backend == AlignBackend::Wfa2)
+            .then_some(align_params.wfa_max_edits),
+        gap_open_p: align_params.gap_open_p,
         screen_backend: align_params.screen_backend,
         minimizer_k: match align_params.screen_backend {
             ScreenBackend::Minimizer => Some(align_params.minimizer_k),
