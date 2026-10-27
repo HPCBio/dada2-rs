@@ -244,7 +244,7 @@ this abundance.
 
 Identical in meaning to [`dada`'s experimental flags](dada.md#experimental):
 `--screen-backend`, `--minimizer-k`, `--minimizer-w`, `--screen-audit`,
-`--wfa-max-edits`, `--end-model`.
+`--wfa-max-edits`, `--end-model`, `--gap-open-p`.
 
 **`--indel-rates-out`**, **`--indel-history`**, **`--indel-max-iter`** (default
 10), **`--indel-fit-cmd`**, **`--hp-ceiling`**, **`--indel-pair-window`**,
