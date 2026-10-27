@@ -228,6 +228,13 @@ pub struct AlignBuffers {
     // Affine scalar DP (align_affine_with_buf): in-place H and F rows.
     aff_h: Vec<i32>,
     aff_f: Vec<i32>,
+    // Affine vectorized DP: rolling anti-diagonals (H: d-2, d-1, d; E and F:
+    // d-1, d), and the padded sequences (s1 reversed).
+    aff_h16: [Vec<i16>; 3],
+    aff_e16: [Vec<i16>; 2],
+    aff_f16: [Vec<i16>; 2],
+    aff_s1r: Vec<u8>,
+    aff_s2p: Vec<u8>,
     // Vectorized DP (align_vectorized).
     d16: Vec<i16>,
     // Traceback pointers hold only 0..=3, so `u8` halves this matrix's
@@ -562,6 +569,12 @@ pub fn align_ends_with_buf(
 // Affine-gap NW (Gotoh), opt-in via --gap-open-p (#309)
 // ---------------------------------------------------------------------------
 
+/// Long-read guard: the vectorized kernels use i16 DP tables. With the default
+/// DADA2 scoring (match=5, mismatch=-4, gap_p=-8) cumulative scores can
+/// approach ±8·N, so longer inputs take the i32 path before overflow can
+/// distort the optimum. 3500 bp leaves ~10% headroom in i16 range.
+const VECTORIZED_MAX_LEN: usize = 3500;
+
 /// Score floor for cells outside the band or unreachable states. Far enough
 /// from `i32::MIN` that adding any penalty cannot wrap.
 const AFF_NEG: i32 = i32::MIN / 4;
@@ -574,7 +587,30 @@ pub(crate) fn align_nw_affine_with_buf(
     p: &AlignParams,
     buf: &mut AlignBuffers,
 ) {
-    align_affine_with_buf(
+    let (lb, rb) = if p.band >= 0 {
+        let (l, r) = band_adjust(s1.len(), s2.len(), p.band);
+        (l as usize, r as usize)
+    } else {
+        (s1.len(), s2.len())
+    };
+    let vectorized = p.vectorized
+        && s1.len().max(s2.len()) <= VECTORIZED_MAX_LEN
+        && affine16_fits(
+            s1.len(),
+            s2.len(),
+            lb,
+            rb,
+            p.match_score,
+            p.mismatch,
+            p.gap_p,
+            p.gap_open_p,
+        );
+    let kernel = if vectorized {
+        align_affine_vectorized_with_buf
+    } else {
+        align_affine_with_buf
+    };
+    kernel(
         s1,
         s2,
         p.match_score,
@@ -678,9 +714,14 @@ pub fn align_affine_with_buf(
                 (1, len2)
             };
             p[i * ncol] = 3 | if i > 1 { AFF_F_EXT } else { 0 };
-            // Column l-1 of this row: the leading-gap edge, or outside the band.
+            // Column l-1 of this row: the leading-gap edge while column 0 is
+            // inside the band (j - i >= -lband), otherwise outside it.
             let mut diag = h[l - 1];
-            let left_val = if l == 1 { edge(i) } else { AFF_NEG };
+            let left_val = if l == 1 && (band < 0 || i as i32 <= lband) {
+                edge(i)
+            } else {
+                AFF_NEG
+            };
             h[l - 1] = left_val;
             f[l - 1] = left_val;
             let mut h_left = left_val;
@@ -739,6 +780,318 @@ pub fn align_affine_with_buf(
     }
     affine_traceback_into(
         |i, j| buf.p32[i * ncol + j],
+        s1,
+        s2,
+        &mut buf.al0,
+        &mut buf.al1,
+    );
+}
+
+/// Score floor of the `i16` affine kernel. Real cell scores stay above
+/// [`AFF16_REAL_MIN`] (checked per pair by [`affine16_fits`]), so a floor-derived
+/// value never wins a comparison, exactly as `AFF_NEG` never does in the scalar
+/// kernel; saturating adds keep it from wrapping.
+const AFF16_NEG: i16 = -30000;
+const AFF16_REAL_MIN: i32 = -28000;
+
+/// Whether every in-band score of this pair fits the `i16` kernel. Each in-band
+/// cell `(i, j)` is reached by `min(i, j)` diagonal steps and one gap run of
+/// `|i - j| <= max(lband, rband)` columns (plus a leading edge gap when
+/// penalised), which bounds its score from below; matches bound it from above.
+#[allow(clippy::too_many_arguments)]
+fn affine16_fits(
+    len1: usize,
+    len2: usize,
+    lband: usize,
+    rband: usize,
+    match_score: i32,
+    mismatch: i32,
+    gap_p: i32,
+    gap_open_p: i32,
+) -> bool {
+    let n = len1.min(len2) as i64;
+    let w = lband.max(rband) as i64;
+    let worst_cell = mismatch.min(0).abs().max(match_score.min(0).abs()) as i64;
+    let gap_run = gap_open_p.abs() as i64 + gap_p.abs() as i64 * w;
+    let low = worst_cell * n + 2 * gap_run;
+    let high = match_score.max(0) as i64 * n;
+    -low > AFF16_REAL_MIN as i64 && high < i16::MAX as i64 - 1000
+}
+
+/// One cell of the affine recurrence, shared by the vectorized kernel's lanes and
+/// its free-end fix-ups so both resolve ties identically (and as
+/// [`align_affine_with_buf`] does). `eo`/`ee` are the costs of opening and
+/// extending E, `fo`/`fe` of F; a free end passes zeros. Returns `(h, e, f, ptr)`.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn aff_cell16(
+    hl: i16,
+    el: i16,
+    hu: i16,
+    fu: i16,
+    hd: i16,
+    sc: i16,
+    eo: i16,
+    ee: i16,
+    fo: i16,
+    fe: i16,
+) -> (i16, i16, i16, u8) {
+    let e_open = hl.saturating_add(eo);
+    let e_ext = el.saturating_add(ee);
+    let e_is_ext = e_ext >= e_open;
+    let e = if e_is_ext { e_ext } else { e_open };
+    let f_open = hu.saturating_add(fo);
+    let f_ext = fu.saturating_add(fe);
+    let f_is_ext = f_ext >= f_open;
+    let f = if f_is_ext { f_ext } else { f_open };
+    let d = hd.saturating_add(sc);
+    // F over E over the diagonal on ties, as in the scalar kernel.
+    let f_wins = f >= e;
+    let gap = if f_wins { f } else { e };
+    let gap_src = if f_wins { 3u8 } else { 2u8 };
+    let (h, src) = if gap >= d { (gap, gap_src) } else { (d, 1u8) };
+    let ptr = src | if e_is_ext { AFF_E_EXT } else { 0 } | if f_is_ext { AFF_F_EXT } else { 0 };
+    (h, e, f, ptr)
+}
+
+/// Inputs of one anti-diagonal's lanes, all of the same length.
+struct AffLanesIn<'a> {
+    hl: &'a [i16],
+    el: &'a [i16],
+    hu: &'a [i16],
+    fu: &'a [i16],
+    hd: &'a [i16],
+    a: &'a [u8],
+    b: &'a [u8],
+}
+
+/// The lanes of one anti-diagonal. A separate function so the output slices
+/// arrive as `&mut` parameters, which LLVM knows cannot alias the inputs; inline,
+/// it guards each vectorized run with overlap checks that cost more than the
+/// lanes on a band-32 anti-diagonal. `k = [match, mismatch, open+extend, extend]`.
+#[inline(never)]
+fn aff_lanes16(
+    i: AffLanesIn,
+    ho: &mut [i16],
+    eo: &mut [i16],
+    fo: &mut [i16],
+    po: &mut [u8],
+    k: [i16; 4],
+) {
+    let n = ho.len();
+    let [m, mm, og, g] = k;
+    let (hl, el, hu, fu, hd, a, b) = (
+        &i.hl[..n],
+        &i.el[..n],
+        &i.hu[..n],
+        &i.fu[..n],
+        &i.hd[..n],
+        &i.a[..n],
+        &i.b[..n],
+    );
+    let (eo, fo, po) = (&mut eo[..n], &mut fo[..n], &mut po[..n]);
+    for x in 0..n {
+        let sc = if a[x] == b[x] { m } else { mm };
+        let (hv, ev, fv, pv) = aff_cell16(hl[x], el[x], hu[x], fu[x], hd[x], sc, og, g, og, g);
+        ho[x] = hv;
+        eo[x] = ev;
+        fo[x] = fv;
+        po[x] = pv;
+    }
+}
+
+/// [`align_affine_with_buf`] over anti-diagonals with `i16` scores: same
+/// alignments, byte for byte (`affine_vectorized_matches_scalar`).
+///
+/// Anti-diagonal `d = i + j` holds the band's cells by offset `k = j - i` at slot
+/// `t = (k + lband - par) / 2`, `par = (d + lband) % 2`. A cell's neighbours are
+/// then fixed slot offsets into the previous two anti-diagonals (diagonal: `d-2`,
+/// `t`; up: `d-1`, `t + par`; left: `d-1`, `t + par - 1`), so each anti-diagonal is
+/// one contiguous, dependency-free loop. Slots carry one pad on each side.
+/// Callers check [`affine16_fits`] first.
+#[allow(clippy::too_many_arguments)]
+pub fn align_affine_vectorized_with_buf(
+    s1: &[u8],
+    s2: &[u8],
+    match_score: i32,
+    mismatch: i32,
+    gap_p: i32,
+    gap_open_p: i32,
+    band: i32,
+    ends: EndModel,
+    buf: &mut AlignBuffers,
+) {
+    let (begin_free, end_free) = ends.free_ends();
+    let (len1, len2) = (s1.len(), s2.len());
+    let (lb, rb) = if band >= 0 {
+        let (l, r) = band_adjust(len1, len2, band);
+        (l as usize, r as usize)
+    } else {
+        (len1, len2)
+    };
+    let nslot = (lb + rb) / 2 + 1;
+    let width = nslot + 2;
+    let ndiag = len1 + len2 + 1;
+    let (m, mm, g, og) = (
+        match_score as i16,
+        mismatch as i16,
+        gap_p as i16,
+        (gap_open_p + gap_p) as i16,
+    );
+    let edge = |n: usize| -> i16 {
+        if begin_free {
+            0
+        } else {
+            (gap_open_p + n as i32 * gap_p) as i16
+        }
+    };
+
+    // Every pointer slot is written below, so the matrix is not cleared.
+    if buf.p8.len() < ndiag * nslot {
+        buf.p8.resize(ndiag * nslot, 0);
+    }
+    // Both sequences padded by `pad` on each side and s1 reversed, so every
+    // anti-diagonal reads one full-width slice of each, in range or not.
+    let pad = lb + rb + 4;
+    buf.aff_s1r.clear();
+    buf.aff_s1r.resize(pad, 0);
+    buf.aff_s1r.extend(s1.iter().rev());
+    buf.aff_s1r.resize(len1 + 2 * pad, 0);
+    buf.aff_s2p.clear();
+    buf.aff_s2p.resize(pad, 0);
+    buf.aff_s2p.extend_from_slice(s2);
+    buf.aff_s2p.resize(len2 + 2 * pad, 0);
+    let mut h = std::mem::take(&mut buf.aff_h16);
+    let mut e = std::mem::take(&mut buf.aff_e16);
+    let mut f = std::mem::take(&mut buf.aff_f16);
+    for v in h.iter_mut().chain(e.iter_mut()).chain(f.iter_mut()) {
+        reset_buf(v, width, AFF16_NEG);
+    }
+    {
+        let p = &mut buf.p8[..ndiag * nslot];
+        let (s1r, s2p) = (&buf.aff_s1r[..], &buf.aff_s2p[..]);
+        let (lbi, padi) = (lb as isize, pad as isize);
+        for d in 0..ndiag {
+            let di = d as isize;
+            let par = (d + lb) % 2;
+            let base = -lbi + par as isize;
+            let slot = |k: isize| ((k - base) / 2) as usize;
+            // h/e/f are [row d-2, d-1, d] / [d-1, d] / [d-1, d].
+            let [h0, h1, h2] = &mut h;
+            let [e0, e1] = &mut e;
+            let [f0, f1] = &mut f;
+            let prow = &mut p[d * nslot..(d + 1) * nslot];
+
+            // Every slot, in a fixed-width loop: slot t is cell
+            // (i_top - t, j_top + t). Slots that are not interior cells are
+            // overwritten below.
+            let i_top = (di - base) / 2;
+            let j_top = (di + base) / 2;
+            let xa = (len1 as isize - i_top + padi) as usize;
+            let xb = (j_top - 1 + padi) as usize;
+            aff_lanes16(
+                AffLanesIn {
+                    hl: &h1[par..par + nslot],
+                    el: &e0[par..par + nslot],
+                    hu: &h1[par + 1..par + 1 + nslot],
+                    fu: &f0[par + 1..par + 1 + nslot],
+                    hd: &h0[1..1 + nslot],
+                    a: &s1r[xa..xa + nslot],
+                    b: &s2p[xb..xb + nslot],
+                },
+                &mut h2[1..1 + nslot],
+                &mut e1[1..1 + nslot],
+                &mut f1[1..1 + nslot],
+                prow,
+                [m, mm, og, g],
+            );
+
+            // Interior cells (i, j >= 1) on this anti-diagonal: slots [lo, hi).
+            let (lo, hi) = if d >= 2 {
+                let mut kmin = (-lbi).max(-(di - 2)).max(di - 2 * len1 as isize);
+                let mut kmax = (rb as isize).min(di - 2).min(2 * len2 as isize - di);
+                if (kmin - base).rem_euclid(2) == 1 {
+                    kmin += 1;
+                }
+                if (kmax - base).rem_euclid(2) == 1 {
+                    kmax -= 1;
+                }
+                if kmin <= kmax {
+                    (slot(kmin), slot(kmax) + 1)
+                } else {
+                    (0, 0)
+                }
+            } else {
+                (0, 0)
+            };
+            for t in (0..lo).chain(hi..nslot) {
+                h2[t + 1] = AFF16_NEG;
+                e1[t + 1] = AFF16_NEG;
+                f1[t + 1] = AFF16_NEG;
+            }
+
+            // Edges: row 0 (gap in s1) and column 0 (gap in s2), when in band.
+            if d == 0 {
+                h2[slot(0) + 1] = 0;
+            } else {
+                if d <= len2 && d <= rb {
+                    let t = slot(di);
+                    h2[t + 1] = edge(d);
+                    prow[t] = 2 | if d > 1 { AFF_E_EXT } else { 0 };
+                }
+                if d <= len1 && d <= lb {
+                    let t = slot(-di);
+                    h2[t + 1] = edge(d);
+                    prow[t] = 3 | if d > 1 { AFF_F_EXT } else { 0 };
+                }
+            }
+
+            // Free trailing ends: E costs nothing in the last row, F in the last
+            // column. At most two cells per anti-diagonal.
+            if end_free && lo < hi {
+                for k in [di - 2 * len1 as isize, 2 * len2 as isize - di] {
+                    let t = slot(k);
+                    if (k - base).rem_euclid(2) != 0 || k < base || t < lo || t >= hi {
+                        continue;
+                    }
+                    let (i, j) = (((di - k) / 2) as usize, ((di + k) / 2) as usize);
+                    let (eo, ee) = if i == len1 { (0, 0) } else { (og, g) };
+                    let (fo, fe) = if j == len2 { (0, 0) } else { (og, g) };
+                    let sc = if s1[i - 1] == s2[j - 1] { m } else { mm };
+                    let (hv, ev, fv, pv) = aff_cell16(
+                        h1[t + par],
+                        e0[t + par],
+                        h1[t + par + 1],
+                        f0[t + par + 1],
+                        h0[t + 1],
+                        sc,
+                        eo,
+                        ee,
+                        fo,
+                        fe,
+                    );
+                    h2[t + 1] = hv;
+                    e1[t + 1] = ev;
+                    f1[t + 1] = fv;
+                    prow[t] = pv;
+                }
+            }
+            h.rotate_left(1);
+            e.rotate_left(1);
+            f.rotate_left(1);
+        }
+    }
+    buf.aff_h16 = h;
+    buf.aff_e16 = e;
+    buf.aff_f16 = f;
+    let p = &buf.p8[..ndiag * nslot];
+    affine_traceback_into(
+        |i, j| {
+            let d = i + j;
+            let par = (d + lb) % 2;
+            let t = ((j as isize - i as isize) + lb as isize - par as isize) / 2;
+            p[d * nslot + t as usize]
+        },
         s1,
         s2,
         &mut buf.al0,
@@ -2003,11 +2356,6 @@ fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers)
         align_nw_affine_with_buf(&raw1.seq, &raw2.seq, p, buf);
         return Some(());
     }
-    // Long-read guard: align_vectorized uses i16 DP tables. With the default
-    // DADA2 scoring (match=5, mismatch=-4, gap_p=-8) cumulative scores can
-    // approach ±8·N, so we must fall back to the i32 path before overflow
-    // can distort the optimum. 3500 bp leaves ~10% headroom in i16 range.
-    const VECTORIZED_MAX_LEN: usize = 3500;
     let too_long = raw1.len() > VECTORIZED_MAX_LEN || raw2.len() > VECTORIZED_MAX_LEN;
     if p.vectorized && !too_long && !use_homo {
         let (begin_free, end_free) = p.end_model.free_ends();
@@ -4573,6 +4921,175 @@ mod affine_tests {
                 }
             }
         }
+    }
+
+    /// Pairs for the kernel-parity tests: random lengths, substitutions,
+    /// indels, end truncations and inserted blocks.
+    fn varied_pairs(n: usize, seed: u64) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut rng = lcg(seed);
+        (0..n)
+            .map(|_| {
+                let s1: Vec<u8> = (0..rng(600)).map(|_| 1 + rng(4) as u8).collect();
+                let mut s2 = s1.clone();
+                for _ in 0..rng(25) {
+                    if s2.is_empty() {
+                        break;
+                    }
+                    let p = rng(s2.len());
+                    match rng(4) {
+                        0 => s2[p] = 1 + rng(4) as u8,
+                        1 => s2.insert(p, 1 + rng(4) as u8),
+                        2 => {
+                            s2.remove(p);
+                        }
+                        _ => {
+                            let block: Vec<u8> = (0..rng(60)).map(|_| 1 + rng(4) as u8).collect();
+                            s2.splice(p..p, block);
+                        }
+                    }
+                }
+                match rng(5) {
+                    0 => {
+                        let k = rng(s2.len() + 1);
+                        s2.drain(..k.min(200));
+                    }
+                    1 => {
+                        let k = rng(s2.len() + 1).min(200);
+                        s2.truncate(s2.len() - k);
+                    }
+                    _ => {}
+                }
+                (s1, s2)
+            })
+            .collect()
+    }
+
+    /// The vectorized kernel produces the scalar kernel's alignment byte for
+    /// byte, on tiny pairs with frequent ties and on varied realistic ones,
+    /// under every end model, opening and band.
+    #[test]
+    fn affine_vectorized_matches_scalar() {
+        let (mut sc, mut ve) = (AlignBuffers::new(), AlignBuffers::new());
+        let mut rng = lcg(0x7EC7);
+        let mut tiny: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for _ in 0..2000 {
+            let alpha = 2 + rng(3);
+            tiny.push((
+                (0..rng(8)).map(|_| 1 + rng(alpha) as u8).collect(),
+                (0..rng(8)).map(|_| 1 + rng(alpha) as u8).collect(),
+            ));
+        }
+        let mut n = 0;
+        for (s1, s2) in tiny.iter().chain(varied_pairs(400, 0x5EED).iter()) {
+            for ends in END_MODELS {
+                for open in [-1, -3, -8, -20] {
+                    for band in [0, 4, 16, 32, -1] {
+                        align_affine_with_buf(s1, s2, MATCH, MM, GAP, open, band, ends, &mut sc);
+                        align_affine_vectorized_with_buf(
+                            s1, s2, MATCH, MM, GAP, open, band, ends, &mut ve,
+                        );
+                        assert!(
+                            sc.al0 == ve.al0 && sc.al1 == ve.al1,
+                            "{s1:?} vs {s2:?}, open {open}, band {band}, {ends:?}"
+                        );
+                        n += 1;
+                    }
+                }
+            }
+        }
+        assert!(n > 40_000);
+    }
+
+    /// Per-pair kernel timing on PacBio-length pairs (#309). Run explicitly:
+    /// `cargo test --release --lib affine_kernel_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn affine_kernel_timing() {
+        let mut rng = lcg(0x71AE);
+        let pairs: Vec<(Vec<u8>, Vec<u8>)> = (0..200)
+            .map(|_| {
+                let s1: Vec<u8> = (0..1450).map(|_| 1 + rng(4) as u8).collect();
+                let mut s2 = s1.clone();
+                for _ in 0..rng(12) {
+                    let p = rng(s2.len());
+                    match rng(3) {
+                        0 => s2[p] = 1 + rng(4) as u8,
+                        1 => s2.insert(p, 1 + rng(4) as u8),
+                        _ => {
+                            s2.remove(p);
+                        }
+                    }
+                }
+                (s1, s2)
+            })
+            .collect();
+        let reps = 20;
+        type Kernel<'a> = dyn FnMut(&[u8], &[u8], &mut AlignBuffers) + 'a;
+        let time = |name: &str, f: &mut Kernel| {
+            let mut b = AlignBuffers::new();
+            let t = std::time::Instant::now();
+            for _ in 0..reps {
+                for (s1, s2) in &pairs {
+                    f(s1, s2, &mut b);
+                }
+            }
+            let us = t.elapsed().as_secs_f64() * 1e6 / (reps * pairs.len()) as f64;
+            println!("{name:28} {us:8.1} us/pair");
+        };
+        let scores = VectorizedAlignScores {
+            match_score: MATCH as i16,
+            mismatch: MM as i16,
+            gap_p: GAP as i16,
+            begin_gap_p: GAP as i16,
+            end_gap_p: GAP as i16,
+            band: 32,
+        };
+        // Each band twice; the first pass warms the CPU and the buffers.
+        for band in [8usize, 32, 128, 8, 32, 128] {
+            let nd = 2900.0 * (band + 1) as f64;
+            let t = std::time::Instant::now();
+            let mut b2 = AlignBuffers::new();
+            for (s1, s2) in &pairs {
+                align_affine_vectorized_with_buf(
+                    s1,
+                    s2,
+                    MATCH,
+                    MM,
+                    GAP,
+                    -1,
+                    band as i32,
+                    EndModel::Global,
+                    &mut b2,
+                );
+            }
+            let s = t.elapsed().as_secs_f64() / pairs.len() as f64;
+            let sc = VectorizedAlignScores {
+                band: band as i32,
+                ..scores
+            };
+            let t = std::time::Instant::now();
+            for (s1, s2) in &pairs {
+                align_vectorized_with_buf(s1, s2, &sc, &mut b2);
+            }
+            let l = t.elapsed().as_secs_f64() / pairs.len() as f64;
+            println!(
+                "band {band:3}: affine {:.2} ns/cell, linear {:.2} ns/cell",
+                s * 1e9 / nd,
+                l * 1e9 / nd
+            );
+        }
+        time("linear vectorized", &mut |a, b, bf| {
+            align_vectorized_with_buf(a, b, &scores, bf)
+        });
+        time("linear scalar", &mut |a, b, bf| {
+            align_ends_with_buf(a, b, MATCH, MM, GAP, 32, EndModel::Global, bf)
+        });
+        time("affine scalar", &mut |a, b, bf| {
+            align_affine_with_buf(a, b, MATCH, MM, GAP, -1, 32, EndModel::Global, bf)
+        });
+        time("affine vectorized", &mut |a, b, bf| {
+            align_affine_vectorized_with_buf(a, b, MATCH, MM, GAP, -1, 32, EndModel::Global, bf)
+        });
     }
 
     /// Banding never beats the unbanded optimum, and a band wider than both
