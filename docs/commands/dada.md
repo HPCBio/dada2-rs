@@ -360,17 +360,25 @@ HiFi or recent Illumina chemistries. The settings are recorded under
 `params.indel_lambda`. The error model is unchanged: `learn-errors` still
 learns from R's partition. Evidence for each choice is on #291.
 
-For PacBio HiFi, use the default `--end-model ends-free` with
-`--indel-end-zone 0`. On indel spike-ins placed 3–25 bases from either end,
-the default end zone missed most indels within 8 bases of the 3′ end, and zone
-0 recovered them with no false splits. `ends-free` misses only indels in the
-first few 5′ bases, which a free leading gap absorbs. `--end-model global`
-recovers those too, but with the indel-aware λ it also splits reads truncated at
-one end: DADA2's gap penalty is linear, so a long end gap fragments into
-interior gaps that λ then scores
-([#309](https://github.com/HPCBio/dada2-rs/issues/309)). `--gap-open-p`
-(below) removes that; whether `global` with it should replace this
-recommendation is being measured on full runs (#309).
+For PacBio HiFi reads trimmed of both primers, use the indel-aware λ with
+`--end-model global --gap-open-p -1 --indel-end-zone 0`
+([#309](https://github.com/HPCBio/dada2-rs/issues/309)):
+
+- **Near-end indels.** On spike-ins placed 3–25 bases from either end it
+  recovered 176 of 192 on Zymo and 128 on BEI, against 167 and 119 for
+  `ends-free`, with no false splits. `ends-free` misses indels in the first few
+  5′ bases, which a free leading gap absorbs; the default 3′ end zone misses
+  most indels within 8 bases of the 3′ end.
+- **Truncated reads.** With linear gaps, `global` splits reads truncated at one
+  end: a long end gap fragments into interior gaps that λ then scores. The
+  opening cost keeps it one gap, and the read is absorbed.
+- **Full run.** On 95 PacBio samples (`dada-pooled`), truncated reads are
+  absorbed, insertion variants such as 16S intervening sequences are kept, and
+  the ASVs match `ends-free` except for a few low-abundance ones. Pooled
+  denoising takes about 1.5× as long as `ends-free`.
+
+`--end-model ends-free --indel-end-zone 0` remains the conservative choice. Both
+are experimental.
 
 **`--end-model`** (default `ends-free`) — which alignment end gaps are free
 ([#289](https://github.com/HPCBio/dada2-rs/issues/289)). An end gap is a run of
