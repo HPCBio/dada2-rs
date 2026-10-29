@@ -23,7 +23,9 @@ the chemistry of the reads being binned, not on binning itself.**
   0.3%. The learned error models agree to **2.1%** mass-weighted.
 
 The unifying explanation: binning absorbs a residual error-variant tail *when one
-exists*. SequelIIe's full-quality model carries such a tail; Revio's does not, so
+exists*. That tail is mostly template damage: C>T/G>A variants at ~0.1% of
+their parent, read at high quality; see
+[Template damage makes C>T/G>A variants](template-damage-variants.md). SequelIIe's full-quality model carries such a tail; Revio's does not, so
 there is nothing left to absorb. Since Revio is the platform that actually emits
 binned data, the practical reading is that **working with binned qualities loses
 essentially nothing**.
