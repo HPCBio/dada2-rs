@@ -133,9 +133,9 @@ removes unlisted alleles and position-specific sequencing errors), against the
 | Illumina V7–V9 (both reads) | 18.0 | 15.7 | **36.7** |
 | PacBio Sequel IIe | **23.2** | 5.3 | 2.3 (all transversions) |
 
-Deamination occurs at a similar rate on both platforms, so it is probably a
-property of the amplicon PCR rather than of PacBio; on Illumina it is hidden
-under a 3× higher background of other molecular transitions. The excess there
+Deamination occurs at a similar rate on both platforms, consistent with it
+arising in the amplicon PCR rather than in PacBio sequencing; on Illumina it is
+hidden under a 3× higher background of other molecular transitions. The excess there
 is G>T/C>A, the signature of 8-oxoguanine, a known artifact of Illumina
 library preparation. It is what survives denoising: the run's low-fraction
 single-substitution ASVs are G>T 41, C>A 21, C>T 22, G>A 9, A>G/T>C 11.
@@ -144,6 +144,42 @@ Flagged as `oxidation`, the run gets 46 calls on three abundant parents in the
 real samples, at 0.19–0.5% of the parent. The Zymo samples are too shallow per
 allele to confirm the class: their five G>T near-misses, at 0.1–0.2%, have fewer
 than three siblings and are not called.
+
+## Why the platforms differ (open)
+
+What reaches the ASV table is a type's molecular rate times the chance that a
+variant of that type splits from its parent instead of being absorbed. Only the
+rate has been measured:
+
+| | molecular rate, Illumina | PacBio | ASVs on |
+|---|---|---|---|
+| deamination (C>T/G>A) | 18 | 23 | PacBio only |
+| oxidation (G>T/C>A) | 37 | ≈2 | Illumina only |
+| other transitions | 16 | 5 | neither |
+
+Deamination has the same rate and opposite outcomes, so the difference there
+lies in denoising. Candidate mechanisms, none tested:
+
+- **The error model's rate at the variant's quality.** At Q90 the full-quality
+  PacBio model expects C>T at about 10⁻⁵, so a variant at 0.1% of its parent
+  splits; an Illumina model at Q38 expects far more, so the same variant is
+  absorbed.
+- **Per-site concentration.** A split depends on one site's fraction, not the
+  average rate. If oxidation concentrates in hotspot contexts it reaches
+  0.2–0.5% at a site while deamination, spread evenly, does not.
+- **Paired-end denoising.** R1 and R2 are denoised separately and then merged;
+  a variant in the overlap must split in both.
+
+A backtrace on the mocks would separate these: follow every one-substitution
+unique of each truth allele through `dada` (its `map` gives each unique's
+ASV), recording type, site, abundance, quality and expected count, and tabulate
+whether it split or was absorbed.
+
+**What these data cannot answer.** The PacBio and Illumina mocks differ in more
+than platform: mock (ATCC vs Zymo), lab, amplicon length (1450 vs 400 nt),
+polymerase, cycle number, and Illumina's index PCR. A backtrace can explain
+why a variant was absorbed or split; whether the different oxidation rates come
+from the platform or the preparation needs one library sequenced on both.
 
 ## Flagging
 
