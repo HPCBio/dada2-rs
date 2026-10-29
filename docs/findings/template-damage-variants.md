@@ -36,8 +36,9 @@ Found while validating the alignment and indel-model work in issues
 - **A 2020 Sequel II MSA-1003 run** from a different library prep (9 samples,
   full qualities).
 - **PacBio 95**, a 95-sample real-community full-length 16S run.
-- **PRJNA674596 V7–V9**, Illumina MiSeq paired reads, 41 samples including
-  three Zymo mock samples, with a V7–V9 truth set cut from the Zymo reference.
+- **PRJNA674596 V7–V9**, Illumina MiSeq paired reads, 41 samples: 33 human
+  stool, three Zymo mock samples (with a V7–V9 truth set cut from the Zymo
+  reference) and five of the study's other mocks (ZIEL1, ZIEL2).
 
 Denoised with `dada-pooled --band 32 --kmer-size 7` (`--errfun pacbio` for
 full qualities, `binned-qual` for binned), consensus chimera removal, scored
@@ -194,8 +195,9 @@ for every type; only the inputs differ.
   expectation, at a median 5.7×, against a fifth of deamination children at
   3.5×. Splitting at that excess needs parents of roughly 125–200k reads; the
   mock alleles (about 9k reads each) are too shallow, so its oxidation
-  children are absorbed. The 46 mouse-sample calls have parents of 14–34k
-  merged reads, at the same per-site fractions as the mock's children.
+  children are absorbed. The 46 calls are in stool samples, whose parents
+  have 14–34k merged reads and which carry twice the mock's oxidation (next
+  subsection).
 - **Paired-end denoising: no detectable effect.** Children in the read overlap
   split as often as those outside it (4 of 1,510 against 7 of 2,113 in R1), but
   too few split to measure a difference.
@@ -230,7 +232,41 @@ Binned models have no dip: rates fall monotonically to Q40, and qualities
 between bins (from averaging) get higher rates, not lower (C>T 6 × 10⁻⁴ at
 Q39 against 4 × 10⁻⁴ at Q40), so averaging makes a split harder.
 
-Why learn-errors underestimates G>T on Illumina is not established.
+### Why the Illumina model underestimates G>T
+
+learn-errors counts G>T correctly; the model reflects the sample it was learned
+from, and damage varies between samples of one run. With the default 10⁸-base
+budget, the run's model came entirely from ZIEL2-C, the first sample in the
+manifest and the deepest (969k reads, 20–50× any other). The read-pair test,
+with each sample's own abundant ASVs as references (on the Zymo samples it
+reproduces the truth-based figures), gives per-base molecular rates:
+
+| × 10⁻⁵ per base | C>T + G>A | A>G + T>C | G>T + C>A |
+|---|---|---|---|
+| ZIEL2-C | 28.3 | 21.2 | **15.6** |
+| Zymo A–C | 18.8 | 16.1 | **38.6** |
+| stool, 33 samples | 22.0 | 18.7 | **77.8** |
+
+Deamination and other transitions vary less than 1.5×, oxidation 5×. Models
+learned from each group, at Q35–38:
+
+| learned from, × 10⁻⁵ | G>T | C>A | C>T | A>G |
+|---|---|---|---|---|
+| ZIEL2-C (the run's model) | 16 | 8 | 30 | 11 |
+| Zymo A–C | 40 | 29 | 56 | 25 |
+| stool (first 19 samples) | 139 | 105 | 212 | 130 |
+
+The ZIEL2-C model fits ZIEL2-C, so it is about 2.5× low for the Zymo samples'
+oxidation and 5× low for stool. The Zymo-learned G>T matches the Zymo
+truth-based rate. The stool-learned model is inflated for every type, 5–10×
+above the measured molecular rates: on a diverse community learn-errors counts
+lumped real variants as errors
+([#319](https://github.com/HPCBio/dada2-rs/issues/319)).
+
+So one error model per run cannot describe damage that differs between
+samples, and which sample is trained on decides which damage class is
+absorbed. A very deep sample read first fills the base budget alone, as in R
+([#68](https://github.com/HPCBio/dada2-rs/issues/68)).
 
 **What these data cannot answer.** The PacBio and Illumina mocks differ in more
 than platform: mock (ATCC vs Zymo), lab, amplicon length (1450 vs 400 nt),
