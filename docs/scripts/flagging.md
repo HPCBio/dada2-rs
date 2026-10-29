@@ -4,8 +4,8 @@
 ASV, after denoising and chimera removal. It is the same kind of step as
 chimera removal: the denoiser judges each unique against one centre, while the
 evidence that a variant is an artifact lies across the whole run. On PacBio
-HiFi mocks, flagging **doubles precision with no loss of recall**
-([Template damage makes C>T/G>A variants](../findings/template-damage-variants.md)).
+HiFi mocks, flagging template damage **doubles precision with no loss of
+recall** ([Template damage makes C>T/G>A variants](../findings/template-damage-variants.md)).
 
 ```bash
 python3 scripts/flag_artifacts.py nochim.json --out flags.tsv
@@ -17,6 +17,13 @@ The input is a `make-sequence-table` or `remove-bimera-denovo` JSON (optionally
 `.gz`). Python 3, standard library only. **Experimental**: the labels and
 thresholds are set from PacBio full-length 16S and may change.
 
+!!! warning "Damage classes are highly experimental"
+    `deamination` and `oxidation` are well supported on mocks, but damage rates
+    are expected to vary between preparations, facilities and labs, and the
+    thresholds were set on mocks. On a data set without a mock, review the
+    calls before acting on them. They are flagged by default but removed or
+    merged only with `--include-damage`.
+
 ## What it flags
 
 Three classes of candidate, each found without alignment:
@@ -25,7 +32,8 @@ Three classes of candidate, each found without alignment:
 |---|---|---|
 | Homopolymer length | differs from a more abundant ASV only in run lengths, at most `--max-edits` bases (default 2) | the same edit at the same site recurs in other parents; tracking |
 | One indel | one inserted or deleted base outside a run, plus any run-length changes | as above |
-| Damage | one C>T or G>A substitution, at most `--damage-max-frac` (0.005) of its parent | at least `--damage-min-siblings` (3) such candidates of the same parent; tracking |
+| Deamination | one C>T or G>A substitution, at most `--damage-max-frac` (0.005) of its parent | at least `--damage-min-siblings` (3) candidates of the same class and parent; tracking |
+| Oxidation | one G>T or C>A substitution, otherwise as deamination | as deamination |
 
 Each candidate's parent is the most abundant ASV it qualifies against.
 **Tracking** means the candidate is a near-constant fraction of its parent in
@@ -34,24 +42,35 @@ its parent. A candidate that varies independently of its parent (dispersion
 above 10, or any such orphan sample) is a `real-candidate` whatever else holds.
 A single-sample table has no tracking evidence.
 
-Damage is cytosine deamination in the template: a damaged molecule is copied
-faithfully, so its reads carry the change at high quality and the denoiser
-correctly keeps it apart. One template accumulates damage at many sites, so
-the siblings are the evidence. The Illumina run tested gets no damage calls.
+Both damage classes are a damaged template base that PCR copies faithfully, so
+the molecule's reads carry the change at high quality and the denoiser
+correctly keeps it apart. Cytosine deaminates to uracil, read as C>T; guanine
+oxidises to 8-oxoguanine, read as G>T. Damage hits many sites of a template, so
+the siblings are the evidence.
+
+| Data | deamination | oxidation |
+|---|---|---|
+| PacBio MSA-1003 mocks (Sequel IIe full, Revio) | 87, 43, all near-misses of true alleles | 0 |
+| Illumina V7–V9, 41 samples incl. Zymo mock | 0 | 46 (3 parents, real samples only) |
+
+On Illumina, the G>T/C>A pair is the dominant error carried by both reads of a
+pair, but the Zymo mock is too shallow per allele to confirm the class: its five
+G>T near-misses have fewer than three siblings and are not called.
 
 ## Labels
 
 | Label | Meaning |
 |---|---|
 | `artifact` | homopolymer or one-indel candidate: parent at least `--min-fold` (4) times more abundant, every edit explained by recurrence or the context rate, tracking does not argue against it |
-| `damage` | damage candidate with enough siblings, tracking does not argue against it |
+| `deamination`, `oxidation` | damage candidate with enough siblings of its class, tracking does not argue against it |
 | `real-candidate` | varies independently of its parent, or is far above the rate its context shows elsewhere |
 | `unresolved` | none of the above |
 
-`--action remove` drops `artifact` and `damage` ASVs; `--action merge` adds
-their reads to their parent, or to the first kept ancestor when the parent is
-dropped too. Both need `--out-seqtab`. The default, `flag`, writes only the
-TSV. `real-candidate` and `unresolved` ASVs are never removed.
+`--action remove` drops `artifact` ASVs, and with `--include-damage` also
+`deamination` and `oxidation` ASVs; `--action merge` adds their reads to their
+parent, or to the first kept ancestor when the parent is dropped too. Both need
+`--out-seqtab`. The default, `flag`, writes only the TSV. `real-candidate` and
+`unresolved` ASVs are never removed.
 
 ## Output
 
@@ -64,7 +83,7 @@ One TSV row per candidate, most abundant first:
 | `frac` | candidate / (candidate + parent), pooled over samples |
 | `samples`, `dispersion`, `orphans` | tracking: samples with either, Pearson dispersion, samples with ≥2 candidate reads and no parent |
 | `edits` | edited bases from the parent |
-| `evidence` | per edit: change, context, recurrence (`recur=`) and context rate (`ctx=`); for damage, substitution, position, context and `siblings=` |
+| `evidence` | per edit: change, context, recurrence (`recur=`) and context rate (`ctx=`); for damage, substitution, position, context, class and `siblings=` |
 | `parent`, `sequence` | the two sequences |
 
 A summary line on stderr counts each label and its reads.
@@ -80,7 +99,8 @@ A summary line on stderr counts each label and its reads.
 | `--pair-window` | 10 | edits of opposite sign this close are a substitution, not slippage, so not a candidate |
 | `--min-unexplained` | 0.1 | fraction above which an edit with no context evidence is `real-candidate` |
 | `--damage-max-frac` | 0.005 | highest fraction of its parent for a damage candidate |
-| `--damage-min-siblings` | 3 | damage candidates of one parent, itself included, needed for `damage` |
+| `--damage-min-siblings` | 3 | candidates of one class and parent, itself included, needed to call the class |
+| `--include-damage` | off | `--action remove` or `merge` also acts on `deamination` and `oxidation` |
 | `--rates`, `--min-exact` | — | an optional per-run slippage table, giving each homopolymer context's rate including variants the denoiser absorbed; maintainer tooling, so not covered here |
 | `--action`, `--out-seqtab` | `flag` | as above |
 
@@ -89,10 +109,13 @@ A summary line on stderr counts each label and its reads.
 - Only one-indel and one-substitution relationships are searched. Multi-switch
   PCR recombinants between rRNA copies differ by several indels and are not
   caught (issue [#55](https://github.com/HPCBio/dada2-rs/issues/55)).
-- A real allele can look like damage if it is one C>T or G>A from a much more
-  abundant allele that also has damage siblings and tracks it closely. On the
-  mocks no true allele was flagged.
+- A real allele can look like damage if it is one damage-type substitution
+  from a much more abundant allele that also has damage siblings and tracks it
+  closely. On the mocks no true allele was flagged.
+- Damage rates depend on the sample and its preparation; thresholds set on one
+  lab's mocks may not transfer.
 - Tested on PacBio full-length 16S (MSA-1003 mocks, a 95-sample real run) and
-  one Illumina V7–V9 run; other amplicons and platforms are untested.
+  one Illumina V7–V9 run; oxidation is not yet confirmed on a deep Illumina
+  mock, and other amplicons are untested.
 
 Developed under issue [#291](https://github.com/HPCBio/dada2-rs/issues/291).

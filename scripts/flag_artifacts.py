@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""flag_artifacts.py — flag homopolymer-length, one-indel and damage artifacts in a sequence table.
+"""flag_artifacts.py — flag homopolymer-length, one-indel and template-damage artifacts in a sequence table.
 
 A post-denoising step in the spirit of chimera removal (issue #291): an ASV
 that differs from a more abundant ASV only in homopolymer run lengths may be a
@@ -35,16 +35,23 @@ from. Edits of opposite sign within --pair-window bases are a substitution
 likewise), so such pairs are not candidates, nor are ASVs with other
 substitutions. A new run's site is keyed like a run's, with run length 0.
 
-Damage. Cytosine deamination in the template reads as C>T (G>A on the other
-strand). A damaged molecule is copied faithfully, so every read of it reports
-the change at high quality and the denoiser keeps it at a fraction of a percent
-of its parent; on PacBio mocks these are 96-100% of the single-substitution
-variants below 1% of a parent, at 0.03-0.2%, spread along the gene. A
-candidate differs from a more abundant ASV by one C>T or G>A substitution, at
-or below --damage-max-frac of it. Found without alignment: two same-length
-sequences one substitution apart share their first or their second half. Damage
-hits many sites of the same template, so the other such candidates of the same
-parent ("siblings") are the evidence, as recurrence is for slippage.
+Damage (highly experimental). A damaged template base is copied faithfully,
+so every read of the molecule reports the change at high quality and the
+denoiser can keep it at a fraction of a percent of its parent. Two classes:
+  deamination  cytosine to uracil, read as C>T (G>A on the other strand); on
+               PacBio mocks 96-100% of the single-substitution variants below
+               1% of a parent, at 0.03-0.2%, spread along the gene
+  oxidation    guanine to 8-oxoguanine, read as G>T (C>A); on an Illumina
+               mock the dominant error in both reads of a pair, and most of
+               the low-fraction single-substitution ASVs
+A candidate differs from a more abundant ASV by one such substitution, at or
+below --damage-max-frac of it. Found without alignment: two same-length
+sequences one substitution apart share their first or their second half.
+Damage hits many sites of the same template, so the other candidates of the
+same class and parent ("siblings") are the evidence, as recurrence is for
+slippage. Rates are expected to vary between preparations and labs, and the
+thresholds were set on mocks, so damage classes are only acted on with
+--include-damage.
 
 Labels (provisional; every piece of evidence is a column):
   artifact        parent >= --min-fold more abundant, every edit's context
@@ -53,22 +60,23 @@ Labels (provisional; every piece of evidence is a column):
   real-candidate  varies independently of its parent (orphans, or
                   dispersion > 10), or far above its context's rate (or
                   above --min-unexplained with no context evidence)
-  damage          a damage candidate with >= --damage-min-siblings such
-                  candidates of its parent (itself included), and tracking
-                  does not argue against it
+  deamination,    a damage candidate with >= --damage-min-siblings
+  oxidation       candidates of its class and parent (itself included), and
+                  tracking does not argue against it
   unresolved      otherwise; single-sample runs lack the tracking evidence
 
 Inputs:  a dada2-rs sequence table (make-sequence-table or
          remove-bimera-denovo JSON, optionally .gz).
 Outputs: --out TSV, one row per candidate. With --out-seqtab, a table with
-         artifact and damage ASVs removed (--action remove) or their reads
-         added to their parent (--action merge); the default only flags.
+         artifact ASVs (and with --include-damage, deamination and oxidation
+         ASVs) removed (--action remove) or their reads added to their parent
+         (--action merge); the default only flags.
 
 Usage:
   flag_artifacts.py nochim.json --out flags.tsv [--rates hp_runs.tsv]
       [--context 6] [--min-fold 4] [--max-ratio 4] [--max-edits 2]
       [--damage-max-frac 0.005] [--damage-min-siblings 3]
-      [--action flag|remove|merge --out-seqtab filtered.json]
+      [--action flag|remove|merge --out-seqtab filtered.json [--include-damage]]
 
 Documented in docs/scripts/flagging.md. Python 3, standard library only.
 """
@@ -185,7 +193,8 @@ def one_substitution_pairs(seqs: list[str]) -> list[tuple[str, str, int]]:
     return out
 
 
-DAMAGE = {("C", "T"), ("G", "A")}
+DAMAGE = {("C", "T"): "deamination", ("G", "A"): "deamination",
+          ("G", "T"): "oxidation", ("C", "A"): "oxidation"}
 
 
 def site(key):
@@ -224,7 +233,9 @@ def main() -> None:
     ap.add_argument("--damage-max-frac", type=float, default=0.005,
                     help="damage candidates: child / (child + parent) at most this")
     ap.add_argument("--damage-min-siblings", type=int, default=3,
-                    help="damage candidates of one parent needed to call damage")
+                    help="damage candidates of one class and parent needed to call it")
+    ap.add_argument("--include-damage", action="store_true",
+                    help="remove or merge deamination and oxidation ASVs too (highly experimental)")
     ap.add_argument("--action", choices=["flag", "remove", "merge"], default="flag")
     ap.add_argument("--out-seqtab", type=Path)
     a = ap.parse_args()
@@ -356,9 +367,9 @@ def main() -> None:
                          dispersion=f"{tr['dispersion']:.3g}" if multi else "NA",
                          orphans=tr["orphans"] if multi else "NA", edits=nd, evidence="; ".join(ev),
                          parent=p, sequence=s))
-    # Damage: one C>T or G>A substitution from a more abundant ASV, at a low
-    # fraction of it. ASVs already judged as run-length or indel candidates keep
-    # that judgement.
+    # Damage: one deamination or oxidation substitution from a more abundant
+    # ASV, at a low fraction of it. ASVs already judged as run-length or indel
+    # candidates keep that judgement.
     dmg = {}
     for x, y, i in one_substitution_pairs(seqs):
         for child, parent in ((x, y), (y, x)):
@@ -371,16 +382,18 @@ def main() -> None:
                 continue
             if child not in dmg or total[parent] > total[dmg[child][0]]:
                 dmg[child] = (parent, i, tr)
-    siblings = collections.Counter(p for p, _, _ in dmg.values())
+    cls = {s: DAMAGE[p[i], s[i]] for s, (p, i, _) in dmg.items()}
+    siblings = collections.Counter((p, cls[s]) for s, (p, _, _) in dmg.items())
     for s, (p, i, tr) in dmg.items():
+        sib = siblings[p, cls[s]]
         independent = multi and (tr["orphans"] > 0 or (tr["dispersion"] == tr["dispersion"] and tr["dispersion"] > 10))
         if independent:
             label = "real-candidate"
-        elif siblings[p] >= a.damage_min_siblings:
-            label = "damage"
+        elif sib >= a.damage_min_siblings:
+            label = cls[s]
         else:
             label = "unresolved"
-        ev = f"{p[i]}>{s[i]}@{i} {p[max(0, i - k):i]}|{p[i + 1:i + 1 + k]} siblings={siblings[p]}"
+        ev = f"{p[i]}>{s[i]}@{i} {p[max(0, i - k):i]}|{p[i + 1:i + 1 + k]} {cls[s]} siblings={sib}"
         rows.append(dict(label=label, reads=total[s], parent_reads=total[p], fold=f"{total[p] / total[s]:.1f}",
                          frac=f"{tr['frac']:.4g}", samples=tr["samples"],
                          dispersion=f"{tr['dispersion']:.3g}" if multi else "NA",
@@ -400,7 +413,8 @@ def main() -> None:
           ("" if multi else "; one sample, so no tracking evidence"), file=sys.stderr)
 
     if a.action != "flag":
-        drop = {r["sequence"]: r["parent"] for r in rows if r["label"] in ("artifact", "damage")}
+        acted = {"artifact"} | ({"deamination", "oxidation"} if a.include_damage else set())
+        drop = {r["sequence"]: r["parent"] for r in rows if r["label"] in acted}
         # Merge into the first kept ancestor, so a dropped parent's reads are not lost.
         for c in drop:
             q = drop[c]
@@ -422,7 +436,7 @@ def main() -> None:
             out["sequence_ids"] = [t["sequence_ids"][i] for i in keep]
         out["counts"] = new_counts
         a.out_seqtab.write_text(json.dumps(out))
-        print(f"{a.action}: {len(drop)} artifact and damage ASVs -> {a.out_seqtab}", file=sys.stderr)
+        print(f"{a.action}: {len(drop)} ASVs labelled {', '.join(sorted(acted))} -> {a.out_seqtab}", file=sys.stderr)
 
 
 if __name__ == "__main__":
