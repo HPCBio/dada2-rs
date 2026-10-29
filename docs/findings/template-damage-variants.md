@@ -6,8 +6,8 @@ single-substitution variant that survives denoising is a **C>T or G>A change at
 template. A damaged molecule is copied faithfully, so every read of it reports
 the change at high quality, and DADA2 correctly calls it a distinct sequence.
 These variants are real molecules but not real alleles. Flagging them after
-denoising (`dev/indels/flag_hp_artifacts.py`, class `damage`) **doubles
-precision on a truth-set mock with no loss of recall**:
+denoising ([`flag_artifacts.py`](../scripts/flagging.md), class `deamination`)
+**doubles precision on a truth-set mock with no loss of recall**:
 
 | ATCC MSA-1003, 20 samples | precision before → after | recall |
 |---|---|---|
@@ -17,7 +17,9 @@ precision on a truth-set mock with no loss of recall**:
 The same signature is present in an independent library prepared three years
 earlier, and accounts for about 17% of the ASVs in a 95-sample real-community
 PacBio run. It is what binning quality scores was absorbing in
-[Binned quality on PacBio](binned-quality-error-model.md).
+[Binned quality on PacBio](binned-quality-error-model.md). On Illumina the
+deamination rate is similar but hidden under other errors, and the damage that
+survives denoising is guanine oxidation (G>T/C>A) instead.
 
 Found while validating the alignment and indel-model work in issues
 [#291](https://github.com/HPCBio/dada2-rs/issues/291) and
@@ -34,6 +36,8 @@ Found while validating the alignment and indel-model work in issues
 - **A 2020 Sequel II MSA-1003 run** from a different library prep (9 samples,
   full qualities).
 - **PacBio 95**, a 95-sample real-community full-length 16S run.
+- **PRJNA674596 V7–V9**, Illumina MiSeq paired reads, 41 samples including
+  three Zymo mock samples, with a V7–V9 truth set cut from the Zymo reference.
 
 Denoised with `dada-pooled --band 32 --kmer-size 7` (`--errfun pacbio` for
 full qualities, `binned-qual` for binned), consensus chimera removal, scored
@@ -99,7 +103,7 @@ all taxa shows only 1.1×, because one-base differences from alleles missing
 from the truth set swamp the signal; restricting it to one well-defined allele
 is what makes it work.
 
-## Specific to C>T/G>A, and to PacBio here
+## Specific to C>T/G>A on PacBio
 
 Low-fraction (≤0.5% of the parent) single-substitution children that track
 their parent across samples, counted by type under identical criteria:
@@ -112,21 +116,54 @@ their parent across samples, counted by type under identical criteria:
 | Illumina V7–V9 (PRJNA674596, 41 samples) | 15 | 9 | 59 |
 
 Polymerase error would not single out C>T/G>A. On the Illumina run the
-low-fraction variants are mostly transversions, a different artifact class.
+low-fraction variants are mostly transversions, a different artifact class:
+all of them G>T or C>A (next section).
+
+## On Illumina: oxidation
+
+Illumina reads are not consensus reads, so the test is the overlap of a read
+pair: a substitution in both R1 and R2 is in the sequenced molecule, one in a
+single read is a sequencing error. On the PRJNA674596 V7–V9 Zymo mock (three
+samples, 112k pairs; sites carried by more than 1% of pairs excluded, which
+removes unlisted alleles and position-specific sequencing errors), against the
+*P. gingivalis* allele on full-quality Sequel IIe reads (Q≥80):
+
+| molecular rate, × 10⁻⁵ per base | C>T + G>A | A>G + T>C | G>T + C>A |
+|---|---|---|---|
+| Illumina V7–V9 (both reads) | 18.0 | 15.7 | **36.7** |
+| PacBio Sequel IIe | **23.2** | 5.3 | 2.3 (all transversions) |
+
+Deamination occurs at a similar rate on both platforms, so it is probably a
+property of the amplicon PCR rather than of PacBio; on Illumina it is hidden
+under a 3× higher background of other molecular transitions. The excess there
+is G>T/C>A, the signature of 8-oxoguanine, a known artifact of Illumina
+library preparation. It is what survives denoising: the run's low-fraction
+single-substitution ASVs are G>T 41, C>A 21, C>T 22, G>A 9, A>G/T>C 11.
+
+Flagged as `oxidation`, the run gets 46 calls on three abundant parents in the
+real samples, at 0.19–0.5% of the parent. The Zymo samples are too shallow per
+allele to confirm the class: their five G>T near-misses, at 0.1–0.2%, have fewer
+than three siblings and are not called.
 
 ## Flagging
 
-`flag_hp_artifacts.py` labels a candidate `damage` when it is one C>T or G>A
+`flag_artifacts.py` labels a candidate `deamination` when it is one C>T or G>A
 substitution from a more abundant ASV, at or below `--damage-max-frac` (0.005)
 of it, its parent has at least `--damage-min-siblings` (3) such candidates, and
-it does not vary independently of the parent across samples. Damage hits many
-sites of the same template, so the siblings are the evidence, as recurrence
-across parents is for homopolymer slippage. `--action remove|merge` removes
-them, or merges them into their parent.
+it does not vary independently of the parent across samples; `oxidation` is the
+same for G>T or C>A. Damage hits many sites of the same template, so the
+siblings are the evidence, as recurrence across parents is for homopolymer
+slippage. `--action remove` or `merge` with `--include-damage` removes them, or
+merges them into their parent.
 
-On the tables above, every `damage` call on the mocks was a near-miss of a true
-allele, never a true allele, and the Illumina run gets none. PacBio 95 gets 365
-(about 23k reads), in every alignment configuration tested.
+On the tables above, every `deamination` call on the mocks was a near-miss of a
+true allele, never a true allele, and the Illumina run gets none. PacBio 95
+gets 365 (about 23k reads), in every alignment configuration tested.
+
+Both classes are **highly experimental**. The evidence on the mocks is strong,
+but damage rates are expected to vary between preparations, facilities and
+labs, and applying the classes to a data set without a mock needs more
+assessment.
 
 ## The error model also counts them
 
@@ -145,16 +182,20 @@ describe what is in an amplicon library.
   and sibling pattern separate damage at no cost to recall on the mocks.
 - **Expect it more on full-quality and deep data.** Binning hides most of it;
   added depth reveals more.
+- **Expect it to vary by lab.** Damage depends on how samples and libraries
+  are handled, so a mock's rates are evidence for that preparation, not a
+  constant.
 - **Not tested:** whether it varies with sample storage, extraction or PCR
-  conditions; other polymerases and library kits; and whether the 2020 library
-  shows it at the ASV level when sequenced deeper.
+  conditions; other polymerases and library kits; whether the 2020 library
+  shows it at the ASV level when sequenced deeper; and oxidation on a deep
+  Illumina mock.
 
 ## Reproducing
 
 - Truth scoring: `dada2-rs reference-eval` against
   `msa1003_FL_27F-1492R.fasta`.
-- Flagging: `dev/indels/flag_hp_artifacts.py nochim.json --out flags.tsv
-  [--action remove --out-seqtab filtered.json]`.
+- Flagging: `scripts/flag_artifacts.py nochim.json --out flags.tsv
+  [--action remove --include-damage --out-seqtab filtered.json]`.
 - Data: `mocks/PacBio-SQII-MSA-1003-{binned,full}`,
   `mocks/PacBio-Kinnex-MSA-1003` (Revio) and `mocks/PacBio-MSA-1003` (2020) in
   the project's data root.

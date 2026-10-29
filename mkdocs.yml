@@ -94,6 +94,7 @@ nav:
     - scripts/index.md
     - Plotting: scripts/plotting.md
     - Pipeline helpers: scripts/pipeline-helpers.md
+    - Artifact flagging: scripts/flagging.md
   - Parameters: parameters.md
   - Removing primers from paired-end reads: primer-removal.md
   - Choosing the error-model training set: error-model-training.md
