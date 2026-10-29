@@ -6,7 +6,7 @@ single-substitution variant that survives denoising is a **C>T or G>A change at
 template. A damaged molecule is copied faithfully, so every read of it reports
 the change at high quality, and DADA2 correctly calls it a distinct sequence.
 These variants are real molecules but not real alleles. Flagging them after
-denoising (`dev/indels/flag_hp_artifacts.py`, class `damage`) **doubles
+denoising ([`flag_artifacts.py`](../scripts/flagging.md), class `damage`) **doubles
 precision on a truth-set mock with no loss of recall**:
 
 | ATCC MSA-1003, 20 samples | precision before → after | recall |
@@ -116,7 +116,7 @@ low-fraction variants are mostly transversions, a different artifact class.
 
 ## Flagging
 
-`flag_hp_artifacts.py` labels a candidate `damage` when it is one C>T or G>A
+`flag_artifacts.py` labels a candidate `damage` when it is one C>T or G>A
 substitution from a more abundant ASV, at or below `--damage-max-frac` (0.005)
 of it, its parent has at least `--damage-min-siblings` (3) such candidates, and
 it does not vary independently of the parent across samples. Damage hits many
@@ -153,7 +153,7 @@ describe what is in an amplicon library.
 
 - Truth scoring: `dada2-rs reference-eval` against
   `msa1003_FL_27F-1492R.fasta`.
-- Flagging: `dev/indels/flag_hp_artifacts.py nochim.json --out flags.tsv
+- Flagging: `scripts/flag_artifacts.py nochim.json --out flags.tsv
   [--action remove --out-seqtab filtered.json]`.
 - Data: `mocks/PacBio-SQII-MSA-1003-{binned,full}`,
   `mocks/PacBio-Kinnex-MSA-1003` (Revio) and `mocks/PacBio-MSA-1003` (2020) in

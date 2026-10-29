@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""flag_hp_artifacts.py — flag homopolymer-length and damage artifacts in a sequence table.
+"""flag_artifacts.py — flag homopolymer-length, one-indel and damage artifacts in a sequence table.
 
 A post-denoising step in the spirit of chimera removal (issue #291): an ASV
 that differs from a more abundant ASV only in homopolymer run lengths may be a
@@ -15,9 +15,9 @@ the evidence that separates the two lies across the run:
                similar or higher fraction; edit size is ignored, so a double
                slip (+2) is explained by single slips (+1) at that site
   context rate the fraction is within what that context shows elsewhere in the
-               run (--rates: per-run slippage table from hp_variant_counts.py,
-               which also counts variants the denoiser absorbed; looked up
-               by site, like recurrence)
+               run (--rates: per-run slippage table from
+               dev/indels/hp_variant_counts.py, which also counts variants
+               the denoiser absorbed; looked up by site, like recurrence)
   fold         the parent is much more abundant than the variant
 
 Candidates are found without alignment, on each ASV's run-collapsed sequence
@@ -65,9 +65,12 @@ Outputs: --out TSV, one row per candidate. With --out-seqtab, a table with
          added to their parent (--action merge); the default only flags.
 
 Usage:
-  flag_hp_artifacts.py nochim.json --out hp_flags.tsv [--rates hp_runs.tsv]
+  flag_artifacts.py nochim.json --out flags.tsv [--rates hp_runs.tsv]
       [--context 6] [--min-fold 4] [--max-ratio 4] [--max-edits 2]
+      [--damage-max-frac 0.005] [--damage-min-siblings 3]
       [--action flag|remove|merge --out-seqtab filtered.json]
+
+Documented in docs/scripts/flagging.md. Python 3, standard library only.
 """
 
 from __future__ import annotations
@@ -392,7 +395,7 @@ def main() -> None:
         w.writeheader()
         w.writerows(rows)
     by = collections.Counter(r["label"] for r in rows)
-    print(f"{len(seqs)} ASVs, {len(rows)} candidates: " +
+    print(f"{len(seqs)} ASVs, {len(rows)} candidates" + (": " if rows else "") +
           ", ".join(f"{k} {n} ({sum(r['reads'] for r in rows if r['label'] == k)} reads)" for k, n in by.most_common()) +
           ("" if multi else "; one sample, so no tracking evidence"), file=sys.stderr)
 

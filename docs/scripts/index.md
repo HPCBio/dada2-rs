@@ -2,8 +2,9 @@
 
 `scripts/` holds small R and Python helpers that sit either side of the
 dada2-rs pipeline: they turn its JSON into the figures DADA2 users expect, carry
-an R-fitted error model in, or roll per-sample counts up into a table. None of
-them is required to run a pipeline, and none of them does inference.
+an R-fitted error model in, roll per-sample counts up into a table, or flag
+likely artifacts in the final table. None of them is required to run a
+pipeline, and none of them does inference.
 
 They are documented here and only here — a subcommand page links to a script
 rather than explaining it, so there is one place to keep current.
@@ -17,6 +18,7 @@ rather than explaining it, so there is one place to keep current.
 | [`plot_indel_errors.R`](plotting.md#plot_indel_errorsr) | R | observed indel error rates and length spectrum (experimental) |
 | [`learnerrors_to_dada2rs.R`](pipeline-helpers.md#learnerrors_to_dada2rsr) | R | R `learnErrors()` `.rds` → dada2-rs error model |
 | [`track_reads.py`](pipeline-helpers.md#track_readspy) | Python | per-sample read counts across every step |
+| [`flag_artifacts.py`](flagging.md) | Python | flag homopolymer, one-indel and template-damage artifacts after chimera removal (experimental) |
 | [`examples/import_mia.R`](pipeline-helpers.md#examplesimport_miar) | R | template for loading the final tables into `mia` |
 
 ## What is not here
@@ -57,9 +59,10 @@ dada2-rs-plot-errors err.json errors.pdf
 | `plot_indel_errors.R` | `dada2-rs-plot-indel-errors` |
 | `learnerrors_to_dada2rs.R` | `dada2-rs-learnerrors-to-dada2rs` |
 | `track_reads.py` | `dada2-rs-track-reads` |
+| `flag_artifacts.py` | `dada2-rs-flag-artifacts` |
 
 The published crate **does carry these scripts** — `scripts/` is not in
-`Cargo.toml`'s `exclude` list, so all seven ship in the `.crate` tarball. But
+`Cargo.toml`'s `exclude` list, so all eight ship in the `.crate` tarball. But
 `cargo install` only places *binary targets* on `PATH`; it has no mechanism for
 data files. So after `cargo install dada2-rs` they exist, unpacked, under
 `~/.cargo/registry/src/<index>/dada2-rs-<version>/scripts/` and you invoke them
@@ -74,7 +77,7 @@ from there or copy them out. See
 |---|---|
 | all four plotting scripts | `jsonlite`, `ggplot2`, `optparse` |
 | `learnerrors_to_dada2rs.R` | `jsonlite`, `optparse` |
-| `track_reads.py` | Python 3, standard library only |
+| `track_reads.py`, `flag_artifacts.py` | Python 3, standard library only |
 | `examples/import_mia.R` | `mia`, `SummarizedExperiment` (Bioconductor) |
 
 ```r

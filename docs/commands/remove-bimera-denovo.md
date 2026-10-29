@@ -79,3 +79,5 @@ with `--align-backend wfa2`. See [`dada`](dada.md#experimental).
 ## See also
 
 - [`chimera-diagnostics`](chimera-diagnostics.md) — higher-order chimeras
+- [`flag_artifacts.py`](../scripts/flagging.md) — homopolymer, one-indel and
+  template-damage artifacts that chimera removal leaves (experimental)

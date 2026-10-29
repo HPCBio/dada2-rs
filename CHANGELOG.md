@@ -10,6 +10,12 @@ minor versions may carry breaking changes).
 
 ### Added
 
+- `scripts/flag_artifacts.py` (Experimental; #291), installed as
+  `dada2-rs-flag-artifacts`: flags ASVs that are likely artifacts of a more
+  abundant ASV after chimera removal (homopolymer-length and one-indel
+  variants, and C>T/G>A template damage), and optionally removes them or
+  merges them into their parent. See
+  [Artifact flagging](docs/scripts/flagging.md).
 - `--gap-open-p` (Experimental) on `learn-errors`, `errors-from-sample`,
   `dada`, `dada-pooled` and `dada-pseudo` (#309): affine gaps, a gap of length
   L costing `--gap-open-p` + L × `--gap-p`, so a truncated read or an inserted
