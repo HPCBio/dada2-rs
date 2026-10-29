@@ -99,6 +99,13 @@ reader benefit. Three homes, and only three:
   difference is a bug, the tie-break sensitivity underneath it is a floor — and
   its converse: the pool's tie-break (#260) sat inside the floor's range and was
   systematic all the same.
+- [Template damage makes C>T/G>A variants](template-damage-variants.md) — on
+  deep PacBio HiFi data almost every low-frequency single-substitution variant
+  that survives denoising is **C>T or G>A at 0.03–0.2% of its parent**: cytosine
+  deamination copied faithfully, read at high quality, and correctly called
+  distinct. Present in two libraries three years apart and in ~17% of a
+  real-community run's ASVs; flagging them doubles precision on MSA-1003 (0.27 →
+  0.61) with recall unchanged. What binning was absorbing on SequelIIe.
 - [**Binned quality scores**](binned-quality.md) — a series, because the answer is
   **dataset-dependent** and we cannot yet predict which datasets are sensitive:
     - [PacBio (SequelIIe & Revio)](binned-quality-error-model.md) — binning never
