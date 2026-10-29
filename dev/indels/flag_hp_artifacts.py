@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""flag_hp_artifacts.py — flag homopolymer-length artifacts in a sequence table.
+"""flag_hp_artifacts.py — flag homopolymer-length and damage artifacts in a sequence table.
 
 A post-denoising step in the spirit of chimera removal (issue #291): an ASV
 that differs from a more abundant ASV only in homopolymer run lengths may be a
@@ -35,6 +35,17 @@ from. Edits of opposite sign within --pair-window bases are a substitution
 likewise), so such pairs are not candidates, nor are ASVs with other
 substitutions. A new run's site is keyed like a run's, with run length 0.
 
+Damage. Cytosine deamination in the template reads as C>T (G>A on the other
+strand). A damaged molecule is copied faithfully, so every read of it reports
+the change at high quality and the denoiser keeps it at a fraction of a percent
+of its parent; on PacBio mocks these are 96-100% of the single-substitution
+variants below 1% of a parent, at 0.03-0.2%, spread along the gene. A
+candidate differs from a more abundant ASV by one C>T or G>A substitution, at
+or below --damage-max-frac of it. Found without alignment: two same-length
+sequences one substitution apart share their first or their second half. Damage
+hits many sites of the same template, so the other such candidates of the same
+parent ("siblings") are the evidence, as recurrence is for slippage.
+
 Labels (provisional; every piece of evidence is a column):
   artifact        parent >= --min-fold more abundant, every edit's context
                   explained (recurs, or within --max-ratio of the context
@@ -42,13 +53,16 @@ Labels (provisional; every piece of evidence is a column):
   real-candidate  varies independently of its parent (orphans, or
                   dispersion > 10), or far above its context's rate (or
                   above --min-unexplained with no context evidence)
+  damage          a damage candidate with >= --damage-min-siblings such
+                  candidates of its parent (itself included), and tracking
+                  does not argue against it
   unresolved      otherwise; single-sample runs lack the tracking evidence
 
 Inputs:  a dada2-rs sequence table (make-sequence-table or
          remove-bimera-denovo JSON, optionally .gz).
 Outputs: --out TSV, one row per candidate. With --out-seqtab, a table with
-         artifacts removed (--action remove) or their reads added to their
-         parent (--action merge); the default only flags.
+         artifact and damage ASVs removed (--action remove) or their reads
+         added to their parent (--action merge); the default only flags.
 
 Usage:
   flag_hp_artifacts.py nochim.json --out hp_flags.tsv [--rates hp_runs.tsv]
@@ -140,6 +154,37 @@ def one_insertion_pairs(collapsed_of: dict[str, str]) -> list[tuple[str, str, in
     return out
 
 
+def one_substitution_pairs(seqs: list[str]) -> list[tuple[str, str, int]]:
+    """(a, b, i) for same-length sequence pairs that differ only at position i.
+    Such a pair shares its first half or its second half exactly."""
+    out, seen = [], set()
+    for half in (0, 1):
+        buckets = collections.defaultdict(list)
+        for s in seqs:
+            m = len(s) // 2
+            buckets[len(s), s[:m] if half == 0 else s[m:]].append(s)
+        for group in buckets.values():
+            for x in range(len(group)):
+                for y in range(x + 1, len(group)):
+                    a, b = group[x], group[y]
+                    if (a, b) in seen:
+                        continue
+                    diff = -1
+                    for i, (u, v) in enumerate(zip(a, b)):
+                        if u != v:
+                            if diff >= 0:
+                                diff = -2
+                                break
+                            diff = i
+                    if diff >= 0:
+                        seen.add((a, b))
+                        out.append((a, b, diff))
+    return out
+
+
+DAMAGE = {("C", "T"), ("G", "A")}
+
+
 def site(key):
     """An edit's site: direction, base, run length and context, not size."""
     return (key[0][0],) + key[1:]
@@ -173,6 +218,10 @@ def main() -> None:
     ap.add_argument("--min-exact", type=int, default=300, help="--rates rows: minimum error-free parent reads")
     ap.add_argument("--min-unexplained", type=float, default=0.1,
                     help="fraction above which an edit without context evidence counts as real")
+    ap.add_argument("--damage-max-frac", type=float, default=0.005,
+                    help="damage candidates: child / (child + parent) at most this")
+    ap.add_argument("--damage-min-siblings", type=int, default=3,
+                    help="damage candidates of one parent needed to call damage")
     ap.add_argument("--action", choices=["flag", "remove", "merge"], default="flag")
     ap.add_argument("--out-seqtab", type=Path)
     a = ap.parse_args()
@@ -304,6 +353,37 @@ def main() -> None:
                          dispersion=f"{tr['dispersion']:.3g}" if multi else "NA",
                          orphans=tr["orphans"] if multi else "NA", edits=nd, evidence="; ".join(ev),
                          parent=p, sequence=s))
+    # Damage: one C>T or G>A substitution from a more abundant ASV, at a low
+    # fraction of it. ASVs already judged as run-length or indel candidates keep
+    # that judgement.
+    dmg = {}
+    for x, y, i in one_substitution_pairs(seqs):
+        for child, parent in ((x, y), (y, x)):
+            if child in info or total[parent] <= total[child]:
+                continue
+            if (parent[i], child[i]) not in DAMAGE:
+                continue
+            tr = tracking(counts[child], counts[parent])
+            if tr["frac"] > a.damage_max_frac:
+                continue
+            if child not in dmg or total[parent] > total[dmg[child][0]]:
+                dmg[child] = (parent, i, tr)
+    siblings = collections.Counter(p for p, _, _ in dmg.values())
+    for s, (p, i, tr) in dmg.items():
+        independent = multi and (tr["orphans"] > 0 or (tr["dispersion"] == tr["dispersion"] and tr["dispersion"] > 10))
+        if independent:
+            label = "real-candidate"
+        elif siblings[p] >= a.damage_min_siblings:
+            label = "damage"
+        else:
+            label = "unresolved"
+        ev = f"{p[i]}>{s[i]}@{i} {p[max(0, i - k):i]}|{p[i + 1:i + 1 + k]} siblings={siblings[p]}"
+        rows.append(dict(label=label, reads=total[s], parent_reads=total[p], fold=f"{total[p] / total[s]:.1f}",
+                         frac=f"{tr['frac']:.4g}", samples=tr["samples"],
+                         dispersion=f"{tr['dispersion']:.3g}" if multi else "NA",
+                         orphans=tr["orphans"] if multi else "NA", edits=1, evidence=ev,
+                         parent=p, sequence=s))
+
     rows.sort(key=lambda r: -r["reads"])
     with a.out.open("w", newline="") as fh:
         fields = ["label", "reads", "parent_reads", "fold", "frac", "samples", "dispersion", "orphans",
@@ -317,7 +397,13 @@ def main() -> None:
           ("" if multi else "; one sample, so no tracking evidence"), file=sys.stderr)
 
     if a.action != "flag":
-        drop = {r["sequence"]: r["parent"] for r in rows if r["label"] == "artifact"}
+        drop = {r["sequence"]: r["parent"] for r in rows if r["label"] in ("artifact", "damage")}
+        # Merge into the first kept ancestor, so a dropped parent's reads are not lost.
+        for c in drop:
+            q = drop[c]
+            while q in drop:
+                q = drop[q]
+            drop[c] = q
         keep = [i for i, s in enumerate(seqs) if s not in drop]
         idx = {s: i for i, s in enumerate(seqs)}
         new_counts = []
@@ -333,7 +419,7 @@ def main() -> None:
             out["sequence_ids"] = [t["sequence_ids"][i] for i in keep]
         out["counts"] = new_counts
         a.out_seqtab.write_text(json.dumps(out))
-        print(f"{a.action}: {len(drop)} artifact ASVs -> {a.out_seqtab}", file=sys.stderr)
+        print(f"{a.action}: {len(drop)} artifact and damage ASVs -> {a.out_seqtab}", file=sys.stderr)
 
 
 if __name__ == "__main__":

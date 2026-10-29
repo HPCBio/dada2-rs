@@ -20,6 +20,8 @@
 #   EXTRA         flags for learn-errors and dada-pooled, e.g. PacBio's
 #                 "--band 32 --homo-gap-p -1 --kmer-size 7"
 #   LEARN_EXTRA   flags for learn-errors only, e.g. "--errfun pacbio"
+#   INDEL_EXTRA   flags for the indel arm's dada-pooled only, e.g.
+#                 "--indel-end-zone 0" (it requires --indel-rates)
 #   MERGE_EXTRA   flags for merge-pairs
 #   FIT_CMD       --indel-fit-cmd for learn-errors (default: the native fit)
 #   ARMS          default "default indel"
@@ -38,6 +40,7 @@ THREADS="${THREADS:-8}"
 ARMS="${ARMS:-default indel}"
 read -r -a extra <<< "${EXTRA:-}"
 read -r -a learn_extra <<< "${LEARN_EXTRA:-}"
+read -r -a indel_extra <<< "${INDEL_EXTRA:-}"
 read -r -a merge_extra <<< "${MERGE_EXTRA:-}"
 
 samples=(); fwd=(); rev=()
@@ -86,7 +89,7 @@ for arm in $ARMS; do
   o="$OUT/$arm"
   mkdir -p "$o"
   for d in "${dirs[@]}"; do
-    lam=(); [ "$arm" = indel ] && lam=(--indel-rates "$OUT/learn/$d.indel_rates.tsv")
+    lam=(); [ "$arm" = indel ] && lam=(--indel-rates "$OUT/learn/$d.indel_rates.tsv" ${indel_extra[@]+"${indel_extra[@]}"})
     mkdir -p "$o/$d"
     echo "==> $arm dada-pooled $d"
     set_inputs "$d"
