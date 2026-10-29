@@ -145,40 +145,66 @@ real samples, at 0.19–0.5% of the parent. The Zymo samples are too shallow per
 allele to confirm the class: their five G>T near-misses, at 0.1–0.2%, have fewer
 than three siblings and are not called.
 
-## Why the platforms differ (open)
+## Why the platforms differ
 
-What reaches the ASV table is a type's molecular rate times the chance that a
-variant of that type splits from its parent instead of being absorbed. Only the
-rate has been measured:
+**The denoiser treats every substitution type alike.** What differs is how far
+each damage type sits above the learned error model, and how deep its parent
+is. The class that becomes ASVs is the one the model underestimates most, at
+the qualities where its variants sit.
 
-| | molecular rate, Illumina | PacBio | ASVs on |
+| molecular rate, × 10⁻⁵ per base | Illumina | PacBio | ASVs on |
 |---|---|---|---|
 | deamination (C>T/G>A) | 18 | 23 | PacBio only |
 | oxidation (G>T/C>A) | 37 | ≈2 | Illumina only |
 | other transitions | 16 | 5 | neither |
 
-Deamination has the same rate and opposite outcomes, so the difference there
-lies in denoising. Candidate mechanisms, none tested:
+The backtrace followed every unique one substitution from a truth allele
+through a re-run of each mock's pooled `dada` with `--pooled-record`; every
+re-run reproduces its original ASV set exactly. A Poisson test of each child's
+reads against its expected count, at `OMEGA_A` (10⁻⁴⁰), predicts 167 of the
+172 children that split. The expected count is the model's rate for the type
+at the site's mean quality times the parent's reads. The split rule is the same
+for every type; only the inputs differ.
 
-- **The error model's rate at the variant's quality.** At Q90 the full-quality
-  PacBio model expects C>T at about 10⁻⁵, so a variant at 0.1% of its parent
-  splits; an Illumina model at Q38 expects far more, so the same variant is
-  absorbed.
-- **Per-site concentration.** A split depends on one site's fraction, not the
-  average rate. If oxidation concentrates in hotspot contexts it reaches
-  0.2–0.5% at a site while deamination, spread evenly, does not.
-- **Paired-end denoising.** R1 and R2 are denoised separately and then merged;
-  a variant in the overlap must split in both.
+| | children ≥2 reads | ≥2× expected | split |
+|---|---|---|---|
+| Sequel IIe full, deamination | 5,688 | 1,438 | 97 |
+| Sequel IIe full, other transitions | 1,934 | 349 | 2 |
+| Sequel IIe binned (same reads), deamination | 5,688 | 1,385 | 4 |
+| Revio binned, deamination | 10,490 | 2,537 | 47 |
+| Illumina R1, deamination | 763 | 172 | 5 |
+| Illumina R1, oxidation | 971 | **508** | 2 |
 
-A backtrace on the mocks would separate these: follow every one-substitution
-unique of each truth allele through `dada` (its `map` gives each unique's
-ASV), recording type, site, abundance, quality and expected count, and tabulate
-whether it split or was absorbed.
+- **PacBio, full qualities: the model's shape.** The full-quality model
+  expects C>T at about 10⁻⁵ at Q89–92 but 6 × 10⁻⁴ at Q93, the CCS cap where
+  most bases sit. 93 of the 97 deamination splits are children whose site
+  averages Q89–92; at Q93 2 of 4,718 split. Deamination children are also more
+  abundant (1,042 with ≥10 reads, against 70 for other transitions), so at the
+  same quality they cross the line and other types do not.
+- **PacBio, binned: depth.** Binning judges every base at Q40, about
+  3 × 10⁻⁴, so the same children sit only about 3× above expectation. At that
+  excess a split needs a parent of roughly 150k reads; Sequel IIe parents
+  (median 9k) rarely reach it, the deeper Revio run's do.
+- **Illumina: the model matches deamination, not oxidation.** At Q37–38 the
+  learned C>T rate (about 2 × 10⁻⁴) matches the molecular rate, so deamination
+  children sit at expectation. G>T is learned at about 1.5 × 10⁻⁴, below its
+  molecular rate: half the oxidation children are at least 2× above
+  expectation, at a median 5.7×, against a fifth of deamination children at
+  3.5×. Splitting at that excess needs parents of roughly 125–200k reads; the
+  mock alleles (about 9k reads each) are too shallow, so its oxidation
+  children are absorbed. The 46 mouse-sample calls have parents of 14–34k
+  merged reads, at the same per-site fractions as the mock's children.
+- **Paired-end denoising: no detectable effect.** Children in the read overlap
+  split as often as those outside it (4 of 1,510 against 7 of 2,113 in R1), but
+  too few split to measure a difference.
+
+Why learn-errors underestimates G>T on Illumina, and why the full-quality
+PacBio model dips at Q89–92, is not established.
 
 **What these data cannot answer.** The PacBio and Illumina mocks differ in more
 than platform: mock (ATCC vs Zymo), lab, amplicon length (1450 vs 400 nt),
-polymerase, cycle number, and Illumina's index PCR. A backtrace can explain
-why a variant was absorbed or split; whether the different oxidation rates come
+polymerase, cycle number, and Illumina's index PCR. The backtrace explains why
+a variant was absorbed or split; whether the different oxidation rates come
 from the platform or the preparation needs one library sequenced on both.
 
 ## Flagging

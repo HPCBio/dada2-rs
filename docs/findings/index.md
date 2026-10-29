@@ -106,7 +106,9 @@ reader benefit. Three homes, and only three:
   distinct. Present in two libraries three years apart and in ~17% of a
   real-community run's ASVs; flagging them doubles precision on MSA-1003 (0.27 →
   0.61) with recall unchanged. What binning was absorbing on SequelIIe. On
-  Illumina the surviving damage is guanine oxidation (G>T/C>A) instead.
+  Illumina the surviving damage is guanine oxidation (G>T/C>A) instead: the
+  class that becomes ASVs is the one the learned error model underestimates
+  most, given parent depth.
 - [**Binned quality scores**](binned-quality.md) — a series, because the answer is
   **dataset-dependent** and we cannot yet predict which datasets are sensitive:
     - [PacBio (SequelIIe & Revio)](binned-quality-error-model.md) — binning never
