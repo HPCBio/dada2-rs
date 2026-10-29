@@ -184,7 +184,9 @@ for every type; only the inputs differ.
 - **PacBio, binned: depth.** Binning judges every base at Q40, about
   3 × 10⁻⁴, so the same children sit only about 3× above expectation. At that
   excess a split needs a parent of roughly 150k reads; Sequel IIe parents
-  (median 9k) rarely reach it, the deeper Revio run's do.
+  (median 9k) rarely reach it, the deeper Revio run's do. Every Revio split is
+  a child of 50 or more reads. Binned data is now the PacBio norm, so on it
+  damage ASVs will grow with depth.
 - **Illumina: the model matches deamination, not oxidation.** At Q37–38 the
   learned C>T rate (about 2 × 10⁻⁴) matches the molecular rate, so deamination
   children sit at expectation. G>T is learned at about 1.5 × 10⁻⁴, below its
@@ -198,8 +200,37 @@ for every type; only the inputs differ.
   split as often as those outside it (4 of 1,510 against 7 of 2,113 in R1), but
   too few split to measure a difference.
 
-Why learn-errors underestimates G>T on Illumina, and why the full-quality
-PacBio model dips at Q89–92, is not established.
+### The Q89–92 dip on full-quality PacBio
+
+The dip is in the counts, not the fit. learn-errors tabulates each difference
+at the unique's mean quality at that site, as DADA2 does. On full-quality
+Sequel IIe reads:
+
+| | Q90 | Q91 | Q92 | Q93 (cap) |
+|---|---|---|---|---|
+| share of bases | 2% | 4% | 18% | 70% |
+| C>T, counted rate | 2.9 × 10⁻⁵ | 3.8 × 10⁻⁵ | 4.5 × 10⁻⁶ | 5.8 × 10⁻⁴ |
+
+A molecular difference (damage, a PCR error, a member lumped into the wrong
+cluster) is present in every pass of the molecule, so CCS gives it full
+quality: Q93 collects them, and its counted rate is the molecular rate, not
+the sequencing rate. DADA2's `PacBioErrfun` estimates Q93 directly from these
+counts and fits LOESS to Q0–92 only, weighted by bases observed, so the 22M
+Q92 bases also pull Q85–91 2–4× below their own counts.
+
+Averaging then moves abundant variants into the dip. Among deamination
+children, the share whose mean site quality falls below Q93 rises from 4% for
+single-read children to 42% at 10–50 reads and 72% above 50, and every split
+is a child of at least 10 reads. An abundant molecular variant is therefore
+judged against a sequencing-error rate about 100× below the molecular rate.
+Quality on HiFi reads measures agreement between passes, not whether the
+molecule was copied faithfully.
+
+Binned models have no dip: rates fall monotonically to Q40, and qualities
+between bins (from averaging) get higher rates, not lower (C>T 6 × 10⁻⁴ at
+Q39 against 4 × 10⁻⁴ at Q40), so averaging makes a split harder.
+
+Why learn-errors underestimates G>T on Illumina is not established.
 
 **What these data cannot answer.** The PacBio and Illumina mocks differ in more
 than platform: mock (ATCC vs Zymo), lab, amplicon length (1450 vs 400 nt),
