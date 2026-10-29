@@ -196,8 +196,8 @@ for every type; only the inputs differ.
   3.5×. Splitting at that excess needs parents of roughly 125–200k reads; the
   mock alleles (about 9k reads each) are too shallow, so its oxidation
   children are absorbed. The 46 calls are in stool samples, whose parents
-  have 14–34k merged reads and which carry twice the mock's oxidation (next
-  subsection).
+  have 14–34k merged reads; the stool samples as a group carry twice the
+  mock's oxidation (next subsection).
 - **Paired-end denoising: no detectable effect.** Children in the read overlap
   split as often as those outside it (4 of 1,510 against 7 of 2,113 in R1), but
   too few split to measure a difference.
@@ -247,8 +247,13 @@ reproduces the truth-based figures), gives per-base molecular rates:
 | Zymo A–C | 18.8 | 16.1 | **38.6** |
 | stool, 33 samples | 22.0 | 18.7 | **77.8** |
 
-Deamination and other transitions vary less than 1.5×, oxidation 5×. Models
-learned from each group, at Q35–38:
+Deamination and other transitions vary less than 1.5×, oxidation 5×. Per
+sample it varies more: the Zymo replicates give 43, 49 and 21; ZIEL2-B, a
+replicate library of ZIEL2-C's mock DNA, 184. Among the stool samples the
+ratio of molecular oxidation to other transitions runs from 0.7 to 15.5
+(median 2.9, as in the mocks), so the group's higher rate comes from a subset
+of samples. Oxidation is a property of the sample and its library, not of the
+platform alone. Models learned from each group, at Q35–38:
 
 | learned from, × 10⁻⁵ | G>T | C>A | C>T | A>G |
 |---|---|---|---|---|
