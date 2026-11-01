@@ -44,6 +44,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         denoise,
         experimental,
         indel_lambda,
+        partition,
         aux_outputs,
         cluster_trace,
         trace_no_members,
@@ -127,6 +128,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
             denoise,
             experimental,
             &indel_lambda,
+            &partition,
         )?;
 
         resolved.params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
@@ -225,6 +227,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         denoise,
         experimental,
         &indel_lambda,
+        &partition,
     )?;
     resolved.params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
     resolved.params.lineage = true;
@@ -296,6 +299,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         pool_tiebreak,
         experimental,
         indel_lambda,
+        partition,
         failed_uniques: failed_uniques_path,
         pooled_record,
         indel_events,
@@ -453,6 +457,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         denoise,
         experimental,
         &indel_lambda,
+        &partition,
     )?;
     let mut dada_params = resolved.params;
     dada_params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
@@ -838,6 +843,7 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
         denoise,
         experimental,
         &indel_lambda,
+        &cli::PartitionArgs::default(),
     )?;
 
     // ---- Validate the re-estimation request up front ----
@@ -1252,6 +1258,12 @@ struct DadaRunParams {
     /// omitted otherwise, keeping R-parity output byte-identical.
     #[serde(skip_serializing_if = "Option::is_none")]
     indel_lambda: Option<IndelLambdaRecord>,
+    /// The experimental partition (#323) and its birth rule, recorded only
+    /// off R's `divisive`, keeping R-parity output byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    partition: Option<dada::Partition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    birth_rule: Option<dada::BirthRule>,
 }
 
 /// `true` when `path` looks like a JSON file (`.json` or `.json.gz`).
@@ -1329,6 +1341,7 @@ fn resolve_dada_params(
     denoise: cli::DadaDenoiseArgs,
     experimental: cli::ExperimentalArgs,
     indel_lambda: &cli::IndelLambdaArgs,
+    partition: &cli::PartitionArgs,
 ) -> io::Result<ResolvedDada> {
     let cli::DadaDenoiseArgs {
         omega_a,
@@ -1618,6 +1631,8 @@ fn resolve_dada_params(
         reestimated_err_between_rounds: false,
         pool_tiebreak: None,
         indel_lambda: None,
+        partition: None,
+        birth_rule: None,
     };
     let mut run = run;
     if let Some(path) = &indel_lambda.indel_rates {
@@ -1637,6 +1652,26 @@ fn resolve_dada_params(
             pair_window: settings.pair_window,
             end_zone: settings.end_zone,
         });
+    }
+
+    let partition_mode = partition.partition.unwrap_or_default();
+    if partition.birth_rule.is_some() && partition_mode != dada::Partition::SinglePass {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--birth-rule applies only with --partition single-pass",
+        ));
+    }
+    if partition_mode == dada::Partition::SinglePass {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "--partition single-pass is not implemented yet (issue #323)",
+        ));
+    }
+    params.partition = partition_mode;
+    params.birth_rule = partition.birth_rule.unwrap_or_default();
+    if partition_mode != dada::Partition::Divisive {
+        run.partition = Some(partition_mode);
+        run.birth_rule = Some(params.birth_rule);
     }
 
     Ok(ResolvedDada {
