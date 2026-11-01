@@ -456,6 +456,19 @@ model and the output `params`, and `dada` warns when its own differs. Each
 affine alignment costs about 1.3× a linear one (learn-errors on the PacBio mocks
 took 1.1–1.2× as long).
 
+**`--partition`**, **`--birth-rule`** — how clusters are formed
+([#323](https://github.com/HPCBio/dada2-rs/issues/323)), on `dada` and
+`dada-pooled` only. `divisive` (default) is R DADA2: split off one new centre
+at a time, then reassign and recompute p-values before the next split.
+`single-pass` is a UNOISE-like alternative under test: one pass over the
+uniques in decreasing abundance, each either becoming a centre or joining its
+best existing one. `--birth-rule` picks the test for a new centre under
+`single-pass`: `pvalue` (default) is DADA2's abundance p-value, and `unoise` is
+UNOISE3's fixed abundance-skew rule. `single-pass` is not implemented yet. It
+keeps every comparison, so it is not a speed option: the phases it removes take
+0.4–31% of pooled denoising time (#323). A non-default value is recorded in the
+output `params`.
+
 ## See also
 
 - [Per-sample denoising algorithm](../algorithm-dada.md)

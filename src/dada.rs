@@ -125,6 +125,61 @@ pub struct DadaParams {
     /// ASV lineage fields of the `dada` outputs. Off for internal callers
     /// such as `learn-errors`, which denoise repeatedly and discard it.
     pub lineage: bool,
+    /// How clusters are formed (issue #323). `Divisive` is R DADA2.
+    pub partition: Partition,
+    /// The test that makes a unique a new center under
+    /// [`Partition::SinglePass`] (issue #323). Unused under `Divisive`.
+    pub birth_rule: BirthRule,
+}
+
+/// How `run_dada` forms clusters (issue #323).
+///
+/// `Divisive` is DADA2's algorithm: split one new center at a time, then
+/// reshuffle and reprice before the next split. `SinglePass` is an
+/// experimental UNOISE-like alternative: one pass over the uniques in
+/// decreasing abundance, each becoming a center or joining its best existing
+/// one. Single pass keeps every comparison, so it is not a speed change; #323
+/// measured the most it can save at 0.4–31% of denoising time.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum Partition {
+    /// R DADA2's divisive partitioning, the default.
+    #[default]
+    Divisive,
+    /// Experimental single pass in decreasing abundance (issue #323).
+    SinglePass,
+}
+
+/// The birth test under [`Partition::SinglePass`] (issue #323).
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum BirthRule {
+    /// DADA2's abundance p-value against the learned error model.
+    #[default]
+    Pvalue,
+    /// UNOISE3's fixed abundance-skew rule, β(d) = 1/2^(αd+1); the control
+    /// arm for the error model.
+    Unoise,
 }
 
 /// The denoising options R exposes through `setDadaOpt`.
@@ -192,6 +247,8 @@ impl DadaParams {
             indel_events: false,
             lineage: false,
             indel_model: None,
+            partition: Partition::Divisive,
+            birth_rule: BirthRule::Pvalue,
         }
     }
 }
