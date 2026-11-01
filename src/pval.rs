@@ -682,6 +682,28 @@ pub fn get_self(seq: &[u8], err: &[[f64; 4]; 4]) -> f64 {
 /// away; `b_p_update` passes `Some` because the mix of early exits versus full
 /// evaluations is the thing that decides whether this phase is worth
 /// parallelising. Equivalent to C++ `get_pA`.
+/// Abundance p-value of a raw against a centre expecting `lambda × base_reads`
+/// of it, with `b_p_update`'s early exits. `b_p_update` passes the cluster's
+/// reads; the single-pass partition (#323) passes the centre's own.
+pub fn get_pA(
+    reads: u32,
+    prior: bool,
+    lambda: f64,
+    hamming: u32,
+    base_reads: u32,
+    detect_singletons: bool,
+) -> f64 {
+    get_pA_counted(
+        reads,
+        prior,
+        lambda,
+        hamming,
+        base_reads,
+        detect_singletons,
+        None,
+    )
+}
+
 fn get_pA_counted(
     reads: u32,
     prior: bool,

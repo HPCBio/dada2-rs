@@ -464,8 +464,14 @@ at a time, then reassign and recompute p-values before the next split.
 uniques in decreasing abundance, each either becoming a centre or joining its
 best existing one. `--birth-rule` picks the test for a new centre under
 `single-pass`: `pvalue` (default) is DADA2's abundance p-value, and `unoise` is
-UNOISE3's fixed abundance-skew rule. `single-pass` is not implemented yet. It
-keeps every comparison, so it is not a speed option: the phases it removes take
+UNOISE3's fixed abundance-skew rule, not implemented yet.
+
+Under `single-pass`, a unique's expected reads from a centre are λ × the
+centre's own reads, not the cluster's running total, so its fate does not
+depend on which uniques joined first. It joins the centre with the most expected
+reads, and the `--min-fold`, `--min-hamming`, `--min-abund` and singleton tests
+apply as in the divisive loop. Nothing is reassigned after the pass. It is not
+a speed option: it keeps every comparison, and the phases it removes take
 0.4–31% of pooled denoising time (#323). A non-default value is recorded in the
 output `params`.
 

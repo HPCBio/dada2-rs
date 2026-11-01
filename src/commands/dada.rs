@@ -1661,10 +1661,10 @@ fn resolve_dada_params(
             "--birth-rule applies only with --partition single-pass",
         ));
     }
-    if partition_mode == dada::Partition::SinglePass {
+    if partition.birth_rule == Some(dada::BirthRule::Unoise) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "--partition single-pass is not implemented yet (issue #323)",
+            "--birth-rule unoise is not implemented yet (issue #323)",
         ));
     }
     params.partition = partition_mode;
