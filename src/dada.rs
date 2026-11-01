@@ -1402,6 +1402,9 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             }
             t_compare += tc.elapsed();
             crate::single_pass::update_best(&mut best, &bb, newi);
+            if params.greedy {
+                crate::single_pass::lock_new_members(&mut bb, &best, newi);
+            }
             bud_calls += 1;
             bud_success += 1;
         }
@@ -2419,5 +2422,30 @@ mod tests {
         let r = dada_uniques(&inputs, &single_pass_params()).unwrap();
         assert_eq!(r.clusters.len(), 2, "single pass: v is born");
         assert_ne!(cluster_of(&r, &v), cluster_of(&r, &c));
+    }
+
+    /// Greedy locks (#323): a raw a newly born centre alone expects more reads
+    /// of than were observed is skipped by later centres, as under the divisive
+    /// loop, so the two partitions align the same pairs here. Without the
+    /// locks, C would also be aligned against B's five variants.
+    #[test]
+    fn single_pass_applies_greedy_locks_like_divisive() {
+        let a = seq(11, 150);
+        let b = mutate(&a, &[5, 20, 35, 50, 65, 80, 95, 110, 125, 140]);
+        let c = seq(12, 150);
+        let mut inputs = vec![input(&a, 10_000), input(&b, 5_000), input(&c, 1_000)];
+        for pos in [12, 27, 42, 57, 72] {
+            inputs.push(input(&mutate(&a, &[pos]), 2));
+            inputs.push(input(&mutate(&b, &[pos + 1]), 2));
+        }
+        let div = dada_uniques(&inputs, &default_params()).unwrap();
+        let sp = dada_uniques(&inputs, &single_pass_params()).unwrap();
+        assert_eq!(div.clusters.len(), 3);
+        assert_eq!(sp.clusters.len(), 3);
+        assert_eq!(sp.map, div.map);
+        // 13 raws against A, 7 against B (A and A's locked variants skipped),
+        // and only C itself against C.
+        assert_eq!(sp.nalign, 13 + 7 + 1);
+        assert_eq!(sp.nalign, div.nalign);
     }
 }

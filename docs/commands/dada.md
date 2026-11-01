@@ -469,8 +469,9 @@ UNOISE3's fixed abundance-skew rule, not implemented yet.
 Under `single-pass`, a unique's expected reads from a centre are λ × the
 centre's own reads, not the cluster's running total, so its fate does not
 depend on which uniques joined first. It joins the centre with the most expected
-reads, and the `--min-fold`, `--min-hamming`, `--min-abund` and singleton tests
-apply as in the divisive loop. Nothing is reassigned after the pass. It is not
+reads. The `--min-fold`, `--min-hamming`, `--min-abund` and singleton tests and
+the greedy locks apply as in the divisive loop. Nothing is reassigned after the
+pass. It is not
 a speed option: it keeps every comparison, and the phases it removes take
 0.4–31% of pooled denoising time (#323). A non-default value is recorded in the
 output `params`.

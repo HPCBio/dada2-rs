@@ -66,6 +66,27 @@ pub fn update_best(best: &mut [Option<Best>], b: &B, k: usize) {
     }
 }
 
+/// Greedy locks for new cluster `k`, as `b_p_update` sets them once for a newly
+/// born cluster: its centre, and every raw whose best centre is now `k` and
+/// which `k`'s centre alone is expected to produce more reads of than were
+/// observed. A locked raw is skipped by later comparisons, as under the
+/// divisive loop. Cluster 0's locks come from the initial `b_p_update`.
+pub fn lock_new_members(b: &mut B, best: &[Option<Best>], k: usize) {
+    let center = b.clusters[k]
+        .center
+        .expect("lock_new_members: cluster has no centre");
+    b.raws[center].lock = true;
+    for ci in 0..b.clusters[k].comp.len() {
+        let j = b.clusters[k].comp[ci].index as usize;
+        if let Some(bst) = &best[j]
+            && bst.cluster == k
+            && bst.e > b.raws[j].reads as f64
+        {
+            b.raws[j].lock = true;
+        }
+    }
+}
+
 /// Gates and thresholds for the birth test.
 #[derive(Clone, Copy)]
 pub struct BirthTest {
