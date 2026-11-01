@@ -818,7 +818,8 @@ fn dada_params_record_the_alignment_model() {
 
 /// `--partition` is opt-in (issue #323): naming the default `divisive` changes
 /// nothing on `dada` or `dada-pooled`, and records nothing. `--birth-rule`
-/// needs `single-pass`, and `dada-pseudo` does not take the flag.
+/// needs `single-pass`, `single-pass` is recorded and thread-independent, and
+/// `dada-pseudo` does not take the flag.
 #[test]
 fn partition_default_unchanged_and_guarded() {
     let dir = scratch("partition");
@@ -885,11 +886,42 @@ fn partition_default_unchanged_and_guarded() {
         stderr.contains("--birth-rule applies only with --partition single-pass"),
         "{stderr}"
     );
-    let stderr = run_expect_err(&[&base[..], &["--partition", "single-pass"]].concat());
+    let stderr = run_expect_err(
+        &[
+            &base[..],
+            &["--partition", "single-pass", "--birth-rule", "unoise"],
+        ]
+        .concat(),
+    );
     assert!(
-        stderr.contains("not implemented yet (issue #323)"),
+        stderr.contains("unoise is not implemented yet (issue #323)"),
         "{stderr}"
     );
+
+    // single-pass runs, is recorded, and does not depend on the thread count.
+    let sp1 = dir.join("single_pass_t1");
+    let sp4 = dir.join("single_pass_t4");
+    for (out, threads) in [(&sp1, "1"), (&sp4, "4")] {
+        run(&[
+            "dada-pooled",
+            s1,
+            s2,
+            "--error-model",
+            err,
+            "--threads",
+            threads,
+            "--output-dir",
+            out.to_str().unwrap(),
+            "--partition",
+            "single-pass",
+        ]);
+    }
+    assert_same_outputs(&sp1, &sp4, "single-pass, 1 vs 4 threads");
+    let any = sp1.join(&common::json_outputs(&sp1)[0]);
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&any).unwrap()).unwrap();
+    assert_eq!(v["params"]["partition"], "single-pass");
+    assert_eq!(v["params"]["birth_rule"], "pvalue");
     let stderr = run_expect_err(&[
         "dada-pseudo",
         s1,

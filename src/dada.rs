@@ -1331,7 +1331,92 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     };
     let nthreads = rayon::current_num_threads().max(1);
 
-    while bb.clusters.len() < max_clust {
+    // Experimental single pass (#323): replaces the bud loop below. Cluster 0
+    // and its compare are shared with the divisive path; each birth then gets
+    // the same compare a divisive split does, and nothing is reshuffled.
+    if params.partition == Partition::SinglePass {
+        let test = crate::single_pass::BirthTest {
+            omega_a: params.omega_a,
+            omega_p: params.omega_p,
+            min_fold: params.min_fold,
+            min_hamming: params.min_hamming,
+            min_abund: params.min_abund,
+            detect_singletons: params.detect_singletons,
+        };
+        let mut best: Vec<Option<crate::single_pass::Best>> = vec![None; bb.raws.len()];
+        crate::single_pass::update_best(&mut best, &bb, 0);
+        let mut assign = vec![0usize; bb.raws.len()];
+        // Decision time is booked as `bud`, the divisive phase it replaces.
+        let cmp_before = t_compare;
+        let t = Instant::now();
+        for j in crate::single_pass::order(&bb) {
+            if bb.clusters[0].center == Some(j) {
+                continue;
+            }
+            let bst = best[j].clone().expect("single pass: raw has no comparison");
+            let birth = if bb.clusters.len() < max_clust {
+                crate::single_pass::birth_test(&bb, j, &bst, &test)
+            } else {
+                None
+            };
+            let Some(birth) = birth else {
+                assign[j] = bst.cluster;
+                continue;
+            };
+            let newi = crate::single_pass::add_center(&mut bb, j, &bst, &birth);
+            assign[j] = newi;
+            let tc = Instant::now();
+            if params.multithread {
+                let ct = b_compare_parallel(
+                    &mut bb,
+                    newi,
+                    &params.err_mat,
+                    params.err_ncol,
+                    &params.align,
+                    params.greedy,
+                    params.measure.attribution(),
+                );
+                t_cmp_map += ct.map;
+                t_cmp_serial += ct.serial;
+                t_cmp_busy += ct.busy;
+                t_cmp_screen += ct.screen;
+                t_cmp_dp += ct.dp;
+                t_cmp_post += ct.post;
+                n_cmp_screened += ct.screened;
+                n_cmp_aligned += ct.aligned;
+                t_cmp_agg += ct.agg;
+                t_cmp_free += ct.free;
+                t_cmp_setup += ct.setup;
+                n_cmp_scanned += bb.raws.len() as u64;
+                n_cmp_stored += ct.stored;
+            } else {
+                b_compare(
+                    &mut bb,
+                    newi,
+                    &params.err_mat,
+                    params.err_ncol,
+                    &params.align,
+                    params.greedy,
+                    &mut rec,
+                );
+            }
+            t_compare += tc.elapsed();
+            crate::single_pass::update_best(&mut best, &bb, newi);
+            bud_calls += 1;
+            bud_success += 1;
+        }
+        t_bud += t.elapsed().saturating_sub(t_compare - cmp_before);
+        crate::single_pass::finalize(&mut bb, &assign, &best);
+        if params.verbose {
+            eprintln!(
+                "[dada] single pass (#323): {} clusters from {} uniques",
+                bb.clusters.len(),
+                bb.raws.len()
+            );
+        }
+    }
+
+    while params.partition == Partition::Divisive && bb.clusters.len() < max_clust {
         let t = Instant::now();
         let mut bud_scanned = 0u64;
         let bud = b_bud_incremental(
@@ -2275,5 +2360,64 @@ mod tests {
         let cv = cluster_of(&r, &v);
         assert!(matches!(r.clusters[cv].birth_type, BirthType::Prior));
         assert!(r.clusters[cv].birth_pval < 1e-4);
+    }
+
+    // ---- Single-pass partition (#323) ----
+
+    fn single_pass_params() -> DadaParams {
+        let mut p = default_params();
+        p.partition = Partition::SinglePass;
+        p
+    }
+
+    /// On a clean two-centre pool the single pass finds what the divisive loop
+    /// finds.
+    #[test]
+    fn single_pass_matches_divisive_on_two_centres() {
+        let (inputs, [a, b, ..]) = two_centre_pool();
+        let r = dada_uniques(&inputs, &single_pass_params()).unwrap();
+        assert_eq!(r.clusters.len(), 2);
+        let (ca, cb) = (cluster_of(&r, &a), cluster_of(&r, &b));
+        assert_eq!(r.map, vec![Some(ca), Some(cb), Some(ca), Some(cb)]);
+        assert_eq!(r.clusters[ca].abundance, 1002);
+        assert_eq!(r.clusters[cb].abundance, 501);
+        assert!(matches!(r.clusters[cb].birth_type, BirthType::Abundance));
+        assert_eq!(r.clusters[cb].birth_from as usize, ca);
+    }
+
+    /// The prior test applies under the single pass as under the divisive loop.
+    #[test]
+    fn single_pass_prior_birth() {
+        let c = seq(8, 150);
+        let v = mutate(&c, &[40]);
+        let mut inputs = vec![input(&c, 2000), input(&v, 10)];
+        let r = dada_uniques(&inputs, &single_pass_params()).unwrap();
+        assert_eq!(r.clusters.len(), 1);
+        inputs[1].prior = true;
+        let r = dada_uniques(&inputs, &single_pass_params()).unwrap();
+        assert_eq!(r.clusters.len(), 2);
+        assert!(matches!(
+            r.clusters[cluster_of(&r, &v)].birth_type,
+            BirthType::Prior
+        ));
+    }
+
+    /// The single pass prices a raw against its centre's own reads, not the
+    /// cluster's total (#323). A 36-read variant is significant against the
+    /// 1000-read centre alone, but not once 100 ten-read variants have joined
+    /// the cluster and doubled its reads, which is what the divisive loop sees.
+    #[test]
+    fn single_pass_prices_against_the_centres_own_reads() {
+        let c = seq(9, 150);
+        let v = mutate(&c, &[75]);
+        let mut inputs = vec![input(&c, 1000), input(&v, 36)];
+        for pos in (0..150).filter(|&p| p != 75).take(100) {
+            inputs.push(input(&mutate(&c, &[pos]), 10));
+        }
+        let r = dada_uniques(&inputs, &default_params()).unwrap();
+        assert_eq!(r.clusters.len(), 1, "divisive: cluster reads absorb v");
+        let r = dada_uniques(&inputs, &single_pass_params()).unwrap();
+        assert_eq!(r.clusters.len(), 2, "single pass: v is born");
+        assert_ne!(cluster_of(&r, &v), cluster_of(&r, &c));
     }
 }
