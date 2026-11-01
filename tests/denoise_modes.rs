@@ -818,8 +818,8 @@ fn dada_params_record_the_alignment_model() {
 
 /// `--partition` is opt-in (issue #323): naming the default `divisive` changes
 /// nothing on `dada` or `dada-pooled`, and records nothing. `--birth-rule`
-/// needs `single-pass`, `single-pass` is recorded and thread-independent, and
-/// `dada-pseudo` does not take the flag.
+/// and `--reassign` need `single-pass`, `single-pass` is recorded and
+/// thread-independent, and `dada-pseudo` does not take the flag.
 #[test]
 fn partition_default_unchanged_and_guarded() {
     let dir = scratch("partition");
@@ -884,6 +884,11 @@ fn partition_default_unchanged_and_guarded() {
     let stderr = run_expect_err(&[&base[..], &["--birth-rule", "unoise"]].concat());
     assert!(
         stderr.contains("--birth-rule applies only with --partition single-pass"),
+        "{stderr}"
+    );
+    let stderr = run_expect_err(&[&base[..], &["--reassign"]].concat());
+    assert!(
+        stderr.contains("--reassign applies only with --partition single-pass"),
         "{stderr}"
     );
     let stderr = run_expect_err(

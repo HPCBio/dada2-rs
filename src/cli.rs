@@ -493,6 +493,10 @@ pub struct PartitionArgs {
     /// EXPERIMENTAL: birth test under `--partition single-pass` [default: pvalue]
     #[arg(long, value_enum, help_heading = H_EXP)]
     pub birth_rule: Option<BirthRule>,
+
+    /// EXPERIMENTAL: after `--partition single-pass`, move each unique once to its best cluster
+    #[arg(long, help_heading = H_EXP)]
+    pub reassign: bool,
 }
 
 fn parse_hp_ceiling(v: &str) -> Result<crate::indel_model::HpCeiling, String> {

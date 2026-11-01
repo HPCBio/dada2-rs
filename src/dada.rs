@@ -130,6 +130,10 @@ pub struct DadaParams {
     /// The test that makes a unique a new center under
     /// [`Partition::SinglePass`] (issue #323). Unused under `Divisive`.
     pub birth_rule: BirthRule,
+    /// Under [`Partition::SinglePass`], one DADA2 shuffle after the pass
+    /// (issue #323): each non-centre raw moves once to the cluster with the
+    /// most expected reads, priced against cluster reads as in `dada`.
+    pub reassign: bool,
 }
 
 /// How `run_dada` forms clusters (issue #323).
@@ -249,6 +253,7 @@ impl DadaParams {
             indel_model: None,
             partition: Partition::Divisive,
             birth_rule: BirthRule::Pvalue,
+            reassign: false,
         }
     }
 }
@@ -1410,6 +1415,17 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         }
         t_bud += t.elapsed().saturating_sub(t_compare - cmp_before);
         crate::single_pass::finalize(&mut bb, &assign, &best);
+        if params.reassign {
+            let t = Instant::now();
+            let st = crate::cluster::b_shuffle2(&mut bb);
+            t_shuffle += t.elapsed();
+            shuf_calls += st.calls as u64;
+            shuf_moves += st.moves as u64;
+            shuf_comps_scanned += st.comps_scanned as u64;
+            if params.verbose {
+                eprintln!("[dada] single pass reassignment: {} raw(s) moved", st.moves);
+            }
+        }
         if params.verbose {
             eprintln!(
                 "[dada] single pass (#323): {} clusters from {} uniques",
@@ -2447,5 +2463,37 @@ mod tests {
         // and only C itself against C.
         assert_eq!(sp.nalign, 13 + 7 + 1);
         assert_eq!(sp.nalign, div.nalign);
+    }
+
+    /// `--reassign` (#323): one DADA2 shuffle after the pass, priced against
+    /// cluster reads. X is equally far from A (1000 reads) and B (900 reads),
+    /// so the pass puts it with A's larger centre. B's twenty 10-read variants
+    /// make B the larger cluster, so the shuffle moves X there, as the divisive
+    /// loop places it.
+    #[test]
+    fn single_pass_reassign_moves_to_the_larger_cluster() {
+        let a = seq(13, 150);
+        let diffs = [5, 20, 35, 50, 65, 80, 95, 110, 125, 140];
+        let b = mutate(&a, &diffs);
+        let x = mutate(&a, &diffs[..5]);
+        let mut inputs = vec![input(&a, 1000), input(&b, 900), input(&x, 1)];
+        for pos in (0..150).filter(|p| !diffs.contains(p)).take(20) {
+            inputs.push(input(&mutate(&b, &[pos]), 10));
+        }
+        let xi = 2;
+        let home = |r: &DadaResult, s: &str| r.map[xi] == Some(cluster_of(r, s));
+
+        let sp = dada_uniques(&inputs, &single_pass_params()).unwrap();
+        assert_eq!(sp.clusters.len(), 2);
+        assert!(home(&sp, &a), "single pass: X joins the larger centre");
+
+        let mut p = single_pass_params();
+        p.reassign = true;
+        let re = dada_uniques(&inputs, &p).unwrap();
+        assert_eq!(re.clusters.len(), 2);
+        assert!(home(&re, &b), "reassign: X moves to the larger cluster");
+
+        let div = dada_uniques(&inputs, &default_params()).unwrap();
+        assert!(home(&div, &b), "divisive places X with B");
     }
 }

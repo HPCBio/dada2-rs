@@ -456,7 +456,7 @@ model and the output `params`, and `dada` warns when its own differs. Each
 affine alignment costs about 1.3× a linear one (learn-errors on the PacBio mocks
 took 1.1–1.2× as long).
 
-**`--partition`**, **`--birth-rule`** — how clusters are formed
+**`--partition`**, **`--birth-rule`**, **`--reassign`** — how clusters are formed
 ([#323](https://github.com/HPCBio/dada2-rs/issues/323)), on `dada` and
 `dada-pooled` only. `divisive` (default) is R DADA2: split off one new centre
 at a time, then reassign and recompute p-values before the next split.
@@ -471,7 +471,10 @@ centre's own reads, not the cluster's running total, so its fate does not
 depend on which uniques joined first. It joins the centre with the most expected
 reads. The `--min-fold`, `--min-hamming`, `--min-abund` and singleton tests and
 the greedy locks apply as in the divisive loop. Nothing is reassigned after the
-pass. It is not
+pass unless `--reassign` is given, which runs one DADA2 shuffle: each unique
+other than a centre moves once to the cluster with the most expected reads,
+priced against the cluster's total reads as in the divisive loop. It moves
+reads between ASVs but cannot add or remove one. It is not
 a speed option: it keeps every comparison, and the phases it removes take
 0.4–31% of pooled denoising time (#323). A non-default value is recorded in the
 output `params`.

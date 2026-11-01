@@ -1264,6 +1264,8 @@ struct DadaRunParams {
     partition: Option<dada::Partition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     birth_rule: Option<dada::BirthRule>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    reassign: bool,
 }
 
 /// `true` when `path` looks like a JSON file (`.json` or `.json.gz`).
@@ -1633,6 +1635,7 @@ fn resolve_dada_params(
         indel_lambda: None,
         partition: None,
         birth_rule: None,
+        reassign: false,
     };
     let mut run = run;
     if let Some(path) = &indel_lambda.indel_rates {
@@ -1661,6 +1664,12 @@ fn resolve_dada_params(
             "--birth-rule applies only with --partition single-pass",
         ));
     }
+    if partition.reassign && partition_mode != dada::Partition::SinglePass {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--reassign applies only with --partition single-pass",
+        ));
+    }
     if partition.birth_rule == Some(dada::BirthRule::Unoise) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -1669,6 +1678,8 @@ fn resolve_dada_params(
     }
     params.partition = partition_mode;
     params.birth_rule = partition.birth_rule.unwrap_or_default();
+    params.reassign = partition.reassign;
+    run.reassign = partition.reassign;
     if partition_mode != dada::Partition::Divisive {
         run.partition = Some(partition_mode);
         run.birth_rule = Some(params.birth_rule);
