@@ -456,28 +456,61 @@ model and the output `params`, and `dada` warns when its own differs. Each
 affine alignment costs about 1.3× a linear one (learn-errors on the PacBio mocks
 took 1.1–1.2× as long).
 
-**`--partition`**, **`--birth-rule`**, **`--reassign`** — how clusters are formed
-([#323](https://github.com/HPCBio/dada2-rs/issues/323)), on `dada` and
-`dada-pooled` only. `divisive` (default) is R DADA2: split off one new centre
-at a time, then reassign and recompute p-values before the next split.
-`single-pass` is a UNOISE-like alternative under test: one pass over the
-uniques in decreasing abundance, each either becoming a centre or joining its
-best existing one. `--birth-rule` picks the test for a new centre under
-`single-pass`: `pvalue` (default) is DADA2's abundance p-value, and `unoise` is
-UNOISE3's fixed abundance-skew rule, not implemented yet.
-
-Under `single-pass`, a unique's expected reads from a centre are λ × the
-centre's own reads, not the cluster's running total, so its fate does not
-depend on which uniques joined first. It joins the centre with the most expected
-reads. The `--min-fold`, `--min-hamming`, `--min-abund` and singleton tests and
-the greedy locks apply as in the divisive loop. Nothing is reassigned after the
-pass unless `--reassign` is given, which runs one DADA2 shuffle: each unique
-other than a centre moves once to the cluster with the most expected reads,
-priced against the cluster's total reads as in the divisive loop. It moves
-reads between ASVs but cannot add or remove one. It is not
-a speed option: it keeps every comparison, and the phases it removes take
+**`--partition`**, **`--birth-rule`**, **`--reassign`** — how clusters are
+formed ([#323](https://github.com/HPCBio/dada2-rs/issues/323)), on `dada` and
+`dada-pooled` only. These flags exist to compare DADA2's divisive algorithm with
+a single pass in the style of UNOISE3 (Edgar 2016,
+[doi:10.1101/081257](https://doi.org/10.1101/081257)). They are not a speed
+option: single pass keeps every comparison, and the phases it removes take
 0.4–31% of pooled denoising time (#323). A non-default value is recorded in the
 output `params`.
+
+| Flags | What forms the clusters |
+| --- | --- |
+| *(default)* `--partition divisive` | R DADA2: split off one new centre at a time, reassigning and recomputing p-values before the next split |
+| `--partition single-pass` | One pass over the uniques in decreasing abundance; each becomes a centre or joins an existing one, using DADA2's abundance p-value |
+| `--partition single-pass --reassign` | As above, then one DADA2 reassignment pass |
+| `--partition single-pass --birth-rule unoise` | One pass using UNOISE's fixed abundance-skew rule instead of the error model |
+
+*Single pass with the p-value* (`--birth-rule pvalue`, the default). A unique's
+expected reads from a centre are λ × the centre's own reads, not the cluster's
+running total, so its fate does not depend on which uniques joined first. It
+joins the centre with the most expected reads, and becomes a centre itself if
+the Bonferroni-corrected p-value is below `--omega-a`. The `--min-fold`,
+`--min-hamming`, `--min-abund` and singleton tests and the greedy locks apply as
+in the divisive loop. `--indel-rates` applies unchanged.
+
+*`--reassign`* runs one DADA2 shuffle after the pass: each unique other than a
+centre moves once to the cluster with the most expected reads, priced against
+the cluster's total reads as in the divisive loop. It moves reads between ASVs
+but cannot add or remove one. It does not combine with `--birth-rule unoise`.
+
+*The UNOISE rule* (`--birth-rule unoise`). A unique with *n* reads is absorbed
+by a centre with *N* reads if its skew *n*/*N* ≤ β(*d*) = 1/2^(2*d*+1), that
+is 1/8, 1/32 and 1/128 for *d* = 1, 2 and 3. *d* is the Levenshtein distance
+from the alignment: substitutions plus internal gap columns, with end gaps not
+counted. It therefore counts indels whether or not `--indel-rates` is given,
+and a 3-base deletion counts 3. When several centres qualify the unique joins
+the one with the smallest *d*, ties going to the more abundant. A unique no
+centre absorbs becomes a centre if it has at least `--min-abund` reads; one
+below is left unassigned, as UNOISE leaves it out of the table. Only
+`--min-abund` gates a birth: DADA2's p-value, `--omega-a`, `--min-fold`,
+`--min-hamming`, the singleton test and the greedy locks do not apply, and each
+new centre is aligned against every unique with at most half its reads.
+`--omega-c` still decides afterwards whether a member's reads are corrected, as
+in every mode. Set `--min-abund 8` to match vsearch `--cluster_unoise`.
+
+This arm reproduces vsearch 2.32 `--cluster_unoise --unoise_alpha 2`. On the
+pooled MiSeq SOP forward reads, the centres matched exactly at `--minsize 8`
+(449 of 449) and at `--minsize 4` (642 of 642), and a negative control at
+`--unoise_alpha 3` gave 510 centres, 61 of them different (#323).
+
+*Counting indels differs between the rules.* The indel-aware λ (`--indel-rates`)
+counts an indel *event* toward `hamming` and ignores indels within
+`--indel-end-zone` bases of the 3′ end; the UNOISE rule counts gap *columns*
+and ignores end gaps. To compare the error model with the fixed rule, compare
+`--birth-rule unoise` with `--partition single-pass --indel-rates`, so that both
+count indels.
 
 ## See also
 
