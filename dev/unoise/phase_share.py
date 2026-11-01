@@ -10,7 +10,7 @@ the initial compare, so it is not used as the denominator.
 A share is only meaningful with the thread count it was measured at: the
 removable phases are serial, so their share grows with threads.
 
-Usage: dev/phase_share.py <metrics.json> [...]
+Usage: dev/unoise/phase_share.py <metrics.json> [...]
 """
 import json
 import sys
