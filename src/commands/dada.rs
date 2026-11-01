@@ -1670,10 +1670,10 @@ fn resolve_dada_params(
             "--reassign applies only with --partition single-pass",
         ));
     }
-    if partition.birth_rule == Some(dada::BirthRule::Unoise) {
+    if partition.reassign && partition.birth_rule == Some(dada::BirthRule::Unoise) {
         return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "--birth-rule unoise is not implemented yet (issue #323)",
+            io::ErrorKind::InvalidInput,
+            "--reassign is DADA2's shuffle and does not apply with --birth-rule unoise",
         ));
     }
     params.partition = partition_mode;

@@ -818,8 +818,9 @@ fn dada_params_record_the_alignment_model() {
 
 /// `--partition` is opt-in (issue #323): naming the default `divisive` changes
 /// nothing on `dada` or `dada-pooled`, and records nothing. `--birth-rule`
-/// and `--reassign` need `single-pass`, `single-pass` is recorded and
-/// thread-independent, and `dada-pseudo` does not take the flag.
+/// and `--reassign` need `single-pass`, `--reassign` does not combine with
+/// the UNOISE rule, both birth rules are recorded and thread-independent,
+/// and `dada-pseudo` does not take the flag.
 #[test]
 fn partition_default_unchanged_and_guarded() {
     let dir = scratch("partition");
@@ -894,12 +895,18 @@ fn partition_default_unchanged_and_guarded() {
     let stderr = run_expect_err(
         &[
             &base[..],
-            &["--partition", "single-pass", "--birth-rule", "unoise"],
+            &[
+                "--partition",
+                "single-pass",
+                "--birth-rule",
+                "unoise",
+                "--reassign",
+            ],
         ]
         .concat(),
     );
     assert!(
-        stderr.contains("unoise is not implemented yet (issue #323)"),
+        stderr.contains("does not apply with --birth-rule unoise"),
         "{stderr}"
     );
 
@@ -927,6 +934,34 @@ fn partition_default_unchanged_and_guarded() {
         serde_json::from_str(&std::fs::read_to_string(&any).unwrap()).unwrap();
     assert_eq!(v["params"]["partition"], "single-pass");
     assert_eq!(v["params"]["birth_rule"], "pvalue");
+
+    // The UNOISE rule runs, is recorded, and does not depend on the thread count.
+    let un1 = dir.join("unoise_t1");
+    let un4 = dir.join("unoise_t4");
+    for (out, threads) in [(&un1, "1"), (&un4, "4")] {
+        run(&[
+            "dada-pooled",
+            s1,
+            s2,
+            "--error-model",
+            err,
+            "--threads",
+            threads,
+            "--output-dir",
+            out.to_str().unwrap(),
+            "--partition",
+            "single-pass",
+            "--birth-rule",
+            "unoise",
+            "--min-abund",
+            "8",
+        ]);
+    }
+    assert_same_outputs(&un1, &un4, "unoise, 1 vs 4 threads");
+    let any = un1.join(&common::json_outputs(&un1)[0]);
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&any).unwrap()).unwrap();
+    assert_eq!(v["params"]["birth_rule"], "unoise");
     let stderr = run_expect_err(&[
         "dada-pseudo",
         s1,

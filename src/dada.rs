@@ -674,7 +674,9 @@ pub fn dada_uniques_cached(
             } else {
                 let lambda = b.raws[raw_idx].comp.lambda;
                 let p = calc_pA(b.raws[raw_idx].reads, lambda * ci_reads as f64, true);
-                let correct = p >= params.omega_c;
+                // The UNOISE rule's raws with no qualifying centre (#323).
+                let unassigned = b.unassigned.get(raw_idx).copied().unwrap_or(false);
+                let correct = p >= params.omega_c && !unassigned;
                 (p, correct)
             };
             b.raws[raw_idx].p = p;
@@ -1339,7 +1341,68 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // Experimental single pass (#323): replaces the bud loop below. Cluster 0
     // and its compare are shared with the divisive path; each birth then gets
     // the same compare a divisive split does, and nothing is reshuffled.
-    if params.partition == Partition::SinglePass {
+    if params.partition == Partition::SinglePass && params.birth_rule == BirthRule::Unoise {
+        // UNOISE rule (#323): its own compare from each centre, because the
+        // λ-based store filter and greedy locks could drop a centre the rule
+        // qualifies. Only `--min-abund` gates a birth; DADA2's other gates and
+        // the p-value do not apply.
+        let n = bb.raws.len();
+        let mut ub = vec![crate::single_pass::UnoiseBest { qualified: None }; n];
+        let mut assign = vec![0usize; n];
+        let mut comps: Vec<Option<crate::containers::Comparison>> = vec![None; n];
+        let mut unassigned = vec![false; n];
+        let tc = Instant::now();
+        n_cmp_screened += crate::single_pass::unoise_compare(
+            &mut bb,
+            0,
+            &mut ub,
+            &params.err_mat,
+            params.err_ncol,
+            &params.align,
+        );
+        t_compare += tc.elapsed();
+        let cmp_before = t_compare;
+        let t = Instant::now();
+        for j in crate::single_pass::order(&bb) {
+            if bb.clusters[0].center == Some(j) {
+                continue;
+            }
+            if let Some((_, k, comp)) = ub[j].qualified.clone() {
+                assign[j] = k;
+                comps[j] = Some(comp);
+                continue;
+            }
+            if bb.raws[j].reads < params.min_abund || bb.clusters.len() >= max_clust {
+                unassigned[j] = true;
+                continue;
+            }
+            let newi = crate::single_pass::add_unoise_center(&mut bb, j);
+            assign[j] = newi;
+            let tc = Instant::now();
+            n_cmp_screened += crate::single_pass::unoise_compare(
+                &mut bb,
+                newi,
+                &mut ub,
+                &params.err_mat,
+                params.err_ncol,
+                &params.align,
+            );
+            t_compare += tc.elapsed();
+            bud_calls += 1;
+            bud_success += 1;
+        }
+        t_bud += t.elapsed().saturating_sub(t_compare - cmp_before);
+        crate::single_pass::finalize(&mut bb, &assign, &comps);
+        bb.unassigned = unassigned;
+        if params.verbose {
+            eprintln!(
+                "[dada] single pass, UNOISE rule (#323): {} clusters from {} uniques, {} unassigned",
+                bb.clusters.len(),
+                bb.raws.len(),
+                bb.unassigned.iter().filter(|&&u| u).count()
+            );
+        }
+    } else if params.partition == Partition::SinglePass {
         let test = crate::single_pass::BirthTest {
             omega_a: params.omega_a,
             omega_p: params.omega_p,
@@ -1414,7 +1477,11 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             bud_success += 1;
         }
         t_bud += t.elapsed().saturating_sub(t_compare - cmp_before);
-        crate::single_pass::finalize(&mut bb, &assign, &best);
+        let comps: Vec<_> = best
+            .iter()
+            .map(|b| b.as_ref().map(|b| b.comp.clone()))
+            .collect();
+        crate::single_pass::finalize(&mut bb, &assign, &comps);
         if params.reassign {
             let t = Instant::now();
             let st = crate::cluster::b_shuffle2(&mut bb);
@@ -2495,5 +2562,41 @@ mod tests {
 
         let div = dada_uniques(&inputs, &default_params()).unwrap();
         assert!(home(&div, &b), "divisive places X with B");
+    }
+
+    /// `--birth-rule unoise` (#323): skew ≤ β(d) = 1/2^(2d+1) absorbs, with d
+    /// counting substitutions and internal gap columns; otherwise a unique at
+    /// or above `--min-abund` becomes a centre and one below is unassigned.
+    #[test]
+    fn unoise_rule_absorbs_by_skew_and_counts_gaps() {
+        let a = seq(14, 150);
+        let v1 = mutate(&a, &[40]); // d=1, skew 0.1 <= 1/8: absorbed
+        let v2 = mutate(&a, &[80]); // d=1, skew 0.2 > 1/8: born
+        let del1 = format!("{}{}", &a[..100], &a[101..]); // d=1, skew 0.1: absorbed
+        let del2 = format!("{}{}", &a[..60], &a[62..]); // d=2, skew 0.05 > 1/32: born
+        let far = seq(15, 150); // unrelated, 3 reads < min_abund: unassigned
+        let inputs = vec![
+            input(&a, 1000),
+            input(&v1, 100),
+            input(&v2, 200),
+            input(&del1, 100),
+            input(&del2, 50),
+            input(&far, 3),
+        ];
+        let mut p = single_pass_params();
+        p.birth_rule = BirthRule::Unoise;
+        p.min_abund = 8;
+        let r = dada_uniques(&inputs, &p).unwrap();
+        assert_eq!(r.clusters.len(), 3);
+        let (ca, cv2, cdel2) = (
+            cluster_of(&r, &a),
+            cluster_of(&r, &v2),
+            cluster_of(&r, &del2),
+        );
+        assert_eq!(
+            r.map,
+            vec![Some(ca), Some(ca), Some(cv2), Some(ca), Some(cdel2), None]
+        );
+        assert_eq!(r.clusters[ca].abundance, 1200);
     }
 }

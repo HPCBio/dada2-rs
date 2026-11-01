@@ -22,8 +22,11 @@
 //! are identical between the two partitions. Raws more abundant than a new
 //! centre are already decided, and greedy mode skips them.
 
-use crate::containers::{B, Bi, BirthType, Comparison};
-use crate::pval::get_pA;
+use rayon::prelude::*;
+
+use crate::containers::{B, Bi, BirthType, Comparison, Sub};
+use crate::nwalign::{AlignBuffers, AlignParams, GAP_GLYPH, sub_new_with_buf};
+use crate::pval::{compute_lambda, get_pA};
 
 /// The centre a raw would join: most expected reads seen so far.
 #[derive(Clone)]
@@ -156,11 +159,22 @@ pub fn add_center(b: &mut B, j: usize, best: &Best, birth: &Birth) -> usize {
     b.add_cluster(bi)
 }
 
+/// Create a cluster centred on raw `j` under the UNOISE rule. The rule has no
+/// p-value, fold or parent, so the birth fields keep their defaults apart from
+/// the type.
+pub fn add_unoise_center(b: &mut B, j: usize) -> usize {
+    let mut bi = Bi::new(b.raws.len() as u32);
+    bi.birth_type = BirthType::Abundance;
+    bi.center = Some(j);
+    bi.seq = b.raws[j].seq.clone();
+    b.add_cluster(bi)
+}
+
 /// Rebuild every cluster's membership from the pass's assignments: the centre
 /// first, then members in input order. Each member's `comp` becomes its
 /// comparison with its own centre, which the post-run p-value pass and the
 /// outputs read.
-pub fn finalize(b: &mut B, assign: &[usize], best: &[Option<Best>]) {
+pub fn finalize(b: &mut B, assign: &[usize], comps: &[Option<Comparison>]) {
     for bi in &mut b.clusters {
         bi.raws.clear();
         bi.reads = 0;
@@ -187,9 +201,178 @@ pub fn finalize(b: &mut B, assign: &[usize], best: &[Option<Best>]) {
             continue;
         }
         b.bi_add_raw(k, j);
-        if let Some(bst) = &best[j] {
-            debug_assert_eq!(bst.cluster, k);
-            b.raws[j].comp = bst.comp.clone();
+        // `None` keeps the raw's comparison with cluster 0's centre, from the
+        // initial compare: the UNOISE rule's unassigned raws.
+        if let Some(comp) = &comps[j] {
+            debug_assert_eq!(comp.i as usize, k);
+            b.raws[j].comp = comp.clone();
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UNOISE birth rule (`--birth-rule unoise`)
+// ---------------------------------------------------------------------------
+
+/// UNOISE's α (Edgar 2016; vsearch `--unoise_alpha` default).
+pub const UNOISE_ALPHA: f64 = 2.0;
+
+/// Maximum skew a member at distance `d` may have: β(d) = 1/2^(αd+1).
+pub fn unoise_beta(d: u32) -> f64 {
+    0.5f64.powf(UNOISE_ALPHA * d as f64 + 1.0)
+}
+
+/// Gap columns inside the alignment: reference bases opposite a query gap,
+/// and query bases between two aligned reference bases. Leading and trailing
+/// gaps on either sequence are not counted, as under vsearch's `--iddef 2`.
+pub fn internal_gap_columns(sub: &Sub) -> u32 {
+    let mapped: Vec<(usize, u16)> = sub
+        .map
+        .iter()
+        .enumerate()
+        .filter(|&(_, &q)| q != GAP_GLYPH)
+        .map(|(i, &q)| (i, q))
+        .collect();
+    let (Some(&(first, _)), Some(&(last, _))) = (mapped.first(), mapped.last()) else {
+        return 0;
+    };
+    // Deletions: unmapped reference bases between the first and last mapped.
+    let deletions = (first..=last).filter(|&i| sub.map[i] == GAP_GLYPH).count() as u32;
+    // Insertions: query bases skipped between consecutive mapped positions.
+    let insertions: u32 = mapped
+        .windows(2)
+        .map(|w| (w[1].1 - w[0].1 - 1) as u32)
+        .sum();
+    deletions + insertions
+}
+
+/// UNOISE's distance d: substitutions plus internal gap columns.
+pub fn unoise_d(sub: &Sub) -> u32 {
+    sub.nsubs() as u32 + internal_gap_columns(sub)
+}
+
+/// A raw's standing against the centres compared with it so far.
+#[derive(Clone)]
+pub struct UnoiseBest {
+    /// Smallest d among centres the raw qualifies for (skew ≤ β(d)).
+    pub qualified: Option<(u32, usize, Comparison)>,
+}
+
+/// Align new centre `k` against every raw with at most half its reads, the
+/// only raws that can satisfy skew ≤ β(d) ≤ 1/2, and record for each the
+/// qualifying centre with the smallest d (ties keep the earlier, more
+/// abundant centre). Also sets the centre's `self_`. Counts pairs into
+/// `b.nalign` and screened-out pairs into `b.nshroud`, as `b_compare` does.
+/// Returns the number of pairs considered.
+pub fn unoise_compare(
+    b: &mut B,
+    k: usize,
+    best: &mut [UnoiseBest],
+    err_mat: &[f64],
+    ncol: usize,
+    params: &AlignParams,
+) -> u64 {
+    let center = b.clusters[k]
+        .center
+        .expect("unoise_compare: cluster has no centre");
+    let center_reads = b.raws[center].reads;
+    let use_quals = b.use_quals;
+    let raws = &b.raws;
+    type Aligned = Option<(u32, f64, u32)>;
+    let results: Vec<Option<(usize, Aligned)>> = (0..raws.len())
+        .into_par_iter()
+        .map_init(AlignBuffers::new, |buf, j| {
+            let raw = &raws[j];
+            if j != center && (raw.reads as u64) * 2 > center_reads as u64 {
+                return None;
+            }
+            let aligned = sub_new_with_buf(&raws[center], raw, params, buf).map(|sub| {
+                let lambda = compute_lambda(raw, Some(&sub), err_mat, ncol, use_quals);
+                (unoise_d(&sub), lambda, sub.nsubs() as u32)
+            });
+            Some((j, aligned))
+        })
+        .collect();
+    let mut considered = 0u64;
+    for (j, aligned) in results.into_iter().flatten() {
+        considered += 1;
+        let Some((d, lambda, nsubs)) = aligned else {
+            b.nshroud += 1;
+            continue;
+        };
+        if j == center {
+            b.clusters[k].self_ = lambda;
+            continue;
+        }
+        let skew = b.raws[j].reads as f64 / center_reads as f64;
+        if skew > unoise_beta(d) {
+            continue;
+        }
+        let slot = &mut best[j].qualified;
+        if slot.as_ref().is_none_or(|&(cur, _, _)| d < cur) {
+            *slot = Some((
+                d,
+                k,
+                Comparison {
+                    i: k as u32,
+                    index: j as u32,
+                    lambda,
+                    hamming: nsubs,
+                },
+            ));
+        }
+    }
+    b.nalign += considered;
+    considered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nwalign::al2subs;
+
+    fn enc(s: &str) -> Vec<u8> {
+        s.bytes()
+            .map(|c| match c {
+                b'A' => 1,
+                b'C' => 2,
+                b'G' => 3,
+                b'T' => 4,
+                _ => b'-',
+            })
+            .collect()
+    }
+
+    fn d(al0: &str, al1: &str) -> (usize, u32) {
+        let sub = al2subs(&enc(al0), &enc(al1));
+        (sub.nsubs(), internal_gap_columns(&sub))
+    }
+
+    #[test]
+    fn beta_matches_the_preprint() {
+        assert_eq!(unoise_beta(1), 1.0 / 8.0);
+        assert_eq!(unoise_beta(2), 1.0 / 32.0);
+        assert_eq!(unoise_beta(3), 1.0 / 128.0);
+    }
+
+    #[test]
+    fn internal_gaps_are_counted_by_column() {
+        assert_eq!(d("ACGTACGTAC", "ACGTACGTAC"), (0, 0));
+        assert_eq!(d("ACGTACGTAC", "ACGAACGTAC"), (1, 0));
+        // A 3-base deletion is three columns, not one event.
+        assert_eq!(d("ACGTACGTAC", "ACG---GTAC"), (0, 3));
+        // A 2-base insertion in the query.
+        assert_eq!(d("ACGT--ACGTAC", "ACGTGGACGTAC"), (0, 2));
+        // Substitution plus internal gap.
+        assert_eq!(d("ACGTACGTAC", "ACG-ACGTTC"), (1, 1));
+    }
+
+    #[test]
+    fn end_gaps_are_not_counted() {
+        // Leading and trailing gaps on either sequence.
+        assert_eq!(d("ACGTACGTAC", "--GTACGT--"), (0, 0));
+        assert_eq!(d("--GTACGTAC--", "ACGTACGTACGT"), (0, 0));
+        // An internal gap still counts beside end gaps.
+        assert_eq!(d("ACGTACGTAC", "--GT-CGT--"), (0, 1));
     }
 }
