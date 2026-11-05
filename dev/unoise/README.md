@@ -7,6 +7,7 @@ CLI. The flags are documented in `docs/commands/dada.md`.
 | Script | Purpose |
 | --- | --- |
 | `run_arms.sh` | Run the arm grid on one dataset: learn once, then denoise, merge, remove chimeras and optionally score each arm against a truth set |
+| `vsearch_to_seqtab.py` | Convert the vsearch arm's ZOTUs and OTU table into the files the other arms produce |
 | `summarize_arms.py` | One row per arm: ASV counts, set identity and Bray-Curtis against a baseline arm, dada time, and `reference-eval` scores |
 | `phase_share.py` | Phase 0: the share of denoising time that the single pass could remove, from `--metrics-json` |
 
@@ -20,6 +21,26 @@ Each script's header documents its inputs, outputs and environment.
 | `sp` | `--partition single-pass` | `--indel-rates` |
 | `sp_reassign` | `--partition single-pass --reassign` | `--indel-rates` |
 | `unoise` | `--partition single-pass --birth-rule unoise` | none: d counts gaps by definition |
+| `vsearch` | UNOISE3 as vsearch runs it (external control) | none |
+
+The `unoise` arm uses UNOISE's rule to pick centres and counts every absorbed
+member's reads (`--omega-c` does not apply), but keeps DADA2's merging, chimera
+removal and table. The `vsearch` arm is the UNOISE3 workflow end to end: merge
+pairs, filter at `--fastq_maxee 1` (`VSEARCH_MAXEE`), dereplicate,
+`--cluster_unoise`, `--uchime3_denovo`, then map every read, filtered or not,
+to the ZOTUs at 97% identity for the table. It uses no error model. Its
+`--minsize` follows the `unoise` arm's `--min-abund`. HiFi quality scores go
+up to 93, so every vsearch step reads FASTQ with `--fastq_qmax 93`.
+
+On the pooled MiSeq SOP forward reads, the two arms differ in three separable
+steps:
+
+| Step | `unoise` | `vsearch` |
+| --- | --- | --- |
+| Centres, `VSEARCH_MAXEE` off | 449 | 449, identical |
+| Centres, `--fastq_maxee 1` | 449 | 427, all among the 449 |
+| After chimera removal | 284 (DADA2 consensus) | 387 (UCHIME3); our 284 are all among UCHIME3's 406 at maxEE off |
+| Reads in the table | 127,286 | 139,114 (97% mapping) |
 
 Compare `sp_indel` with `unoise` to test the learned error model against the
 fixed rule with indels counted in both (`summarize_arms.py --pair
@@ -51,6 +72,11 @@ The manifest is tab-separated with no header: `sample  fwd  [rev]`. Inputs must
 already be trimmed and filtered, for example the `filtered/` directory of a
 `dev/concordance/run_illumina.sh` or `run_pacbio.sh` run. Row order selects the
 training set when `--nbases` truncates.
+
+The `vsearch` arm needs vsearch (`VSEARCH`, default `vsearch` on `PATH`); the
+script checks before any work. Drop it from `ARMS` where vsearch is not
+installed. For ITS2, `VSEARCH_MERGE_EXTRA="--fastq_allowmergestagger"` may be
+needed when reads overrun each other.
 
 ```bash
 BIN=target/release/dada2-rs

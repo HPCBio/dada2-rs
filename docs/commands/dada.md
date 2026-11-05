@@ -226,7 +226,8 @@ so do not combine it with a timing measurement. Requires `--metrics-json`.
 See [Run metrics](metrics-json.md) for the schema and the two levels.
 
 **`--failed-uniques`** — write a TSV of uniques that failed to denoise (final
-p-value < `omega_c`, `map == null`). Tidy long format with a header —
+p-value < `omega_c`, `map == null`; with `--birth-rule unoise`, the unassigned
+uniques). Tidy long format with a header —
 `sequence<TAB>sample<TAB>reads` — one row per failed unique per sample it
 appears in. This answers "what failed to denoise, and how many reads did it
 cost?" without hand-joining `map` back to the derep uniques.
@@ -497,8 +498,14 @@ below is left unassigned, as UNOISE leaves it out of the table. Only
 `--min-abund` gates a birth: DADA2's p-value, `--omega-a`, `--min-fold`,
 `--min-hamming`, the singleton test and the greedy locks do not apply, and each
 new centre is aligned against every unique with at most half its reads.
-`--omega-c` still decides afterwards whether a member's reads are corrected, as
-in every mode. Set `--min-abund 8` to match vsearch `--cluster_unoise`.
+`--omega-c` does not apply either: every member's reads count toward its ASV,
+as in UNOISE3, and only unassigned uniques are left out of `map`. Set
+`--min-abund 8` to match vsearch `--cluster_unoise`.
+
+UNOISE3 itself also counts reads differently and removes chimeras with
+UCHIME3: its table maps every read, including uniques below `minsize`, to the
+nearest ASV at 97% identity. This rule reproduces only its choice of centres.
+`dev/unoise/run_arms.sh` runs the vsearch pipeline as a separate control.
 
 This arm reproduces vsearch 2.32 `--cluster_unoise --unoise_alpha 2`. On the
 pooled MiSeq SOP forward reads, the centres matched exactly at `--minsize 8`

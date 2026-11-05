@@ -662,6 +662,10 @@ pub fn dada_uniques_cached(
 
     // ---- Final per-raw p-value pass ----
     // Determines raw->correct, which controls the read-to-cluster map.
+    // The UNOISE rule counts every member's reads, as UNOISE3 does: OMEGA_C is
+    // DADA2's check and does not apply. Only its unassigned raws go uncounted.
+    let unoise =
+        params.partition == Partition::SinglePass && params.birth_rule == BirthRule::Unoise;
     let mut pvals = vec![0.0f64; nraw];
     for ci in 0..b.clusters.len() {
         let members: Vec<usize> = b.clusters[ci].raws.clone();
@@ -676,7 +680,7 @@ pub fn dada_uniques_cached(
                 let p = calc_pA(b.raws[raw_idx].reads, lambda * ci_reads as f64, true);
                 // The UNOISE rule's raws with no qualifying centre (#323).
                 let unassigned = b.unassigned.get(raw_idx).copied().unwrap_or(false);
-                let correct = p >= params.omega_c && !unassigned;
+                let correct = !unassigned && (unoise || p >= params.omega_c);
                 (p, correct)
             };
             b.raws[raw_idx].p = p;
@@ -2598,5 +2602,26 @@ mod tests {
             vec![Some(ca), Some(ca), Some(cv2), Some(ca), Some(cdel2), None]
         );
         assert_eq!(r.clusters[ca].abundance, 1200);
+    }
+
+    /// The UNOISE rule counts every absorbed member's reads, as UNOISE3 does:
+    /// OMEGA_C does not drop them. Under the same OMEGA_C, divisive drops one.
+    #[test]
+    fn unoise_rule_ignores_omega_c() {
+        let inputs = uncorrected_pool();
+        let mut p = single_pass_params();
+        p.birth_rule = BirthRule::Unoise;
+        p.min_abund = 8;
+        p.omega_c = 0.3;
+        let r = dada_uniques(&inputs, &p).unwrap();
+        assert_eq!(r.clusters.len(), 1);
+        assert!(r.pvals[1] < 0.3, "pvals {:?}", r.pvals);
+        assert_eq!(r.map, vec![Some(0); 4]);
+        assert_eq!(r.clusters[0].abundance, 2006);
+
+        let mut strict = default_params();
+        strict.omega_c = 0.3;
+        let div = dada_uniques(&inputs, &strict).unwrap();
+        assert_eq!(div.map[1], None, "divisive applies OMEGA_C");
     }
 }
