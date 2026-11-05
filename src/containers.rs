@@ -369,6 +369,9 @@ pub struct B {
     /// [`B::new`]; deliberately *not* reset by [`B::init`], which never reset
     /// the field either.
     pub e_minmax: Vec<f64>,
+    /// Raws the experimental UNOISE rule left without a qualifying centre
+    /// (#323); never corrected. Empty under every other partition.
+    pub unassigned: Vec<bool>,
 }
 
 impl B {
@@ -447,6 +450,7 @@ impl B {
             minimizer_probe: Default::default(),
             screen_shared: Vec::new(),
             e_minmax,
+            unassigned: Vec::new(),
         };
         b.init();
         b
