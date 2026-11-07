@@ -59,6 +59,9 @@
 #                     reference-eval
 #   REF_EXTRA         flags for reference-eval, e.g. "--max-diffs 0"
 #   FORCE             1 re-runs arms that already finished
+#   TIME_BIN          GNU or BSD time for wall time and peak memory; default
+#                     /usr/bin/time. Without one, bash's `time` keyword records
+#                     wall and CPU seconds only
 #   VSEARCH           vsearch binary for the vsearch arm; default `vsearch`
 #   VSEARCH_MAXEE     the vsearch arm's --fastq_maxee before denoising;
 #                     default 1, the UNOISE3 workflow's
@@ -93,6 +96,7 @@ read -r -a indel_extra <<< "${INDEL_EXTRA:-}"
 read -r -a merge_extra <<< "${MERGE_EXTRA:-}"
 read -r -a chimera_extra <<< "${CHIMERA_EXTRA:-}"
 read -r -a ref_extra <<< "${REF_EXTRA:-}"
+TIME_BIN="${TIME_BIN:-/usr/bin/time}"
 VSEARCH="${VSEARCH:-vsearch}"
 VSEARCH_MAXEE="${VSEARCH_MAXEE:-1}"
 VSEARCH_ALPHA="${VSEARCH_ALPHA:-2}"
@@ -133,13 +137,18 @@ out_json() {
   echo "$o/$d/$f.json"
 }
 
-# Wall time and peak memory: GNU time on Linux, BSD time on macOS; untimed
-# (with a note in the log) where /usr/bin/time is missing.
+# Wall time and peak memory: GNU time (TIME_BIN, else /usr/bin/time) on Linux,
+# BSD time on macOS. Where neither exists (some clusters have only the shell
+# keyword), bash's `time` records wall and CPU seconds but not memory. The
+# dada steps' wall time and peak RSS are in their --metrics-json either way.
 timed() {
   local log=$1; shift
-  if /usr/bin/time -v true 2> /dev/null; then /usr/bin/time -v -o "$log" "$@"
-  elif /usr/bin/time -l true 2> /dev/null; then /usr/bin/time -l "$@" 2> >(tee "$log" >&2)
-  else echo "no /usr/bin/time: untimed" > "$log"; "$@"; fi
+  if "$TIME_BIN" -v true 2> /dev/null; then "$TIME_BIN" -v -o "$log" "$@"
+  elif "$TIME_BIN" -l true 2> /dev/null; then "$TIME_BIN" -l "$@" 2> >(tee "$log" >&2)
+  else
+    local TIMEFORMAT='bash time: wall_seconds %3R user_seconds %3U sys_seconds %3S'
+    { time "$@" 2>&3; } 3>&2 2> "$log"
+  fi
 }
 
 # The flags that define an arm, and what its output JSON must record for it.
@@ -186,7 +195,7 @@ cp "$MAN" "$OUT/manifest.tsv"
   case " $ARMS " in *" vsearch "*) echo "vsearch: $("$VSEARCH" --version 2>&1 | sed -n 1p)" ;; esac
   for v in THREADS MODE ARMS MIN_ABUND UNOISE_MIN_ABUND EXTRA LEARN_EXTRA DADA_EXTRA \
            INDEL_EXTRA MERGE_EXTRA CHIMERA_EXTRA LEARN_DIR REFERENCE REF_EXTRA VSEARCH_MAXEE \
-           VSEARCH_ALPHA VSEARCH_MERGE_EXTRA; do
+           TIME_BIN VSEARCH_ALPHA VSEARCH_MERGE_EXTRA; do
     echo "$v: ${!v:-}"
   done
 } > "$OUT/config.txt"

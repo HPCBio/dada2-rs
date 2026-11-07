@@ -105,6 +105,12 @@ THREADS=24 bash dev/unoise/run_arms.sh $BIN out/its2 its2.tsv
 python3 dev/unoise/summarize_arms.py out/msa1003 --pair sp_indel:unoise --tsv out/msa1003.tsv
 ```
 
+Timing: `summarize_arms.py` reports each dada step's wall time (`wall_s`) and
+peak memory (`peak_mb`) from its `--metrics-json`, which needs no external
+timer. The vsearch arm's come from `time_fwd.txt` and cover `--cluster_unoise`
+only. Where `/usr/bin/time` is missing, set `TIME_BIN` to a GNU time; without
+one, bash's `time` keyword records wall and CPU seconds but no memory.
+
 A run stopped part-way resumes: finished arms (those with `<arm>/.done`) are
 skipped unless `FORCE=1`, and learning is skipped when `LEARN_DIR` already holds
 the error models and indel rates.
