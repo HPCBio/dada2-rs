@@ -106,7 +106,8 @@ re-fitted model; round 1 and the re-fit are unaffected.
 
 ## Experimental
 
-Identical in meaning to [`dada`'s experimental flags](dada.md#experimental).
+Identical in meaning to [`dada`'s experimental flags](dada.md#experimental). `--partition` and `--birth-rule` are
+not available here.
 
 ## See also
 
