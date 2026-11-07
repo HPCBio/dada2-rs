@@ -10,7 +10,10 @@ For each finished arm under <out-dir> it reports, from the chimera-free table:
 - Bray-Curtis dissimilarity of per-ASV read totals against the baseline, which
   catches arms that call the same set but move reads (--reassign can do only
   that);
-- the summed dada phase timings from --metrics-json;
+- the summed dada phase timings, and the dada step's wall time and peak memory,
+  from --metrics-json. The vsearch arm has no phases; its wall time and peak
+  memory are those of --cluster_unoise, from time_fwd.txt (bash's `time`, used
+  where GNU time is missing, records no memory);
 - with refeval.json present (REFERENCE set): TP, near, FP, references recovered,
   precision and recall.
 
@@ -61,6 +64,42 @@ def phase_seconds(path):
     return sum(r["phases"].get(k) or 0.0 for r in rows for k in PHASES)
 
 
+def run_cost(path):
+    """Wall seconds and peak RSS (MB) of one dada run, from its metrics JSON."""
+    if not os.path.exists(path):
+        return None, None
+    with open(path) as fh:
+        j = json.load(fh)
+    peaks = (j.get("pipeline") or {}).get("peak_rss_mb") or {}
+    return j.get("wall_seconds"), max(peaks.values(), default=None)
+
+
+def time_file(path):
+    """Wall seconds and peak RSS (MB) from a time_<dir>.txt, whichever timer
+    wrote it: GNU time -v, BSD time -l or bash's `time` (no memory)."""
+    if not os.path.exists(path):
+        return None, None
+    wall = peak = None
+    with open(path) as fh:
+        for line in fh:
+            t = line.strip()
+            if t.startswith("Elapsed (wall clock)"):
+                secs = 0.0
+                for part in t.rsplit(" ", 1)[1].split(":"):
+                    secs = secs * 60 + float(part)
+                wall = secs
+            elif t.startswith("Maximum resident set size (kbytes)"):
+                peak = int(t.rsplit(" ", 1)[1]) / 1024
+            elif t.endswith("maximum resident set size"):
+                peak = int(t.split()[0]) / 2**20
+            elif t.split()[1:2] == ["real"]:
+                wall = float(t.split()[0])
+            elif t.startswith("bash time:"):
+                f = t.split()
+                wall = float(f[f.index("wall_seconds") + 1])
+    return wall, peak
+
+
 def identity(a, b):
     sa, sb = set(a), set(b)
     shared = len(sa & sb)
@@ -102,12 +141,22 @@ def main():
         o = os.path.join(args.out_dir, a)
         secs = [phase_seconds(os.path.join(o, f"{d}.metrics.json")) for d in ("fwd", "rev")]
         secs = [s for s in secs if s is not None]
+        # The dada step's wall time and peak memory (the vsearch arm: its
+        # --cluster_unoise step, from the time file).
+        costs = [run_cost(os.path.join(o, f"{d}.metrics.json")) for d in ("fwd", "rev")]
+        costs = [c for c in costs if c[0] is not None]
+        if not costs:
+            costs = [c for c in (time_file(os.path.join(o, "time_fwd.txt")),) if c[0] is not None]
+        walls = [w for w, _ in costs]
+        peaks = [p for _, p in costs if p is not None]
         r = {
             "arm": a,
             "asvs_prechim": pre[a],
             "asvs": len(tables[a]),
             "reads": sum(tables[a].values()),
             "dada_s": f"{sum(secs):.2f}" if secs else "",
+            "wall_s": f"{sum(walls):.2f}" if walls else "",
+            "peak_mb": f"{max(peaks):.0f}" if peaks else "",
         }
         if base is not None:
             r.update(identity(tables[a], base))
