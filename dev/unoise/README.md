@@ -75,7 +75,10 @@ training set when `--nbases` truncates.
 
 The `vsearch` arm needs vsearch (`VSEARCH`, default `vsearch` on `PATH`); the
 script checks before any work. Drop it from `ARMS` where vsearch is not
-installed. For ITS2, `VSEARCH_MERGE_EXTRA="--fastq_allowmergestagger"` may be
+installed. Every DADA2-side arm removes chimeras with `remove-bimera-denovo
+--method consensus`; `CHIMERA_EXTRA` passes it flags, such as the
+`--min-fold-parent-over-abundance 3.5` recommended for PacBio. The vsearch arm
+uses UCHIME3 regardless. For ITS2, `VSEARCH_MERGE_EXTRA="--fastq_allowmergestagger"` may be
 needed when reads overrun each other.
 
 ```bash
@@ -92,6 +95,7 @@ LEARN_EXTRA="--errfun binned-qual --binned-quals 2,11,25,37" \
 
 # PacBio HiFi, MSA-1003 (k=7, the PacBio recommendation)
 LEARN_EXTRA="--errfun pacbio" EXTRA="--band 32 --kmer-size 7" \
+  CHIMERA_EXTRA="--min-fold-parent-over-abundance 3.5" \
   REFERENCE=msa1003_truth.fa THREADS=24 \
   bash dev/unoise/run_arms.sh $BIN out/msa1003 msa1003.tsv
 

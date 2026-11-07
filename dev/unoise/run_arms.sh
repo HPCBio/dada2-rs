@@ -48,6 +48,9 @@
 #   DADA_EXTRA        flags for every arm's dada step
 #   INDEL_EXTRA       flags for the _indel arms only, e.g. "--indel-end-zone 0"
 #   MERGE_EXTRA       flags for merge-pairs, e.g. ITS2's "--min-overlap 20"
+#   CHIMERA_EXTRA     flags for remove-bimera-denovo (consensus) in every
+#                     DADA2-side arm, e.g. "--min-fold-parent-over-abundance 3.5"
+#                     for PacBio; the vsearch arm uses UCHIME3 regardless
 #   LEARN_DIR         where the error models and indel rates live; default
 #                     <out-dir>/learn. Learning is skipped when every file is
 #                     already there, so a dev/indels/run_indel_ab.sh learn/
@@ -88,6 +91,7 @@ read -r -a learn_extra <<< "${LEARN_EXTRA:-}"
 read -r -a dada_extra <<< "${DADA_EXTRA:-}"
 read -r -a indel_extra <<< "${INDEL_EXTRA:-}"
 read -r -a merge_extra <<< "${MERGE_EXTRA:-}"
+read -r -a chimera_extra <<< "${CHIMERA_EXTRA:-}"
 read -r -a ref_extra <<< "${REF_EXTRA:-}"
 VSEARCH="${VSEARCH:-vsearch}"
 VSEARCH_MAXEE="${VSEARCH_MAXEE:-1}"
@@ -181,7 +185,7 @@ cp "$MAN" "$OUT/manifest.tsv"
   echo "host: $(hostname)"
   case " $ARMS " in *" vsearch "*) echo "vsearch: $("$VSEARCH" --version 2>&1 | sed -n 1p)" ;; esac
   for v in THREADS MODE ARMS MIN_ABUND UNOISE_MIN_ABUND EXTRA LEARN_EXTRA DADA_EXTRA \
-           INDEL_EXTRA MERGE_EXTRA LEARN_DIR REFERENCE REF_EXTRA VSEARCH_MAXEE \
+           INDEL_EXTRA MERGE_EXTRA CHIMERA_EXTRA LEARN_DIR REFERENCE REF_EXTRA VSEARCH_MAXEE \
            VSEARCH_ALPHA VSEARCH_MERGE_EXTRA; do
     echo "$v: ${!v:-}"
   done
@@ -244,7 +248,7 @@ PY
   fi
   echo "==> $arm remove-bimera-denovo"
   "$BIN" remove-bimera-denovo "$o/seqtab.json" --method consensus --threads "$THREADS" \
-    -o "$o/nochim.json" 2> "$o/chimera.log"
+    ${chimera_extra[@]+"${chimera_extra[@]}"} -o "$o/nochim.json" 2> "$o/chimera.log"
   "$BIN" seq-table-to-fasta "$o/nochim.json" -o "$o/nochim.fa"
   "$BIN" seq-table-to-fasta "$o/seqtab.json" -o "$o/seqtab.fa"
 }
