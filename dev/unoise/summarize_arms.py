@@ -17,11 +17,17 @@ For each finished arm under <out-dir> it reports, from the chimera-free table:
 - with refeval.json present (REFERENCE set): TP, near, FP, references recovered,
   precision and recall.
 
+--sample NAME scores one sample instead: the refeval columns come from
+<arm>/sample_NAME/, written by dev/unoise/eval_sample.sh (e.g. MiSeq SOP's
+Mock), with the sample's ASVs and reads, the reads in FP ASVs (in a pooled run
+mostly 1-2 read ASVs bled in from other samples, so fp alone overstates the
+error) and tp_chim_lost, the TP ASVs that chimera removal dropped.
+
 --pair A:B adds a set-identity row for any two arms, e.g. sp_indel:unoise, the
 comparison of the learned error model with the fixed rule when both count indels.
 
 Usage: dev/unoise/summarize_arms.py <out-dir> [--baseline divisive]
-           [--pair A:B ...] [--tsv out.tsv]
+           [--sample NAME] [--pair A:B ...] [--tsv out.tsv]
 """
 import argparse
 import csv
@@ -100,6 +106,17 @@ def time_file(path):
     return wall, peak
 
 
+def fp_reads(path):
+    """Reads in FP ASVs, from the ;size= in a per-ASV TSV's query_id."""
+    n = 0
+    with open(path) as fh:
+        for r in csv.DictReader(fh, delimiter="\t"):
+            if r["class"] == "FP":
+                n += next((int(f[5:]) for f in r["query_id"].split(";")
+                           if f.startswith("size=")), 0)
+    return n
+
+
 def identity(a, b):
     sa, sb = set(a), set(b)
     shared = len(sa & sb)
@@ -120,6 +137,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("out_dir")
     ap.add_argument("--baseline", default="divisive")
+    ap.add_argument("--sample", help="score this sample (eval_sample.sh output)")
     ap.add_argument("--pair", action="append", default=[], metavar="A:B")
     ap.add_argument("--tsv", help="also write the arm table here")
     args = ap.parse_args()
@@ -160,13 +178,27 @@ def main():
         }
         if base is not None:
             r.update(identity(tables[a], base))
-        ref = os.path.join(o, "refeval.json")
+        rd = os.path.join(o, f"sample_{args.sample}") if args.sample else o
+        ref = os.path.join(rd, "refeval.json")
+        if args.sample and not os.path.exists(ref):
+            sys.exit(f"{ref} missing: run dev/unoise/eval_sample.sh first")
         if os.path.exists(ref):
             with open(ref) as fh:
                 e = json.load(fh)
+            if args.sample:
+                with open(os.path.join(rd, "nochim.fa")) as fh:
+                    sizes = [int(l.split("size=")[1]) for l in fh if l.startswith(">")]
+                r["s_asvs"], r["s_reads"] = len(sizes), sum(sizes)
             for k in ("tp", "tp_exact", "near", "fp", "recovered_refs", "n_ref",
                       "precision", "recall"):
                 r[k] = e.get(k, "")
+            if args.sample:
+                r["fp_reads"] = fp_reads(os.path.join(rd, "refeval_asv.tsv"))
+                pj = os.path.join(rd, "refeval_prechim.json")
+                if os.path.exists(pj):
+                    with open(pj) as fh:
+                        cb = json.load(fh).get("chimera_breakdown") or {}
+                    r["tp_chim_lost"] = cb.get("tp_chimeric", "")
         rows.append(r)
 
     cols = []

@@ -9,6 +9,8 @@ CLI. The flags are documented in `docs/commands/dada.md`.
 | `run_arms.sh` | Run the arm grid on one dataset: learn once, then denoise, merge, remove chimeras and optionally score each arm against a truth set |
 | `vsearch_to_seqtab.py` | Convert the vsearch arm's ZOTUs and OTU table into the files the other arms produce |
 | `summarize_arms.py` | One row per arm: ASV counts, set identity and Bray-Curtis against a baseline arm, dada time, and `reference-eval` scores |
+| `eval_sample.sh` | Score one sample of a finished grid (e.g. MiSeq SOP's `Mock`) against a truth set |
+| `trim_truth.py` | Trim a mock reference FASTA to the inter-primer region of the reads (in-silico PCR) |
 | `phase_share.py` | Phase 0: the share of denoising time that the single pass could remove, from `--metrics-json` |
 
 Each script's header documents its inputs, outputs and environment.
@@ -104,6 +106,25 @@ THREADS=24 bash dev/unoise/run_arms.sh $BIN out/its2 its2.tsv
 
 python3 dev/unoise/summarize_arms.py out/msa1003 --pair sp_indel:unoise --tsv out/msa1003.tsv
 ```
+
+## Scoring a mock sample
+
+When only one sample of a run has a truth set, such as MiSeq SOP's `Mock`
+(HMP mock, `HMP_MOCK.v35.fasta` in the SOP download), score that sample after
+the grid finishes. The reference spans V3–V5, so trim it to the reads' V4
+first:
+
+```bash
+python3 dev/unoise/trim_truth.py HMP_MOCK.v35.fasta > hmp_mock_v4.fasta
+bash dev/unoise/eval_sample.sh $BIN out/miseq Mock hmp_mock_v4.fasta
+python3 dev/unoise/summarize_arms.py out/miseq --sample Mock
+```
+
+This gives 32 references and 25 distinct V4 regions; the S. aureus and
+S. epidermidis V4s are identical. In a pooled run the mock's FP ASVs are
+mostly 1–2 reads bled in from other samples, so read `fp_reads` alongside
+`fp`. On the 20-sample SOP subset every arm recovers the same 20 exact V4s
+(the DADA2 tutorial's count) and misses minor gene copies and P. acnes.
 
 Timing: `summarize_arms.py` reports each dada step's wall time (`wall_s`) and
 peak memory (`peak_mb`) from its `--metrics-json`, which needs no external
