@@ -34,6 +34,15 @@ to the ZOTUs at 97% identity for the table. It uses no error model. Its
 `--minsize` follows the `unoise` arm's `--min-abund`. HiFi quality scores go
 up to 93, so every vsearch step reads FASTQ with `--fastq_qmax 93`.
 
+The two arms define UNOISE's distance d differently. The `unoise` arm follows
+Edgar (2016): the Levenshtein distance, substitutions plus gap columns. vsearch
+counts mismatches only, ignoring gaps (`searchcore.cpp`, and its manual), so a
+variant that differs from a centroid by indels alone is merged at any abundance
+ratio. On MSA-1003 HiFi this merges a *B. pacificus* copy variant (a T4 run
+read as T5) at 38% of its parent, in all 96 samples, which `unoise` and the
+DADA2 indel arms keep. Where close pairs differ by substitutions, as on the
+MiSeq SOP forward reads, the two agree.
+
 On the pooled MiSeq SOP forward reads, the two arms differ in three separable
 steps:
 

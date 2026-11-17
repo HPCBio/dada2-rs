@@ -507,10 +507,15 @@ UCHIME3: its table maps every read, including uniques below `minsize`, to the
 nearest ASV at 97% identity. This rule reproduces only its choice of centres.
 `dev/unoise/run_arms.sh` runs the vsearch pipeline as a separate control.
 
-This arm reproduces vsearch 2.32 `--cluster_unoise --unoise_alpha 2`. On the
-pooled MiSeq SOP forward reads, the centres matched exactly at `--minsize 8`
-(449 of 449) and at `--minsize 4` (642 of 642), and a negative control at
-`--unoise_alpha 3` gave 510 centres, 61 of them different (#323).
+*d* follows Edgar (2016). vsearch's `--cluster_unoise` instead counts
+mismatches only, ignoring gaps, so it merges a variant that differs from a
+centre by indels alone at any skew. The two agree where close variants differ
+by substitutions. On the pooled MiSeq SOP forward reads the centres matched
+vsearch 2.32 (`--unoise_alpha 2`) exactly at `--minsize 8` (449 of 449) and
+at `--minsize 4` (642 of 642), and a negative control at `--unoise_alpha 3`
+gave 510 centres, 61 of them different. On MSA-1003 HiFi this rule keeps a
+*B. pacificus* copy variant, a T4 run read as T5 at 38% of its parent, that
+vsearch merges (#323).
 
 *Counting indels differs between the rules.* The indel-aware λ (`--indel-rates`)
 counts an indel *event* toward `hamming` and ignores indels within

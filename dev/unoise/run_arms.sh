@@ -306,7 +306,9 @@ run_vsearch_arm() {
   "$VSEARCH" --derep_fulllength "$vd/filt.fa" --sizeout --relabel Uniq \
     --output "$vd/uniques.fa" --fasta_width 0 2> "$vd/derep.log"
   echo "==> vsearch --cluster_unoise (--minsize $want_min_abund, alpha $VSEARCH_ALPHA)"
-  timed "$o/time_fwd.txt" "$VSEARCH" --cluster_unoise "$vd/uniques.fa" \
+  # --sizein: centroid sizes are reads, not member-unique counts, so
+  # UCHIME3's parent-abundance test sees reads.
+  timed "$o/time_fwd.txt" "$VSEARCH" --cluster_unoise "$vd/uniques.fa" --sizein \
     --minsize "$want_min_abund" --unoise_alpha "$VSEARCH_ALPHA" --sizeout \
     --centroids "$vd/centroids.fa" --fasta_width 0 --threads "$THREADS" 2> "$vd/unoise.log"
   "$VSEARCH" --uchime3_denovo "$vd/centroids.fa" --nonchimeras "$vd/zotus.fa" \
