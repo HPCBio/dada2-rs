@@ -72,7 +72,8 @@
 #
 # Writes <out-dir>/learn/, then per arm <out-dir>/<arm>/: per-sample JSON per
 # direction, <dir>.metrics.json (phase timings), time_<dir>.txt (wall time and
-# peak memory), seqtab.json, nochim.json, nochim.fa and, with REFERENCE,
+# peak memory), seqtab.json, nochim.json, their FASTA (seqtab.fa, nochim.fa:
+# headers `<id>;size=<reads over all samples>`) and, with REFERENCE,
 # refeval.json plus per-ASV and per-reference TSVs. Then:
 #   python3 dev/unoise/summarize_arms.py <out-dir>
 set -eEuo pipefail
@@ -215,6 +216,22 @@ for d in "${dirs[@]}"; do
 done
 
 # A dada2-rs arm: dada per direction, merge, table, chimera removal.
+# A table JSON as FASTA whose headers carry the read total over all samples,
+# `<id>;size=<n>`: reference-eval keeps the header as query_id, so its per-ASV
+# TSV can be weighted by reads.
+table_fasta() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+table, out = sys.argv[1:]
+with open(table) as fh:
+    j = json.load(fh)
+ids = j.get("sequence_ids") or [f"ASV{i}" for i in range(1, len(j["sequences"]) + 1)]
+with open(out, "w") as fh:
+    for i, (sid, s) in enumerate(zip(ids, j["sequences"])):
+        fh.write(f">{sid};size={sum(row[i] for row in j['counts'])}\n{s.upper()}\n")
+PY
+}
+
 run_dada_arm() {
   local arm=$1 o=$2
   for d in "${dirs[@]}"; do
@@ -258,8 +275,6 @@ PY
   echo "==> $arm remove-bimera-denovo"
   "$BIN" remove-bimera-denovo "$o/seqtab.json" --method consensus --threads "$THREADS" \
     ${chimera_extra[@]+"${chimera_extra[@]}"} -o "$o/nochim.json" 2> "$o/chimera.log"
-  "$BIN" seq-table-to-fasta "$o/nochim.json" -o "$o/nochim.fa"
-  "$BIN" seq-table-to-fasta "$o/seqtab.json" -o "$o/seqtab.fa"
 }
 
 # The vsearch arm: the UNOISE3 workflow. Reads are quality-filtered for
@@ -312,6 +327,8 @@ for arm in $ARMS; do
   fi
   rm -rf "$o"; mkdir -p "$o"
   if [ "$arm" = vsearch ]; then run_vsearch_arm "$o"; else run_dada_arm "$arm" "$o"; fi
+  table_fasta "$o/nochim.json" "$o/nochim.fa"
+  table_fasta "$o/seqtab.json" "$o/seqtab.fa"
   if [ -n "$REFERENCE" ]; then
     echo "==> $arm reference-eval"
     "$BIN" reference-eval --asvs "$o/nochim.fa" --reference "$REFERENCE" \

@@ -123,7 +123,8 @@ python3 dev/unoise/summarize_arms.py out/miseq --sample Mock
 This gives 32 references and 25 distinct V4 regions; the S. aureus and
 S. epidermidis V4s are identical. In a pooled run the mock's FP ASVs are
 mostly 1–2 reads bled in from other samples, so read `fp_reads` alongside
-`fp`. On the 20-sample SOP subset every arm recovers the same 20 exact V4s
+`fp`. Whole-table scores report `near_reads` and `fp_reads` too: the FASTA
+that `run_arms.sh` scores carries each ASV's read total as `;size=`. On the 20-sample SOP subset every arm recovers the same 20 exact V4s
 (the DADA2 tutorial's count) and misses minor gene copies and P. acnes.
 
 Timing: `summarize_arms.py` reports each dada step's wall time (`wall_s`) and

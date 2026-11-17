@@ -10,13 +10,12 @@ Inputs, from the pipeline in run_arms.sh:
 Writes to --out-dir:
   nochim.json  sample x ZOTU counts from the OTU table, in the shape
                summarize_arms.py reads (`samples`, `sequences`, `counts`)
-  nochim.fa    the ZOTUs
   seqtab.json  the centroids before chimera removal, with their pooled sizes as
                one column: vsearch has no per-sample table before chimeras
-  seqtab.fa    the centroids
 
 The JSON is tagged `vsearch-unoise3`, not as a dada2-rs command, so dada2-rs
-subcommands that check the tag refuse it; run_arms.sh passes them the FASTA.
+subcommands that check the tag refuse it; run_arms.sh writes the FASTA it
+passes them from these tables, as for the other arms.
 """
 import argparse
 import json
@@ -49,12 +48,6 @@ def size(label):
         if f.startswith("size="):
             return int(f[5:])
     return 0
-
-
-def write_fasta(path, recs):
-    with open(path, "w") as fh:
-        for label, s in recs:
-            fh.write(f">{label}\n{s}\n")
 
 
 def main():
@@ -103,8 +96,6 @@ def main():
         json.dump(nochim, fh)
     with open(os.path.join(a.out_dir, "seqtab.json"), "w") as fh:
         json.dump(seqtab, fh)
-    write_fasta(os.path.join(a.out_dir, "nochim.fa"), [(bare(l), s) for l, s in zotus])
-    write_fasta(os.path.join(a.out_dir, "seqtab.fa"), [(bare(l), s) for l, s in centroids])
     print(f"vsearch arm: {len(centroids)} centroids, {len(zotus)} ZOTUs, "
           f"{sum(map(sum, counts))} reads mapped")
 
