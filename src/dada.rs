@@ -1349,9 +1349,17 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         // UNOISE rule (#323): its own compare from each centre, because the
         // λ-based store filter and greedy locks could drop a centre the rule
         // qualifies. Only `--min-abund` gates a birth; DADA2's other gates and
-        // the p-value do not apply.
+        // the p-value do not apply. Reads are counted afterwards, as UNOISE3's
+        // `-otutab` counts them: each non-centre raw to its highest-identity
+        // centre at 97% or more, whichever centre absorbed it.
         let n = bb.raws.len();
-        let mut ub = vec![crate::single_pass::UnoiseBest { qualified: None }; n];
+        let mut ub = vec![
+            crate::single_pass::UnoiseBest {
+                qualified: None,
+                nearest: None,
+            };
+            n
+        ];
         let mut assign = vec![0usize; n];
         let mut comps: Vec<Option<crate::containers::Comparison>> = vec![None; n];
         let mut unassigned = vec![false; n];
@@ -1371,13 +1379,10 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             if bb.clusters[0].center == Some(j) {
                 continue;
             }
-            if let Some((_, k, comp)) = ub[j].qualified.clone() {
-                assign[j] = k;
-                comps[j] = Some(comp);
-                continue;
-            }
-            if bb.raws[j].reads < params.min_abund || bb.clusters.len() >= max_clust {
-                unassigned[j] = true;
+            if ub[j].qualified.is_some()
+                || bb.raws[j].reads < params.min_abund
+                || bb.clusters.len() >= max_clust
+            {
                 continue;
             }
             let newi = crate::single_pass::add_unoise_center(&mut bb, j);
@@ -1396,6 +1401,25 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             bud_success += 1;
         }
         t_bud += t.elapsed().saturating_sub(t_compare - cmp_before);
+        let is_center: Vec<bool> = {
+            let mut v = vec![false; n];
+            for bi in &bb.clusters {
+                v[bi.center.expect("unoise: cluster has no centre")] = true;
+            }
+            v
+        };
+        for j in 0..n {
+            if is_center[j] {
+                continue;
+            }
+            match ub[j].nearest.take() {
+                Some((_, k, comp)) => {
+                    assign[j] = k;
+                    comps[j] = Some(comp);
+                }
+                None => unassigned[j] = true,
+            }
+        }
         crate::single_pass::finalize(&mut bb, &assign, &comps);
         bb.unassigned = unassigned;
         if params.verbose {
@@ -2602,6 +2626,34 @@ mod tests {
             vec![Some(ca), Some(ca), Some(cv2), Some(ca), Some(cdel2), None]
         );
         assert_eq!(r.clusters[ca].abundance, 1200);
+    }
+
+    /// The UNOISE rule counts reads as UNOISE3's `-otutab` does: each raw to
+    /// its highest-identity centre at 97% or more, whatever absorbed it. Y
+    /// qualifies only for A (d = 3) but is closer to B (d = 2). X qualifies
+    /// for neither and is below `--min-abund`, but is 1 base from B.
+    #[test]
+    fn unoise_rule_counts_reads_to_the_nearest_centre() {
+        let a = seq(17, 150);
+        let b = mutate(&a, &[10, 70, 130]); // skew 0.02 > 1/128: born
+        let y = mutate(&a, &[10, 70, 100]); // A: 0.001 <= 1/128; B: 0.05 > 1/32
+        let x = mutate(&a, &[10, 70, 130, 100]); // A: 0.005 > 1/512; B: 0.25 > 1/8
+        let far = seq(19, 150);
+        let inputs = vec![
+            input(&a, 1000),
+            input(&b, 20),
+            input(&y, 1),
+            input(&x, 5),
+            input(&far, 3),
+        ];
+        let mut p = single_pass_params();
+        p.birth_rule = BirthRule::Unoise;
+        p.min_abund = 8;
+        let r = dada_uniques(&inputs, &p).unwrap();
+        assert_eq!(r.clusters.len(), 2);
+        let (ca, cb) = (cluster_of(&r, &a), cluster_of(&r, &b));
+        assert_eq!(r.map, vec![Some(ca), Some(cb), Some(cb), Some(cb), None]);
+        assert_eq!(r.clusters[cb].abundance, 26);
     }
 
     /// The UNOISE rule counts every absorbed member's reads, as UNOISE3 does:

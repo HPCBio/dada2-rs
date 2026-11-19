@@ -226,6 +226,13 @@ pub fn unoise_beta(d: u32) -> f64 {
 /// and query bases between two aligned reference bases. Leading and trailing
 /// gaps on either sequence are not counted, as under vsearch's `--iddef 2`.
 pub fn internal_gap_columns(sub: &Sub) -> u32 {
+    internal_columns(sub).1
+}
+
+/// The alignment's columns between its first and last aligned reference
+/// bases, and how many of those are gaps. End gaps on either sequence are
+/// outside this span, as under vsearch's `--iddef 2`.
+pub fn internal_columns(sub: &Sub) -> (u32, u32) {
     let mapped: Vec<(usize, u16)> = sub
         .map
         .iter()
@@ -234,7 +241,7 @@ pub fn internal_gap_columns(sub: &Sub) -> u32 {
         .map(|(i, &q)| (i, q))
         .collect();
     let (Some(&(first, _)), Some(&(last, _))) = (mapped.first(), mapped.last()) else {
-        return 0;
+        return (0, 0);
     };
     // Deletions: unmapped reference bases between the first and last mapped.
     let deletions = (first..=last).filter(|&i| sub.map[i] == GAP_GLYPH).count() as u32;
@@ -243,7 +250,10 @@ pub fn internal_gap_columns(sub: &Sub) -> u32 {
         .windows(2)
         .map(|w| (w[1].1 - w[0].1 - 1) as u32)
         .sum();
-    deletions + insertions
+    (
+        (last - first + 1) as u32 + insertions,
+        deletions + insertions,
+    )
 }
 
 /// UNOISE's distance d: substitutions plus internal gap columns.
@@ -251,17 +261,43 @@ pub fn unoise_d(sub: &Sub) -> u32 {
     sub.nsubs() as u32 + internal_gap_columns(sub)
 }
 
+/// Identity at which UNOISE3 counts a read to a ZOTU: USEARCH `-otutab`'s
+/// default, used with ZOTUs as with 97% OTUs.
+pub const UNOISE_COUNT_ID: f64 = 0.97;
+
 /// A raw's standing against the centres compared with it so far.
 #[derive(Clone)]
 pub struct UnoiseBest {
-    /// Smallest d among centres the raw qualifies for (skew ≤ β(d)).
+    /// Smallest d among centres the raw qualifies for (skew ≤ β(d)). Decides
+    /// births only.
     pub qualified: Option<(u32, usize, Comparison)>,
+    /// The centre with the highest identity of at least [`UNOISE_COUNT_ID`],
+    /// at any skew: (identity, cluster, comparison). Decides which ASV the
+    /// raw's reads count toward, as UNOISE3's `-otutab` does.
+    pub nearest: Option<(f64, usize, Comparison)>,
 }
 
-/// Align new centre `k` against every raw with at most half its reads, the
-/// only raws that can satisfy skew ≤ β(d) ≤ 1/2, and record for each the
-/// qualifying centre with the smallest d (ties keep the earlier, more
-/// abundant centre). Also sets the centre's `self_`. Counts pairs into
+/// Identity as vsearch `--iddef 2` defines it: matches over the alignment's
+/// columns between its first and last aligned reference bases.
+pub fn unoise_identity(sub: &Sub) -> f64 {
+    let (cols, gaps) = internal_columns(sub);
+    if cols == 0 {
+        return 0.0;
+    }
+    let matches = cols - gaps - sub.nsubs() as u32;
+    matches as f64 / cols as f64
+}
+
+/// Align new centre `k` against every raw and record two things for each.
+///
+/// - Births: the qualifying centre with the smallest d (skew ≤ β(d)). Only a
+///   raw with at most half the centre's reads can qualify, since β(d) ≤ 1/2.
+/// - Counting: the centre with the highest identity of at least
+///   [`UNOISE_COUNT_ID`], at any skew, as UNOISE3's `-otutab` maps every read
+///   to its closest ZOTU.
+///
+/// Ties keep the earlier, more abundant centre in both, as `-otutab` breaks
+/// ties by ZOTU file order. Also sets the centre's `self_`. Counts pairs into
 /// `b.nalign` and screened-out pairs into `b.nshroud`, as `b_compare` does.
 /// Returns the number of pairs considered.
 pub fn unoise_compare(
@@ -278,25 +314,27 @@ pub fn unoise_compare(
     let center_reads = b.raws[center].reads;
     let use_quals = b.use_quals;
     let raws = &b.raws;
-    type Aligned = Option<(u32, f64, u32)>;
-    let results: Vec<Option<(usize, Aligned)>> = (0..raws.len())
+    type Aligned = Option<(u32, f64, f64, u32)>;
+    let results: Vec<(usize, Aligned)> = (0..raws.len())
         .into_par_iter()
         .map_init(AlignBuffers::new, |buf, j| {
             let raw = &raws[j];
-            if j != center && (raw.reads as u64) * 2 > center_reads as u64 {
-                return None;
-            }
             let aligned = sub_new_with_buf(&raws[center], raw, params, buf).map(|sub| {
                 let lambda = compute_lambda(raw, Some(&sub), err_mat, ncol, use_quals);
-                (unoise_d(&sub), lambda, sub.nsubs() as u32)
+                (
+                    unoise_d(&sub),
+                    unoise_identity(&sub),
+                    lambda,
+                    sub.nsubs() as u32,
+                )
             });
-            Some((j, aligned))
+            (j, aligned)
         })
         .collect();
     let mut considered = 0u64;
-    for (j, aligned) in results.into_iter().flatten() {
+    for (j, aligned) in results {
         considered += 1;
-        let Some((d, lambda, nsubs)) = aligned else {
+        let Some((d, id, lambda, nsubs)) = aligned else {
             b.nshroud += 1;
             continue;
         };
@@ -304,22 +342,25 @@ pub fn unoise_compare(
             b.clusters[k].self_ = lambda;
             continue;
         }
+        let comp = Comparison {
+            i: k as u32,
+            index: j as u32,
+            lambda,
+            hamming: nsubs,
+        };
+        if id >= UNOISE_COUNT_ID {
+            let slot = &mut best[j].nearest;
+            if slot.as_ref().is_none_or(|&(cur, _, _)| id > cur) {
+                *slot = Some((id, k, comp.clone()));
+            }
+        }
         let skew = b.raws[j].reads as f64 / center_reads as f64;
         if skew > unoise_beta(d) {
             continue;
         }
         let slot = &mut best[j].qualified;
         if slot.as_ref().is_none_or(|&(cur, _, _)| d < cur) {
-            *slot = Some((
-                d,
-                k,
-                Comparison {
-                    i: k as u32,
-                    index: j as u32,
-                    lambda,
-                    hamming: nsubs,
-                },
-            ));
+            *slot = Some((d, k, comp));
         }
     }
     b.nalign += considered;
@@ -365,6 +406,16 @@ mod tests {
         assert_eq!(d("ACGT--ACGTAC", "ACGTGGACGTAC"), (0, 2));
         // Substitution plus internal gap.
         assert_eq!(d("ACGTACGTAC", "ACG-ACGTTC"), (1, 1));
+    }
+
+    #[test]
+    fn identity_is_over_internal_columns() {
+        let id = |a: &str, b: &str| unoise_identity(&al2subs(&enc(a), &enc(b)));
+        assert_eq!(id("ACGTACGTAC", "ACGAACGTAC"), 0.9);
+        // End gaps are outside the span: 6 columns, all matches.
+        assert_eq!(id("ACGTACGTAC", "--GTACGT--"), 1.0);
+        // A 2-base insertion adds two columns: 10 of 12 match.
+        assert_eq!(id("ACGT--ACGTAC", "ACGTGGACGTAC"), 10.0 / 12.0);
     }
 
     #[test]

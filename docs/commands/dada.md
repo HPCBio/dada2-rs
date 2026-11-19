@@ -493,18 +493,25 @@ from the alignment: substitutions plus internal gap columns, with end gaps not
 counted. It therefore counts indels whether or not `--indel-rates` is given,
 and a 3-base deletion counts 3. When several centres qualify the unique joins
 the one with the smallest *d*, ties going to the more abundant. A unique no
-centre absorbs becomes a centre if it has at least `--min-abund` reads; one
-below is left unassigned, as UNOISE leaves it out of the table. Only
+centre absorbs becomes a centre if it has at least `--min-abund` reads. Only
 `--min-abund` gates a birth: DADA2's p-value, `--omega-a`, `--min-fold`,
-`--min-hamming`, the singleton test and the greedy locks do not apply, and each
-new centre is aligned against every unique with at most half its reads.
-`--omega-c` does not apply either: every member's reads count toward its ASV,
-as in UNOISE3, and only unassigned uniques are left out of `map`. Set
+`--min-hamming`, the singleton test and the greedy locks do not apply. Set
 `--min-abund 8` to match vsearch `--cluster_unoise`.
 
-UNOISE3 itself also counts reads differently and removes chimeras with
-UCHIME3: its table maps every read, including uniques below `minsize`, to the
-nearest ASV at 97% identity. This rule reproduces only its choice of centres.
+Reads are then counted as UNOISE3's `-otutab` counts them, not by which centre
+absorbed a unique. Each unique that is not a centre counts toward the centre it
+matches with the highest identity, if that is at least 97%, ties going to the
+more abundant centre. Identity is matches over the alignment columns between
+the first and last aligned bases, as vsearch `--iddef 2`. This includes
+uniques below `--min-abund` that no centre absorbed. A unique with no centre
+at 97% is left unassigned and out of `map`. Each new centre is aligned against
+every unique, so this needs no extra pass. `--omega-c` does not apply: every
+member's reads count toward its ASV. On the pooled MiSeq SOP forward reads,
+the counts agree with exhaustive vsearch `--usearch_global --id 0.97
+--maxaccepts 0 --maxrejects 0` on the same reads to within 23 of 139,476 reads.
+
+UNOISE3 maps reads from before quality filtering, which `dada` never sees, so
+its table can hold more reads; it also removes chimeras with UCHIME3.
 `dev/unoise/run_arms.sh` runs the vsearch pipeline as a separate control.
 
 *d* follows Edgar (2016). vsearch's `--cluster_unoise` instead counts

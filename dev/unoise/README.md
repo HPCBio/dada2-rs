@@ -25,9 +25,10 @@ Each script's header documents its inputs, outputs and environment.
 | `unoise` | `--partition single-pass --birth-rule unoise` | none: d counts gaps by definition |
 | `vsearch` | UNOISE3 as vsearch runs it (external control) | none |
 
-The `unoise` arm uses UNOISE's rule to pick centres and counts every absorbed
-member's reads (`--omega-c` does not apply), but keeps DADA2's merging, chimera
-removal and table. The `vsearch` arm is the UNOISE3 workflow end to end: merge
+The `unoise` arm uses UNOISE's rule to pick centres and counts reads as
+UNOISE3's `-otutab` does: each unique toward its highest-identity centre at 97%
+or more (`--omega-c` does not apply). It keeps DADA2's merging, chimera removal
+and table. The `vsearch` arm is the UNOISE3 workflow end to end: merge
 pairs, filter at `--fastq_maxee 1` (`VSEARCH_MAXEE`), dereplicate,
 `--cluster_unoise`, `--uchime3_denovo`, then map every read, filtered or not,
 to the ZOTUs at 97% identity for the table. It uses no error model. Its
@@ -52,6 +53,9 @@ steps:
 | Centres, `--fastq_maxee 1` | 449 | 427, all among the 449 |
 | After chimera removal | 284 (DADA2 consensus) | 387 (UCHIME3); our 284 are all among UCHIME3's 406 at maxEE off |
 | Reads in the table | 127,286 | 139,114 (97% mapping) |
+
+The `unoise` read count above predates its 97% counting rule, which left
+uniques below `--min-abund` that no centre absorbed out of the table.
 
 Compare `sp_indel` with `unoise` to test the learned error model against the
 fixed rule with indels counted in both (`summarize_arms.py --pair
