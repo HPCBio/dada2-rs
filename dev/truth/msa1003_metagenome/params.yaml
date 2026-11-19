@@ -1,0 +1,45 @@
+# nf-core/mag 5.5.0: HiFi-only metagenome assembly of ATCC MSA-1003 (#166).
+# The three runs are one sample; mag concatenates them before assembly.
+input: samplesheet.csv
+outdir: /path/to/results/msa1003_mag
+
+# Long-read QC. PacBio skips adapter trimming in mag. The quality floor
+# keeps only HiFi (Q20+) reads and drops anything that is not CCS.
+longread_filtering_tool: chopper
+longreads_min_length: 1000
+longreads_min_quality: 20
+keep_lambda: true            # the lambda filter is for ONT
+
+# Assembly: both long-read assemblers (Flye --pacbio-hifi, metaMDBG hifi).
+skip_flye: false
+skip_metamdbg: false
+skip_quast: false
+
+# Mapping reads back to the contigs gives per-copy coverage of rRNA operons.
+save_assembly_mapped_reads: true
+
+# Binning: one sample, 20 known strains. The co-abundance binners that need
+# several samples, and the slowest ones, are off.
+skip_metabat2: false
+skip_maxbin2: false
+skip_semibin: false
+skip_concoct: true
+skip_comebin: true
+skip_metabinner: true
+
+# Bin QC: CheckM2 rather than BUSCO.
+run_checkm2: true
+run_busco: false
+# checkm2_db: /path/to/CheckM2_database/uniref100.KO.1.dmnd
+
+# Classification: GTDB-Tk against the cluster's local database (an
+# uncompressed directory or .tar.gz), which must be the release this mag
+# version's GTDB-Tk expects (the default download is r232). On a known
+# mock it checks each bin's species.
+skip_gtdbtk: false
+gtdb_db: /path/to/gtdbtk/release232
+gtdbtk_single_job: true
+
+# Annotation: Prokka is off. mag has no Bakta step; run Bakta on the bins
+# afterwards if annotation is needed.
+skip_prokka: true

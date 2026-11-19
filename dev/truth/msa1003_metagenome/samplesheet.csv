@@ -1,0 +1,4 @@
+sample,run,group,long_reads,long_reads_platform
+msa1003_hifi,1,0,/path/to/reads/SRR9202034_subreads.fastq.gz,PACBIO_HIFI
+msa1003_hifi,2,0,/path/to/reads/SRR9328980_subreads.fastq.gz,PACBIO_HIFI
+msa1003_hifi,3,0,/path/to/reads/SRR11469785_subreads.fastq.gz,PACBIO_HIFI
