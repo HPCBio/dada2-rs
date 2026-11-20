@@ -42,7 +42,7 @@
 #   UNOISE_MIN_ABUND  unoise's --min-abund when MIN_ABUND is unset; default 8,
 #                     vsearch --cluster_unoise's --minsize default
 #   EXTRA             flags for learn-errors and dada, e.g. PacBio's
-#                     "--band 32 --homo-gap-p -1 --kmer-size 7"
+#                     "--band 32 --kmer-size 7"
 #   LEARN_EXTRA       flags for learn-errors only, e.g. "--errfun pacbio" or
 #                     "--errfun binned-qual --binned-quals 2,11,25,37"
 #   DADA_EXTRA        flags for every arm's dada step

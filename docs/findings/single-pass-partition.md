@@ -47,11 +47,11 @@ are documented on the [`dada` page](../commands/dada.md).
 
 ## Data
 
-| Run | Platform | Samples | Reads | Truth set |
+| Run | Platform | Samples | Input reads | Truth set |
 |---|---|---|---|---|
-| MiSeq V4 | Illumina MiSeq, paired | 362 | 2.80M | HMP mock, 25 alleles (samples `Mock`, `Mock2`) |
-| PacBio 95 | PacBio HiFi, full-length 16S | 95 | 2.39M | none |
-| MSA-1003 Kinnex | PacBio Sequel IIe (full qualities) and Revio (binned) | 96 each | 2.08M / 6.33M | ATCC MSA-1003, 52 alleles |
+| MiSeq V4 | Illumina MiSeq, paired | 362 | 3.35M | HMP mock, 25 alleles (samples `Mock`, `Mock2`) |
+| PacBio 95 | PacBio HiFi, full-length 16S | 95 | 2.43M | none |
+| MSA-1003 Kinnex | PacBio Sequel IIe (full qualities) and Revio (binned) | 96 each | 2.10M / 6.38M | ATCC MSA-1003, 52 alleles |
 | NovaSeq 16S | Illumina NovaSeq, paired, binned qualities | 30 | 2.45M | none |
 | NovaSeq ITS2 | Illumina NovaSeq, paired, binned qualities | 30 | 2.46M | none |
 
@@ -78,10 +78,10 @@ grows with threads. Measured dada time, forward plus reverse:
 
 | Run | `divisive` | `sp` | `unoise` |
 |---|---|---|---|
-| MiSeq V4 | 114 s | 102 s (−10%) | 97 s (−15%) |
-| PacBio 95 | 280 s | 276 s (−2%) | 334 s (+19%) |
-| MSA-1003 Sequel IIe | 75 s | 79 s (+6%) | 17 s (−77%) |
-| MSA-1003 Revio | 155 s | 182 s (+17%) | 83 s (−47%) |
+| MiSeq V4 | 114 s | 102 s (−10%) | 107 s (−6%) |
+| PacBio 95 | 280 s | 276 s (−2%) | 350 s (+25%) |
+| MSA-1003 Sequel IIe | 75 s | 79 s (+6%) | 18 s (−76%) |
+| MSA-1003 Revio | 155 s | 182 s (+17%) | 90 s (−42%) |
 | NovaSeq 16S | 1631 s | 1423 s (−13%) | 1341 s (−18%) |
 | NovaSeq ITS2 | 297 s | 216 s (−27%) | 182 s (−39%) |
 
@@ -93,8 +93,8 @@ grows with threads. Measured dada time, forward plus reverse:
   ASVs where `divisive` keeps 1194. On diverse real communities it keeps
   about as many centres as `divisive` (13,850 vs 14,256 on NovaSeq 16S
   forward reads), so the saving is small. On PacBio 95 it is slower. It has
-  no greedy locks, so it aligns pairs `divisive` skips; alignment counts
-  weren't recorded for that run.
+  no greedy locks, so it screens every unique against every centre (933M
+  pairs: 547k uniques × 1703 centres) and aligns the 105M that pass.
 - `vsearch --cluster_unoise` takes 1–25 s on the same data. It clusters only
   the uniques that reach `--minsize`, then maps every read with an indexed
   search. That index is what makes it fast, not the single pass.
@@ -147,10 +147,10 @@ in brackets.
 
 | Run | `sp` | `sp_reassign` | `unoise` | `vsearch` |
 |---|---|---|---|---|
-| MiSeq V4 | 0.91 (0.004) | 0.91 (0.003) | 0.59 (0.034) | 0.39 (0.083) |
-| PacBio 95 | 0.96 (0.003) | 0.96 (0.002) | 0.65 (0.037) | 0.66 (0.022) |
-| MSA-1003 Sequel IIe | 0.89 (0.006) | 0.89 (0.006) | 0.05 (0.077) | 0.05 (0.060) |
-| MSA-1003 Revio | 0.66 (0.013) | 0.66 (0.013) | 0.08 (0.070) | 0.08 (0.050) |
+| MiSeq V4 | 0.91 (0.004) | 0.91 (0.003) | 0.61 (0.027) | 0.39 (0.083) |
+| PacBio 95 | 0.96 (0.003) | 0.96 (0.002) | 0.65 (0.048) | 0.66 (0.022) |
+| MSA-1003 Sequel IIe | 0.89 (0.006) | 0.89 (0.006) | 0.05 (0.078) | 0.05 (0.060) |
+| MSA-1003 Revio | 0.66 (0.013) | 0.66 (0.013) | 0.08 (0.071) | 0.08 (0.050) |
 | NovaSeq 16S | 0.82 (0.027) | 0.84 (0.025) | 0.43 (0.155) | 0.31 (0.144) |
 | NovaSeq ITS2 | 0.97 (0.008) | 0.97 (0.008) | 0.68 (0.107) | 0.73 (0.053) |
 
@@ -215,10 +215,14 @@ counts a difference made of gaps alone:
 
 ## Caveats
 
-- The MiSeq, PacBio 95 and MSA-1003 runs predate the `unoise` counting change
-  (99d8fbc), which counts each unique toward its nearest centre at 97%. It
-  leaves the centres unchanged. On NovaSeq it raised `unoise`'s reads by 4–20%
-  and, through new forward/reverse pairings, added low-abundance merged ASVs,
-  so the older runs' `unoise` read totals and paired-read ASV sets are low.
+- The `unoise` arm was rerun on every dataset after the counting change
+  (99d8fbc), which counts each unique toward its nearest centre at 97%; the
+  other arms weren't rerun. The change leaves the centres unchanged.
+  - On PacBio it moves the ASV sets by at most one ASV, raises reads by
+    0.3–1%, and leaves MSA-1003 recall unchanged.
+  - On paired reads it adds low-abundance merged ASVs through new
+    forward/reverse pairings: 40 more on MiSeq after chimera removal.
+  - Reads rise 4–20% on NovaSeq, but fall 1.4% on MiSeq. That fall isn't
+    explained yet; MiSeq mock recall is unchanged.
 - `vsearch` times cover `--cluster_unoise` only, not merging or mapping.
 - NovaSeq has no mock, so its numbers measure agreement, not accuracy.
