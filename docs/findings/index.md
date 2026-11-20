@@ -77,6 +77,14 @@ reader benefit. Three homes, and only three:
   concordance fixture is only evidence about the part of the distribution it
   contains, and the k-mer screen at 0.42 is itself **not lossless** against
   unscreened denoising.
+- [Single pass vs the divisive partition](single-pass-partition.md) — **a
+  single pass over the uniques doesn't make DADA2 faster in a way that matters,
+  and doesn't make it more accurate.** Every partition compares each unique
+  with every centre; a single pass saves only the serial reshuffle (up to 27%
+  of dada time on NovaSeq, nothing on PacBio). With DADA2's error model it
+  recovers the same alleles as `dada` on every truth set. With UNOISE's fixed
+  skew ratio it misses real minor gene copies on the MiSeq mocks and drifts far
+  from `dada` on real communities. Both stay experimental.
 - [K-mer screen size](kmer-size-screening.md) — `--kmer-size` has ~no effect on
   the final chimera-filtered table on either platform; it is a speed/memory knob,
   not an accuracy knob (k=5 Illumina, k=7 PacBio for speed).
