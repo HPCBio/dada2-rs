@@ -138,6 +138,13 @@ VERBOSE="${VERBOSE:-}"
 verbose_arg=()
 [ -n "$VERBOSE" ] && verbose_arg=(--verbose)
 METRICS="${METRICS:-}"
+# metrics_for <step>: sets metrics_arg to --metrics-json $OUT/<step>.metrics.json
+# when METRICS is set, else to nothing.
+metrics_for() {
+  metrics_arg=()
+  [ -n "$METRICS" ] && metrics_arg=(--metrics-json "$OUT/$1.metrics.json")
+  return 0
+}
 
 mkdir -p "$OUT"/{filtered,dada_fwd,dada_rev,control_persample}
 
@@ -301,14 +308,16 @@ if [ "$POOL" = "pseudo" ] || [ "$POOL" = "pseudo-fixed-err" ]; then
   else
     echo "==> dada-pseudo (fwd, rev; one error model across both rounds -- our default)"
   fi
+  metrics_for dada-pseudo.fwd
   run_step dada-pseudo.fwd "$BIN" dada-pseudo "${filtFs[@]}" --error-model "$OUT/errF.json" \
       -o "$OUT/dada_fwd" --priors-out "$OUT/priors_fwd.fasta" \
       ${reest_arg[@]+"${reest_arg[@]}"} \
-      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"}
+  metrics_for dada-pseudo.rev
   run_step dada-pseudo.rev "$BIN" dada-pseudo "${filtRs[@]}" --error-model "$OUT/errR.json" \
       -o "$OUT/dada_rev" --priors-out "$OUT/priors_rev.fasta" \
       ${reest_arg[@]+"${reest_arg[@]}"} \
-      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+      --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"}
 
   # Positive control: did the priors actually CHANGE anything?
   #
@@ -355,19 +364,23 @@ elif [ "$POOL" = "true" ]; then
   # MEMORY: pooling holds every sample's uniques at once. Budget accordingly --
   # docs/findings has pooled peaks in the tens of GB for diverse soil runs.
   echo "==> dada-pooled (fwd, rev; full pooling)"
+  metrics_for dada-pooled.fwd
   run_step dada-pooled.fwd "$BIN" dada-pooled "${filtFs[@]}" --error-model "$OUT/errF.json" \
       -o "$OUT/dada_fwd" --threads "$THREADS" \
-      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"}
+  metrics_for dada-pooled.rev
   run_step dada-pooled.rev "$BIN" dada-pooled "${filtRs[@]}" --error-model "$OUT/errR.json" \
       -o "$OUT/dada_rev" --threads "$THREADS" \
-      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+      ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"}
 else
   # Per-sample denoising (pool=FALSE analog) — matches R dada() default.
   echo "==> dada (fwd, rev; per-sample)"
+  metrics_for dada.fwd
   run_step dada.fwd "$BIN" dada "${filtFs[@]}" --error-model "$OUT/errF.json" \
-      --output-dir "$OUT/dada_fwd" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+      --output-dir "$OUT/dada_fwd" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"}
+  metrics_for dada.rev
   run_step dada.rev "$BIN" dada "${filtRs[@]}" --error-model "$OUT/errR.json" \
-      --output-dir "$OUT/dada_rev" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"}
+      --output-dir "$OUT/dada_rev" --threads "$THREADS" ${backend_arg[@]+"${backend_arg[@]}"} ${screen_arg[@]+"${screen_arg[@]}"} ${end_arg[@]+"${end_arg[@]}"} ${verbose_arg[@]+"${verbose_arg[@]}"} ${metrics_arg[@]+"${metrics_arg[@]}"}
 fi
 
 echo "==> merge-pairs"

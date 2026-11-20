@@ -9,7 +9,10 @@ mod common;
 
 use std::path::Path;
 
-use common::{BIN, asv_set, err_model, fasta_seqs, fixture, normalized, run, scratch};
+use common::{
+    BIN, assert_same_outputs, asv_set, err_model, fasta_seqs, fixture, normalized, run,
+    run_expect_err, scratch,
+};
 
 #[test]
 fn dada_pseudo_matches_manual_recipe() {
@@ -811,4 +814,163 @@ fn dada_params_record_the_alignment_model() {
         assert_eq!(wfa["align_backend"], "wfa2");
         assert_eq!(wfa["wfa_max_edits"], 0);
     }
+}
+
+/// `--partition` is opt-in (issue #323): naming the default `divisive` changes
+/// nothing on `dada` or `dada-pooled`, and records nothing. `--birth-rule`
+/// and `--reassign` need `single-pass`, `--reassign` does not combine with
+/// the UNOISE rule, both birth rules are recorded and thread-independent,
+/// and `dada-pseudo` does not take the flag.
+#[test]
+fn partition_default_unchanged_and_guarded() {
+    let dir = scratch("partition");
+    let err = err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+    let s2 = fixture("sam2F.fastq.gz");
+    let (s1, s2, err) = (
+        s1.to_str().unwrap(),
+        s2.to_str().unwrap(),
+        err.to_str().unwrap(),
+    );
+
+    let single_default = dir.join("single_default.json");
+    let single_named = dir.join("single_named.json");
+    for (out, extra) in [(&single_default, None), (&single_named, Some("divisive"))] {
+        let mut args = vec![
+            "dada",
+            s1,
+            "--error-model",
+            err,
+            "--threads",
+            "1",
+            "-o",
+            out.to_str().unwrap(),
+        ];
+        if let Some(p) = extra {
+            args.extend_from_slice(&["--partition", p]);
+        }
+        run(&args);
+    }
+    assert_eq!(normalized(&single_default), normalized(&single_named));
+    assert!(!normalized(&single_named).contains("\"partition\""));
+
+    let pooled_default = dir.join("pooled_default");
+    let pooled_named = dir.join("pooled_named");
+    for (out, extra) in [(&pooled_default, None), (&pooled_named, Some("divisive"))] {
+        let mut args = vec![
+            "dada-pooled",
+            s1,
+            s2,
+            "--error-model",
+            err,
+            "--threads",
+            "1",
+            "--output-dir",
+            out.to_str().unwrap(),
+        ];
+        if let Some(p) = extra {
+            args.extend_from_slice(&["--partition", p]);
+        }
+        run(&args);
+    }
+    assert_same_outputs(
+        &pooled_default,
+        &pooled_named,
+        "dada-pooled --partition divisive",
+    );
+
+    let out = dir.join("rejected.json");
+    let out = out.to_str().unwrap();
+    let base = ["dada", s1, "--error-model", err, "-o", out];
+    let stderr = run_expect_err(&[&base[..], &["--birth-rule", "unoise"]].concat());
+    assert!(
+        stderr.contains("--birth-rule applies only with --partition single-pass"),
+        "{stderr}"
+    );
+    let stderr = run_expect_err(&[&base[..], &["--reassign"]].concat());
+    assert!(
+        stderr.contains("--reassign applies only with --partition single-pass"),
+        "{stderr}"
+    );
+    let stderr = run_expect_err(
+        &[
+            &base[..],
+            &[
+                "--partition",
+                "single-pass",
+                "--birth-rule",
+                "unoise",
+                "--reassign",
+            ],
+        ]
+        .concat(),
+    );
+    assert!(
+        stderr.contains("does not apply with --birth-rule unoise"),
+        "{stderr}"
+    );
+
+    // single-pass runs, is recorded, and does not depend on the thread count.
+    let sp1 = dir.join("single_pass_t1");
+    let sp4 = dir.join("single_pass_t4");
+    for (out, threads) in [(&sp1, "1"), (&sp4, "4")] {
+        run(&[
+            "dada-pooled",
+            s1,
+            s2,
+            "--error-model",
+            err,
+            "--threads",
+            threads,
+            "--output-dir",
+            out.to_str().unwrap(),
+            "--partition",
+            "single-pass",
+        ]);
+    }
+    assert_same_outputs(&sp1, &sp4, "single-pass, 1 vs 4 threads");
+    let any = sp1.join(&common::json_outputs(&sp1)[0]);
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&any).unwrap()).unwrap();
+    assert_eq!(v["params"]["partition"], "single-pass");
+    assert_eq!(v["params"]["birth_rule"], "pvalue");
+
+    // The UNOISE rule runs, is recorded, and does not depend on the thread count.
+    let un1 = dir.join("unoise_t1");
+    let un4 = dir.join("unoise_t4");
+    for (out, threads) in [(&un1, "1"), (&un4, "4")] {
+        run(&[
+            "dada-pooled",
+            s1,
+            s2,
+            "--error-model",
+            err,
+            "--threads",
+            threads,
+            "--output-dir",
+            out.to_str().unwrap(),
+            "--partition",
+            "single-pass",
+            "--birth-rule",
+            "unoise",
+            "--min-abund",
+            "8",
+        ]);
+    }
+    assert_same_outputs(&un1, &un4, "unoise, 1 vs 4 threads");
+    let any = un1.join(&common::json_outputs(&un1)[0]);
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&any).unwrap()).unwrap();
+    assert_eq!(v["params"]["birth_rule"], "unoise");
+    let stderr = run_expect_err(&[
+        "dada-pseudo",
+        s1,
+        "--error-model",
+        err,
+        "-o",
+        out,
+        "--partition",
+        "divisive",
+    ]);
+    assert!(stderr.contains("--partition"), "{stderr}");
 }

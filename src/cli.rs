@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 
+use crate::dada::{BirthRule, Partition};
 use crate::derep::PoolTiebreak;
 use crate::misc::DADA2_RS_VERSION;
 use crate::nwalign::{AlignBackend, EndModel, ScreenBackend};
@@ -481,6 +482,23 @@ pub struct LearnIndelArgs {
     pub indel_end_zone: usize,
 }
 
+/// The experimental single-pass partition (issue #323), on `dada` and
+/// `dada-pooled`. Off unless `--partition single-pass`; R DADA2 is divisive.
+#[derive(Args, Default)]
+pub struct PartitionArgs {
+    /// EXPERIMENTAL: how clusters are formed; R is `divisive` [default: divisive]
+    #[arg(long, value_enum, help_heading = H_EXP)]
+    pub partition: Option<Partition>,
+
+    /// EXPERIMENTAL: birth test under `--partition single-pass` [default: pvalue]
+    #[arg(long, value_enum, help_heading = H_EXP)]
+    pub birth_rule: Option<BirthRule>,
+
+    /// EXPERIMENTAL: after `--partition single-pass`, move each unique once to its best cluster
+    #[arg(long, help_heading = H_EXP)]
+    pub reassign: bool,
+}
+
 fn parse_hp_ceiling(v: &str) -> Result<crate::indel_model::HpCeiling, String> {
     if v == "off" {
         return Ok(crate::indel_model::HpCeiling::Off);
@@ -783,6 +801,9 @@ pub struct DadaArgs {
 
     #[command(flatten)]
     pub indel_lambda: IndelLambdaArgs,
+
+    #[command(flatten)]
+    pub partition: PartitionArgs,
 }
 
 /// Arguments for [`Commands::DadaPooled`].
@@ -884,6 +905,9 @@ pub struct DadaPooledArgs {
 
     #[command(flatten)]
     pub indel_lambda: IndelLambdaArgs,
+
+    #[command(flatten)]
+    pub partition: PartitionArgs,
 }
 
 /// Arguments for [`Commands::DadaPseudo`].
