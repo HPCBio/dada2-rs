@@ -808,10 +808,10 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
     }
 
     // Scan remaining clusters for better matches.
-    for ci in 1..b.clusters.len() {
-        comps_scanned += b.clusters[ci].comp.len();
-        let ci_reads = b.clusters[ci].reads as f64;
-        for comp in &b.clusters[ci].comp {
+    for bi in b.clusters.iter().skip(1) {
+        comps_scanned += bi.comp.len();
+        let ci_reads = bi.reads as f64;
+        for comp in &bi.comp {
             let idx = comp.index as usize;
             let e = comp.lambda * ci_reads;
             if e > emax[idx] {
@@ -1703,15 +1703,15 @@ pub fn b_bud_incremental(
     let mut min_reads = b.raws[init_center].reads;
     let mut min_reads_prior = b.raws[init_center].reads;
 
-    for ci in 0..b.clusters.len() {
-        if let Some(c) = b.clusters[ci].bud_min
+    for (ci, bi) in b.clusters.iter().enumerate() {
+        if let Some(c) = bi.bud_min
             && (c.p < min_p || (c.p == min_p && c.reads > min_reads))
         {
             mini = Some((ci, c.r, c.raw_idx));
             min_p = c.p;
             min_reads = c.reads;
         }
-        if let Some(c) = b.clusters[ci].bud_min_prior
+        if let Some(c) = bi.bud_min_prior
             && (c.p < min_p_prior || (c.p == min_p_prior && c.reads > min_reads_prior))
         {
             mini_prior = Some((ci, c.r, c.raw_idx));
