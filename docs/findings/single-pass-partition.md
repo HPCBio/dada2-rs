@@ -222,7 +222,14 @@ counts a difference made of gaps alone:
     0.3–1%, and leaves MSA-1003 recall unchanged.
   - On paired reads it adds low-abundance merged ASVs through new
     forward/reverse pairings: 40 more on MiSeq after chimera removal.
-  - Reads rise 4–20% on NovaSeq, but fall 1.4% on MiSeq. That fall isn't
-    explained yet; MiSeq mock recall is unchanged.
+  - Reads rise 4–20% on NovaSeq, but fall 1.4% on MiSeq; MiSeq mock recall
+    is unchanged. The fall is in the reverse reads, which are noisier and
+    truncated to 160 bp, where 97% allows only 4 differences: they leave
+    20.9k more reads without a centre, while the forward reads leave 30.4k
+    fewer. Most of the loss comes after denoising: 14.1k more pairs fail to
+    merge, and the same 1,030 chimeric ASVs gain 24.9k reads. That fits a
+    read moving to a neighbouring centre in one direction only, which makes a
+    mismatched pair. Merging first
+    ([#327](https://github.com/HPCBio/dada2-rs/issues/327)) would avoid it.
 - `vsearch` times cover `--cluster_unoise` only, not merging or mapping.
 - NovaSeq has no mock, so its numbers measure agreement, not accuracy.
