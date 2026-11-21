@@ -257,6 +257,12 @@ reader benefit. Three homes, and only three:
   samples cannot show — the first case here of a small fixture erring in that
   direction rather than the usual one. Ends with a lever deliberately *not*
   built, and the arithmetic for why.
+- [Dereplicate per sample, keep JSON](per-sample-derep.md) — feeding
+  `dada-pooled` pre-dereplicated JSON gives **identical output** on MiSeq,
+  NovaSeq and PacBio, cuts the serial load front 44–90% (25–31% of wall on a
+  362-sample MiSeq run) and peak RSS 14–30%. A cheaper format could save at most
+  the parse, **≤3.9% of wall**, so issue #1 is closed. The write-side cost is
+  gzip at level 6, ~60% of a per-sample `derep`.
 - [Carrying `compmax` across buds](shuffle-compmax-carry.md) — the remaining
   serial lever in pooled `dada` is worth −7.5% wall on 16S and a +10.5%
   *regression* on ITS2 from the same NovaSeq run; comparison counts overstate

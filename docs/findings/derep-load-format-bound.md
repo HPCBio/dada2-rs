@@ -130,7 +130,9 @@ turns up with a much larger read column.
 The remaining parse is still 71% of the reduced 21.7 s, so what is left belongs to
 a cheaper format — [#1](https://github.com/HPCBio/dada2-rs/issues/1) — and **must
 be costed against the new baseline, not the old one.** That is the same trap this
-page opens with, one level down.
+page opens with, one level down. That costing is in
+[Dereplicate per sample, keep JSON](per-sample-derep.md): at most 3.9% of wall,
+and #1 is closed.
 
 ## What this dictates
 

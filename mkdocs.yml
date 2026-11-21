@@ -117,6 +117,7 @@ nav:
     - WFA as an alignment backend: findings/wfa-viability.md
     - Pooled memory: findings/pooled-memory.md
     - Derep load is format-bound: findings/derep-load-format-bound.md
+    - Dereplicate per sample, keep JSON: findings/per-sample-derep.md
     - Carrying compmax across buds: findings/shuffle-compmax-carry.md
     - Redesigning b_shuffle (closed): findings/shuffle-build-scan.md
     - Inside b_compare — screen vs align: findings/compare-screen-vs-align.md
