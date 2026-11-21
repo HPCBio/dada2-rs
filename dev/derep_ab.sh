@@ -27,8 +27,13 @@
 #   PREFIX      command prefix for every timed step, whitespace-split, e.g.
 #               PREFIX="$NUMA_PREFIX" after sourcing dev/numa_pin.sh on the
 #               cluster (see feedback on NUMA placement in that file)
-#   STRIP       suffix removed from each FASTQ basename to form the sample name,
-#               after .fastq.gz/.fq.gz/.fastq/.fq (e.g. STRIP=_F); default none
+#   STRIP       shell glob (not a regex) removed from the end of each FASTQ
+#               basename to form the sample name, shortest match. It is tried on
+#               the full name, then on the name minus .fastq.gz/.fq.gz/.fastq/.fq,
+#               so STRIP='_R[12].fastq.gz', STRIP='_R[12]' and STRIP='_R[12]_*'
+#               all work; quote it so the shell does not expand it. Default none
+#               (the extension is still removed).
+#               Paired data: pass one direction per run (R1s only, say).
 #   SKIP_A=1    reuse an existing arm A (out-dir/a_fastq) instead of rerunning
 #
 # Writes out-dir/summary.tsv and prints it. Exits non-zero if the arms differ.
@@ -55,8 +60,16 @@ mkdir -p "$OUT"/{a_fastq,b_json,derep,logs}
 names=()
 for f in "$@"; do
   n=$(basename "$f")
-  for ext in .fastq.gz .fq.gz .fastq .fq; do n=${n%"$ext"}; done
-  [ -n "$STRIP" ] && n=${n%"$STRIP"}
+  # STRIP is a glob, tried first on the full basename, then (only if that did
+  # not match) on the extension-less name. One strip at most, so `_R[12]*`
+  # cannot also eat an `_R1` that is part of the sample name.
+  if [ -n "$STRIP" ] && [ "${n%$STRIP}" != "$n" ]; then
+    n=${n%$STRIP}
+    for ext in .fastq.gz .fq.gz .fastq .fq; do n=${n%"$ext"}; done
+  else
+    for ext in .fastq.gz .fq.gz .fastq .fq; do n=${n%"$ext"}; done
+    [ -n "$STRIP" ] && n=${n%$STRIP}
+  fi
   names+=("$n")
 done
 dups=$(printf '%s\n' "${names[@]}" | sort | uniq -d)
