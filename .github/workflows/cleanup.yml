@@ -1,22 +1,24 @@
 name: Cleanup GHCR Images
 
+# Prunes ghcr.io/hpcbio/dada2-rs. An image is one build (a digest); a tag is a
+# name pointing at one, and a build can carry several (0.5.0 and 0.5). Tagged
+# images (releases, latest, main and their -opt twins) are never deleted. Each
+# push to main moves :main to the new build and leaves the previous one
+# untagged; those untagged builds are all this workflow removes.
+
 on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Dry run (preview without deleting)'
+        description: 'Dry run: list what would be deleted, delete nothing'
         required: true
-        default: 'true'
+        default: true
         type: boolean
-      keep_n_tagged:
-        description: 'Number of tagged versions to keep'
+      keep_n_untagged:
+        description: 'Untagged builds to keep, newest first (superseded main builds, kept for rollback; 0 deletes all). Tagged images are always kept.'
         required: true
         default: '5'
-      delete_untagged:
-        description: 'Delete untagged images'
-        required: true
-        default: 'true'
-        type: boolean
+        type: string
 
 jobs:
   cleanup:
@@ -30,6 +32,5 @@ jobs:
         uses: dataaxiom/ghcr-cleanup-action@v1
         with:
           dry-run: ${{ inputs.dry_run }}
-          keep-n-tagged: ${{ inputs.keep_n_tagged }}
-          delete-untagged: ${{ inputs.delete_untagged }}
+          keep-n-untagged: ${{ inputs.keep_n_untagged }}
           token: ${{ secrets.GITHUB_TOKEN }}
