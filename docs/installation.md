@@ -121,6 +121,18 @@ Dedicated container images are published for the project — see the `Dockerfile
 and the Docker build workflow in the repository for the current image
 coordinates and tags.
 
+### BioContainers (Docker and Singularity)
+
+[BioContainers](https://biocontainers.pro) builds images from the
+[Bioconda](#bioconda) package, so they share its portable build. Tags pair the
+version with a build hash; take the current one from
+[quay.io](https://quay.io/repository/biocontainers/dada2-rs?tab=tags).
+
+```bash
+docker pull quay.io/biocontainers/dada2-rs:0.5.0--hfa8f182_0
+singularity pull https://depot.galaxyproject.org/singularity/dada2-rs:0.5.0--hfa8f182_0
+```
+
 ## Verify
 
 ```bash
