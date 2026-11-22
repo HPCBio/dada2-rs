@@ -117,9 +117,26 @@ installed. To remove an installation, use `make uninstall` (same `PREFIX`).
 
 ## Docker
 
-Dedicated container images are published for the project — see the `Dockerfile`
-and the Docker build workflow in the repository for the current image
-coordinates and tags.
+Images are published to `ghcr.io/hpcbio/dada2-rs` in two variants: a portable
+build that runs on any x86-64 CPU, and an `-opt` build for x86-64-v3 (AVX2,
+roughly 2013 and later) that is faster.
+
+| Tag | Image |
+|---|---|
+| `X.Y.Z`, e.g. `0.5.0` | that release |
+| `X.Y`, e.g. `0.5` | newest release in that series |
+| `latest` | newest release |
+| `main` | tip of the `main` branch, unreleased |
+
+Each tag has an `-opt` twin (`0.5.0-opt`, `latest-opt`, `main-opt`). Pin
+`X.Y.Z` for reproducible runs.
+
+```bash
+docker pull ghcr.io/hpcbio/dada2-rs:0.5.0
+docker run --rm -v "$PWD":/data -w /data ghcr.io/hpcbio/dada2-rs:0.5.0 --help
+```
+
+The image's entrypoint is `dada2-rs`, so arguments go straight to it.
 
 ### BioContainers (Docker and Singularity)
 

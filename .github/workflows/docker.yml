@@ -23,8 +23,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Portable image: baseline x86-64, runs anywhere. Default tags
-          # (latest, semver, sha-...).
+          # Portable image: baseline x86-64, runs anywhere. Release tags
+          # (X.Y.Z, X.Y, latest) and :main for the tip of main.
           - variant: portable
             profile: release
             rustflags: ""
@@ -71,10 +71,13 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           flavor: |
             suffix=${{ matrix.suffix }},onlatest=true
+          # `latest` comes from flavor latest=auto, which sets it on a
+          # non-prerelease semver tag only, so it is always the newest release.
+          # Pushes to main get :main. No rule may tag `latest` on a branch.
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
