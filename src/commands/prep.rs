@@ -43,6 +43,7 @@ pub(crate) fn run_remove_primers(args: cli::RemovePrimersArgs) -> io::Result<()>
         output,
         compact,
         verbose,
+        compression: _,
     } = args;
     if allow_indels && verbose {
         eprintln!("[remove-primers] indel mode enabled — expect ~4× slower matching");
@@ -174,6 +175,7 @@ pub(crate) fn run_filter_and_trim(args: cli::FilterAndTrimArgs) -> io::Result<()
         output,
         compact,
         verbose,
+        compression: _,
     } = args;
     // ---- Validate paired-end files ----
     if rev.is_some() {

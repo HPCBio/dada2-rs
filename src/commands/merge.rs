@@ -31,6 +31,7 @@ pub(crate) fn run_merge_pairs(args: cli::MergePairsArgs) -> io::Result<()> {
         output,
         compact,
         verbose,
+        compression: _,
     } = args;
     // ---- Validate that every input path actually exists ----
     // An unmatched shell glob is passed through literally (bash/zsh

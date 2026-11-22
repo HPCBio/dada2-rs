@@ -31,6 +31,7 @@ pub(crate) fn run_remove_bimera_denovo(args: cli::RemoveBimeraDenovoArgs) -> io:
         verbose,
         output,
         compact,
+        compression: _,
     } = args;
     let table: SequenceTable =
         read_tagged_json(&input, &["make-sequence-table", "remove-bimera-denovo"])

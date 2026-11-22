@@ -26,6 +26,7 @@ pub(crate) fn run_assign_taxonomy(args: cli::AssignTaxonomyArgs) -> io::Result<(
         output,
         compact,
         verbose,
+        compression: _,
     } = args;
     const MIN_REF_LEN: usize = 20;
     const DADA2_UNSPEC: &str = "_DADA2_UNSPECIFIED";
@@ -275,6 +276,7 @@ pub(crate) fn run_assign_species(args: cli::AssignSpeciesArgs) -> io::Result<()>
         output,
         compact,
         verbose,
+        compression: _,
     } = args;
     const MIN_REF_LEN: usize = 20;
 

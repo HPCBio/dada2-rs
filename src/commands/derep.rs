@@ -24,6 +24,7 @@ pub(crate) fn run_derep(args: cli::DerepArgs) -> io::Result<()> {
         show_map,
         pretty,
         verbose,
+        compression: _,
     } = args;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
@@ -118,6 +119,7 @@ pub(crate) fn run_sample(args: cli::SampleArgs) -> io::Result<()> {
         pretty,
         gzip,
         verbose,
+        compression: _,
     } = args;
     check_input_paths("input", &input)?;
     std::fs::create_dir_all(&output_dir)?;

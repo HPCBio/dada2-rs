@@ -27,6 +27,7 @@ subcommand:
 | **Metrics** | Optional per-read metrics (`summary`, `summary-merge`) |
 | **Pooling regime** | Which population is scored, and how it is sampled (`kdist-calibrate`) |
 | **Evaluation** | Truth-set classification thresholds (`reference-eval`) |
+| **Output** | Where results go and how they are written; never affects results |
 | **Performance** | Threads and concurrency; never affects results |
 | **Diagnostics** | Extra output for QC and debugging; never affects ASVs |
 | **Experimental** | Unstable flags. Off by default, and not drop-in replacements |
@@ -39,6 +40,18 @@ algorithm's definition of an ASV.
 
 Anything under **Performance** or **Diagnostics** is safe to change without
 affecting the ASV table.
+
+## Compressed output
+
+A `.gz` output path (or `--gzip`, `--compress`) writes gzip, and every
+subcommand reads `.gz` input transparently. `--compress-level` sets the gzip
+level for any subcommand that can write it: 1 is fastest, 9 is smallest, and the
+default is 5. The level changes only speed and file size, never the content.
+
+Level 5 measured 3–4× faster to write than level 6 for 1–6% larger files on
+derep JSON and FASTQ ([#331](https://github.com/HPCBio/dada2-rs/issues/331)).
+Use 1 for scratch intermediates that are deleted after the run, and 9 for files
+that are archived or shared.
 
 ## Pages
 

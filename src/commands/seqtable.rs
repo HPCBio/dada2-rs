@@ -20,6 +20,7 @@ pub(crate) fn run_make_sequence_table(args: cli::MakeSequenceTableArgs) -> io::R
         hash,
         output,
         compact,
+        compression: _,
     } = args;
     check_input_paths("input", &input)?;
     if !sample_names.is_empty() && sample_names.len() != input.len() {

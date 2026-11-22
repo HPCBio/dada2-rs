@@ -396,6 +396,16 @@ pub struct LearnDenoiseArgs {
     pub no_kmer_screen: bool,
 }
 
+/// Gzip level, shared by every subcommand that can write `.gz` output.
+/// Level 5 measured 3–4x faster than 6 at 1–6% larger files (#331).
+#[derive(Args)]
+pub struct CompressArgs {
+    /// Gzip level for compressed output: 1 (fastest) to 9 (smallest)
+    #[arg(long, default_value_t = crate::misc::DEFAULT_GZIP_LEVEL,
+          value_parser = clap::value_parser!(u32).range(1..=9), help_heading = H_OUTPUT)]
+    pub compress_level: u32,
+}
+
 /// Experimental screen and aligner knobs shared by every denoising subcommand.
 #[derive(Args)]
 pub struct ExperimentalArgs {
@@ -629,6 +639,9 @@ pub struct SummaryArgs {
     #[arg(long, help_heading = H_OUTPUT)]
     pub compact: bool,
 
+    #[command(flatten)]
+    pub compression: CompressArgs,
+
     /// Also print a human-readable metrics report to stderr
     #[arg(long, help_heading = H_DIAG)]
     pub report: bool,
@@ -656,6 +669,9 @@ pub struct SummaryMergeArgs {
     /// Emit compact (minified) JSON instead of pretty-printed
     #[arg(long, help_heading = H_OUTPUT)]
     pub compact: bool,
+
+    #[command(flatten)]
+    pub compression: CompressArgs,
 
     /// Also print a human-readable run-level report to stderr
     #[arg(long, help_heading = H_DIAG)]
@@ -692,6 +708,9 @@ pub struct DerepArgs {
     /// Pretty-print the JSON; the default is compact (~34% smaller)
     #[arg(long, help_heading = H_OUTPUT)]
     pub pretty: bool,
+
+    #[command(flatten)]
+    pub compression: CompressArgs,
 
     /// Print progress to stderr
     #[arg(long, help_heading = H_DIAG)]
@@ -755,6 +774,9 @@ pub struct DadaArgs {
     /// Gzip the per-sample JSON files (`{sample}.json.gz`)
     #[arg(long, help_heading = H_OUTPUT)]
     pub gzip: bool,
+
+    #[command(flatten)]
+    pub compression: CompressArgs,
 
     /// Write machine-readable run metrics (JSON) to this file
     #[arg(long, help_heading = H_DIAG)]
@@ -859,6 +881,9 @@ pub struct DadaPooledArgs {
     /// Gzip the per-sample JSON files (`{sample}.json.gz`)
     #[arg(long, help_heading = H_OUTPUT)]
     pub gzip: bool,
+
+    #[command(flatten)]
+    pub compression: CompressArgs,
 
     /// Write machine-readable run metrics (JSON) to this file
     #[arg(long, help_heading = H_DIAG)]
@@ -980,6 +1005,9 @@ pub struct DadaPseudoArgs {
     #[arg(long, help_heading = H_OUTPUT)]
     pub gzip: bool,
 
+    #[command(flatten)]
+    pub compression: CompressArgs,
+
     /// Write machine-readable run metrics (JSON) to this file
     #[arg(long, help_heading = H_DIAG)]
     pub metrics_json: Option<PathBuf>,
@@ -1077,6 +1105,9 @@ pub struct MergePairsArgs {
     /// Emit compact (minified) JSON instead of pretty-printed
     #[arg(long, help_heading = H_OUTPUT)]
     pub compact: bool,
+
+    #[command(flatten)]
+    pub compression: CompressArgs,
 
     /// Verify that the dada JSONs and FASTQ names agree on the sample
     #[arg(long, help_heading = H_DIAG)]
@@ -1243,6 +1274,9 @@ pub struct RemovePrimersArgs {
     #[arg(long, help_heading = H_OUTPUT)]
     pub compact: bool,
 
+    #[command(flatten)]
+    pub compression: CompressArgs,
+
     /// Print progress to stderr
     #[arg(long, help_heading = H_DIAG)]
     pub verbose: bool,
@@ -1344,6 +1378,9 @@ pub struct FilterAndTrimArgs {
     #[arg(long, help_heading = H_OUTPUT)]
     pub compact: bool,
 
+    #[command(flatten)]
+    pub compression: CompressArgs,
+
     /// Print progress to stderr
     #[arg(long, help_heading = H_DIAG)]
     pub verbose: bool,
@@ -1385,6 +1422,9 @@ pub struct MakeSequenceTableArgs {
     /// Emit compact (minified) JSON instead of pretty-printed
     #[arg(long, help_heading = H_OUTPUT)]
     pub compact: bool,
+
+    #[command(flatten)]
+    pub compression: CompressArgs,
 }
 
 /// Arguments for [`Commands::RemoveBimeraDenovo`].
@@ -1454,6 +1494,9 @@ pub struct RemoveBimeraDenovoArgs {
     /// Emit compact (minified) JSON instead of pretty-printed
     #[arg(long, help_heading = H_OUTPUT)]
     pub compact: bool,
+
+    #[command(flatten)]
+    pub compression: CompressArgs,
 
     /// Print progress to stderr
     #[arg(long, help_heading = H_DIAG)]
@@ -1596,6 +1639,9 @@ pub struct AssignTaxonomyArgs {
     #[arg(long, help_heading = H_OUTPUT)]
     pub compact: bool,
 
+    #[command(flatten)]
+    pub compression: CompressArgs,
+
     /// Print progress to stderr
     #[arg(long, help_heading = H_DIAG)]
     pub verbose: bool,
@@ -1627,6 +1673,9 @@ pub struct AssignSpeciesArgs {
     /// Emit compact (minified) JSON instead of pretty-printed
     #[arg(long, help_heading = H_OUTPUT)]
     pub compact: bool,
+
+    #[command(flatten)]
+    pub compression: CompressArgs,
 
     /// Print progress to stderr
     #[arg(long, help_heading = H_DIAG)]
@@ -1708,6 +1757,9 @@ pub struct SampleArgs {
     #[arg(long, help_heading = H_OUTPUT)]
     pub gzip: bool,
 
+    #[command(flatten)]
+    pub compression: CompressArgs,
+
     /// Print progress to stderr
     #[arg(long, help_heading = H_DIAG)]
     pub verbose: bool,
@@ -1737,6 +1789,9 @@ pub struct ErrorsFromSampleArgs {
     /// Emit compact (minified) JSON instead of pretty-printed
     #[arg(long, help_heading = H_OUTPUT)]
     pub compact: bool,
+
+    #[command(flatten)]
+    pub compression: CompressArgs,
 
     /// Print per-iteration progress to stderr
     #[arg(long, help_heading = H_DIAG)]
@@ -1789,6 +1844,9 @@ pub struct LearnErrorsArgs {
     /// Emit compact (minified) JSON instead of pretty-printed
     #[arg(long, help_heading = H_OUTPUT)]
     pub compact: bool,
+
+    #[command(flatten)]
+    pub compression: CompressArgs,
 
     /// Print per-iteration progress to stderr
     #[arg(long, help_heading = H_DIAG)]

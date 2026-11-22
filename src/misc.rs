@@ -8,6 +8,30 @@ use flate2::write::GzEncoder;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+/// Default gzip level for every writer (`--compress-level`). Level 5 on the
+/// zlib-rs backend measured 3–4x faster than level 6 for 1–6% larger files on
+/// derep JSON and FASTQ (#331).
+pub const DEFAULT_GZIP_LEVEL: u32 = 5;
+
+static GZIP_LEVEL: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+/// Set the process-wide gzip level, once, from the running subcommand's
+/// `--compress-level`. Later calls are ignored.
+pub fn set_gzip_level(level: u32) {
+    let _ = GZIP_LEVEL.set(level);
+}
+
+/// The gzip level every writer uses: `--compress-level`, else the default.
+pub fn gzip_level() -> Compression {
+    Compression::new(*GZIP_LEVEL.get().unwrap_or(&DEFAULT_GZIP_LEVEL))
+}
+
+/// [`gzip_level`] for the bgzf writers (`--threads` > 1 on FASTQ output).
+pub fn bgzf_level() -> noodles::bgzf::writer::CompressionLevel {
+    let level = gzip_level().level() as u8;
+    noodles::bgzf::writer::CompressionLevel::new(level).expect("gzip level is clamped to 1..=9")
+}
+
 /// Write `bytes` to `path`, gzip-compressing when the path ends in `.gz`
 /// (otherwise written verbatim). Parent directories are created as needed.
 ///
@@ -24,7 +48,7 @@ pub fn write_maybe_gz(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let file = File::create(path)?;
     let is_gz = path.extension().and_then(|e| e.to_str()) == Some("gz");
     if is_gz {
-        let mut w = GzEncoder::new(file, Compression::default());
+        let mut w = GzEncoder::new(file, gzip_level());
         w.write_all(bytes)?;
         w.finish()?;
     } else {

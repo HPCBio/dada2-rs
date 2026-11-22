@@ -34,6 +34,9 @@ bins are reported as informational, not as errors.
 
 **`--compact`** — minified JSON.
 
+**`--compress-level`** (default 5) — gzip level for `.gz` output, 1 (fastest)
+to 9 (smallest). See [compressed output](index.md#compressed-output).
+
 ## Diagnostics
 
 **`--report`** — also print a human-readable run-level report to stderr. Stdout

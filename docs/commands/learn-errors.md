@@ -219,6 +219,9 @@ affect results.
 
 **`--compact`** — minified JSON instead of pretty-printed.
 
+**`--compress-level`** (default 5) — gzip level for `.gz` output, 1 (fastest)
+to 9 (smallest). See [compressed output](index.md#compressed-output).
+
 ## Diagnostics
 
 **`--verbose`** — per-iteration progress to stderr.

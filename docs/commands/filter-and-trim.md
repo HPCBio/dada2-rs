@@ -93,6 +93,9 @@ richness falls below this value.
 
 **`--compact`** — minified JSON.
 
+**`--compress-level`** (default 5) — gzip level for `.gz` output, 1 (fastest)
+to 9 (smallest). See [compressed output](index.md#compressed-output).
+
 ## Diagnostics
 
 **`--verbose`** — progress to stderr.
