@@ -126,7 +126,8 @@ coordinates and tags.
 [BioContainers](https://biocontainers.pro) builds images from the
 [Bioconda](#bioconda) package, so they share its portable build. Tags pair the
 version with a build hash; take the current one from
-[quay.io](https://quay.io/repository/biocontainers/dada2-rs?tab=tags).
+[quay.io](https://quay.io/repository/biocontainers/dada2-rs?tab=tags). There is
+no `latest` tag, so a pull without a tag fails.
 
 ```bash
 docker pull quay.io/biocontainers/dada2-rs:0.5.0--hfa8f182_0
