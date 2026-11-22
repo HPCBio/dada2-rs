@@ -1,5 +1,18 @@
 # Building & installing
 
+## Bioconda
+
+```bash
+conda install -c conda-forge -c bioconda dada2-rs
+```
+
+Packages exist for Linux (x86-64, aarch64) and macOS (Intel, Apple Silicon).
+The package is a portable build: it runs on any CPU of its platform but is
+slower than a [native build](#native-release-recommended-for-production-runs)
+or the release binaries, which target x86-64-v3 (AVX2). It holds the binary
+only: no experimental WFA backend, and none of the helper R/Python scripts,
+which `make install` from a source checkout provides.
+
 ## Prerequisites
 
 A recent stable Rust toolchain. The easiest way to get one is

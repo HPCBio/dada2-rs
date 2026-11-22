@@ -42,11 +42,17 @@ fixtures; see [benchmarking](docs/benchmarking.md) and the
   - Intermediate outputs (in JSON) - can be evaluated for debugging purposes or for plotting in R, Python, etc.
   - Experimental [wavefront-alignment (WFA) backend](docs/parameters.md#experimental-wfa-alignment-backend) (`--align-backend wfa2`), a developer build gated behind `--features wfa` (not in the published crate)
   - Per-position quality summaries, with binned-quality detection (`summary`, `summary-merge`)
-  - Dedicated Docker builds available
+  - Dedicated Docker builds and a Bioconda package available
 
 ## Building & installing
 
-Requires a recent stable Rust toolchain ([rustup.rs](https://rustup.rs)).
+From Bioconda (binary only, portable build):
+
+```bash
+conda install -c conda-forge -c bioconda dada2-rs
+```
+
+Building from source requires a recent stable Rust toolchain ([rustup.rs](https://rustup.rs)).
 
 ```bash
 cargo build --release
