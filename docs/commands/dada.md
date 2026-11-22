@@ -182,6 +182,9 @@ absent from a given sample's file. `nearest` is found after denoising (a k-mer
 screen, then one alignment per candidate) and is omitted when there is a single
 ASV.
 
+**`--compress-level`** (default 5) — gzip level for `.gz` output, 1 (fastest)
+to 9 (smallest). See [compressed output](index.md#compressed-output).
+
 ## Diagnostics
 
 None of these change the ASVs.

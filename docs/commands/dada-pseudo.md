@@ -85,6 +85,9 @@ so the cache is pure overhead except in narrow cases.
 [`dada-pooled`](dada-pooled.md#output). ASV records carry
 [lineage fields](dada.md#output), with cluster ids per sample.
 
+**`--compress-level`** (default 5) — gzip level for `.gz` output, 1 (fastest)
+to 9 (smallest). See [compressed output](index.md#compressed-output).
+
 ## Diagnostics
 
 **`--metrics-json`** — write a structured record of the run's phase times,

@@ -38,6 +38,7 @@ pub(crate) fn run_learn_errors(args: cli::LearnErrorsArgs) -> io::Result<()> {
         diag,
         verbose,
         indel,
+        compression: _,
     } = args;
     check_input_paths("input", &input)?;
     let resolved = resolve_learn_params(&fit, denoise, experimental, threads, verbose)?;
@@ -82,6 +83,7 @@ pub(crate) fn run_errors_from_sample(args: cli::ErrorsFromSampleArgs) -> io::Res
         compact,
         diag,
         verbose,
+        compression: _,
     } = args;
     check_input_paths("input", &input)?;
     let resolved = resolve_learn_params(&fit, denoise, experimental, threads, verbose)?;

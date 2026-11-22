@@ -28,6 +28,7 @@ pub(crate) fn run_summary(args: cli::SummaryArgs) -> io::Result<()> {
         ee_bins,
         binned_threshold,
         report,
+        compression: _,
     } = args;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
@@ -208,6 +209,7 @@ pub(crate) fn run_summary_merge(args: cli::SummaryMergeArgs) -> io::Result<()> {
         binned_threshold,
         report,
         expected_bins,
+        compression: _,
     } = args;
     check_input_paths("input", &inputs)?;
     use std::collections::BTreeMap;

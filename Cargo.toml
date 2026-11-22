@@ -37,7 +37,7 @@ exclude = [
 
 [dependencies]
 noodles = { version = "0.91", features = ["fastq", "fasta", "bgzf"] }
-flate2 = "1"
+flate2 = { version = "1", features = ["zlib-rs"] }
 clap = { version = "4", features = ["derive"] }
 rayon = "1"
 serde = { version = "1", features = ["derive"] }

@@ -21,7 +21,6 @@ use std::path::Path;
 use noodles::bgzf;
 use noodles::fasta;
 
-use flate2::Compression;
 use flate2::read::MultiGzDecoder;
 use flate2::write::GzEncoder;
 use noodles::fastq;
@@ -293,10 +292,11 @@ fn open_writer(path: &Path, compress: bool, threads: usize) -> io::Result<Box<dy
         if threads > 1 {
             let w = bgzf::multithreaded_writer::Builder::default()
                 .set_worker_count(NonZeroUsize::new(threads).unwrap())
+                .set_compression_level(crate::misc::bgzf_level())
                 .build_from_writer(file);
             Ok(Box::new(w))
         } else {
-            Ok(Box::new(GzEncoder::new(file, Compression::default())))
+            Ok(Box::new(GzEncoder::new(file, crate::misc::gzip_level())))
         }
     } else {
         Ok(Box::new(BufWriter::new(file)))

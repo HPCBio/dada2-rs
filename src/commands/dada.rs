@@ -59,6 +59,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         metrics_json,
         metrics_attribution,
         verbose,
+        compression: _,
     } = args;
     // Wall clock for `--metrics-json`, started before any I/O so the
     // document measures the subcommand and not just the denoiser.
@@ -312,6 +313,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
         metrics_json,
         metrics_attribution,
         verbose,
+        compression: _,
     } = args;
     let t_start = std::time::Instant::now();
     let measure_level = resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution);
@@ -805,6 +807,7 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
         metrics_json,
         metrics_attribution,
         verbose,
+        compression: _,
     } = args;
     let t_start = std::time::Instant::now();
     let measure_level = resolve_measure_level(verbose, metrics_json.as_ref(), metrics_attribution);

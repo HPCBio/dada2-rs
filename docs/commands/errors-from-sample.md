@@ -40,6 +40,9 @@ Identical in meaning to [`learn-errors`](learn-errors.md). In particular
 
 **`--compact`** — minified JSON.
 
+**`--compress-level`** (default 5) — gzip level for `.gz` output, 1 (fastest)
+to 9 (smallest). See [compressed output](index.md#compressed-output).
+
 ## See also
 
 - [`learn-errors`](learn-errors.md) — the one-step form

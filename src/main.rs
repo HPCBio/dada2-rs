@@ -62,6 +62,10 @@ fn run() -> io::Result<()> {
         }
     };
 
+    if let Some(level) = compress_level(&command) {
+        misc::set_gzip_level(level);
+    }
+
     match command {
         Commands::Summary(args) => commands::qc::run_summary(args)?,
         Commands::SummaryMerge(args) => commands::qc::run_summary_merge(args)?,
@@ -88,4 +92,28 @@ fn run() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// The running subcommand's `--compress-level`, for those that can write gzip.
+fn compress_level(command: &Commands) -> Option<u32> {
+    let c = match command {
+        Commands::Summary(a) => &a.compression,
+        Commands::SummaryMerge(a) => &a.compression,
+        Commands::Derep(a) => &a.compression,
+        Commands::Sample(a) => &a.compression,
+        Commands::LearnErrors(a) => &a.compression,
+        Commands::ErrorsFromSample(a) => &a.compression,
+        Commands::Dada(a) => &a.compression,
+        Commands::DadaPooled(a) => &a.compression,
+        Commands::DadaPseudo(a) => &a.compression,
+        Commands::MergePairs(a) => &a.compression,
+        Commands::RemovePrimers(a) => &a.compression,
+        Commands::FilterAndTrim(a) => &a.compression,
+        Commands::MakeSequenceTable(a) => &a.compression,
+        Commands::RemoveBimeraDenovo(a) => &a.compression,
+        Commands::AssignTaxonomy(a) => &a.compression,
+        Commands::AssignSpecies(a) => &a.compression,
+        _ => return None,
+    };
+    Some(c.compress_level)
 }

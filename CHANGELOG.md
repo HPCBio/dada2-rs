@@ -10,6 +10,10 @@ minor versions may carry breaking changes).
 
 ### Added
 
+- `--compress-level` (Output; #331) on every subcommand that can write gzip:
+  1 (fastest) to 9 (smallest), default 5. Applies to `.gz` JSON, gzipped FASTQ
+  and bgzf FASTQ (`--threads` > 1). Changes speed and file size only. See
+  [Compressed output](docs/commands/index.md#compressed-output).
 - `scripts/flag_artifacts.py` (Experimental; #291), installed as
   `dada2-rs-flag-artifacts`: flags ASVs that are likely artifacts of a more
   abundant ASV after chimera removal (homopolymer-length and one-indel
@@ -56,6 +60,13 @@ minor versions may carry breaking changes).
   `--indel-opportunities` table. `learn-errors --indel-fit-cmd` (Experimental)
   hands the fit to a command, and `examples/external_indel_fit/indel_gam.R`
   fits penalised GAMs with mgcv.
+
+### Changed
+
+- Gzip output uses flate2's zlib-rs backend and level 5 instead of
+  miniz_oxide at level 6 (#331): about 2× faster `derep` to `.json.gz` on a
+  NovaSeq sample, files 1–6% larger, faster gzip reads. Decompressed content is
+  unchanged; the `.gz` bytes differ.
 
 ### Fixed
 - `remove-primers` `--rc-primer-rev`, `--trim-fwd`, `--trim-rev`, `--orient`

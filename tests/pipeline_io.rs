@@ -792,3 +792,34 @@ fn merge_pairs_provenance_from_derep_json() {
         assert!(swapped.contains(WARNING), "{mode}: {swapped}");
     }
 }
+
+/// `--compress-level` reaches the gzip writer: levels 1 and 9 give different
+/// `.gz` bytes for the same derep, and the same JSON once decompressed (#331).
+#[test]
+fn compress_level_changes_bytes_not_content() {
+    use std::io::Read;
+    let dir = scratch("compress_level");
+    let input = fixture("sam1F.fastq.gz");
+    let write = |level: &str| {
+        let out = dir.join(format!("l{level}.json.gz"));
+        run(&[
+            "derep",
+            input.to_str().unwrap(),
+            "--compress-level",
+            level,
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        let gz = std::fs::read(&out).unwrap();
+        let mut json = Vec::new();
+        flate2::read::MultiGzDecoder::new(&gz[..])
+            .read_to_end(&mut json)
+            .unwrap();
+        (gz, json)
+    };
+    let (fast, fast_json) = write("1");
+    let (small, small_json) = write("9");
+    assert_ne!(fast, small, "levels 1 and 9 wrote identical gzip bytes");
+    assert!(small.len() < fast.len(), "level 9 not smaller than level 1");
+    assert_eq!(fast_json, small_json, "decompressed JSON differs by level");
+}

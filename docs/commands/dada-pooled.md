@@ -82,6 +82,9 @@ floor that grows as a share of runtime as threads rise; see
 ASV records carry [lineage fields](dada.md#output); here cluster ids are
 pool-wide, the same in every sample's file.
 
+**`--compress-level`** (default 5) — gzip level for `.gz` output, 1 (fastest)
+to 9 (smallest). See [compressed output](index.md#compressed-output).
+
 ## Diagnostics
 
 **`--verbose`** — the run's shape and results to stderr: CPU allocation,
