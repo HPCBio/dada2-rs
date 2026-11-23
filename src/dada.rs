@@ -2134,6 +2134,7 @@ mod tests {
             band: 16,
             vectorized: true,
             gapless: true,
+            batch_align: false,
         };
         let opts = DenoiseOpts {
             omega_a: 1e-40,

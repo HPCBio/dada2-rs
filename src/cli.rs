@@ -436,6 +436,10 @@ pub struct ExperimentalArgs {
     /// EXPERIMENTAL: affine gap-opening penalty; 0 = linear gaps, R's [default: 0]
     #[arg(long, allow_hyphen_values = true, help_heading = H_EXP)]
     pub gap_open_p: Option<i32>,
+
+    /// EXPERIMENTAL: align screen-passing pairs in same-length batches; same output
+    #[arg(long, default_value_t = false, help_heading = H_EXP)]
+    pub batch_align: bool,
 }
 
 /// The experimental indel-aware λ (issue #291), on `dada`, `dada-pooled` and

@@ -1,4 +1,4 @@
-//! PROTOTYPE: inter-sequence batched banded NW.
+//! Inter-sequence batched banded NW (experimental, `--batch-align`).
 //!
 //! [`align_vectorized_batch`] runs the algorithm of
 //! [`crate::nwalign::align_vectorized_with_buf`] (R `nwalign_vectorized2`) on
@@ -8,8 +8,8 @@
 //! and every per-cell operation becomes `L` contiguous lanes. Output per lane
 //! is byte-identical to the single-pair kernel (see the tests).
 //!
-//! Not wired into `dada`. Exists to measure ns/cell against the single-pair
-//! kernel (docs/findings/compare-screen-vs-align.md).
+//! Used by `cluster::b_compare_parallel` under `--batch-align`;
+//! `examples/batch_nw_bench.rs` measures it against the single-pair kernel.
 
 use crate::nwalign::{VectorizedAlignScores, align_vectorized_with_buf};
 

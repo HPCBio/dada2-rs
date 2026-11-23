@@ -9,8 +9,10 @@ use rayon::prelude::*;
 
 use crate::containers::{B, Bi, BirthType, Comparison};
 use crate::nwalign::{
-    AlignBuffers, AlignParams, ScreenBackend, sub_new_with_buf, sub_new_with_screen,
+    AlignBuffers, AlignParams, ScreenBackend, SubOrDefer, align_vectorized_with_buf,
+    sub_from_alignment, sub_new_or_defer, sub_new_with_buf, sub_new_with_screen, vectorized_scores,
 };
+use crate::nwalign_batch::{BatchBuffers, align_vectorized_batch};
 use crate::progress::ProgressRecord;
 use crate::pval::compute_lambda;
 use crate::rec_print;
@@ -256,6 +258,115 @@ pub struct CompareTiming {
     pub aligned: u64,
 }
 
+/// One batch's `(raw index, lambda, hamming)` results and its worker nanos.
+type BatchResult = (Vec<(u32, f64, u32)>, u64);
+
+/// `hamming` marker for a comparison left to [`align_deferred`].
+const DEFERRED: u32 = u32::MAX - 1;
+
+/// Pairs per batch under `--batch-align`; 16 was fastest on all three platforms
+/// (batched-NW prototype, branch `proto/batched-nw`).
+const BATCH_LANES: usize = 16;
+
+/// Same-length groups smaller than this go through the single-pair kernel
+/// rather than a mostly-padded batch.
+const MIN_BATCH: usize = 8;
+
+/// Align the comparisons `b_compare_parallel` deferred, in batches of raws
+/// that share a length, and fill in their `(lambda, hamming)`. Results are
+/// byte-identical to the per-pair path (`nwalign_batch` tests). Returns the
+/// summed worker time in nanoseconds under `measure`, else 0.
+#[allow(clippy::too_many_arguments)]
+fn align_deferred(
+    comps: &mut [(f64, u32, bool, CompCost)],
+    raws: &[crate::containers::Raw],
+    center_idx: usize,
+    err_mat: &[f64],
+    ncol: usize,
+    use_quals: bool,
+    indel_model: Option<&crate::indel_model::IndelModel>,
+    params: &AlignParams,
+    measure: bool,
+) -> u64 {
+    let mut pending: Vec<u32> = comps
+        .par_iter()
+        .enumerate()
+        .filter_map(|(i, c)| (c.1 == DEFERRED).then_some(i as u32))
+        .collect();
+    if pending.is_empty() {
+        return 0;
+    }
+    pending.par_sort_unstable_by_key(|&i| (raws[i as usize].seq.len(), i));
+
+    let mut chunks: Vec<&[u32]> = Vec::new();
+    let len_of = |i: u32| raws[i as usize].seq.len();
+    let mut start = 0;
+    for k in 1..=pending.len() {
+        if k == pending.len() || len_of(pending[k]) != len_of(pending[start]) {
+            chunks.extend(pending[start..k].chunks(BATCH_LANES));
+            start = k;
+        }
+    }
+
+    let scores = vectorized_scores(params);
+    let center = &raws[center_idx];
+    let results: Vec<BatchResult> = chunks
+        .par_iter()
+        .map_init(
+            || (BatchBuffers::new(), AlignBuffers::new()),
+            |(bb, sb), chunk| {
+                let t0 = measure.then(std::time::Instant::now);
+                let mut out = Vec::with_capacity(chunk.len());
+                let mut finish = |idx: u32, al0: &[u8], al1: &[u8]| {
+                    let raw = &raws[idx as usize];
+                    let sub = sub_from_alignment(center, raw, al0, al1);
+                    let mut lambda = compute_lambda(raw, Some(&sub), err_mat, ncol, use_quals);
+                    let mut hamming = sub.nsubs() as u32;
+                    if let Some(m) = indel_model {
+                        let qual = raw.qual.as_deref().filter(|_| use_quals);
+                        let (f, h) = m.score(&center.seq, &raw.seq, qual, &sub, err_mat, ncol);
+                        lambda *= f;
+                        hamming += h;
+                    }
+                    out.push((idx, lambda, hamming));
+                };
+                if chunk.len() >= MIN_BATCH {
+                    let lanes: [(&[u8], &[u8]); BATCH_LANES] = std::array::from_fn(|k| {
+                        let idx = chunk[if k < chunk.len() { k } else { 0 }];
+                        (center.seq.as_slice(), raws[idx as usize].seq.as_slice())
+                    });
+                    align_vectorized_batch::<BATCH_LANES>(&lanes, &scores, bb);
+                    for (&idx, (al0, al1)) in chunk.iter().zip(&bb.al) {
+                        finish(idx, al0, al1);
+                    }
+                } else {
+                    for &idx in chunk.iter() {
+                        align_vectorized_with_buf(
+                            &center.seq,
+                            &raws[idx as usize].seq,
+                            &scores,
+                            sb,
+                        );
+                        finish(idx, &sb.al0, &sb.al1);
+                    }
+                }
+                (out, t0.map_or(0, |t| t.elapsed().as_nanos() as u64))
+            },
+        )
+        .collect();
+
+    let mut ns = 0u64;
+    for (out, t) in results {
+        ns += t;
+        for (idx, lambda, hamming) in out {
+            let c = &mut comps[idx as usize];
+            c.0 = lambda;
+            c.1 = hamming;
+        }
+    }
+    ns
+}
+
 /// Time the two per-pair screen paths on a sample of raws, for the index probe.
 ///
 /// Returns `(merge_join_ns_per_pair, array_read_ns_per_pair)`. The difference is
@@ -407,12 +518,17 @@ pub fn b_compare_parallel(
     // `DADA2_RS_PAR_GRAIN` env var to tune for your workload.
     // Per-item compute time (4th tuple field, nanos) is summed after collect to
     // get total worker-busy time without cross-thread atomic contention.
-    let comps: Vec<(f64, u32, bool, CompCost)> = (0..nraw)
+    // `--batch-align`: pairs bound for the vectorized kernel are left DEFERRED
+    // here and aligned in same-length batches by `align_deferred` below. The
+    // per-pair screen/DP split is not attributed in that mode (buffers do not
+    // measure); the batch phase is charged to `dp` as a whole.
+    let batch = params.batch_align && !params.screen_audit;
+    let mut comps: Vec<(f64, u32, bool, CompCost)> = (0..nraw)
         .into_par_iter()
         .with_max_len(par_max_len())
         .map_init(
             || {
-                if measure {
+                if measure && !batch {
                     AlignBuffers::measuring()
                 } else {
                     AlignBuffers::new()
@@ -435,7 +551,16 @@ pub fn b_compare_parallel(
                             raw.minimizers.as_ref(),
                         )
                     });
-                    let sub = sub_new_with_screen(&raws[center_idx], raw, params, buf, screen_d);
+                    let sub = if batch {
+                        match sub_new_or_defer(&raws[center_idx], raw, params, buf, screen_d) {
+                            SubOrDefer::Done(sub) => sub,
+                            SubOrDefer::Defer => {
+                                return (0.0, DEFERRED, false, CompCost::default());
+                            }
+                        }
+                    } else {
+                        sub_new_with_screen(&raws[center_idx], raw, params, buf, screen_d)
+                    };
                     let mut lambda = compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
                     let mut hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
                     if let (Some(m), Some(s)) = (indel_model.as_deref(), sub.as_ref()) {
@@ -473,6 +598,21 @@ pub fn b_compare_parallel(
             },
         )
         .collect();
+    let batch_ns = if batch {
+        align_deferred(
+            &mut comps,
+            raws,
+            center_idx,
+            err_mat,
+            ncol,
+            use_quals,
+            indel_model.as_deref(),
+            params,
+            measure,
+        )
+    } else {
+        0
+    };
     let map_dur = t_map.elapsed();
 
     // Serial post-processing: reduce the map's per-item costs and selectively
@@ -541,6 +681,8 @@ pub fn b_compare_parallel(
         }
     }
     let serial_dur = t_serial.elapsed();
+    cost.total += batch_ns;
+    cost.dp += batch_ns;
     let busy_dur = std::time::Duration::from_nanos(cost.total);
     // Retained so the attribution block still reconstructs `compare` and so a
     // future change that reintroduces a separate reduction is visible rather
@@ -2019,6 +2161,7 @@ mod compare_fold_tests {
             band: 16,
             vectorized: true,
             gapless: true,
+            batch_align: false,
         }
     }
 
@@ -2111,6 +2254,154 @@ mod compare_fold_tests {
                     s.lambda.to_bits(),
                     "greedy={greedy}: lambda"
                 );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod batch_align_tests {
+    use super::*;
+    use crate::containers::Raw;
+    use crate::kmers::raw_assign_kmers;
+    use crate::nwalign::{AlignBackend, EndModel};
+
+    const K: usize = 5;
+
+    fn rng(st: &mut u64) -> u64 {
+        *st ^= *st << 13;
+        *st ^= *st >> 7;
+        *st ^= *st << 17;
+        *st
+    }
+
+    fn raw(seq: Vec<u8>, reads: u32, st: &mut u64) -> Raw {
+        let qual: Vec<f64> = (0..seq.len())
+            .map(|_| 20.0 + (rng(st) % 21) as f64)
+            .collect();
+        let mut r = Raw::new(seq, Some(&qual), reads, false);
+        raw_assign_kmers(&mut r, K);
+        r
+    }
+
+    /// A center plus variants covering every route through `b_compare_parallel`
+    /// under `--batch-align`: 24 same-length indel variants (one full batch and
+    /// an 8-pair batch), 5 one-shorter variants (below `MIN_BATCH`, single
+    /// kernel), substitution-only variants (gapless shortcut) and unrelated
+    /// sequences (shrouded).
+    fn pool() -> Vec<Raw> {
+        let mut st = 0x9E37_79B9_7F4A_7C15u64;
+        let center: Vec<u8> = (0..150).map(|_| 1 + (rng(&mut st) % 4) as u8).collect();
+        let sub = |s: &mut Vec<u8>, st: &mut u64| {
+            let p = (rng(st) % s.len() as u64) as usize;
+            s[p] = 1 + (s[p] % 4);
+        };
+        let mut raws = vec![raw(center.clone(), 10_000, &mut st)];
+        for n in 0..24u32 {
+            let mut s = center.clone();
+            let d = 20 + (rng(&mut st) % 50) as usize;
+            s.remove(d);
+            let i = 80 + (rng(&mut st) % 50) as usize;
+            s.insert(i, 1 + (rng(&mut st) % 4) as u8);
+            sub(&mut s, &mut st);
+            raws.push(raw(s, 500 - n, &mut st));
+        }
+        for n in 0..5u32 {
+            let mut s = center.clone();
+            s.remove(40 + 10 * n as usize);
+            raws.push(raw(s, 300 - n, &mut st));
+        }
+        for n in 0..10u32 {
+            let mut s = center.clone();
+            for _ in 0..=n % 3 {
+                sub(&mut s, &mut st);
+            }
+            raws.push(raw(s, 200 - n, &mut st));
+        }
+        for n in 0..5u32 {
+            let s: Vec<u8> = (0..150).map(|_| 1 + (rng(&mut st) % 4) as u8).collect();
+            raws.push(raw(s, 50 - n, &mut st));
+        }
+        raws
+    }
+
+    fn params(batch_align: bool) -> AlignParams {
+        AlignParams {
+            backend: AlignBackend::Nw,
+            end_model: EndModel::EndsFree,
+            wfa_max_edits: 0,
+            match_score: 5,
+            mismatch: -4,
+            gap_p: -8,
+            gap_open_p: 0,
+            homo_gap_p: -8,
+            use_kmers: true,
+            kdist_cutoff: 0.42,
+            screen_backend: ScreenBackend::Kmer,
+            minimizer_k: crate::minimizers::MINIMIZER_K,
+            minimizer_w: crate::minimizers::MINIMIZER_W,
+            screen_audit: false,
+            kmer_size: K,
+            band: 16,
+            vectorized: true,
+            gapless: true,
+            batch_align,
+        }
+    }
+
+    /// Batched and per-pair comparisons must leave `B` in the same state, bit
+    /// for bit.
+    #[test]
+    fn batch_align_matches_per_pair() {
+        let raws = pool();
+        let p = params(true);
+        let mut buf = AlignBuffers::new();
+        let deferred: Vec<usize> = (1..raws.len())
+            .filter(|&r| {
+                matches!(
+                    sub_new_or_defer(&raws[0], &raws[r], &p, &mut buf, None),
+                    SubOrDefer::Defer
+                )
+            })
+            .map(|r| raws[r].seq.len())
+            .collect();
+        // Guard against a vacuous pass: both batch sizes and the single-kernel
+        // fallback must actually be reached.
+        assert_eq!(deferred.iter().filter(|&&l| l == 150).count(), 24);
+        assert_eq!(deferred.iter().filter(|&&l| l == 149).count(), 5);
+
+        let mut err = vec![0.0f64; 16 * 41];
+        for (row, cells) in err.chunks_mut(41).enumerate() {
+            let self_trans = row % 5 == 0;
+            for (q, e) in cells.iter_mut().enumerate() {
+                let x = 10f64.powf(-(q as f64) / 10.0);
+                *e = if self_trans { 1.0 - x } else { x / 3.0 };
+            }
+        }
+        for greedy in [false, true] {
+            for measure in [false, true] {
+                let run = |batch: bool| {
+                    let mut b = B::new(pool(), 1e-40, 1e-4, true);
+                    b.clusters[0].center = Some(0);
+                    b_compare_parallel(&mut b, 0, &err, 41, &params(batch), greedy, measure);
+                    b
+                };
+                let (a, z) = (run(false), run(true));
+                let tag = format!("greedy={greedy} measure={measure}");
+                assert_eq!(a.nalign, z.nalign, "{tag}: nalign");
+                assert_eq!(a.nshroud, z.nshroud, "{tag}: nshroud");
+                assert_eq!(a.clusters[0].self_.to_bits(), z.clusters[0].self_.to_bits());
+                assert_eq!(a.clusters[0].comp.len(), z.clusters[0].comp.len(), "{tag}");
+                for (x, y) in a.clusters[0].comp.iter().zip(&z.clusters[0].comp) {
+                    assert_eq!(x.index, y.index, "{tag}: index");
+                    assert_eq!(x.hamming, y.hamming, "{tag}: hamming");
+                    assert_eq!(x.lambda.to_bits(), y.lambda.to_bits(), "{tag}: lambda");
+                }
+                for (x, y) in a.raws.iter().zip(&z.raws) {
+                    assert_eq!(x.comp.lambda.to_bits(), y.comp.lambda.to_bits(), "{tag}");
+                    assert_eq!(x.comp.hamming, y.comp.hamming, "{tag}");
+                }
+                assert!(a.clusters[0].comp.len() > 30, "{tag}: too few comps stored");
             }
         }
     }

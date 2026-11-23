@@ -460,6 +460,19 @@ model and the output `params`, and `dada` warns when its own differs. Each
 affine alignment costs about 1.3× a linear one (learn-errors on the PacBio mocks
 took 1.1–1.2× as long).
 
+**`--batch-align`** — align the pairs that pass the screen 16 at a time instead
+of one by one: during each cluster comparison, raws bound for the vectorized NW
+kernel are grouped by length and aligned in lockstep, one pair per SIMD lane.
+Output is byte-identical to a run without it; only the schedule changes. Pairs
+routed elsewhere (gapless shortcut, WFA, affine gaps, `--homo-gap-p`, reads over
+3,500 bp) are aligned as before, and `--screen-audit` turns it off. Under
+`--metrics-json` the batch phase is reported as DP time as a whole, with no
+per-pair screen/DP split. On the kernel benchmark the batched kernel is
+3–4.5× faster per DP cell than the per-pair one (EPYC 7713, 1–48 threads);
+end-to-end gains are bounded by the DP kernel's share of `run_dada`. Applies to
+`dada-pooled`, `dada-pseudo` and `learn-errors` too, and only with
+`--threads` > 1 (a single-threaded run takes the serial comparison path).
+
 **`--partition`**, **`--birth-rule`**, **`--reassign`** — how clusters are
 formed ([#323](https://github.com/HPCBio/dada2-rs/issues/323)), on `dada` and
 `dada-pooled` only. These flags exist to compare DADA2's divisive algorithm with

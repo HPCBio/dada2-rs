@@ -453,6 +453,7 @@ fn resolve_learn_params(
         wfa_max_edits,
         end_model,
         gap_open_p,
+        batch_align,
     } = experimental;
     // R's HOMOPOLYMER_GAP_PENALTY = NULL tracks GAP_PENALTY. R also
     // normalizes a positive penalty to negative before comparing them
@@ -543,6 +544,7 @@ fn resolve_learn_params(
         band,
         vectorized: true,
         gapless: true,
+        batch_align,
     };
 
     let dada_params = dada::DadaParams::new(

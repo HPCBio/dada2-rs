@@ -180,6 +180,10 @@ pub struct AlignParams {
     pub band: i32,
     pub vectorized: bool,
     pub gapless: bool,
+    /// Experimental: `b_compare_parallel` defers pairs bound for the vectorized
+    /// kernel and aligns them in same-shape batches ([`crate::nwalign_batch`]).
+    /// Output is unchanged; only the work schedule differs.
+    pub batch_align: bool,
 }
 
 /// Scoring parameters for [`align_vectorized_with_buf`].
@@ -1919,10 +1923,15 @@ pub fn backend_repr(p: &AlignParams) -> String {
     } else {
         backend
     };
-    match p.end_model {
+    let backend = match p.end_model {
         EndModel::EndsFree => backend,
         EndModel::Free3p => format!("{backend}; end model: free-3p (experimental)"),
         EndModel::Global => format!("{backend}; end model: global (experimental)"),
+    };
+    if p.batch_align {
+        format!("{backend}; batched alignment (experimental)")
+    } else {
+        backend
     }
 }
 
@@ -2020,23 +2029,15 @@ pub fn raw_align_with_buf(
     raw_align_with_screen(raw1, raw2, p, buf, None)
 }
 
-/// [`raw_align_with_buf`] with the screen distance optionally supplied by the
-/// caller.
-///
-/// `screen` short-circuits the pairwise screen computation only — the value is
-/// used exactly as the computed one would have been, for the cutoff gate and for
-/// the DP's banding decisions alike. Its purpose is
-/// [`crate::minimizers::MinimizerIndex`], which derives the same distance for
-/// every raw against one cluster center in a single scatter pass, making the
-/// per-pair merge-join redundant. Passing a value that differs from what the
-/// pairwise path would compute changes the run's output.
-pub fn raw_align_with_screen(
+/// The pre-alignment screen of [`raw_align_with_screen`]: `false` means the
+/// pair is shrouded (NULL alignment).
+fn screen_pass(
     raw1: &Raw,
     raw2: &Raw,
     p: &AlignParams,
     buf: &mut AlignBuffers,
     screen: Option<f64>,
-) -> Option<()> {
+) -> bool {
     // --- K-mer screening ---
     // Timed under `buf.measure` (#127). The screen and the alignment are the
     // two halves of a comparison's cost, and only the second is avoidable —
@@ -2128,10 +2129,33 @@ pub fn raw_align_with_screen(
             if p.screen_audit {
                 minimizers::audit::record(buf.audit_kmer_pass, buf.audit_mini_pass, None);
             }
-            return None; // Outside k-mer distance threshold → NULL alignment.
+            return false; // Outside k-mer distance threshold → NULL alignment.
         }
     }
 
+    true
+}
+
+/// [`raw_align_with_buf`] with the screen distance optionally supplied by the
+/// caller.
+///
+/// `screen` short-circuits the pairwise screen computation only — the value is
+/// used exactly as the computed one would have been, for the cutoff gate and for
+/// the DP's banding decisions alike. Its purpose is
+/// [`crate::minimizers::MinimizerIndex`], which derives the same distance for
+/// every raw against one cluster center in a single scatter pass, making the
+/// per-pair merge-join redundant. Passing a value that differs from what the
+/// pairwise path would compute changes the run's output.
+pub fn raw_align_with_screen(
+    raw1: &Raw,
+    raw2: &Raw,
+    p: &AlignParams,
+    buf: &mut AlignBuffers,
+    screen: Option<f64>,
+) -> Option<()> {
+    if !screen_pass(raw1, raw2, p, buf, screen) {
+        return None;
+    }
     let t_align = buf.measure.then(std::time::Instant::now);
     let r = raw_align_dp(raw1, raw2, p, buf);
     if let Some(t) = t_align {
@@ -2139,6 +2163,30 @@ pub fn raw_align_with_screen(
         buf.last_align_nanos = buf.last_dp_nanos;
     }
     r
+}
+
+/// [`raw_align_with_screen`] split at the screen, for batched callers.
+///
+/// Returns `None` when the screen shrouds the pair, `Some(true)` when the pair
+/// passed and the alignment is in `buf`, and `Some(false)` when it passed but
+/// was left unaligned because it would take the vectorized kernel (see
+/// [`vectorized_route`]); the caller aligns those itself.
+fn raw_align_or_defer(
+    raw1: &Raw,
+    raw2: &Raw,
+    p: &AlignParams,
+    buf: &mut AlignBuffers,
+    screen: Option<f64>,
+) -> Option<bool> {
+    if !screen_pass(raw1, raw2, p, buf, screen) {
+        return None;
+    }
+    let gapless = take_gapless(raw1, raw2, p, buf);
+    if !gapless && vectorized_route(raw1, raw2, p) {
+        return Some(false);
+    }
+    raw_align_dp_routed(raw1, raw2, p, buf, gapless)?;
+    Some(true)
 }
 
 /// Whether a pair is free of indels, decided from `kord` alone.
@@ -2270,6 +2318,12 @@ fn screen_dist_minimizer(raw1: &Raw, raw2: &Raw) -> f64 {
 /// and the DP can be timed separately (#127). Behaviour is unchanged: this is
 /// the body that followed the screen's early return.
 fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers) -> Option<()> {
+    let gapless = take_gapless(raw1, raw2, p, buf);
+    raw_align_dp_routed(raw1, raw2, p, buf, gapless)
+}
+
+/// Whether the pair takes the gapless shortcut instead of a DP alignment.
+fn take_gapless(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers) -> bool {
     // --- Method selection ---
     // Method selection is decided from `kord`, independent of which screen ran.
     // For the k-mer backend this reproduces the historical `kodist == kdist`
@@ -2278,10 +2332,46 @@ fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers)
     // Without k-mers there is no shortcut: R's raw_align computes `kodist` only
     // under `use_kmers`, leaving it at -1 != kdist, so the final-subs pass
     // (use_kmers = false, Rmain.cpp) always takes the full alignment (#277).
-    let take_gapless = p.band == 0
+    p.band == 0
         || (p.use_kmers
             && p.gapless
-            && pair_is_gapless(raw1, raw2, p.kmer_size, &mut buf.kord_counts));
+            && pair_is_gapless(raw1, raw2, p.kmer_size, &mut buf.kord_counts))
+}
+
+/// Whether a non-gapless pair would be aligned by [`align_vectorized_with_buf`]
+/// in [`raw_align_dp_routed`]; must mirror that dispatch exactly.
+fn vectorized_route(raw1: &Raw, raw2: &Raw, p: &AlignParams) -> bool {
+    let use_homo = p.homo_gap_p != p.gap_p && p.homo_gap_p <= 0;
+    #[cfg(feature = "wfa")]
+    let wfa = p.backend == AlignBackend::Wfa2 || *USE_WFA_BACKEND;
+    #[cfg(not(feature = "wfa"))]
+    let wfa = p.backend == AlignBackend::Wfa2;
+    let too_long = raw1.len() > VECTORIZED_MAX_LEN || raw2.len() > VECTORIZED_MAX_LEN;
+    !wfa && !use_homo && p.gap_open_p == 0 && p.vectorized && !too_long
+}
+
+/// Scoring for the vectorized kernel under `p`'s end model.
+pub(crate) fn vectorized_scores(p: &AlignParams) -> VectorizedAlignScores {
+    let (begin_free, end_free) = p.end_model.free_ends();
+    let edge = |free: bool| if free { 0 } else { p.gap_p as i16 };
+    VectorizedAlignScores {
+        match_score: p.match_score as i16,
+        mismatch: p.mismatch as i16,
+        gap_p: p.gap_p as i16,
+        begin_gap_p: edge(begin_free),
+        end_gap_p: edge(end_free),
+        band: p.band,
+    }
+}
+
+/// [`raw_align_dp`] with the gapless decision already made.
+fn raw_align_dp_routed(
+    raw1: &Raw,
+    raw2: &Raw,
+    p: &AlignParams,
+    buf: &mut AlignBuffers,
+    take_gapless: bool,
+) -> Option<()> {
     if p.screen_audit {
         // The gapless shortcut fires on `kodist == kdist`: the positional and
         // compositional k-mer distances agreeing means no shifts, hence no
@@ -2358,21 +2448,7 @@ fn raw_align_dp(raw1: &Raw, raw2: &Raw, p: &AlignParams, buf: &mut AlignBuffers)
     }
     let too_long = raw1.len() > VECTORIZED_MAX_LEN || raw2.len() > VECTORIZED_MAX_LEN;
     if p.vectorized && !too_long && !use_homo {
-        let (begin_free, end_free) = p.end_model.free_ends();
-        let edge = |free: bool| if free { 0 } else { p.gap_p as i16 };
-        align_vectorized_with_buf(
-            &raw1.seq,
-            &raw2.seq,
-            &VectorizedAlignScores {
-                match_score: p.match_score as i16,
-                mismatch: p.mismatch as i16,
-                gap_p: p.gap_p as i16,
-                begin_gap_p: edge(begin_free),
-                end_gap_p: edge(end_free),
-                band: p.band,
-            },
-            buf,
-        );
+        align_vectorized_with_buf(&raw1.seq, &raw2.seq, &vectorized_scores(p), buf);
         return Some(());
     }
     if use_homo {
@@ -2429,16 +2505,7 @@ pub fn sub_new_with_screen(
     // only by pairs the screen let through, so it belongs to what the aligner
     // costs, not to the screen's unavoidable baseline.
     let t_post = buf.measure.then(std::time::Instant::now);
-    let mut sub = al2subs(&buf.al0, &buf.al1);
-
-    if let (Some(q0), Some(q1)) = (&raw0.qual, &raw1.qual) {
-        sub.q0 = sub.pos.iter().map(|&pos| q0[pos as usize]).collect();
-        sub.q1 = sub
-            .pos
-            .iter()
-            .map(|&pos| q1[sub.map[pos as usize] as usize])
-            .collect();
-    }
+    let sub = sub_from_alignment(raw0, raw1, &buf.al0, &buf.al1);
     if let Some(t) = t_post {
         buf.last_post_nanos = t.elapsed().as_nanos() as u64;
         buf.last_align_nanos += buf.last_post_nanos;
@@ -2454,6 +2521,51 @@ pub fn sub_new_with_screen(
         return None;
     }
     Some(sub)
+}
+
+/// The `Sub` for an alignment of `raw0` against `raw1`, with quality scores
+/// filled in when both carry them. The post-alignment half of [`sub_new`].
+pub fn sub_from_alignment(raw0: &Raw, raw1: &Raw, al0: &[u8], al1: &[u8]) -> Sub {
+    let mut sub = al2subs(al0, al1);
+    if let (Some(q0), Some(q1)) = (&raw0.qual, &raw1.qual) {
+        sub.q0 = sub.pos.iter().map(|&pos| q0[pos as usize]).collect();
+        sub.q1 = sub
+            .pos
+            .iter()
+            .map(|&pos| q1[sub.map[pos as usize] as usize])
+            .collect();
+    }
+    sub
+}
+
+/// Outcome of [`sub_new_or_defer`].
+pub enum SubOrDefer {
+    /// Same as [`sub_new_with_screen`]'s result.
+    Done(Option<Sub>),
+    /// Passed the screen and bound for [`align_vectorized_with_buf`] with
+    /// [`vectorized_scores`]; the caller aligns it and builds the `Sub` with
+    /// [`sub_from_alignment`].
+    Defer,
+}
+
+/// [`sub_new_with_screen`], except that pairs bound for the vectorized kernel
+/// are returned unaligned so the caller can batch them (`--batch-align`).
+///
+/// Requires `!screen_audit` and a non-measuring `buf`: both attach per-pair
+/// state to the alignment, which a deferred pair does not have yet.
+pub fn sub_new_or_defer(
+    raw0: &Raw,
+    raw1: &Raw,
+    params: &AlignParams,
+    buf: &mut AlignBuffers,
+    screen: Option<f64>,
+) -> SubOrDefer {
+    debug_assert!(!params.screen_audit && !buf.measure);
+    match raw_align_or_defer(raw0, raw1, params, buf, screen) {
+        None => SubOrDefer::Done(None),
+        Some(false) => SubOrDefer::Defer,
+        Some(true) => SubOrDefer::Done(Some(sub_from_alignment(raw0, raw1, &buf.al0, &buf.al1))),
+    }
 }
 
 /// Whether the active backend's own screen passed the last comparison, for
@@ -3506,6 +3618,7 @@ mod tests {
                 band: BAND,
                 vectorized: false,
                 gapless: false,
+                batch_align: false,
             };
             for (s1, s2) in random_pairs(500, 0x40B0) {
                 align_ends_with_buf(&s1, &s2, MATCH, MM, GAP, BAND, ends, &mut buf);
@@ -4555,6 +4668,7 @@ mod tests {
             band: 16,
             vectorized: true, // must be overridden by the homopolymer branch
             gapless: true,
+            batch_align: false,
         };
 
         // Reference: the homopolymer-aware aligner called directly.
@@ -4628,6 +4742,7 @@ mod tests {
             band: 16,
             vectorized: true,
             gapless: true,
+            batch_align: false,
         };
         let mut r1 = Raw::new(s1.clone(), None, 10, false);
         let mut r2 = Raw::new(s2.clone(), None, 5, false);
