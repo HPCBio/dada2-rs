@@ -105,21 +105,27 @@ fn dploop(
 }
 
 /// Align `pairs.len()` pairs, all with the same `(a.len(), b.len())`, `L` at
-/// a time. A short final group is padded by repeating its first pair. Results
-/// land in `buf.al` in input order.
+/// a time, passing each alignment to `sink` in input order. A short final
+/// group is padded by repeating its first pair. Lane buffers are reused, so
+/// the steady state allocates nothing; moving them out per batch is the
+/// suspected cause of the bench collapsing at 16+ threads on the cluster
+/// (`L16alloc` arm in `examples/batch_nw_bench.rs` is the control).
 pub fn align_batch_all<const L: usize>(
     pairs: &[(&[u8], &[u8])],
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
-    out: &mut Vec<(Vec<u8>, Vec<u8>)>,
+    mut sink: impl FnMut(&[u8], &[u8]),
 ) {
-    out.clear();
     for chunk in pairs.chunks(L) {
         let mut lanes = [chunk[0]; L];
         lanes[..chunk.len()].copy_from_slice(chunk);
         align_vectorized_batch::<L>(&lanes, scores, buf);
-        let m = chunk.len().min(buf.al.len());
-        out.extend(buf.al.drain(..m));
+        if SKIP_TRACEBACK.load(std::sync::atomic::Ordering::Relaxed) {
+            continue;
+        }
+        for (al0, al1) in &buf.al[..chunk.len()] {
+            sink(al0, al1);
+        }
     }
 }
 
