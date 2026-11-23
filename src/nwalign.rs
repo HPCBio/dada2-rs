@@ -287,6 +287,19 @@ impl AlignBuffers {
         Self::default()
     }
 
+    /// Test hook: fill the pointer matrix with valid-looking pointers (1-3),
+    /// growing it to at least `n`, to check that no stale cell is ever read.
+    #[cfg(test)]
+    pub(crate) fn poison_pointers(&mut self, n: usize, st: &mut u64) {
+        self.p8.resize(n.max(self.p8.len()), 0);
+        for x in self.p8.iter_mut() {
+            *st ^= *st << 13;
+            *st ^= *st >> 7;
+            *st ^= *st << 17;
+            *x = 1 + (*st % 3) as u8;
+        }
+    }
+
     /// Enable per-call screen/align timing (see [`AlignBuffers::measure`]).
     pub fn measuring() -> Self {
         Self {
@@ -311,6 +324,19 @@ fn reset_buf<T: Copy>(v: &mut Vec<T>, n: usize, val: T) {
         v.resize(n, val);
     } else {
         v[..n].fill(val);
+    }
+}
+
+/// Size a traceback-pointer matrix without clearing it: the traceback reads
+/// only cells written by the same call's fill, so a release build skips the
+/// full-matrix write (batched kernel only; see `align_vectorized_with_buf`). Debug-assertion builds still zero it, which turns a read
+/// of an unwritten cell into a panic on pointer 0 instead of a stale pointer.
+#[inline]
+pub(crate) fn reset_pointers(v: &mut Vec<u8>, n: usize) {
+    if cfg!(debug_assertions) {
+        reset_buf(v, n, 0);
+    } else if v.len() < n {
+        v.resize(n, 0);
     }
 }
 
@@ -1567,6 +1593,8 @@ pub fn align_vectorized_with_buf(
     // slot carries stale values from three rows back.
     const DROWS: usize = 3;
     reset_buf(&mut buf.d16, ncol * DROWS, 0i16);
+    // Still zeroed, unlike the batched kernel's (`reset_pointers`): skipping it
+    // made this kernel 7-13% slower on Illumina pairs (M2, L1-sized matrix).
     reset_buf(&mut buf.p8, ncol * nrow, 0u8);
     reset_buf(&mut buf.diag_buf, ncol, 0i16);
     let p = &mut buf.p8[..ncol * nrow];

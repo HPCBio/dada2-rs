@@ -11,7 +11,7 @@
 //! Used by `cluster::b_compare_parallel` under `--batch-align`;
 //! `examples/batch_nw_bench.rs` measures it against the single-pair kernel.
 
-use crate::nwalign::{VectorizedAlignScores, align_vectorized_with_buf};
+use crate::nwalign::{VectorizedAlignScores, align_vectorized_with_buf, reset_pointers};
 
 /// Reusable scratch for [`align_vectorized_batch`].
 #[derive(Default)]
@@ -192,7 +192,7 @@ fn batch_impl<const L: usize>(
     const DROWS: usize = 3;
     let w = ncol * L;
     reset_buf(&mut buf.d, w * DROWS, 0i16);
-    reset_buf(&mut buf.p, w * nrow, 0u8);
+    reset_pointers(&mut buf.p, w * nrow);
     reset_buf(&mut buf.diag, w, 0i16);
     let p = &mut buf.p[..w * nrow];
     let diag_buf = &mut buf.diag[..w];
@@ -548,6 +548,55 @@ mod tests {
     #[test]
     fn batch_matches_single_l16() {
         check_identity::<16>(1500, 0xD1B54A32D192ED03);
+    }
+
+    /// Release builds no longer clear the pointer matrix (`reset_pointers`).
+    /// Fill it with valid-looking pointers before every call: a traceback that
+    /// read an unwritten cell would follow one and change the alignment. Only
+    /// meaningful without debug assertions (`cargo test --release`), since
+    /// debug builds still zero the matrix.
+    #[test]
+    fn stale_pointers_do_not_leak() {
+        let mut st = 0xA076_1D64_78BD_642Fu64;
+        let mut single = AlignBuffers::new();
+        let mut batch = BatchBuffers::new();
+        for case in 0..1500 {
+            let la = 20 + (rng(&mut st) % 300) as usize;
+            let lb = la.saturating_sub(12) + (rng(&mut st) % 25) as usize;
+            let band = [-1, 1, 2, 3, 7, 8, 16, 17, 32][(rng(&mut st) % 9) as usize];
+            let (begin, end) =
+                [(0i16, 0i16), (-8, -8), (0, -8), (-8, 0)][(rng(&mut st) % 4) as usize];
+            let scores = VectorizedAlignScores {
+                match_score: 5,
+                mismatch: -4,
+                gap_p: -8,
+                begin_gap_p: begin,
+                end_gap_p: end,
+                band,
+            };
+            let center: Vec<u8> = (0..la).map(|_| 1 + (rng(&mut st) % 4) as u8).collect();
+            let raws: Vec<Vec<u8>> = (0..16).map(|_| variant(&center, lb, &mut st)).collect();
+            let pairs: [(&[u8], &[u8]); 16] = std::array::from_fn(|k| {
+                if case % 2 == 0 {
+                    (center.as_slice(), raws[k].as_slice())
+                } else {
+                    (raws[k].as_slice(), center.as_slice())
+                }
+            });
+            let n = 64 * (la + lb + 2) * 16;
+            batch.p.resize(n.max(batch.p.len()), 0);
+            for x in batch.p.iter_mut() {
+                *x = 1 + (rng(&mut st) % 3) as u8;
+            }
+            align_vectorized_batch::<16>(&pairs, &scores, &mut batch);
+            for (lane, &(a, b)) in pairs.iter().enumerate() {
+                single.poison_pointers(n / 16, &mut st);
+                let got = align_single(a, b, &scores, &mut single);
+                let want = align_single(a, b, &scores, &mut AlignBuffers::new());
+                assert_eq!(got, want, "single, case {case} lane {lane}");
+                assert_eq!(batch.al[lane], want, "batch, case {case} lane {lane}");
+            }
+        }
     }
 
     #[test]
