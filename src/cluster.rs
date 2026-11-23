@@ -210,6 +210,39 @@ struct CompCost {
     traceback: u64,
 }
 
+/// Wall time per pass of `b_compare_parallel` under `--batch-align`, and how
+/// the deferred pairs were aligned. Three or four clock reads per call, so it
+/// is collected at every measurement level (#337).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BatchTiming {
+    /// The per-raw map: screen, non-deferred alignments, lambda.
+    pub screen_pass: std::time::Duration,
+    /// Collecting, sorting and grouping the deferred pairs by length.
+    pub prep: std::time::Duration,
+    /// The batched alignment map, lambda included.
+    pub align_pass: std::time::Duration,
+    /// Writing the deferred results back (serial).
+    pub writeback: std::time::Duration,
+    /// Pairs deferred to the batch pass.
+    pub deferred: u64,
+    /// Batches run through the batched kernel (up to 16 pairs each).
+    pub batches: u64,
+    /// Deferred pairs in groups too small to batch, aligned one by one.
+    pub single: u64,
+}
+
+impl BatchTiming {
+    pub fn add(&mut self, o: &BatchTiming) {
+        self.screen_pass += o.screen_pass;
+        self.prep += o.prep;
+        self.align_pass += o.align_pass;
+        self.writeback += o.writeback;
+        self.deferred += o.deferred;
+        self.batches += o.batches;
+        self.single += o.single;
+    }
+}
+
 /// Timing breakdown returned by [`b_compare_parallel`].
 ///
 /// `busy / (map × nthreads)` is the map's parallel efficiency — if well below
@@ -256,6 +289,8 @@ pub struct CompareTiming {
     pub post: std::time::Duration,
     /// Portion of `dp` in the vectorized kernels' traceback.
     pub traceback: std::time::Duration,
+    /// Per-pass wall split, present under `--batch-align`.
+    pub batch: Option<BatchTiming>,
     /// Comparisons that reached the k-mer screen (i.e. were not greedy-skipped).
     pub screened: u64,
     /// Comparisons that passed the screen and were aligned.
@@ -302,13 +337,16 @@ fn align_deferred(
     indel_model: Option<&crate::indel_model::IndelModel>,
     params: &AlignParams,
     measure: bool,
+    bt: &mut BatchTiming,
 ) -> CompCost {
+    let t_prep = std::time::Instant::now();
     let mut pending: Vec<u32> = comps
         .par_iter()
         .enumerate()
         .filter_map(|(i, c)| (c.1 == DEFERRED).then_some(i as u32))
         .collect();
     if pending.is_empty() {
+        bt.prep = t_prep.elapsed();
         return CompCost::default();
     }
     pending.par_sort_unstable_by_key(|&i| (raws[i as usize].seq.len(), i));
@@ -322,6 +360,16 @@ fn align_deferred(
             start = k;
         }
     }
+    bt.deferred = pending.len() as u64;
+    for c in &chunks {
+        if c.len() >= MIN_BATCH {
+            bt.batches += 1;
+        } else {
+            bt.single += c.len() as u64;
+        }
+    }
+    bt.prep = t_prep.elapsed();
+    let t_align = std::time::Instant::now();
 
     let scores = vectorized_scores(params);
     let center = &raws[center_idx];
@@ -384,6 +432,8 @@ fn align_deferred(
         })
         .collect();
 
+    bt.align_pass = t_align.elapsed();
+    let t_write = std::time::Instant::now();
     let mut total = CompCost::default();
     for (out, cost) in results {
         total.total += cost.total;
@@ -396,6 +446,7 @@ fn align_deferred(
             c.1 = hamming;
         }
     }
+    bt.writeback = t_write.elapsed();
     total
 }
 
@@ -644,7 +695,11 @@ pub fn b_compare_parallel(
             },
         )
         .collect();
-    let batch_cost = if batch {
+    let mut batch_timing = batch.then(|| BatchTiming {
+        screen_pass: t_map.elapsed(),
+        ..BatchTiming::default()
+    });
+    let batch_cost = if let Some(bt) = batch_timing.as_mut() {
         align_deferred(
             &mut comps,
             raws,
@@ -655,6 +710,7 @@ pub fn b_compare_parallel(
             indel_model.as_deref(),
             params,
             measure,
+            bt,
         )
     } else {
         CompCost::default()
@@ -787,6 +843,7 @@ pub fn b_compare_parallel(
         dp: std::time::Duration::from_nanos(cost.dp),
         post: std::time::Duration::from_nanos(cost.post),
         traceback: std::time::Duration::from_nanos(cost.traceback),
+        batch: batch_timing,
         screened,
         aligned,
     }
@@ -2440,6 +2497,18 @@ mod batch_align_tests {
                 let ((a, ca), (z, cz)) = (run(false), run(true));
                 let tag = format!("greedy={greedy} measure={measure}");
                 assert_eq!(ca.screened, cz.screened, "{tag}: screened");
+                // Per-pass split (#337): absent without the flag; with it, the
+                // pool's 24 same-length indel variants make one full batch and
+                // one of 8, and its 5 one-shorter variants go one by one.
+                assert!(ca.batch.is_none(), "{tag}: batch split without the flag");
+                let bt = cz.batch.expect("batch split under --batch-align");
+                assert_eq!((bt.deferred, bt.batches, bt.single), (29, 2, 5), "{tag}");
+                assert!(bt.screen_pass > std::time::Duration::ZERO, "{tag}");
+                assert!(bt.align_pass > std::time::Duration::ZERO, "{tag}");
+                assert!(
+                    bt.screen_pass + bt.prep + bt.align_pass + bt.writeback <= cz.map,
+                    "{tag}: passes exceed the map"
+                );
                 assert_eq!(ca.aligned, cz.aligned, "{tag}: aligned");
                 // Attribution must mean the same thing in both modes (#337).
                 for (mode, ct) in [("per-pair", &ca), ("batched", &cz)] {

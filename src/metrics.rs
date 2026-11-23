@@ -142,6 +142,10 @@ pub struct CompareMetrics {
     /// Summed per-item compute across all workers. Attribution level only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub busy: Option<f64>,
+    /// Per-pass wall split under `--batch-align`; absent otherwise. Collected
+    /// at every level (a few clock reads per cluster).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch: Option<BatchMetrics>,
     /// `busy / (map × threads)`. Near 1.0 with low CPU utilization implies
     /// memory-bandwidth stalls; well below 1.0 implies threads idling on tail
     /// load-imbalance.
@@ -166,6 +170,25 @@ pub struct CompareAttribution {
     pub stored: u64,
     pub ns_per_scanned: Option<f64>,
     pub ns_per_stored: Option<f64>,
+}
+
+/// Where `--batch-align`'s map time goes (#337): the per-raw screen pass, the
+/// grouping of deferred pairs, the batched alignment pass and the write-back.
+/// Their sum is the map's wall time.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct BatchMetrics {
+    pub screen_pass: f64,
+    pub prep: f64,
+    pub align_pass: f64,
+    pub writeback: f64,
+    /// Pairs deferred to the batch pass.
+    pub deferred: u64,
+    /// Batches run through the batched kernel.
+    pub batches: u64,
+    /// Deferred pairs in groups too small to batch, aligned one by one.
+    pub single: u64,
+    /// Mean lanes used per batch, of 16.
+    pub mean_fill: Option<f64>,
 }
 
 /// The screen-vs-align question (#127): the screen runs on every comparison,
@@ -545,6 +568,7 @@ pub struct RawCounters {
     pub t_cmp_dp: Duration,
     pub t_cmp_post: Duration,
     pub t_cmp_traceback: Duration,
+    pub cmp_batch: Option<crate::cluster::BatchTiming>,
     pub n_cmp_scanned: u64,
     pub n_cmp_stored: u64,
     pub n_cmp_screened: u64,
@@ -633,6 +657,17 @@ impl RawCounters {
                     ns_per_stored: per(self.t_cmp_serial, self.n_cmp_stored),
                 }),
                 index_add_cluster: secs(self.t_index_add),
+                batch: self.cmp_batch.map(|b| BatchMetrics {
+                    screen_pass: secs(b.screen_pass),
+                    prep: secs(b.prep),
+                    align_pass: secs(b.align_pass),
+                    writeback: secs(b.writeback),
+                    deferred: b.deferred,
+                    batches: b.batches,
+                    single: b.single,
+                    mean_fill: (b.batches > 0)
+                        .then(|| (b.deferred - b.single) as f64 / b.batches as f64),
+                }),
                 screened: self.n_cmp_screened,
                 aligned: self.n_cmp_aligned,
                 // Everything below is produced by the per-comparison timers, so

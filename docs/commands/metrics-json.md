@@ -39,6 +39,14 @@ includes the traceback; `traceback` is the vectorized kernels' share of it
 (zero for gapless, scalar, affine and WFA alignments). Never enable it on a run
 whose wall time you intend to report.
 
+`compare.batch` (only under `--batch-align`) is collected at every level: the
+map's wall time split into `screen_pass`, `prep` (grouping deferred pairs by
+length), `align_pass` and `writeback`, plus `deferred`, `batches`, `single`
+(pairs in groups too small to batch) and `mean_fill` (lanes used per batch, of
+16). It is the place to read where a batched run's map time goes without the
+attribution timers, whose per-raw cost biases `map_parallel_efficiency` low
+when the map's per-raw work is small.
+
 `--metrics-attribution` requires `--metrics-json`, so the timers can never run
 with nowhere to write.
 
@@ -118,6 +126,9 @@ jq '.runs[0].phases' run_metrics.json
 
 # screen vs align, the question behind thread-count choice
 jq '.runs[0].compare.split' run_metrics.json    # needs --metrics-attribution
+
+# under --batch-align: wall time per pass, and how full the batches were
+jq '.runs[0].compare.batch' run_metrics.json
 
 # did the minimizer index get built, and was the probe right?
 jq '.runs[0].index | {use_index, hindsight_disagrees}' run_metrics.json
