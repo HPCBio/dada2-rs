@@ -13,10 +13,6 @@
 
 use crate::nwalign::{VectorizedAlignScores, align_vectorized_with_buf};
 
-/// Bench-only switch: stop after the fill, to time it apart from traceback.
-pub static SKIP_TRACEBACK: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
 /// Reusable scratch for [`align_vectorized_batch`].
 #[derive(Default)]
 pub struct BatchBuffers {
@@ -120,9 +116,6 @@ pub fn align_batch_all<const L: usize>(
         let mut lanes = [chunk[0]; L];
         lanes[..chunk.len()].copy_from_slice(chunk);
         align_vectorized_batch::<L>(&lanes, scores, buf);
-        if SKIP_TRACEBACK.load(std::sync::atomic::Ordering::Relaxed) {
-            continue;
-        }
         for (al0, al1) in &buf.al[..chunk.len()] {
             sink(al0, al1);
         }
@@ -137,6 +130,25 @@ pub fn align_vectorized_batch<const L: usize>(
     pairs: &[(&[u8], &[u8]); L],
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
+) {
+    batch_impl::<L>(pairs, scores, buf, true);
+}
+
+/// The DP fill of [`align_vectorized_batch`] without the traceback, for timing
+/// the two apart. Leaves `buf.al` untouched.
+pub fn align_vectorized_batch_fill_only<const L: usize>(
+    pairs: &[(&[u8], &[u8]); L],
+    scores: &VectorizedAlignScores,
+    buf: &mut BatchBuffers,
+) {
+    batch_impl::<L>(pairs, scores, buf, false);
+}
+
+fn batch_impl<const L: usize>(
+    pairs: &[(&[u8], &[u8]); L],
+    scores: &VectorizedAlignScores,
+    buf: &mut BatchBuffers,
+    traceback: bool,
 ) {
     let VectorizedAlignScores {
         match_score,
@@ -403,7 +415,7 @@ pub fn align_vectorized_batch<const L: usize>(
         even = !even;
     }
 
-    if SKIP_TRACEBACK.load(std::sync::atomic::Ordering::Relaxed) {
+    if !traceback {
         return;
     }
     // Per-lane traceback.
