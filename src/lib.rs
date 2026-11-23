@@ -32,6 +32,7 @@ pub mod metrics;
 pub mod minimizers;
 pub mod misc;
 pub mod nwalign;
+pub mod nwalign_batch;
 pub mod progress;
 pub mod pval;
 pub mod reference_eval;
