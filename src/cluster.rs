@@ -206,6 +206,8 @@ struct CompCost {
     screen: u64,
     dp: u64,
     post: u64,
+    /// Portion of `dp` in the vectorized kernels' traceback.
+    traceback: u64,
 }
 
 /// Timing breakdown returned by [`b_compare_parallel`].
@@ -252,14 +254,16 @@ pub struct CompareTiming {
     /// Portion of `busy` in `al2subs` + quality mapping, i.e. the
     /// post-alignment work paid only by pairs the screen passed.
     pub post: std::time::Duration,
+    /// Portion of `dp` in the vectorized kernels' traceback.
+    pub traceback: std::time::Duration,
     /// Comparisons that reached the k-mer screen (i.e. were not greedy-skipped).
     pub screened: u64,
     /// Comparisons that passed the screen and were aligned.
     pub aligned: u64,
 }
 
-/// One batch's `(raw index, lambda, hamming)` results and its worker nanos.
-type BatchResult = (Vec<(u32, f64, u32)>, u64);
+/// One batch's `(raw index, lambda, hamming)` results and its cost.
+type BatchResult = (Vec<(u32, f64, u32)>, CompCost);
 
 /// `hamming` marker for a comparison left to [`align_deferred`].
 const DEFERRED: u32 = u32::MAX - 1;
@@ -274,8 +278,9 @@ const MIN_BATCH: usize = 8;
 
 /// Align the comparisons `b_compare_parallel` deferred, in batches of raws
 /// that share a length, and fill in their `(lambda, hamming)`. Results are
-/// byte-identical to the per-pair path (`nwalign_batch` tests). Returns the
-/// summed worker time in nanoseconds under `measure`, else 0.
+/// byte-identical to the per-pair path (`nwalign_batch` tests). Under
+/// `measure`, returns the summed worker time split as the per-pair path splits
+/// it (`dp` = kernel incl. traceback, `post` = al2subs + quals).
 #[allow(clippy::too_many_arguments)]
 fn align_deferred(
     comps: &mut [(f64, u32, bool, CompCost)],
@@ -287,14 +292,14 @@ fn align_deferred(
     indel_model: Option<&crate::indel_model::IndelModel>,
     params: &AlignParams,
     measure: bool,
-) -> u64 {
+) -> CompCost {
     let mut pending: Vec<u32> = comps
         .par_iter()
         .enumerate()
         .filter_map(|(i, c)| (c.1 == DEFERRED).then_some(i as u32))
         .collect();
     if pending.is_empty() {
-        return 0;
+        return CompCost::default();
     }
     pending.par_sort_unstable_by_key(|&i| (raws[i as usize].seq.len(), i));
 
@@ -310,16 +315,29 @@ fn align_deferred(
 
     let scores = vectorized_scores(params);
     let center = &raws[center_idx];
+    let elapsed = |t: Option<std::time::Instant>| t.map_or(0, |t| t.elapsed().as_nanos() as u64);
     let results: Vec<BatchResult> = chunks
         .par_iter()
         .map_init(
-            || (BatchBuffers::new(), AlignBuffers::new()),
+            || {
+                let mut bb = BatchBuffers::new();
+                bb.measure = measure;
+                let sb = if measure {
+                    AlignBuffers::measuring()
+                } else {
+                    AlignBuffers::new()
+                };
+                (bb, sb)
+            },
             |(bb, sb), chunk| {
                 let t0 = measure.then(std::time::Instant::now);
+                let mut cost = CompCost::default();
                 let mut out = Vec::with_capacity(chunk.len());
-                let mut finish = |idx: u32, al0: &[u8], al1: &[u8]| {
+                let mut finish = |idx: u32, al0: &[u8], al1: &[u8], cost: &mut CompCost| {
                     let raw = &raws[idx as usize];
+                    let t_post = measure.then(std::time::Instant::now);
                     let sub = sub_from_alignment(center, raw, al0, al1);
+                    cost.post += elapsed(t_post);
                     let mut lambda = compute_lambda(raw, Some(&sub), err_mat, ncol, use_quals);
                     let mut hamming = sub.nsubs() as u32;
                     if let Some(m) = indel_model {
@@ -335,36 +353,46 @@ fn align_deferred(
                         let idx = chunk[if k < chunk.len() { k } else { 0 }];
                         (center.seq.as_slice(), raws[idx as usize].seq.as_slice())
                     });
+                    let t_dp = measure.then(std::time::Instant::now);
                     align_vectorized_batch::<BATCH_LANES>(&lanes, &scores, bb);
+                    cost.dp += elapsed(t_dp);
+                    cost.traceback += if measure { bb.last_traceback_nanos } else { 0 };
                     for (&idx, (al0, al1)) in chunk.iter().zip(&bb.al) {
-                        finish(idx, al0, al1);
+                        finish(idx, al0, al1, &mut cost);
                     }
                 } else {
                     for &idx in chunk.iter() {
+                        let t_dp = measure.then(std::time::Instant::now);
                         align_vectorized_with_buf(
                             &center.seq,
                             &raws[idx as usize].seq,
                             &scores,
                             sb,
                         );
-                        finish(idx, &sb.al0, &sb.al1);
+                        cost.dp += elapsed(t_dp);
+                        cost.traceback += if measure { sb.last_traceback_nanos } else { 0 };
+                        finish(idx, &sb.al0, &sb.al1, &mut cost);
                     }
                 }
-                (out, t0.map_or(0, |t| t.elapsed().as_nanos() as u64))
+                cost.total = elapsed(t0);
+                (out, cost)
             },
         )
         .collect();
 
-    let mut ns = 0u64;
-    for (out, t) in results {
-        ns += t;
+    let mut total = CompCost::default();
+    for (out, cost) in results {
+        total.total += cost.total;
+        total.dp += cost.dp;
+        total.post += cost.post;
+        total.traceback += cost.traceback;
         for (idx, lambda, hamming) in out {
             let c = &mut comps[idx as usize];
             c.0 = lambda;
             c.1 = hamming;
         }
     }
-    ns
+    total
 }
 
 /// Time the two per-pair screen paths on a sample of raws, for the index probe.
@@ -519,16 +547,15 @@ pub fn b_compare_parallel(
     // Per-item compute time (4th tuple field, nanos) is summed after collect to
     // get total worker-busy time without cross-thread atomic contention.
     // `--batch-align`: pairs bound for the vectorized kernel are left DEFERRED
-    // here and aligned in same-length batches by `align_deferred` below. The
-    // per-pair screen/DP split is not attributed in that mode (buffers do not
-    // measure); the batch phase is charged to `dp` as a whole.
+    // here and aligned in same-length batches by `align_deferred` below, which
+    // attributes their DP, traceback and al2subs time the same way.
     let batch = params.batch_align && !params.screen_audit;
     let mut comps: Vec<(f64, u32, bool, CompCost)> = (0..nraw)
         .into_par_iter()
         .with_max_len(par_max_len())
         .map_init(
             || {
-                if measure && !batch {
+                if measure {
                     AlignBuffers::measuring()
                 } else {
                     AlignBuffers::new()
@@ -551,36 +578,50 @@ pub fn b_compare_parallel(
                             raw.minimizers.as_ref(),
                         )
                     });
-                    let sub = if batch {
-                        match sub_new_or_defer(&raws[center_idx], raw, params, buf, screen_d) {
-                            SubOrDefer::Done(sub) => sub,
-                            SubOrDefer::Defer => {
-                                return (0.0, DEFERRED, false, CompCost::default());
-                            }
-                        }
+                    let routed = if batch {
+                        sub_new_or_defer(&raws[center_idx], raw, params, buf, screen_d)
                     } else {
-                        sub_new_with_screen(&raws[center_idx], raw, params, buf, screen_d)
+                        SubOrDefer::Done(sub_new_with_screen(
+                            &raws[center_idx],
+                            raw,
+                            params,
+                            buf,
+                            screen_d,
+                        ))
                     };
-                    let mut lambda = compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
-                    let mut hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
-                    if let (Some(m), Some(s)) = (indel_model.as_deref(), sub.as_ref()) {
-                        let qual = raw.qual.as_deref().filter(|_| use_quals);
-                        let (f, h) =
-                            m.score(&raws[center_idx].seq, &raw.seq, qual, s, err_mat, ncol);
-                        lambda *= f;
-                        hamming += h;
+                    match routed {
+                        SubOrDefer::Defer => (0.0, DEFERRED, false),
+                        SubOrDefer::Done(sub) => {
+                            let mut lambda =
+                                compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
+                            let mut hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
+                            if let (Some(m), Some(s)) = (indel_model.as_deref(), sub.as_ref()) {
+                                let qual = raw.qual.as_deref().filter(|_| use_quals);
+                                let (f, h) = m.score(
+                                    &raws[center_idx].seq,
+                                    &raw.seq,
+                                    qual,
+                                    s,
+                                    err_mat,
+                                    ncol,
+                                );
+                                lambda *= f;
+                                hamming += h;
+                            }
+                            (lambda, hamming, false)
+                        }
                     }
-                    (lambda, hamming, false)
                 };
                 // A greedy skip runs neither half, so leave both at zero rather
                 // than reading the buffer's stale values from the previous item.
-                let (screen, dp, post) = if skipped || !measure {
-                    (0, 0, 0)
+                let (screen, dp, post, traceback) = if skipped || !measure {
+                    (0, 0, 0, 0)
                 } else {
                     (
                         buf.last_screen_nanos,
                         buf.last_dp_nanos,
                         buf.last_post_nanos,
+                        buf.last_traceback_nanos,
                     )
                 };
                 let nanos = t0.map_or(0, |t| t.elapsed().as_nanos() as u64);
@@ -593,12 +634,13 @@ pub fn b_compare_parallel(
                         screen,
                         dp,
                         post,
+                        traceback,
                     },
                 )
             },
         )
         .collect();
-    let batch_ns = if batch {
+    let batch_cost = if batch {
         align_deferred(
             &mut comps,
             raws,
@@ -611,7 +653,7 @@ pub fn b_compare_parallel(
             measure,
         )
     } else {
-        0
+        CompCost::default()
     };
     let map_dur = t_map.elapsed();
 
@@ -645,6 +687,7 @@ pub fn b_compare_parallel(
         cost.screen += item.screen;
         cost.dp += item.dp;
         cost.post += item.post;
+        cost.traceback += item.traceback;
 
         // Match serial b_compare counting: only count non-skipped raws.
         if !skipped {
@@ -681,8 +724,10 @@ pub fn b_compare_parallel(
         }
     }
     let serial_dur = t_serial.elapsed();
-    cost.total += batch_ns;
-    cost.dp += batch_ns;
+    cost.total += batch_cost.total;
+    cost.dp += batch_cost.dp;
+    cost.post += batch_cost.post;
+    cost.traceback += batch_cost.traceback;
     let busy_dur = std::time::Duration::from_nanos(cost.total);
     // Retained so the attribution block still reconstructs `compare` and so a
     // future change that reintroduces a separate reduction is visible rather
@@ -737,6 +782,7 @@ pub fn b_compare_parallel(
         screen: std::time::Duration::from_nanos(cost.screen),
         dp: std::time::Duration::from_nanos(cost.dp),
         post: std::time::Duration::from_nanos(cost.post),
+        traceback: std::time::Duration::from_nanos(cost.traceback),
         screened,
         aligned,
     }
@@ -2383,11 +2429,31 @@ mod batch_align_tests {
                 let run = |batch: bool| {
                     let mut b = B::new(pool(), 1e-40, 1e-4, true);
                     b.clusters[0].center = Some(0);
-                    b_compare_parallel(&mut b, 0, &err, 41, &params(batch), greedy, measure);
-                    b
+                    let ct =
+                        b_compare_parallel(&mut b, 0, &err, 41, &params(batch), greedy, measure);
+                    (b, ct)
                 };
-                let (a, z) = (run(false), run(true));
+                let ((a, ca), (z, cz)) = (run(false), run(true));
                 let tag = format!("greedy={greedy} measure={measure}");
+                assert_eq!(ca.screened, cz.screened, "{tag}: screened");
+                assert_eq!(ca.aligned, cz.aligned, "{tag}: aligned");
+                // Attribution must mean the same thing in both modes (#337).
+                for (mode, ct) in [("per-pair", &ca), ("batched", &cz)] {
+                    let zero = std::time::Duration::ZERO;
+                    if measure {
+                        assert!(ct.screen > zero, "{tag} {mode}: screen unmeasured");
+                        assert!(ct.dp > zero, "{tag} {mode}: dp unmeasured");
+                        assert!(ct.post > zero, "{tag} {mode}: al2subs unmeasured");
+                        assert!(ct.traceback > zero, "{tag} {mode}: traceback unmeasured");
+                        assert!(ct.traceback <= ct.dp, "{tag} {mode}: traceback > dp");
+                        assert!(
+                            ct.screen + ct.dp + ct.post <= ct.busy,
+                            "{tag} {mode}: parts exceed busy"
+                        );
+                    } else {
+                        assert_eq!(ct.busy + ct.dp + ct.traceback, zero, "{tag} {mode}");
+                    }
+                }
                 assert_eq!(a.nalign, z.nalign, "{tag}: nalign");
                 assert_eq!(a.nshroud, z.nshroud, "{tag}: nshroud");
                 assert_eq!(a.clusters[0].self_.to_bits(), z.clusters[0].self_.to_bits());

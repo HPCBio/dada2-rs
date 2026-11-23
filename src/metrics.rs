@@ -175,11 +175,15 @@ pub struct CompareAttribution {
 pub struct CompareSplit {
     pub screen: f64,
     pub dp_kernel: f64,
+    /// Portion of `dp_kernel` in the vectorized kernels' traceback (#337);
+    /// zero for gapless, scalar, affine and WFA alignments.
+    pub traceback: f64,
     pub al2subs: f64,
     /// `busy` minus the three named parts.
     pub other: f64,
     pub screen_ns_per_screened: Option<f64>,
     pub dp_ns_per_aligned: Option<f64>,
+    pub traceback_ns_per_aligned: Option<f64>,
     pub al2subs_ns_per_aligned: Option<f64>,
 }
 
@@ -540,6 +544,7 @@ pub struct RawCounters {
     pub t_cmp_screen: Duration,
     pub t_cmp_dp: Duration,
     pub t_cmp_post: Duration,
+    pub t_cmp_traceback: Duration,
     pub n_cmp_scanned: u64,
     pub n_cmp_stored: u64,
     pub n_cmp_screened: u64,
@@ -640,10 +645,12 @@ impl RawCounters {
                 split: level.attribution().then(|| CompareSplit {
                     screen: secs(self.t_cmp_screen),
                     dp_kernel: secs(self.t_cmp_dp),
+                    traceback: secs(self.t_cmp_traceback),
                     al2subs: secs(self.t_cmp_post),
                     other: secs(other_busy),
                     screen_ns_per_screened: per(self.t_cmp_screen, self.n_cmp_screened),
                     dp_ns_per_aligned: per(self.t_cmp_dp, self.n_cmp_aligned),
+                    traceback_ns_per_aligned: per(self.t_cmp_traceback, self.n_cmp_aligned),
                     al2subs_ns_per_aligned: per(self.t_cmp_post, self.n_cmp_aligned),
                 }),
             },

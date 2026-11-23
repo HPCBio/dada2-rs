@@ -1187,8 +1187,12 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     // with the matching denominators. This ratio is what #127 exists to
     // measure: it decides whether `b_compare`'s lever is a cheaper screen or a
     // cheaper aligner.
-    let (mut t_cmp_screen, mut t_cmp_dp, mut t_cmp_post) =
-        (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+    let (mut t_cmp_screen, mut t_cmp_dp, mut t_cmp_post, mut t_cmp_traceback) = (
+        Duration::ZERO,
+        Duration::ZERO,
+        Duration::ZERO,
+        Duration::ZERO,
+    );
     let (mut n_cmp_screened, mut n_cmp_aligned) = (0u64, 0u64);
     // Shuffle rescan-redundancy accounting (verbose-only diagnostics).
     let (mut shuf_calls, mut shuf_moves, mut shuf_zero_move_calls) = (0u64, 0u64, 0u64);
@@ -1270,6 +1274,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         t_cmp_screen += ct.screen;
         t_cmp_dp += ct.dp;
         t_cmp_post += ct.post;
+        t_cmp_traceback += ct.traceback;
         n_cmp_screened += ct.screened;
         n_cmp_aligned += ct.aligned;
         t_cmp_agg += ct.agg;
@@ -1478,6 +1483,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 t_cmp_screen += ct.screen;
                 t_cmp_dp += ct.dp;
                 t_cmp_post += ct.post;
+                t_cmp_traceback += ct.traceback;
                 n_cmp_screened += ct.screened;
                 n_cmp_aligned += ct.aligned;
                 t_cmp_agg += ct.agg;
@@ -1588,6 +1594,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             t_cmp_screen += ct.screen;
             t_cmp_dp += ct.dp;
             t_cmp_post += ct.post;
+            t_cmp_traceback += ct.traceback;
             n_cmp_screened += ct.screened;
             n_cmp_aligned += ct.aligned;
             t_cmp_agg += ct.agg;
@@ -1929,6 +1936,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             t_cmp_screen,
             t_cmp_dp,
             t_cmp_post,
+            t_cmp_traceback,
             n_cmp_scanned,
             n_cmp_stored,
             n_cmp_screened,

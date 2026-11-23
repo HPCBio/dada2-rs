@@ -275,6 +275,9 @@ pub struct AlignBuffers {
     /// Nanos in `al2subs` + quality mapping of the last call — the
     /// post-alignment work in [`sub_new_with_buf`].
     pub last_post_nanos: u64,
+    /// Portion of `last_dp_nanos` spent in the vectorized kernel's traceback;
+    /// zero on every other alignment path.
+    pub last_traceback_nanos: u64,
     /// Nanos in DP alignment + `al2subs` + quality mapping of the last call,
     /// i.e. `last_dp_nanos + last_post_nanos`.
     /// Zero when the screen shrouded the pair, which is the whole point of the
@@ -1876,6 +1879,7 @@ pub fn align_vectorized_with_buf(
     }
 
     // --- Traceback through compressed p matrix ---
+    let t_tb = buf.measure.then(std::time::Instant::now);
     // Reborrow via disjoint fields: p8 (shared) + al0/al1 (mutable each) are
     // three distinct fields of `buf`, so NLL permits holding them simultaneously.
     let p_ro = &buf.p8[..ncol * nrow];
@@ -1924,6 +1928,9 @@ pub fn align_vectorized_with_buf(
     // Restore original input ordering if we swapped the DP inputs.
     if swap {
         std::mem::swap(&mut buf.al0, &mut buf.al1);
+    }
+    if let Some(t) = t_tb {
+        buf.last_traceback_nanos = t.elapsed().as_nanos() as u64;
     }
 }
 
@@ -2075,6 +2082,7 @@ fn screen_pass(
         buf.last_screen_nanos = 0;
         buf.last_dp_nanos = 0;
         buf.last_post_nanos = 0;
+        buf.last_traceback_nanos = 0;
         buf.last_align_nanos = 0;
     }
     let mut kdist = 0.0f64;
@@ -2213,7 +2221,13 @@ fn raw_align_or_defer(
     if !gapless && vectorized_route(raw1, raw2, p) {
         return Some(false);
     }
-    raw_align_dp_routed(raw1, raw2, p, buf, gapless)?;
+    let t_align = buf.measure.then(std::time::Instant::now);
+    let r = raw_align_dp_routed(raw1, raw2, p, buf, gapless);
+    if let Some(t) = t_align {
+        buf.last_dp_nanos = t.elapsed().as_nanos() as u64;
+        buf.last_align_nanos = buf.last_dp_nanos;
+    }
+    r?;
     Some(true)
 }
 
@@ -2579,8 +2593,9 @@ pub enum SubOrDefer {
 /// [`sub_new_with_screen`], except that pairs bound for the vectorized kernel
 /// are returned unaligned so the caller can batch them (`--batch-align`).
 ///
-/// Requires `!screen_audit` and a non-measuring `buf`: both attach per-pair
-/// state to the alignment, which a deferred pair does not have yet.
+/// Requires `!screen_audit`, whose per-pair audit record needs the alignment.
+/// Under `buf.measure` a deferred pair records only its screen time; the
+/// caller times the alignment it does later.
 pub fn sub_new_or_defer(
     raw0: &Raw,
     raw1: &Raw,
@@ -2588,11 +2603,19 @@ pub fn sub_new_or_defer(
     buf: &mut AlignBuffers,
     screen: Option<f64>,
 ) -> SubOrDefer {
-    debug_assert!(!params.screen_audit && !buf.measure);
+    debug_assert!(!params.screen_audit);
     match raw_align_or_defer(raw0, raw1, params, buf, screen) {
         None => SubOrDefer::Done(None),
         Some(false) => SubOrDefer::Defer,
-        Some(true) => SubOrDefer::Done(Some(sub_from_alignment(raw0, raw1, &buf.al0, &buf.al1))),
+        Some(true) => {
+            let t_post = buf.measure.then(std::time::Instant::now);
+            let sub = sub_from_alignment(raw0, raw1, &buf.al0, &buf.al1);
+            if let Some(t) = t_post {
+                buf.last_post_nanos = t.elapsed().as_nanos() as u64;
+                buf.last_align_nanos += buf.last_post_nanos;
+            }
+            SubOrDefer::Done(Some(sub))
+        }
     }
 }
 

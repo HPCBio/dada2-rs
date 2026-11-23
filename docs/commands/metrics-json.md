@@ -34,8 +34,10 @@ or counters that the store loop already folds in.
 
 **`attribution` is not free.** It adds 2–4 `Instant::now()` calls to *every
 comparison*, and comparisons reach 1.4e10 on a diverse pool. It buys `busy`, the
-map's parallel efficiency, and the screen / DP / `al2subs` split. Never enable it
-on a run whose wall time you intend to report.
+map's parallel efficiency, and the screen / DP / `al2subs` split. `dp_kernel`
+includes the traceback; `traceback` is the vectorized kernels' share of it
+(zero for gapless, scalar, affine and WFA alignments). Never enable it on a run
+whose wall time you intend to report.
 
 `--metrics-attribution` requires `--metrics-json`, so the timers can never run
 with nowhere to write.

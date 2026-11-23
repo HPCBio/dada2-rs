@@ -465,9 +465,10 @@ of one by one: during each cluster comparison, raws bound for the vectorized NW
 kernel are grouped by length and aligned in lockstep, one pair per SIMD lane.
 Output is byte-identical to a run without it; only the schedule changes. Pairs
 routed elsewhere (gapless shortcut, WFA, affine gaps, `--homo-gap-p`, reads over
-3,500 bp) are aligned as before, and `--screen-audit` turns it off. Under
-`--metrics-json` the batch phase is reported as DP time as a whole, with no
-per-pair screen/DP split. On the kernel benchmark the batched kernel is
+3,500 bp) are aligned as before, and `--screen-audit` turns it off. The
+`--metrics-attribution` split (screen, DP, traceback, `al2subs`) means the same
+in both modes, so runs with and without the flag compare field for field. On the
+kernel benchmark the batched kernel is
 3–4.5× faster per DP cell than the per-pair one (EPYC 7713, 1–48 threads);
 end-to-end gains are bounded by the DP kernel's share of `run_dada`. Applies to
 `dada-pooled`, `dada-pseudo` and `learn-errors` too, and only with

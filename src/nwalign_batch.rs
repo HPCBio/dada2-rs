@@ -23,6 +23,10 @@ pub struct BatchBuffers {
     s2: Vec<u8>,
     /// Alignment of each lane, in the order of its input pair.
     pub al: Vec<(Vec<u8>, Vec<u8>)>,
+    /// Time the traceback into `last_traceback_nanos` (metrics attribution).
+    pub measure: bool,
+    /// Nanos in the last batch's traceback, all lanes, when `measure`.
+    pub last_traceback_nanos: u64,
 }
 
 impl BatchBuffers {
@@ -419,6 +423,7 @@ fn batch_impl<const L: usize>(
         return;
     }
     // Per-lane traceback.
+    let t_tb = buf.measure.then(std::time::Instant::now);
     let p_ro = &buf.p[..w * nrow];
     buf.al.resize_with(L, Default::default);
     for (lane, &(a, b)) in pairs.iter().enumerate() {
@@ -455,6 +460,9 @@ fn batch_impl<const L: usize>(
         if swap {
             std::mem::swap(al0, al1);
         }
+    }
+    if let Some(t) = t_tb {
+        buf.last_traceback_nanos = t.elapsed().as_nanos() as u64;
     }
 }
 
