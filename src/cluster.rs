@@ -262,6 +262,16 @@ pub struct CompareTiming {
     pub aligned: u64,
 }
 
+thread_local! {
+    /// Per-worker scratch for `align_deferred`, kept for the whole run.
+    /// `map_init` builds a fresh value per rayon job instead (~120 per cluster
+    /// at 6 threads, ~260 at 10, growing with threads), and each one zero-fills
+    /// a 0.15-1.6 MB pointer matrix: on a 48-thread MiSeq pool that churn left
+    /// the map at 63% parallel efficiency (#337).
+    static BATCH_SCRATCH: std::cell::RefCell<(BatchBuffers, AlignBuffers)> =
+        std::cell::RefCell::new((BatchBuffers::new(), AlignBuffers::new()));
+}
+
 /// One batch's `(raw index, lambda, hamming)` results and its cost.
 type BatchResult = (Vec<(u32, f64, u32)>, CompCost);
 
@@ -318,18 +328,12 @@ fn align_deferred(
     let elapsed = |t: Option<std::time::Instant>| t.map_or(0, |t| t.elapsed().as_nanos() as u64);
     let results: Vec<BatchResult> = chunks
         .par_iter()
-        .map_init(
-            || {
-                let mut bb = BatchBuffers::new();
+        .map(|chunk| {
+            BATCH_SCRATCH.with(|cell| {
+                let mut scratch = cell.borrow_mut();
+                let (bb, sb) = &mut *scratch;
                 bb.measure = measure;
-                let sb = if measure {
-                    AlignBuffers::measuring()
-                } else {
-                    AlignBuffers::new()
-                };
-                (bb, sb)
-            },
-            |(bb, sb), chunk| {
+                sb.measure = measure;
                 let t0 = measure.then(std::time::Instant::now);
                 let mut cost = CompCost::default();
                 let mut out = Vec::with_capacity(chunk.len());
@@ -376,8 +380,8 @@ fn align_deferred(
                 }
                 cost.total = elapsed(t0);
                 (out, cost)
-            },
-        )
+            })
+        })
         .collect();
 
     let mut total = CompCost::default();
