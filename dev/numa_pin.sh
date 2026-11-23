@@ -57,8 +57,13 @@
 #
 # Usage:
 #   source "$(dirname "$0")/numa_pin.sh"
-#   numa_pin_init "$THREADS"        # sets NUMA_PREFIX (may be empty)
-#   $NUMA_PREFIX some_command ...
+#   numa_pin_init "$THREADS"        # sets NUMA_PREFIX and NUMA_PREFIX_ARGS
+#   "${NUMA_PREFIX_ARGS[@]}" some_command ...   # works under any IFS
+#   $NUMA_PREFIX some_command ...               # needs the default IFS
+#
+# The unquoted string form relies on word splitting, so under the strict-mode
+# header `IFS=$'\n\t'` it runs a command literally named "numactl --..." and
+# fails; numa_pin_init warns when IFS would do that. Prefer the array.
 #
 # Env overrides:
 #   NUMA_POLICY=interleave  (default) numactl --interleave=all
@@ -88,6 +93,7 @@ numa_pin_init() {
     local policy="${NUMA_POLICY:-interleave}"
     local node="${NUMA_NODE:-0}"
     NUMA_PREFIX=""
+    NUMA_PREFIX_ARGS=()
 
     # Legacy alias, kept so existing invocations keep working.
     [ "${NUMA_PIN:-}" = "0" ] && policy="none"
@@ -110,10 +116,10 @@ numa_pin_init() {
         return 0
     fi
 
-    local candidate
+    local -a candidate
     case "$policy" in
         interleave)
-            candidate="numactl --interleave=all"
+            candidate=(numactl --interleave=all)
             ;;
         bind)
             # Binding restricts CPUs as well as memory, so it can turn a thread
@@ -127,7 +133,7 @@ numa_pin_init() {
                 echo "[numa]   Use NUMA_POLICY=interleave (no core restriction), or --threads <= $cores." >&2
                 return 0
             fi
-            candidate="numactl --cpunodebind=$node --membind=$node"
+            candidate=(numactl "--cpunodebind=$node" "--membind=$node")
             ;;
         *)
             echo "[numa] unknown NUMA_POLICY=$policy (expected interleave|bind|none) — default placement" >&2
@@ -136,12 +142,23 @@ numa_pin_init() {
     esac
 
     # numactl can exist but be forbidden (containers, restricted cpusets).
-    if ! $candidate true >/dev/null 2>&1; then
-        echo "[numa] numactl present but '$candidate' failed (container or restricted cpuset?) — default placement" >&2
+    # Run as an array so a non-default IFS cannot break the probe itself.
+    # Joined with explicit spaces: "${candidate[*]}" would use IFS's first char.
+    local joined err
+    joined="$(printf '%s ' "${candidate[@]}")"
+    joined="${joined% }"
+    if ! err="$("${candidate[@]}" true 2>&1)"; then
+        echo "[numa] '$joined' failed — default placement. numactl said:" >&2
+        echo "[numa]   ${err:-<no output>}" >&2
         return 0
     fi
 
-    NUMA_PREFIX="$candidate"
+    NUMA_PREFIX_ARGS=("${candidate[@]}")
+    NUMA_PREFIX="$joined"
     echo "[numa] fixed placement: $NUMA_PREFIX" >&2
+    if [ "$IFS" != $' \t\n' ]; then
+        echo "[numa]   WARNING: IFS is not the default, so unquoted \$NUMA_PREFIX will not split;" >&2
+        echo "[numa]   use \"\${NUMA_PREFIX_ARGS[@]}\" or restore IFS=\$' \\t\\n' around the call." >&2
+    fi
     echo "[numa]   for measurement reproducibility — see the header of dev/numa_pin.sh" >&2
 }

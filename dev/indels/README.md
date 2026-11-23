@@ -20,5 +20,8 @@ which stays in `dev/` because it serves every mock (#166).
 | `hp_structure_features.py` | Structure covariates per run: Rfam consensus pairing (`cmalign`), local folding (`RNAplfold`, DNA parameters), inverted repeats |
 | `hp_structure_proto.R` | Held-out test of structure and sequence context as slippage covariates |
 | `align_model_subs.py` | Where an alignment model moves substitutions: realigns a fixed partition under ends-free linear and global affine scoring and classifies the differences (#309; needs Biopython) |
+| `damage_pair_events.py` | Substitutions in each read of a pair against a truth set or a sample's own ASVs (needs Biopython) |
+| `damage_pair_spectrum.py` | Molecular (both reads) vs sequencing (one read) substitution rates per type and damage class, from `damage_pair_events.py` |
+| `damage_backtrace.py` | Fate of each one-substitution child of a truth allele in a `dada-pooled --pooled-record` run, with dada's predicted split |
 
 Each script's header documents its inputs, outputs and usage.
