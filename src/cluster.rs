@@ -320,12 +320,14 @@ const MIN_BATCH: usize = 8;
 /// `defer_len` entry for a raw the screen pass did not defer.
 const NOT_DEFERRED: u32 = u32::MAX;
 /// At or below this many raws (or deferred pairs), the deferred-pair scan and
-/// sort run serially. Serially they cost microseconds at this size; in parallel
-/// each adds a join point, and a thread waiting at a join runs other queued
-/// work. In `learn-errors`, where samples run concurrently, that cost ~7 ms per
-/// call (2,500 raws on average) and made batching 24% slower than base on the
-/// 48-thread MiSeq run (#337). `dada-pooled` calls (~270k raws) stay parallel.
-pub const SERIAL_PREP_MAX_DEFAULT: usize = 32_768;
+/// sort run serially. The default is no limit: prep is always serial.
+///
+/// In parallel each step adds a join point, and a thread waiting at a join runs
+/// other queued work. On the 48-thread MiSeq runs (#337), parallel prep cost
+/// ~7 ms per `learn-errors` call (samples run concurrently; 2,500 raws on
+/// average) and ~2.6 ms per `dada-pooled` call (272k raws). Serial prep took
+/// `learn-errors` from 13.8 to 9.6 s and `dada-pooled` from 75.3 to 70.5 s.
+pub const SERIAL_PREP_MAX_DEFAULT: usize = usize::MAX;
 
 /// [`SERIAL_PREP_MAX_DEFAULT`], overridable for tuning via
 /// `DADA2RS_SERIAL_PREP_MAX` (0 = always parallel; invalid values fall back to
