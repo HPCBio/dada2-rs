@@ -1312,7 +1312,7 @@ struct ResolvedDada {
 /// byte-identical and the archived `docs/findings/data/*.txt` remain comparable
 /// with new runs (issue #162). `--metrics-json` on its own collects only the
 /// free tier, which is why it is safe to leave on for a production run.
-fn resolve_measure_level(
+pub(crate) fn resolve_measure_level(
     verbose: bool,
     metrics_json: Option<&PathBuf>,
     metrics_attribution: bool,
@@ -2417,7 +2417,7 @@ fn asv_entry_from_cluster(ci: usize, cluster: &dada::ClusterSummary, abundance: 
 /// Write the `--metrics-json` document. Always pretty-printed and always
 /// gzip-free: this is a small file read by humans and by `dev/` scripts, not a
 /// bulk artifact, and `jq` over a plain file is the point of it (issue #162).
-fn write_metrics_json(path: &Path, doc: &metrics::MetricsDocument) -> io::Result<()> {
+pub(crate) fn write_metrics_json(path: &Path, doc: &metrics::MetricsDocument) -> io::Result<()> {
     let mut body = serde_json::to_string_pretty(doc).map_err(io::Error::other)?;
     body.push('\n');
     std::fs::write(path, body)

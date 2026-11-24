@@ -497,6 +497,36 @@ pub struct MetricsDocument {
     #[serde(skip_serializing_if = "PipelineTimes::is_empty")]
     pub pipeline: PipelineTimes,
     pub runs: Vec<LabelledRun>,
+    /// The self-consistency loop of `learn-errors` / `errors-from-sample`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub learn: Option<LearnMetrics>,
+}
+
+/// The `learn-errors` / `errors-from-sample` loop (issue #338).
+///
+/// Samples are denoised concurrently, so per-run times in `runs[]` overlap
+/// and their sum is thread time, not wall time. The pass times here are wall.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct LearnMetrics {
+    pub samples: usize,
+    pub iterations: usize,
+    pub converged: bool,
+    /// Loading inputs: FASTQ dereplication or JSON parsing.
+    pub load_seconds: f64,
+    /// The init pass (`iteration` 0, R's nconsist=0), then one per iteration.
+    pub passes: Vec<LearnPass>,
+}
+
+/// Wall time of one pass of the learn loop.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct LearnPass {
+    pub iteration: usize,
+    /// The parallel stage: `dada` on every sample plus its transition counts.
+    pub dada_seconds: f64,
+    /// Transition-count alignments, summed over samples (thread time).
+    pub trans_thread_seconds: f64,
+    /// Summing the counts and fitting the error function.
+    pub fit_seconds: f64,
 }
 
 /// A `run_dada` invocation, tagged with which sample and round produced it.
@@ -507,6 +537,10 @@ pub struct LabelledRun {
     /// `dada-pseudo` round (1 or 2); absent for the other subcommands.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub round: Option<u8>,
+    /// Learn-loop pass (0 = init pass); `learn-errors` and
+    /// `errors-from-sample` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iteration: Option<usize>,
     #[serde(flatten)]
     pub metrics: RunMetrics,
 }
@@ -531,6 +565,7 @@ impl MetricsDocument {
             wall_seconds: secs(wall),
             pipeline: PipelineTimes::default(),
             runs: Vec::new(),
+            learn: None,
         }
     }
 
@@ -538,6 +573,17 @@ impl MetricsDocument {
         self.runs.push(LabelledRun {
             sample: sample.into(),
             round,
+            iteration: None,
+            metrics,
+        });
+    }
+
+    /// Add one sample's run from pass `iteration` of the learn loop.
+    pub fn push_learn(&mut self, sample: impl Into<String>, iteration: usize, metrics: RunMetrics) {
+        self.runs.push(LabelledRun {
+            sample: sample.into(),
+            round: None,
+            iteration: Some(iteration),
             metrics,
         });
     }

@@ -243,6 +243,12 @@ files, emitting only centers and birth metadata. Reduces trace size ~10×.
 **`--trace-min-abund`** (default 1) — only include trace members at or above
 this abundance.
 
+**`--metrics-json`** — write run metrics (JSON) to this file: wall time per
+pass of the learn loop, and each sample's `dada` metrics per pass. Cheap enough
+to leave on. **`--metrics-attribution`** adds per-comparison timings and slows
+the run. `--verbose` still turns the per-comparison timers on, as before. See
+[run metrics](metrics-json.md).
+
 ## Experimental
 
 Identical in meaning to [`dada`'s experimental flags](dada.md#experimental):

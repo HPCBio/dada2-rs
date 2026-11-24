@@ -14,6 +14,7 @@
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use flate2::read::MultiGzDecoder;
 use rayon::prelude::*;
@@ -27,6 +28,7 @@ use crate::error_models::{
     LoessConfig, LoessSurface, accumulate_trans, binned_qual_errfun, external_errfun, loess_errfun,
     noqual_errfun, pacbio_errfun,
 };
+use crate::metrics::{LearnPass, RunMetrics};
 use crate::misc::WithPath;
 use crate::misc::nt_encode;
 use crate::nwalign::{AlignBuffers, AlignParams, raw_align_with_buf};
@@ -120,7 +122,15 @@ pub struct LearnErrorsResult {
     pub iterations: usize,
     /// Why the iteration loop stopped.
     pub stop_reason: StopReason,
+    /// Wall time of the init pass and each iteration (issue #338).
+    pub passes: Vec<LearnPass>,
+    /// Each sample's dada run metrics as `(pass, sample index, metrics)`;
+    /// empty unless `DadaParams::measure` is enabled.
+    pub runs: Vec<SampleRun>,
 }
+
+/// One sample's dada run metrics from one pass of the learn loop.
+pub type SampleRun = (usize, usize, RunMetrics);
 
 /// Parameters captured from a `learn-errors` / `errors-from-sample` run, embedded
 /// in the JSON output for provenance and downstream consistency checks.
@@ -563,28 +573,42 @@ fn run_init_pass(
     dada_params: &mut DadaParams,
     nq: usize,
     verbose: bool,
-) -> io::Result<Vec<f64>> {
+    runs: &mut Vec<SampleRun>,
+) -> io::Result<(Vec<f64>, LearnPass)> {
     let align_params = dada_params.align;
+    let t_dada = Instant::now();
     // R: erri = matrix(1, nrow=16, ncol=...). Every entry, not just diagonal.
     let saved_max_clust = dada_params.max_clust;
     dada_params.err_mat = vec![1.0f64; 16 * nq];
     dada_params.err_ncol = nq;
     dada_params.max_clust = 1;
 
-    let sample_results: Vec<(usize, Result<Vec<u32>, String>)> = all_inputs
+    type InitResults = Vec<(
+        usize,
+        Result<(Vec<u32>, Option<RunMetrics>, Duration), String>,
+    )>;
+    let sample_results: InitResults = all_inputs
         .par_iter()
         .zip(raw_cache.par_iter_mut())
         .enumerate()
         .map(|(si, (inputs, cache_slot))| {
             let cached = cache_slot.take();
-            let outcome =
-                dada_uniques_cached(inputs, cached, dada_params).map(|(result, reused_raws)| {
+            let outcome = dada_uniques_cached(inputs, cached, dada_params).map(
+                |(mut result, reused_raws)| {
                     *cache_slot = Some(reused_raws);
-                    build_trans_mat(inputs, &result, &align_params, nq)
-                });
+                    let t_trans = Instant::now();
+                    let t = build_trans_mat(inputs, &result, &align_params, nq);
+                    (t, result.metrics.take(), t_trans.elapsed())
+                },
+            );
             (si, outcome)
         })
         .collect();
+    let mut pass = LearnPass {
+        iteration: 0,
+        dada_seconds: t_dada.elapsed().as_secs_f64(),
+        ..LearnPass::default()
+    };
 
     dada_params.max_clust = saved_max_clust;
 
@@ -596,7 +620,13 @@ fn run_init_pass(
     let mut first_err: Option<(usize, String)> = None;
     for (si, outcome) in sample_results {
         match outcome {
-            Ok(t) => sample_trans.push(t),
+            Ok((t, m, trans_time)) => {
+                sample_trans.push(t);
+                pass.trans_thread_seconds += trans_time.as_secs_f64();
+                if let Some(m) = m {
+                    runs.push((0, si, m));
+                }
+            }
             Err(e) => {
                 if verbose {
                     eprintln!(
@@ -622,6 +652,7 @@ fn run_init_pass(
         )));
     }
 
+    let t_fit = Instant::now();
     let refs: Vec<(&[u32], usize)> = sample_trans.iter().map(|t| (t.as_slice(), nq)).collect();
     let (acc_trans, _) = accumulate_trans(&refs);
 
@@ -637,11 +668,13 @@ fn run_init_pass(
         }
     }
 
+    pass.fit_seconds = t_fit.elapsed().as_secs_f64();
+
     if verbose {
         eprintln!("[learn_errors] init pass complete (R nconsist=0)");
     }
 
-    Ok(new_err)
+    Ok((new_err, pass))
 }
 
 /// Build the 16 × `nq` transition count matrix from a single DADA result.
@@ -790,7 +823,10 @@ pub fn learn_errors(
         ));
     }
 
-    type SampleResults = Vec<(usize, Result<(Vec<u32>, crate::dada::DadaResult), String>)>;
+    type SampleResults = Vec<(
+        usize,
+        Result<(Vec<u32>, crate::dada::DadaResult, Duration), String>,
+    )>;
 
     let nq = detect_nq(all_inputs);
 
@@ -820,14 +856,17 @@ pub fn learn_errors(
     // errfun on the resulting trans, and force diagonal self-transitions
     // to 1.0. This produces iter-1's err_in with the same shape and
     // per-Q calibration that R uses.
-    let mut err = run_init_pass(
+    let mut runs: Vec<SampleRun> = Vec::new();
+    let (mut err, init_pass) = run_init_pass(
         all_inputs,
         &mut raw_cache,
         errfun,
         &mut dada_params,
         nq,
         verbose,
+        &mut runs,
     )?;
+    let mut passes = vec![init_pass];
 
     let mut converged = false;
     let mut iterations = 0usize;
@@ -857,6 +896,7 @@ pub fn learn_errors(
         // `raw_cache` is zipped in so each sample's Raw Vec flows back out of
         // DADA and into the next iteration's call without reallocation.
         let collect_diags = diag_dir.is_some();
+        let t_dada = Instant::now();
         let sample_results: SampleResults = all_inputs
             .par_iter()
             .zip(raw_cache.par_iter_mut())
@@ -866,13 +906,19 @@ pub fn learn_errors(
                 let outcome = dada_uniques_cached(inputs, cached, &dada_params).map(
                     |(result, reused_raws)| {
                         *cache_slot = Some(reused_raws);
+                        let t_trans = Instant::now();
                         let t = build_trans_mat(inputs, &result, &dada_params.align, nq);
-                        (t, result)
+                        (t, result, t_trans.elapsed())
                     },
                 );
                 (si, outcome)
             })
             .collect();
+        let mut pass = LearnPass {
+            iteration: iter + 1,
+            dada_seconds: t_dada.elapsed().as_secs_f64(),
+            ..LearnPass::default()
+        };
 
         // Serial post-processing: logging and diagnostics.
         let mut sample_trans_pairs: Vec<(Vec<u32>, usize)> = Vec::new();
@@ -881,8 +927,12 @@ pub fn learn_errors(
 
         for (si, outcome) in sample_results {
             match outcome {
-                Ok((t, result)) => {
+                Ok((t, mut result, trans_time)) => {
                     sample_trans_pairs.push((t, nq));
+                    pass.trans_thread_seconds += trans_time.as_secs_f64();
+                    if let Some(m) = result.metrics.take() {
+                        runs.push((iter + 1, si, m));
+                    }
 
                     if verbose {
                         eprintln!(
@@ -973,6 +1023,7 @@ pub fn learn_errors(
         }
 
         // ---- Accumulate transition matrices ----
+        let t_fit = Instant::now();
         let refs: Vec<(&[u32], usize)> = sample_trans_pairs
             .iter()
             .map(|(t, nq)| (t.as_slice(), *nq))
@@ -983,6 +1034,8 @@ pub fn learn_errors(
         let new_err = errfun
             .apply(&acc_trans, nq)
             .map_err(|e| io::Error::other(format!("errfun failed: {e}")))?;
+        pass.fit_seconds = t_fit.elapsed().as_secs_f64();
+        passes.push(pass);
 
         // max_delta is kept for diagnostics only; convergence is decided by
         // bit-exact membership in `err_history` (see below).
@@ -1051,6 +1104,8 @@ pub fn learn_errors(
         converged,
         iterations,
         stop_reason,
+        passes,
+        runs,
     })
 }
 

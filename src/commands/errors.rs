@@ -3,6 +3,7 @@
 use std::{
     io,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use dada2_rs::{
@@ -14,12 +15,13 @@ use learn_errors::{
     ErrFun, LearnDiagOptions, LearnedErrParams, learn_errors, load_derep_samples,
     load_fastq_samples,
 };
-use metrics::MeasureLevel;
+use metrics::{MeasureLevel, MetricsDocument};
 use misc::Tagged;
 use nwalign::AlignParams;
 use serde::Serialize;
 
 use super::common::{WFA_MAX_EDITS_DEFAULT, check_input_paths, note_homopolymer_gapping};
+use super::dada::{resolve_measure_level, write_metrics_json};
 use error_models::{LoessConfig, LoessSurface};
 
 pub(crate) fn run_learn_errors(args: cli::LearnErrorsArgs) -> io::Result<()> {
@@ -40,8 +42,14 @@ pub(crate) fn run_learn_errors(args: cli::LearnErrorsArgs) -> io::Result<()> {
         indel,
         compression: _,
     } = args;
+    let t_start = Instant::now();
     check_input_paths("input", &input)?;
-    let resolved = resolve_learn_params(&fit, denoise, experimental, threads, verbose)?;
+    let measure = resolve_measure_level(
+        verbose,
+        diag.metrics_json.as_ref(),
+        diag.metrics_attribution,
+    );
+    let resolved = resolve_learn_params(&fit, denoise, experimental, threads, verbose, measure)?;
     let max_consist = fit.max_consist;
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -57,6 +65,11 @@ pub(crate) fn run_learn_errors(args: cli::LearnErrorsArgs) -> io::Result<()> {
         &pool,
         verbose,
     )?;
+    let timing = RunTiming {
+        t_start,
+        load: t_start.elapsed(),
+        measure,
+    };
 
     learn_and_write(
         "learn-errors",
@@ -69,6 +82,7 @@ pub(crate) fn run_learn_errors(args: cli::LearnErrorsArgs) -> io::Result<()> {
         compact,
         output,
         Some(&indel),
+        timing,
     )
 }
 
@@ -85,8 +99,14 @@ pub(crate) fn run_errors_from_sample(args: cli::ErrorsFromSampleArgs) -> io::Res
         verbose,
         compression: _,
     } = args;
+    let t_start = Instant::now();
     check_input_paths("input", &input)?;
-    let resolved = resolve_learn_params(&fit, denoise, experimental, threads, verbose)?;
+    let measure = resolve_measure_level(
+        verbose,
+        diag.metrics_json.as_ref(),
+        diag.metrics_attribution,
+    );
+    let resolved = resolve_learn_params(&fit, denoise, experimental, threads, verbose, measure)?;
     let max_consist = fit.max_consist;
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -95,6 +115,11 @@ pub(crate) fn run_errors_from_sample(args: cli::ErrorsFromSampleArgs) -> io::Res
         .map_err(io::Error::other)?;
 
     let all_inputs = load_derep_samples(&input)?;
+    let timing = RunTiming {
+        t_start,
+        load: t_start.elapsed(),
+        measure,
+    };
 
     if verbose {
         eprintln!(
@@ -114,6 +139,7 @@ pub(crate) fn run_errors_from_sample(args: cli::ErrorsFromSampleArgs) -> io::Res
         compact,
         output,
         None,
+        timing,
     )
 }
 
@@ -185,6 +211,7 @@ fn learn_and_write(
     compact: bool,
     output: Option<PathBuf>,
     indel: Option<&cli::LearnIndelArgs>,
+    timing: RunTiming,
 ) -> io::Result<()> {
     if let Some(ref dir) = diag.diag_dir {
         std::fs::create_dir_all(dir)?;
@@ -286,7 +313,35 @@ fn learn_and_write(
         Some(path) => misc::write_maybe_gz(&path, json.as_bytes())?,
         None => println!("{json}"),
     }
+
+    if let Some(path) = &diag.metrics_json {
+        let mut doc = MetricsDocument::new(timing.t_start.elapsed(), timing.measure);
+        let mut runs = result.runs;
+        // Samples finish out of order; sort so reruns give identical documents.
+        runs.sort_by_key(|&(pass, si, _)| (pass, si));
+        for (pass, si, m) in runs {
+            doc.push_learn(format!("sample_{:03}", si + 1), pass, m);
+        }
+        doc.learn = Some(metrics::LearnMetrics {
+            samples: all_inputs.len(),
+            iterations: result.iterations,
+            converged: result.converged,
+            load_seconds: timing.load.as_secs_f64(),
+            passes: result.passes,
+        });
+        write_metrics_json(path, &doc)?;
+        if verbose {
+            eprintln!("[{tag}] wrote run metrics to {}", path.display());
+        }
+    }
     Ok(())
+}
+
+/// Start time, input-loading time and measure level, for `--metrics-json`.
+struct RunTiming {
+    t_start: Instant,
+    load: Duration,
+    measure: MeasureLevel,
 }
 
 /// Resolve a [`LoessConfig`] from CLI inputs: preset + per-knob overrides.
@@ -423,6 +478,7 @@ fn resolve_learn_params(
     experimental: cli::ExperimentalArgs,
     threads: usize,
     verbose: bool,
+    measure: MeasureLevel,
 ) -> io::Result<(ErrFun, AlignParams, dada::DadaParams)> {
     let cli::LearnDenoiseArgs {
         omega_a,
@@ -565,13 +621,7 @@ fn resolve_learn_params(
         },
         threads,
         verbose,
-        // learn-errors has no --metrics-json yet; keep
-        // --verbose's measurements exactly as they were.
-        if verbose {
-            MeasureLevel::Attribution
-        } else {
-            MeasureLevel::Off
-        },
+        measure,
     );
     Ok((err_fun, align_params, dada_params))
 }
