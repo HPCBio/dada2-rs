@@ -586,6 +586,14 @@ pub struct LearnDiagArgs {
     /// Only trace members with abundance >= this value
     #[arg(long, default_value_t = 1, help_heading = H_DIAG)]
     pub trace_min_abund: u32,
+
+    /// Write machine-readable run metrics (JSON) to this file
+    #[arg(long, help_heading = H_DIAG)]
+    pub metrics_json: Option<PathBuf>,
+
+    /// Add per-comparison timings to --metrics-json; slows the run measurably
+    #[arg(long, requires = "metrics_json", help_heading = H_DIAG)]
+    pub metrics_attribution: bool,
 }
 
 /// Arguments for [`Commands::Summary`].
