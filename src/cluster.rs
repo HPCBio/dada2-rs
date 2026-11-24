@@ -319,6 +319,13 @@ const BATCH_LANES: usize = 16;
 const MIN_BATCH: usize = 8;
 /// `defer_len` entry for a raw the screen pass did not defer.
 const NOT_DEFERRED: u32 = u32::MAX;
+/// At or below this many raws (or deferred pairs), the deferred-pair scan and
+/// sort run serially. Serially they cost microseconds at this size; in parallel
+/// each adds a join point, and a thread waiting at a join runs other queued
+/// work. In `learn-errors`, where samples run concurrently, that cost ~7 ms per
+/// call (2,500 raws on average) and made batching 24% slower than base on the
+/// 48-thread MiSeq run (#337). `dada-pooled` calls (~270k raws) stay parallel.
+const SERIAL_PREP_MAX: usize = 32_768;
 
 /// `comps` as a raw pointer, for the batch pass's in-place writes. Sound
 /// because each deferred index occurs exactly once in `pending`, so no two
@@ -368,7 +375,11 @@ fn align_deferred(
         bt.prep = t_prep.elapsed();
         return CompCost::default();
     }
-    pending.par_sort_unstable();
+    if pending.len() <= SERIAL_PREP_MAX {
+        pending.sort_unstable();
+    } else {
+        pending.par_sort_unstable();
+    }
     let idx: Vec<u32> = pending.iter().map(|&(_, i)| i).collect();
     let mut chunks: Vec<&[u32]> = Vec::new();
     let mut start = 0;
@@ -716,12 +727,17 @@ pub fn b_compare_parallel(
             .collect();
     }
     let screen_pass = t_map.elapsed();
-    let pending: Vec<(u32, u32)> = defer_len
-        .par_iter()
-        .enumerate()
-        .filter(|&(_, &len)| len != NOT_DEFERRED)
-        .map(|(index, &len)| (len, index as u32))
-        .collect();
+    let deferred =
+        |(index, &len): (usize, &u32)| (len != NOT_DEFERRED).then_some((len, index as u32));
+    let pending: Vec<(u32, u32)> = if defer_len.len() <= SERIAL_PREP_MAX {
+        defer_len.iter().enumerate().filter_map(deferred).collect()
+    } else {
+        defer_len
+            .par_iter()
+            .enumerate()
+            .filter_map(deferred)
+            .collect()
+    };
     drop(defer_len);
     let mut batch_timing = batch.then(|| BatchTiming {
         screen_pass,
