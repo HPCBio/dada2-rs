@@ -319,28 +319,14 @@ const BATCH_LANES: usize = 16;
 const MIN_BATCH: usize = 8;
 /// `defer_len` entry for a raw the screen pass did not defer.
 const NOT_DEFERRED: u32 = u32::MAX;
-/// At or below this many raws (or deferred pairs), the deferred-pair scan and
-/// sort run serially. The default is no limit: prep is always serial.
-///
-/// In parallel each step adds a join point, and a thread waiting at a join runs
-/// other queued work. On the 48-thread MiSeq runs (#337), parallel prep cost
-/// ~7 ms per `learn-errors` call (samples run concurrently; 2,500 raws on
-/// average) and ~2.6 ms per `dada-pooled` call (272k raws). Serial prep took
-/// `learn-errors` from 13.8 to 9.6 s and `dada-pooled` from 75.3 to 70.5 s.
-pub const SERIAL_PREP_MAX_DEFAULT: usize = usize::MAX;
-
-/// [`SERIAL_PREP_MAX_DEFAULT`], overridable for tuning via
-/// `DADA2RS_SERIAL_PREP_MAX` (0 = always parallel; invalid values fall back to
-/// the default). Read once per process. See [`crate::gates`].
-pub fn serial_prep_max() -> usize {
-    static VALUE: OnceLock<usize> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        std::env::var("DADA2RS_SERIAL_PREP_MAX")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(SERIAL_PREP_MAX_DEFAULT)
-    })
-}
+// The deferred-pair scan and sort ("prep") run serially. In parallel each step
+// adds a join point, and a thread waiting at a join runs other queued work. On
+// the 48-thread MiSeq runs (#337), parallel prep cost ~7 ms per `learn-errors`
+// call (samples run concurrently; 2,500 raws on average) and ~2.6 ms per
+// `dada-pooled` call (272k raws): serial prep took `learn-errors` from 13.8 to
+// 9.6 s and `dada-pooled` from 75.3 to 70.5 s. PacBio agreed. Only NovaSeq
+// `dada-pooled` (2.3M raws) preferred parallel, by 7 s of a 2,000 s run, which
+// did not justify a size threshold.
 
 /// `comps` as a raw pointer, for the batch pass's in-place writes. Sound
 /// because each deferred index occurs exactly once in `pending`, so no two
@@ -390,11 +376,7 @@ fn align_deferred(
         bt.prep = t_prep.elapsed();
         return CompCost::default();
     }
-    if pending.len() <= serial_prep_max() {
-        pending.sort_unstable();
-    } else {
-        pending.par_sort_unstable();
-    }
+    pending.sort_unstable();
     let idx: Vec<u32> = pending.iter().map(|&(_, i)| i).collect();
     let mut chunks: Vec<&[u32]> = Vec::new();
     let mut start = 0;
@@ -744,15 +726,7 @@ pub fn b_compare_parallel(
     let screen_pass = t_map.elapsed();
     let deferred =
         |(index, &len): (usize, &u32)| (len != NOT_DEFERRED).then_some((len, index as u32));
-    let pending: Vec<(u32, u32)> = if defer_len.len() <= serial_prep_max() {
-        defer_len.iter().enumerate().filter_map(deferred).collect()
-    } else {
-        defer_len
-            .par_iter()
-            .enumerate()
-            .filter_map(deferred)
-            .collect()
-    };
+    let pending: Vec<(u32, u32)> = defer_len.iter().enumerate().filter_map(deferred).collect();
     drop(defer_len);
     let mut batch_timing = batch.then(|| BatchTiming {
         screen_pass,
