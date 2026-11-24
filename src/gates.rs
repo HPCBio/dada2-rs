@@ -48,6 +48,7 @@ const KNOWN: &[&str] = &[
     "DADA2RS_RECONCILE_VERIFY",
     "DADA2RS_RECONCILE_FULL",
     "DADA2RS_PAR_GRAIN",
+    "DADA2RS_SERIAL_PREP_MAX",
     "DADA2RS_PROGRESS_SECS",
     "DADA2RS_PUPDATE_PREFETCH",
     "DADA2RS_ALIGN_BACKEND",
@@ -317,6 +318,11 @@ pub fn report() -> Vec<String> {
             label: "par grain",
             value: grain.to_string(),
             default: grain == crate::cluster::PAR_GRAIN_DEFAULT,
+        },
+        Resolved {
+            label: "serial prep max",
+            value: crate::cluster::serial_prep_max().to_string(),
+            default: crate::cluster::serial_prep_max() == crate::cluster::SERIAL_PREP_MAX_DEFAULT,
         },
     ];
 

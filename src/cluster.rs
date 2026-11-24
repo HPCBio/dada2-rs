@@ -325,7 +325,20 @@ const NOT_DEFERRED: u32 = u32::MAX;
 /// work. In `learn-errors`, where samples run concurrently, that cost ~7 ms per
 /// call (2,500 raws on average) and made batching 24% slower than base on the
 /// 48-thread MiSeq run (#337). `dada-pooled` calls (~270k raws) stay parallel.
-const SERIAL_PREP_MAX: usize = 32_768;
+pub const SERIAL_PREP_MAX_DEFAULT: usize = 32_768;
+
+/// [`SERIAL_PREP_MAX_DEFAULT`], overridable for tuning via
+/// `DADA2RS_SERIAL_PREP_MAX` (0 = always parallel; invalid values fall back to
+/// the default). Read once per process. See [`crate::gates`].
+pub fn serial_prep_max() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("DADA2RS_SERIAL_PREP_MAX")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(SERIAL_PREP_MAX_DEFAULT)
+    })
+}
 
 /// `comps` as a raw pointer, for the batch pass's in-place writes. Sound
 /// because each deferred index occurs exactly once in `pending`, so no two
@@ -375,7 +388,7 @@ fn align_deferred(
         bt.prep = t_prep.elapsed();
         return CompCost::default();
     }
-    if pending.len() <= SERIAL_PREP_MAX {
+    if pending.len() <= serial_prep_max() {
         pending.sort_unstable();
     } else {
         pending.par_sort_unstable();
@@ -729,7 +742,7 @@ pub fn b_compare_parallel(
     let screen_pass = t_map.elapsed();
     let deferred =
         |(index, &len): (usize, &u32)| (len != NOT_DEFERRED).then_some((len, index as u32));
-    let pending: Vec<(u32, u32)> = if defer_len.len() <= SERIAL_PREP_MAX {
+    let pending: Vec<(u32, u32)> = if defer_len.len() <= serial_prep_max() {
         defer_len.iter().enumerate().filter_map(deferred).collect()
     } else {
         defer_len
