@@ -317,6 +317,8 @@ const BATCH_LANES: usize = 16;
 /// Same-length groups smaller than this go through the single-pair kernel
 /// rather than a mostly-padded batch.
 const MIN_BATCH: usize = 8;
+/// `defer_len` entry for a raw the screen pass did not defer.
+const NOT_DEFERRED: u32 = u32::MAX;
 
 /// `comps` as a raw pointer, for the batch pass's in-place writes. Sound
 /// because each deferred index occurs exactly once in `pending`, so no two
@@ -682,27 +684,45 @@ pub fn b_compare_parallel(
             AlignBuffers::new()
         }
     };
-    // Both paths run the same screen pass: `map_init` + indexed `collect`.
-    // Collecting deferred pairs inside the pass (a `fold` with a per-job
-    // `Vec`) cut prep from 10 s to 0.3 s on the 48-thread MiSeq pool but made
-    // the screen pass 2.7x slower there (22 -> 60 s), slower with every
-    // thread added past 16 (#337). A separate parallel scan is cheap.
-    let mut comps: Vec<CompItem> = (0..nraw)
-        .into_par_iter()
-        .with_max_len(par_max_len())
-        .map_init(make_buf, |buf, index| compare_one(buf, index))
-        .collect();
-    let screen_pass = t_map.elapsed();
-    let pending: Vec<(u32, u32)> = if batch {
-        comps
-            .par_iter()
-            .enumerate()
-            .filter(|(_, c)| c.1 == DEFERRED)
-            .map(|(index, _)| (raws[index].seq.len() as u32, index as u32))
-            .collect()
+    // Both paths run the same `map_init` screen pass, which keeps buffer
+    // reuse per worker and writes results through an indexed collect.
+    // Gathering deferred pairs inside the pass with a `fold` and a per-job
+    // `Vec` made it 2.7x slower at 48 threads (22 -> 60 s on the MiSeq pool,
+    // #337). A scan of `comps` afterwards cost ~3 ms per cluster there (8 s),
+    // slower with each thread added: it re-reads 15 MB just written across
+    // the whole machine. So the batch path also writes one `u32` per raw,
+    // the length of each deferred raw, and the scan reads only that.
+    let mut comps: Vec<CompItem> = Vec::new();
+    let mut defer_len: Vec<u32> = Vec::new();
+    if batch {
+        (0..nraw)
+            .into_par_iter()
+            .with_max_len(par_max_len())
+            .map_init(make_buf, |buf, index| {
+                let item = compare_one(buf, index);
+                let len = if item.1 == DEFERRED {
+                    raws[index].seq.len() as u32
+                } else {
+                    NOT_DEFERRED
+                };
+                (item, len)
+            })
+            .unzip_into_vecs(&mut comps, &mut defer_len);
     } else {
-        Vec::new()
-    };
+        comps = (0..nraw)
+            .into_par_iter()
+            .with_max_len(par_max_len())
+            .map_init(make_buf, |buf, index| compare_one(buf, index))
+            .collect();
+    }
+    let screen_pass = t_map.elapsed();
+    let pending: Vec<(u32, u32)> = defer_len
+        .par_iter()
+        .enumerate()
+        .filter(|&(_, &len)| len != NOT_DEFERRED)
+        .map(|(index, &len)| (len, index as u32))
+        .collect();
+    drop(defer_len);
     let mut batch_timing = batch.then(|| BatchTiming {
         screen_pass,
         ..BatchTiming::default()
