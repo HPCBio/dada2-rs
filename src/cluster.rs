@@ -682,49 +682,35 @@ pub fn b_compare_parallel(
             AlignBuffers::new()
         }
     };
-    let (mut comps, pending): (Vec<CompItem>, Vec<(u32, u32)>) = if batch {
-        // Each job records the pairs it defers as `(length, index)`, so the
-        // batch pass needs no rescan of `comps` and no lookups into `raws`.
-        // `comps` is still a fresh allocation first touched in parallel, like
-        // the `collect` below: reused memory measured slower in this map (#151).
-        let mut comps: Vec<CompItem> = Vec::with_capacity(nraw);
-        let pieces: Vec<Vec<(u32, u32)>> = comps.spare_capacity_mut()[..nraw]
-            .par_iter_mut()
+    // Both paths run the same screen pass: `map_init` + indexed `collect`.
+    // Collecting deferred pairs inside the pass (a `fold` with a per-job
+    // `Vec`) cut prep from 10 s to 0.3 s on the 48-thread MiSeq pool but made
+    // the screen pass 2.7x slower there (22 -> 60 s), slower with every
+    // thread added past 16 (#337). A separate parallel scan is cheap.
+    let mut comps: Vec<CompItem> = (0..nraw)
+        .into_par_iter()
+        .with_max_len(par_max_len())
+        .map_init(make_buf, |buf, index| compare_one(buf, index))
+        .collect();
+    let screen_pass = t_map.elapsed();
+    let pending: Vec<(u32, u32)> = if batch {
+        comps
+            .par_iter()
             .enumerate()
-            .with_max_len(par_max_len())
-            // Boxed: `fold` moves its accumulator on every item, and an inline
-            // `AlignBuffers` made that a struct-sized memcpy per raw (+35% on
-            // this pass, profiled).
-            .fold(
-                || (Box::new(make_buf()), Vec::new()),
-                |(mut buf, mut pend), (index, slot)| {
-                    let item = compare_one(&mut buf, index);
-                    if item.1 == DEFERRED {
-                        pend.push((raws[index].seq.len() as u32, index as u32));
-                    }
-                    slot.write(item);
-                    (buf, pend)
-                },
-            )
-            .map(|(_, pend)| pend)
-            .collect();
-        // SAFETY: the pass above wrote every one of the first `nraw` slots.
-        unsafe { comps.set_len(nraw) };
-        (comps, pieces.concat())
+            .filter(|(_, c)| c.1 == DEFERRED)
+            .map(|(index, _)| (raws[index].seq.len() as u32, index as u32))
+            .collect()
     } else {
-        let comps = (0..nraw)
-            .into_par_iter()
-            .with_max_len(par_max_len())
-            .map_init(make_buf, |buf, index| compare_one(buf, index))
-            .collect();
-        (comps, Vec::new())
+        Vec::new()
     };
     let mut batch_timing = batch.then(|| BatchTiming {
-        screen_pass: t_map.elapsed(),
+        screen_pass,
         ..BatchTiming::default()
     });
+    // The deferred-pair scan counts as prep.
+    let scan = t_map.elapsed() - screen_pass;
     let batch_cost = if let Some(bt) = batch_timing.as_mut() {
-        align_deferred(
+        let cost = align_deferred(
             &mut comps,
             pending,
             raws,
@@ -736,7 +722,9 @@ pub fn b_compare_parallel(
             params,
             measure,
             bt,
-        )
+        );
+        bt.prep += scan;
+        cost
     } else {
         CompCost::default()
     };
