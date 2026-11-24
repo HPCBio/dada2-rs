@@ -173,14 +173,13 @@ pub struct CompareAttribution {
 }
 
 /// Where `--batch-align`'s map time goes (#337): the per-raw screen pass, the
-/// grouping of deferred pairs, the batched alignment pass and the write-back.
-/// Their sum is the map's wall time.
+/// grouping of deferred pairs and the batched alignment pass. Their sum is the
+/// map's wall time.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct BatchMetrics {
     pub screen_pass: f64,
     pub prep: f64,
     pub align_pass: f64,
-    pub writeback: f64,
     /// Pairs deferred to the batch pass.
     pub deferred: u64,
     /// Batches run through the batched kernel.
@@ -661,7 +660,6 @@ impl RawCounters {
                     screen_pass: secs(b.screen_pass),
                     prep: secs(b.prep),
                     align_pass: secs(b.align_pass),
-                    writeback: secs(b.writeback),
                     deferred: b.deferred,
                     batches: b.batches,
                     single: b.single,

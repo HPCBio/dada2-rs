@@ -221,8 +221,6 @@ pub struct BatchTiming {
     pub prep: std::time::Duration,
     /// The batched alignment map, lambda included.
     pub align_pass: std::time::Duration,
-    /// Writing the deferred results back (serial).
-    pub writeback: std::time::Duration,
     /// Pairs deferred to the batch pass.
     pub deferred: u64,
     /// Batches run through the batched kernel (up to 16 pairs each).
@@ -236,7 +234,6 @@ impl BatchTiming {
         self.screen_pass += o.screen_pass;
         self.prep += o.prep;
         self.align_pass += o.align_pass;
-        self.writeback += o.writeback;
         self.deferred += o.deferred;
         self.batches += o.batches;
         self.single += o.single;
@@ -307,8 +304,8 @@ thread_local! {
         std::cell::RefCell::new((BatchBuffers::new(), AlignBuffers::new()));
 }
 
-/// One batch's `(raw index, lambda, hamming)` results and its cost.
-type BatchResult = (Vec<(u32, f64, u32)>, CompCost);
+/// One `b_compare_parallel` result: `(lambda, hamming, greedy-skipped, cost)`.
+type CompItem = (f64, u32, bool, CompCost);
 
 /// `hamming` marker for a comparison left to [`align_deferred`].
 const DEFERRED: u32 = u32::MAX - 1;
@@ -321,14 +318,38 @@ const BATCH_LANES: usize = 16;
 /// rather than a mostly-padded batch.
 const MIN_BATCH: usize = 8;
 
+/// `comps` as a raw pointer, for the batch pass's in-place writes. Sound
+/// because each deferred index occurs exactly once in `pending`, so no two
+/// chunks touch the same element, and nothing else accesses `comps` while
+/// the pass runs.
+struct CompsPtr(*mut CompItem);
+// SAFETY: see the type's doc; the pointee is only written at disjoint indices.
+unsafe impl Send for CompsPtr {}
+unsafe impl Sync for CompsPtr {}
+
+impl CompCost {
+    fn add(mut self, o: CompCost) -> CompCost {
+        self.total += o.total;
+        self.screen += o.screen;
+        self.dp += o.dp;
+        self.post += o.post;
+        self.traceback += o.traceback;
+        self
+    }
+}
+
 /// Align the comparisons `b_compare_parallel` deferred, in batches of raws
-/// that share a length, and fill in their `(lambda, hamming)`. Results are
+/// that share a length, and write their `(lambda, hamming)` into `comps`.
+/// `pending` holds `(raw length, raw index)` for each deferred comparison, as
+/// collected by the screen pass (#337: rescanning `comps` for them and sorting
+/// through `raws` cost ~10 s of a 48-thread MiSeq map). Results are
 /// byte-identical to the per-pair path (`nwalign_batch` tests). Under
 /// `measure`, returns the summed worker time split as the per-pair path splits
 /// it (`dp` = kernel incl. traceback, `post` = al2subs + quals).
 #[allow(clippy::too_many_arguments)]
 fn align_deferred(
-    comps: &mut [(f64, u32, bool, CompCost)],
+    comps: &mut [CompItem],
+    mut pending: Vec<(u32, u32)>,
     raws: &[crate::containers::Raw],
     center_idx: usize,
     err_mat: &[f64],
@@ -340,27 +361,21 @@ fn align_deferred(
     bt: &mut BatchTiming,
 ) -> CompCost {
     let t_prep = std::time::Instant::now();
-    let mut pending: Vec<u32> = comps
-        .par_iter()
-        .enumerate()
-        .filter_map(|(i, c)| (c.1 == DEFERRED).then_some(i as u32))
-        .collect();
+    bt.deferred = pending.len() as u64;
     if pending.is_empty() {
         bt.prep = t_prep.elapsed();
         return CompCost::default();
     }
-    pending.par_sort_unstable_by_key(|&i| (raws[i as usize].seq.len(), i));
-
+    pending.par_sort_unstable();
+    let idx: Vec<u32> = pending.iter().map(|&(_, i)| i).collect();
     let mut chunks: Vec<&[u32]> = Vec::new();
-    let len_of = |i: u32| raws[i as usize].seq.len();
     let mut start = 0;
     for k in 1..=pending.len() {
-        if k == pending.len() || len_of(pending[k]) != len_of(pending[start]) {
-            chunks.extend(pending[start..k].chunks(BATCH_LANES));
+        if k == pending.len() || pending[k].0 != pending[start].0 {
+            chunks.extend(idx[start..k].chunks(BATCH_LANES));
             start = k;
         }
     }
-    bt.deferred = pending.len() as u64;
     for c in &chunks {
         if c.len() >= MIN_BATCH {
             bt.batches += 1;
@@ -374,7 +389,9 @@ fn align_deferred(
     let scores = vectorized_scores(params);
     let center = &raws[center_idx];
     let elapsed = |t: Option<std::time::Instant>| t.map_or(0, |t| t.elapsed().as_nanos() as u64);
-    let results: Vec<BatchResult> = chunks
+    let out = CompsPtr(comps.as_mut_ptr());
+    let out = &out;
+    let total = chunks
         .par_iter()
         .map(|chunk| {
             BATCH_SCRATCH.with(|cell| {
@@ -384,8 +401,7 @@ fn align_deferred(
                 sb.measure = measure;
                 let t0 = measure.then(std::time::Instant::now);
                 let mut cost = CompCost::default();
-                let mut out = Vec::with_capacity(chunk.len());
-                let mut finish = |idx: u32, al0: &[u8], al1: &[u8], cost: &mut CompCost| {
+                let finish = |idx: u32, al0: &[u8], al1: &[u8], cost: &mut CompCost| {
                     let raw = &raws[idx as usize];
                     let t_post = measure.then(std::time::Instant::now);
                     let sub = sub_from_alignment(center, raw, al0, al1);
@@ -398,7 +414,10 @@ fn align_deferred(
                         lambda *= f;
                         hamming += h;
                     }
-                    out.push((idx, lambda, hamming));
+                    // SAFETY: `idx` is a distinct deferred index (see `CompsPtr`).
+                    let c = unsafe { &mut *out.0.add(idx as usize) };
+                    c.0 = lambda;
+                    c.1 = hamming;
                 };
                 if chunk.len() >= MIN_BATCH {
                     let lanes: [(&[u8], &[u8]); BATCH_LANES] = std::array::from_fn(|k| {
@@ -427,26 +446,11 @@ fn align_deferred(
                     }
                 }
                 cost.total = elapsed(t0);
-                (out, cost)
+                cost
             })
         })
-        .collect();
-
+        .reduce(CompCost::default, CompCost::add);
     bt.align_pass = t_align.elapsed();
-    let t_write = std::time::Instant::now();
-    let mut total = CompCost::default();
-    for (out, cost) in results {
-        total.total += cost.total;
-        total.dp += cost.dp;
-        total.post += cost.post;
-        total.traceback += cost.traceback;
-        for (idx, lambda, hamming) in out {
-            let c = &mut comps[idx as usize];
-            c.0 = lambda;
-            c.1 = hamming;
-        }
-    }
-    bt.writeback = t_write.elapsed();
     total
 }
 
@@ -605,96 +609,116 @@ pub fn b_compare_parallel(
     // here and aligned in same-length batches by `align_deferred` below, which
     // attributes their DP, traceback and al2subs time the same way.
     let batch = params.batch_align && !params.screen_audit;
-    let mut comps: Vec<(f64, u32, bool, CompCost)> = (0..nraw)
-        .into_par_iter()
-        .with_max_len(par_max_len())
-        .map_init(
-            || {
-                if measure {
-                    AlignBuffers::measuring()
-                } else {
-                    AlignBuffers::new()
-                }
-            },
-            |buf, index| {
-                // Per-item timing only under `measure` (verbose) — keeps the hot
-                // alignment loop allocation/Instant-free in production runs.
-                let t0 = measure.then(std::time::Instant::now);
-                let raw = &raws[index];
-                let (lambda, hamming, skipped) = if greedy && (raw.reads > center_reads || raw.lock)
-                {
-                    let lambda = compute_lambda(raw, None, err_mat, ncol, use_quals);
-                    (lambda, u32::MAX, true)
-                } else {
-                    let screen_d = shared.map(|sh| {
-                        crate::minimizers::screen_dist(
-                            sh[index],
-                            center_sketch,
-                            raw.minimizers.as_ref(),
-                        )
-                    });
-                    let routed = if batch {
-                        sub_new_or_defer(&raws[center_idx], raw, params, buf, screen_d)
-                    } else {
-                        SubOrDefer::Done(sub_new_with_screen(
-                            &raws[center_idx],
-                            raw,
-                            params,
-                            buf,
-                            screen_d,
-                        ))
-                    };
-                    match routed {
-                        SubOrDefer::Defer => (0.0, DEFERRED, false),
-                        SubOrDefer::Done(sub) => {
-                            let mut lambda =
-                                compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
-                            let mut hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
-                            if let (Some(m), Some(s)) = (indel_model.as_deref(), sub.as_ref()) {
-                                let qual = raw.qual.as_deref().filter(|_| use_quals);
-                                let (f, h) = m.score(
-                                    &raws[center_idx].seq,
-                                    &raw.seq,
-                                    qual,
-                                    s,
-                                    err_mat,
-                                    ncol,
-                                );
-                                lambda *= f;
-                                hamming += h;
-                            }
-                            (lambda, hamming, false)
-                        }
+    // The per-raw comparison, shared by both iteration schemes below.
+    let compare_one = |buf: &mut AlignBuffers, index: usize| -> CompItem {
+        // Per-item timing only under `measure` (verbose) — keeps the hot
+        // alignment loop allocation/Instant-free in production runs.
+        let t0 = measure.then(std::time::Instant::now);
+        let raw = &raws[index];
+        let (lambda, hamming, skipped) = if greedy && (raw.reads > center_reads || raw.lock) {
+            let lambda = compute_lambda(raw, None, err_mat, ncol, use_quals);
+            (lambda, u32::MAX, true)
+        } else {
+            let screen_d = shared.map(|sh| {
+                crate::minimizers::screen_dist(sh[index], center_sketch, raw.minimizers.as_ref())
+            });
+            let routed = if batch {
+                sub_new_or_defer(&raws[center_idx], raw, params, buf, screen_d)
+            } else {
+                SubOrDefer::Done(sub_new_with_screen(
+                    &raws[center_idx],
+                    raw,
+                    params,
+                    buf,
+                    screen_d,
+                ))
+            };
+            match routed {
+                SubOrDefer::Defer => (0.0, DEFERRED, false),
+                SubOrDefer::Done(sub) => {
+                    let mut lambda = compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
+                    let mut hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
+                    if let (Some(m), Some(s)) = (indel_model.as_deref(), sub.as_ref()) {
+                        let qual = raw.qual.as_deref().filter(|_| use_quals);
+                        let (f, h) =
+                            m.score(&raws[center_idx].seq, &raw.seq, qual, s, err_mat, ncol);
+                        lambda *= f;
+                        hamming += h;
                     }
-                };
-                // A greedy skip runs neither half, so leave both at zero rather
-                // than reading the buffer's stale values from the previous item.
-                let (screen, dp, post, traceback) = if skipped || !measure {
-                    (0, 0, 0, 0)
-                } else {
-                    (
-                        buf.last_screen_nanos,
-                        buf.last_dp_nanos,
-                        buf.last_post_nanos,
-                        buf.last_traceback_nanos,
-                    )
-                };
-                let nanos = t0.map_or(0, |t| t.elapsed().as_nanos() as u64);
-                (
-                    lambda,
-                    hamming,
-                    skipped,
-                    CompCost {
-                        total: nanos,
-                        screen,
-                        dp,
-                        post,
-                        traceback,
-                    },
-                )
+                    (lambda, hamming, false)
+                }
+            }
+        };
+        // A greedy skip runs neither half, so leave both at zero rather
+        // than reading the buffer's stale values from the previous item.
+        let (screen, dp, post, traceback) = if skipped || !measure {
+            (0, 0, 0, 0)
+        } else {
+            (
+                buf.last_screen_nanos,
+                buf.last_dp_nanos,
+                buf.last_post_nanos,
+                buf.last_traceback_nanos,
+            )
+        };
+        let nanos = t0.map_or(0, |t| t.elapsed().as_nanos() as u64);
+        (
+            lambda,
+            hamming,
+            skipped,
+            CompCost {
+                total: nanos,
+                screen,
+                dp,
+                post,
+                traceback,
             },
         )
-        .collect();
+    };
+    let make_buf = || {
+        if measure {
+            AlignBuffers::measuring()
+        } else {
+            AlignBuffers::new()
+        }
+    };
+    let (mut comps, pending): (Vec<CompItem>, Vec<(u32, u32)>) = if batch {
+        // Each job records the pairs it defers as `(length, index)`, so the
+        // batch pass needs no rescan of `comps` and no lookups into `raws`.
+        // `comps` is still a fresh allocation first touched in parallel, like
+        // the `collect` below: reused memory measured slower in this map (#151).
+        let mut comps: Vec<CompItem> = Vec::with_capacity(nraw);
+        let pieces: Vec<Vec<(u32, u32)>> = comps.spare_capacity_mut()[..nraw]
+            .par_iter_mut()
+            .enumerate()
+            .with_max_len(par_max_len())
+            // Boxed: `fold` moves its accumulator on every item, and an inline
+            // `AlignBuffers` made that a struct-sized memcpy per raw (+35% on
+            // this pass, profiled).
+            .fold(
+                || (Box::new(make_buf()), Vec::new()),
+                |(mut buf, mut pend), (index, slot)| {
+                    let item = compare_one(&mut buf, index);
+                    if item.1 == DEFERRED {
+                        pend.push((raws[index].seq.len() as u32, index as u32));
+                    }
+                    slot.write(item);
+                    (buf, pend)
+                },
+            )
+            .map(|(_, pend)| pend)
+            .collect();
+        // SAFETY: the pass above wrote every one of the first `nraw` slots.
+        unsafe { comps.set_len(nraw) };
+        (comps, pieces.concat())
+    } else {
+        let comps = (0..nraw)
+            .into_par_iter()
+            .with_max_len(par_max_len())
+            .map_init(make_buf, |buf, index| compare_one(buf, index))
+            .collect();
+        (comps, Vec::new())
+    };
     let mut batch_timing = batch.then(|| BatchTiming {
         screen_pass: t_map.elapsed(),
         ..BatchTiming::default()
@@ -702,6 +726,7 @@ pub fn b_compare_parallel(
     let batch_cost = if let Some(bt) = batch_timing.as_mut() {
         align_deferred(
             &mut comps,
+            pending,
             raws,
             center_idx,
             err_mat,
@@ -2506,7 +2531,7 @@ mod batch_align_tests {
                 assert!(bt.screen_pass > std::time::Duration::ZERO, "{tag}");
                 assert!(bt.align_pass > std::time::Duration::ZERO, "{tag}");
                 assert!(
-                    bt.screen_pass + bt.prep + bt.align_pass + bt.writeback <= cz.map,
+                    bt.screen_pass + bt.prep + bt.align_pass <= cz.map,
                     "{tag}: passes exceed the map"
                 );
                 assert_eq!(ca.aligned, cz.aligned, "{tag}: aligned");

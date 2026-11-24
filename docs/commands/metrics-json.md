@@ -41,7 +41,7 @@ whose wall time you intend to report.
 
 `compare.batch` (only under `--batch-align`) is collected at every level: the
 map's wall time split into `screen_pass`, `prep` (grouping deferred pairs by
-length), `align_pass` and `writeback`, plus `deferred`, `batches`, `single`
+length) and `align_pass`, plus `deferred`, `batches`, `single`
 (pairs in groups too small to batch) and `mean_fill` (lanes used per batch, of
 16). It is the place to read where a batched run's map time goes without the
 attribution timers, whose per-raw cost biases `map_parallel_efficiency` low
