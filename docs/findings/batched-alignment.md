@@ -203,6 +203,11 @@ share is estimated below as the per-pair map time minus the batched screen pass.
 
 Share of wall × (1 − 1/alignment speedup) reproduces the measured changes.
 
+The pools were chosen to cover both ends. NovaSeq 16S is screen-heavy and
+alignment-light; PacBio at k = 5 is the opposite, since the screen passes nearly
+every pair. Other pools should fall between them, by their alignment share. The
+NovaSeq ITS2 pool was not run.
+
 On NovaSeq the ceiling is about 9% of wall, and serial prep (64–72 s per run)
 takes back what the align pass saves. There, the k-mer screen (1,006 s) and the
 store (303 s) are the costs to attack, not alignment.
