@@ -52,8 +52,8 @@ One layout choice decided the result. The first sequence is stored *reversed*,
 so the anti-diagonal fill becomes one flat loop. Without it the 16-lane kernel
 was only 1.17× faster than the per-pair one on a laptop; with it, 2.9×.
 
-Output is byte-identical by construction. That is checked by fuzzing (6,500
-random cases), by every real pair in the benchmark, and by a parity test on the
+Output is byte-identical by construction. That is checked by fuzzing (4,500 random
+batches, every lane against the per-pair kernel), by every real pair in the benchmark, and by a parity test on the
 full `b_compare` state.
 
 **Kernel benchmark** (`examples/batch_nw_bench.rs`): full pools, 100 centres,
