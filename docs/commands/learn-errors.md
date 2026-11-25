@@ -213,6 +213,8 @@ see [KDIST cutoff decoupling](../findings/kdist-cutoff-decoupling.md).
 **`--threads`** (default 1) — threads for parallel sample processing. Does not
 affect results.
 
+**`--batch-align`** (default true) — as in [`dada`](dada.md#performance).
+
 ## Output
 
 **`--output` / `-o`** — write JSON here instead of stdout.

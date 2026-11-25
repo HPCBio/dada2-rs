@@ -9,8 +9,10 @@ use rayon::prelude::*;
 
 use crate::containers::{B, Bi, BirthType, Comparison};
 use crate::nwalign::{
-    AlignBuffers, AlignParams, ScreenBackend, sub_new_with_buf, sub_new_with_screen,
+    AlignBuffers, AlignParams, ScreenBackend, SubOrDefer, align_vectorized_with_buf,
+    sub_from_alignment, sub_new_or_defer, sub_new_with_buf, sub_new_with_screen, vectorized_scores,
 };
+use crate::nwalign_batch::{BatchBuffers, align_vectorized_batch};
 use crate::progress::ProgressRecord;
 use crate::pval::compute_lambda;
 use crate::rec_print;
@@ -204,6 +206,38 @@ struct CompCost {
     screen: u64,
     dp: u64,
     post: u64,
+    /// Portion of `dp` in the vectorized kernels' traceback.
+    traceback: u64,
+}
+
+/// Wall time per pass of `b_compare_parallel` under `--batch-align`, and how
+/// the deferred pairs were aligned. Three or four clock reads per call, so it
+/// is collected at every measurement level (#337).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BatchTiming {
+    /// The per-raw map: screen, non-deferred alignments, lambda.
+    pub screen_pass: std::time::Duration,
+    /// Collecting, sorting and grouping the deferred pairs by length.
+    pub prep: std::time::Duration,
+    /// The batched alignment map, lambda included.
+    pub align_pass: std::time::Duration,
+    /// Pairs deferred to the batch pass.
+    pub deferred: u64,
+    /// Batches run through the batched kernel (up to 16 pairs each).
+    pub batches: u64,
+    /// Deferred pairs in groups too small to batch, aligned one by one.
+    pub single: u64,
+}
+
+impl BatchTiming {
+    pub fn add(&mut self, o: &BatchTiming) {
+        self.screen_pass += o.screen_pass;
+        self.prep += o.prep;
+        self.align_pass += o.align_pass;
+        self.deferred += o.deferred;
+        self.batches += o.batches;
+        self.single += o.single;
+    }
 }
 
 /// Timing breakdown returned by [`b_compare_parallel`].
@@ -250,10 +284,184 @@ pub struct CompareTiming {
     /// Portion of `busy` in `al2subs` + quality mapping, i.e. the
     /// post-alignment work paid only by pairs the screen passed.
     pub post: std::time::Duration,
+    /// Portion of `dp` in the vectorized kernels' traceback.
+    pub traceback: std::time::Duration,
+    /// Per-pass wall split, present under `--batch-align`.
+    pub batch: Option<BatchTiming>,
     /// Comparisons that reached the k-mer screen (i.e. were not greedy-skipped).
     pub screened: u64,
     /// Comparisons that passed the screen and were aligned.
     pub aligned: u64,
+}
+
+thread_local! {
+    /// Per-worker scratch for `align_deferred`, kept for the whole run.
+    /// `map_init` builds a fresh value per rayon job instead (~120 per cluster
+    /// at 6 threads, ~260 at 10, growing with threads), and each one zero-fills
+    /// a 0.15-1.6 MB pointer matrix: on a 48-thread MiSeq pool that churn left
+    /// the map at 63% parallel efficiency (#337).
+    static BATCH_SCRATCH: std::cell::RefCell<(BatchBuffers, AlignBuffers)> =
+        std::cell::RefCell::new((BatchBuffers::new(), AlignBuffers::new()));
+}
+
+/// One `b_compare_parallel` result: `(lambda, hamming, greedy-skipped, cost)`.
+type CompItem = (f64, u32, bool, CompCost);
+
+/// `hamming` marker for a comparison left to [`align_deferred`].
+const DEFERRED: u32 = u32::MAX - 1;
+
+/// Pairs per batch under `--batch-align`; 16 was fastest on all three platforms
+/// (batched-NW prototype, branch `proto/batched-nw`).
+const BATCH_LANES: usize = 16;
+
+/// Same-length groups smaller than this go through the single-pair kernel
+/// rather than a mostly-padded batch.
+const MIN_BATCH: usize = 8;
+/// `defer_len` entry for a raw the screen pass did not defer.
+const NOT_DEFERRED: u32 = u32::MAX;
+// The deferred-pair scan and sort ("prep") run serially. In parallel each step
+// adds a join point, and a thread waiting at a join runs other queued work. On
+// the 48-thread MiSeq runs (#337), parallel prep cost ~7 ms per `learn-errors`
+// call (samples run concurrently; 2,500 raws on average) and ~2.6 ms per
+// `dada-pooled` call (272k raws): serial prep took `learn-errors` from 13.8 to
+// 9.6 s and `dada-pooled` from 75.3 to 70.5 s. PacBio agreed. Only NovaSeq
+// `dada-pooled` (2.3M raws) preferred parallel, by 7 s of a 2,000 s run, which
+// did not justify a size threshold.
+
+/// `comps` as a raw pointer, for the batch pass's in-place writes. Sound
+/// because each deferred index occurs exactly once in `pending`, so no two
+/// chunks touch the same element, and nothing else accesses `comps` while
+/// the pass runs.
+struct CompsPtr(*mut CompItem);
+// SAFETY: see the type's doc; the pointee is only written at disjoint indices.
+unsafe impl Send for CompsPtr {}
+unsafe impl Sync for CompsPtr {}
+
+impl CompCost {
+    fn add(mut self, o: CompCost) -> CompCost {
+        self.total += o.total;
+        self.screen += o.screen;
+        self.dp += o.dp;
+        self.post += o.post;
+        self.traceback += o.traceback;
+        self
+    }
+}
+
+/// Align the comparisons `b_compare_parallel` deferred, in batches of raws
+/// that share a length, and write their `(lambda, hamming)` into `comps`.
+/// `pending` holds `(raw length, raw index)` for each deferred comparison, as
+/// collected by the screen pass (#337: rescanning `comps` for them and sorting
+/// through `raws` cost ~10 s of a 48-thread MiSeq map). Results are
+/// byte-identical to the per-pair path (`nwalign_batch` tests). Under
+/// `measure`, returns the summed worker time split as the per-pair path splits
+/// it (`dp` = kernel incl. traceback, `post` = al2subs + quals).
+#[allow(clippy::too_many_arguments)]
+fn align_deferred(
+    comps: &mut [CompItem],
+    mut pending: Vec<(u32, u32)>,
+    raws: &[crate::containers::Raw],
+    center_idx: usize,
+    err_mat: &[f64],
+    ncol: usize,
+    use_quals: bool,
+    indel_model: Option<&crate::indel_model::IndelModel>,
+    params: &AlignParams,
+    measure: bool,
+    bt: &mut BatchTiming,
+) -> CompCost {
+    let t_prep = std::time::Instant::now();
+    bt.deferred = pending.len() as u64;
+    if pending.is_empty() {
+        bt.prep = t_prep.elapsed();
+        return CompCost::default();
+    }
+    pending.sort_unstable();
+    let idx: Vec<u32> = pending.iter().map(|&(_, i)| i).collect();
+    let mut chunks: Vec<&[u32]> = Vec::new();
+    let mut start = 0;
+    for k in 1..=pending.len() {
+        if k == pending.len() || pending[k].0 != pending[start].0 {
+            chunks.extend(idx[start..k].chunks(BATCH_LANES));
+            start = k;
+        }
+    }
+    for c in &chunks {
+        if c.len() >= MIN_BATCH {
+            bt.batches += 1;
+        } else {
+            bt.single += c.len() as u64;
+        }
+    }
+    bt.prep = t_prep.elapsed();
+    let t_align = std::time::Instant::now();
+
+    let scores = vectorized_scores(params);
+    let center = &raws[center_idx];
+    let elapsed = |t: Option<std::time::Instant>| t.map_or(0, |t| t.elapsed().as_nanos() as u64);
+    let out = CompsPtr(comps.as_mut_ptr());
+    let out = &out;
+    let total = chunks
+        .par_iter()
+        .map(|chunk| {
+            BATCH_SCRATCH.with(|cell| {
+                let mut scratch = cell.borrow_mut();
+                let (bb, sb) = &mut *scratch;
+                bb.measure = measure;
+                sb.measure = measure;
+                let t0 = measure.then(std::time::Instant::now);
+                let mut cost = CompCost::default();
+                let finish = |idx: u32, al0: &[u8], al1: &[u8], cost: &mut CompCost| {
+                    let raw = &raws[idx as usize];
+                    let t_post = measure.then(std::time::Instant::now);
+                    let sub = sub_from_alignment(center, raw, al0, al1);
+                    cost.post += elapsed(t_post);
+                    let mut lambda = compute_lambda(raw, Some(&sub), err_mat, ncol, use_quals);
+                    let mut hamming = sub.nsubs() as u32;
+                    if let Some(m) = indel_model {
+                        let qual = raw.qual.as_deref().filter(|_| use_quals);
+                        let (f, h) = m.score(&center.seq, &raw.seq, qual, &sub, err_mat, ncol);
+                        lambda *= f;
+                        hamming += h;
+                    }
+                    // SAFETY: `idx` is a distinct deferred index (see `CompsPtr`).
+                    let c = unsafe { &mut *out.0.add(idx as usize) };
+                    c.0 = lambda;
+                    c.1 = hamming;
+                };
+                if chunk.len() >= MIN_BATCH {
+                    let lanes: [(&[u8], &[u8]); BATCH_LANES] = std::array::from_fn(|k| {
+                        let idx = chunk[if k < chunk.len() { k } else { 0 }];
+                        (center.seq.as_slice(), raws[idx as usize].seq.as_slice())
+                    });
+                    let t_dp = measure.then(std::time::Instant::now);
+                    align_vectorized_batch::<BATCH_LANES>(&lanes, &scores, bb);
+                    cost.dp += elapsed(t_dp);
+                    cost.traceback += if measure { bb.last_traceback_nanos } else { 0 };
+                    for (&idx, (al0, al1)) in chunk.iter().zip(&bb.al) {
+                        finish(idx, al0, al1, &mut cost);
+                    }
+                } else {
+                    for &idx in chunk.iter() {
+                        let t_dp = measure.then(std::time::Instant::now);
+                        align_vectorized_with_buf(
+                            &center.seq,
+                            &raws[idx as usize].seq,
+                            &scores,
+                            sb,
+                        );
+                        cost.dp += elapsed(t_dp);
+                        cost.traceback += if measure { sb.last_traceback_nanos } else { 0 };
+                        finish(idx, &sb.al0, &sb.al1, &mut cost);
+                    }
+                }
+                cost.total = elapsed(t0);
+                cost
+            })
+        })
+        .reduce(CompCost::default, CompCost::add);
+    bt.align_pass = t_align.elapsed();
+    total
 }
 
 /// Time the two per-pair screen paths on a sample of raws, for the index probe.
@@ -407,35 +615,37 @@ pub fn b_compare_parallel(
     // `DADA2_RS_PAR_GRAIN` env var to tune for your workload.
     // Per-item compute time (4th tuple field, nanos) is summed after collect to
     // get total worker-busy time without cross-thread atomic contention.
-    let comps: Vec<(f64, u32, bool, CompCost)> = (0..nraw)
-        .into_par_iter()
-        .with_max_len(par_max_len())
-        .map_init(
-            || {
-                if measure {
-                    AlignBuffers::measuring()
-                } else {
-                    AlignBuffers::new()
-                }
-            },
-            |buf, index| {
-                // Per-item timing only under `measure` (verbose) — keeps the hot
-                // alignment loop allocation/Instant-free in production runs.
-                let t0 = measure.then(std::time::Instant::now);
-                let raw = &raws[index];
-                let (lambda, hamming, skipped) = if greedy && (raw.reads > center_reads || raw.lock)
-                {
-                    let lambda = compute_lambda(raw, None, err_mat, ncol, use_quals);
-                    (lambda, u32::MAX, true)
-                } else {
-                    let screen_d = shared.map(|sh| {
-                        crate::minimizers::screen_dist(
-                            sh[index],
-                            center_sketch,
-                            raw.minimizers.as_ref(),
-                        )
-                    });
-                    let sub = sub_new_with_screen(&raws[center_idx], raw, params, buf, screen_d);
+    // `--batch-align`: pairs bound for the vectorized kernel are left DEFERRED
+    // here and aligned in same-length batches by `align_deferred` below, which
+    // attributes their DP, traceback and al2subs time the same way.
+    let batch = params.batch_align && !params.screen_audit;
+    // The per-raw comparison, shared by both iteration schemes below.
+    let compare_one = |buf: &mut AlignBuffers, index: usize| -> CompItem {
+        // Per-item timing only under `measure` (verbose) — keeps the hot
+        // alignment loop allocation/Instant-free in production runs.
+        let t0 = measure.then(std::time::Instant::now);
+        let raw = &raws[index];
+        let (lambda, hamming, skipped) = if greedy && (raw.reads > center_reads || raw.lock) {
+            let lambda = compute_lambda(raw, None, err_mat, ncol, use_quals);
+            (lambda, u32::MAX, true)
+        } else {
+            let screen_d = shared.map(|sh| {
+                crate::minimizers::screen_dist(sh[index], center_sketch, raw.minimizers.as_ref())
+            });
+            let routed = if batch {
+                sub_new_or_defer(&raws[center_idx], raw, params, buf, screen_d)
+            } else {
+                SubOrDefer::Done(sub_new_with_screen(
+                    &raws[center_idx],
+                    raw,
+                    params,
+                    buf,
+                    screen_d,
+                ))
+            };
+            match routed {
+                SubOrDefer::Defer => (0.0, DEFERRED, false),
+                SubOrDefer::Done(sub) => {
                     let mut lambda = compute_lambda(raw, sub.as_ref(), err_mat, ncol, use_quals);
                     let mut hamming = sub.as_ref().map_or(u32::MAX, |s| s.nsubs() as u32);
                     if let (Some(m), Some(s)) = (indel_model.as_deref(), sub.as_ref()) {
@@ -446,33 +656,103 @@ pub fn b_compare_parallel(
                         hamming += h;
                     }
                     (lambda, hamming, false)
-                };
-                // A greedy skip runs neither half, so leave both at zero rather
-                // than reading the buffer's stale values from the previous item.
-                let (screen, dp, post) = if skipped || !measure {
-                    (0, 0, 0)
-                } else {
-                    (
-                        buf.last_screen_nanos,
-                        buf.last_dp_nanos,
-                        buf.last_post_nanos,
-                    )
-                };
-                let nanos = t0.map_or(0, |t| t.elapsed().as_nanos() as u64);
-                (
-                    lambda,
-                    hamming,
-                    skipped,
-                    CompCost {
-                        total: nanos,
-                        screen,
-                        dp,
-                        post,
-                    },
-                )
+                }
+            }
+        };
+        // A greedy skip runs neither half, so leave both at zero rather
+        // than reading the buffer's stale values from the previous item.
+        let (screen, dp, post, traceback) = if skipped || !measure {
+            (0, 0, 0, 0)
+        } else {
+            (
+                buf.last_screen_nanos,
+                buf.last_dp_nanos,
+                buf.last_post_nanos,
+                buf.last_traceback_nanos,
+            )
+        };
+        let nanos = t0.map_or(0, |t| t.elapsed().as_nanos() as u64);
+        (
+            lambda,
+            hamming,
+            skipped,
+            CompCost {
+                total: nanos,
+                screen,
+                dp,
+                post,
+                traceback,
             },
         )
-        .collect();
+    };
+    let make_buf = || {
+        if measure {
+            AlignBuffers::measuring()
+        } else {
+            AlignBuffers::new()
+        }
+    };
+    // Both paths run the same `map_init` screen pass, which keeps buffer
+    // reuse per worker and writes results through an indexed collect.
+    // Gathering deferred pairs inside the pass with a `fold` and a per-job
+    // `Vec` made it 2.7x slower at 48 threads (22 -> 60 s on the MiSeq pool,
+    // #337). A scan of `comps` afterwards cost ~3 ms per cluster there (8 s),
+    // slower with each thread added: it re-reads 15 MB just written across
+    // the whole machine. So the batch path also writes one `u32` per raw,
+    // the length of each deferred raw, and the scan reads only that.
+    let mut comps: Vec<CompItem> = Vec::new();
+    let mut defer_len: Vec<u32> = Vec::new();
+    if batch {
+        (0..nraw)
+            .into_par_iter()
+            .with_max_len(par_max_len())
+            .map_init(make_buf, |buf, index| {
+                let item = compare_one(buf, index);
+                let len = if item.1 == DEFERRED {
+                    raws[index].seq.len() as u32
+                } else {
+                    NOT_DEFERRED
+                };
+                (item, len)
+            })
+            .unzip_into_vecs(&mut comps, &mut defer_len);
+    } else {
+        comps = (0..nraw)
+            .into_par_iter()
+            .with_max_len(par_max_len())
+            .map_init(make_buf, |buf, index| compare_one(buf, index))
+            .collect();
+    }
+    let screen_pass = t_map.elapsed();
+    let deferred =
+        |(index, &len): (usize, &u32)| (len != NOT_DEFERRED).then_some((len, index as u32));
+    let pending: Vec<(u32, u32)> = defer_len.iter().enumerate().filter_map(deferred).collect();
+    drop(defer_len);
+    let mut batch_timing = batch.then(|| BatchTiming {
+        screen_pass,
+        ..BatchTiming::default()
+    });
+    // The deferred-pair scan counts as prep.
+    let scan = t_map.elapsed() - screen_pass;
+    let batch_cost = if let Some(bt) = batch_timing.as_mut() {
+        let cost = align_deferred(
+            &mut comps,
+            pending,
+            raws,
+            center_idx,
+            err_mat,
+            ncol,
+            use_quals,
+            indel_model.as_deref(),
+            params,
+            measure,
+            bt,
+        );
+        bt.prep += scan;
+        cost
+    } else {
+        CompCost::default()
+    };
     let map_dur = t_map.elapsed();
 
     // Serial post-processing: reduce the map's per-item costs and selectively
@@ -505,6 +785,7 @@ pub fn b_compare_parallel(
         cost.screen += item.screen;
         cost.dp += item.dp;
         cost.post += item.post;
+        cost.traceback += item.traceback;
 
         // Match serial b_compare counting: only count non-skipped raws.
         if !skipped {
@@ -541,6 +822,10 @@ pub fn b_compare_parallel(
         }
     }
     let serial_dur = t_serial.elapsed();
+    cost.total += batch_cost.total;
+    cost.dp += batch_cost.dp;
+    cost.post += batch_cost.post;
+    cost.traceback += batch_cost.traceback;
     let busy_dur = std::time::Duration::from_nanos(cost.total);
     // Retained so the attribution block still reconstructs `compare` and so a
     // future change that reintroduces a separate reduction is visible rather
@@ -595,6 +880,8 @@ pub fn b_compare_parallel(
         screen: std::time::Duration::from_nanos(cost.screen),
         dp: std::time::Duration::from_nanos(cost.dp),
         post: std::time::Duration::from_nanos(cost.post),
+        traceback: std::time::Duration::from_nanos(cost.traceback),
+        batch: batch_timing,
         screened,
         aligned,
     }
@@ -2019,6 +2306,7 @@ mod compare_fold_tests {
             band: 16,
             vectorized: true,
             gapless: true,
+            batch_align: false,
         }
     }
 
@@ -2111,6 +2399,186 @@ mod compare_fold_tests {
                     s.lambda.to_bits(),
                     "greedy={greedy}: lambda"
                 );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod batch_align_tests {
+    use super::*;
+    use crate::containers::Raw;
+    use crate::kmers::raw_assign_kmers;
+    use crate::nwalign::{AlignBackend, EndModel};
+
+    const K: usize = 5;
+
+    fn rng(st: &mut u64) -> u64 {
+        *st ^= *st << 13;
+        *st ^= *st >> 7;
+        *st ^= *st << 17;
+        *st
+    }
+
+    fn raw(seq: Vec<u8>, reads: u32, st: &mut u64) -> Raw {
+        let qual: Vec<f64> = (0..seq.len())
+            .map(|_| 20.0 + (rng(st) % 21) as f64)
+            .collect();
+        let mut r = Raw::new(seq, Some(&qual), reads, false);
+        raw_assign_kmers(&mut r, K);
+        r
+    }
+
+    /// A center plus variants covering every route through `b_compare_parallel`
+    /// under `--batch-align`: 24 same-length indel variants (one full batch and
+    /// an 8-pair batch), 5 one-shorter variants (below `MIN_BATCH`, single
+    /// kernel), substitution-only variants (gapless shortcut) and unrelated
+    /// sequences (shrouded).
+    fn pool() -> Vec<Raw> {
+        let mut st = 0x9E37_79B9_7F4A_7C15u64;
+        let center: Vec<u8> = (0..150).map(|_| 1 + (rng(&mut st) % 4) as u8).collect();
+        let sub = |s: &mut Vec<u8>, st: &mut u64| {
+            let p = (rng(st) % s.len() as u64) as usize;
+            s[p] = 1 + (s[p] % 4);
+        };
+        let mut raws = vec![raw(center.clone(), 10_000, &mut st)];
+        for n in 0..24u32 {
+            let mut s = center.clone();
+            let d = 20 + (rng(&mut st) % 50) as usize;
+            s.remove(d);
+            let i = 80 + (rng(&mut st) % 50) as usize;
+            s.insert(i, 1 + (rng(&mut st) % 4) as u8);
+            sub(&mut s, &mut st);
+            raws.push(raw(s, 500 - n, &mut st));
+        }
+        for n in 0..5u32 {
+            let mut s = center.clone();
+            s.remove(40 + 10 * n as usize);
+            raws.push(raw(s, 300 - n, &mut st));
+        }
+        for n in 0..10u32 {
+            let mut s = center.clone();
+            for _ in 0..=n % 3 {
+                sub(&mut s, &mut st);
+            }
+            raws.push(raw(s, 200 - n, &mut st));
+        }
+        for n in 0..5u32 {
+            let s: Vec<u8> = (0..150).map(|_| 1 + (rng(&mut st) % 4) as u8).collect();
+            raws.push(raw(s, 50 - n, &mut st));
+        }
+        raws
+    }
+
+    fn params(batch_align: bool) -> AlignParams {
+        AlignParams {
+            backend: AlignBackend::Nw,
+            end_model: EndModel::EndsFree,
+            wfa_max_edits: 0,
+            match_score: 5,
+            mismatch: -4,
+            gap_p: -8,
+            gap_open_p: 0,
+            homo_gap_p: -8,
+            use_kmers: true,
+            kdist_cutoff: 0.42,
+            screen_backend: ScreenBackend::Kmer,
+            minimizer_k: crate::minimizers::MINIMIZER_K,
+            minimizer_w: crate::minimizers::MINIMIZER_W,
+            screen_audit: false,
+            kmer_size: K,
+            band: 16,
+            vectorized: true,
+            gapless: true,
+            batch_align,
+        }
+    }
+
+    /// Batched and per-pair comparisons must leave `B` in the same state, bit
+    /// for bit.
+    #[test]
+    fn batch_align_matches_per_pair() {
+        let raws = pool();
+        let p = params(true);
+        let mut buf = AlignBuffers::new();
+        let deferred: Vec<usize> = (1..raws.len())
+            .filter(|&r| {
+                matches!(
+                    sub_new_or_defer(&raws[0], &raws[r], &p, &mut buf, None),
+                    SubOrDefer::Defer
+                )
+            })
+            .map(|r| raws[r].seq.len())
+            .collect();
+        // Guard against a vacuous pass: both batch sizes and the single-kernel
+        // fallback must actually be reached.
+        assert_eq!(deferred.iter().filter(|&&l| l == 150).count(), 24);
+        assert_eq!(deferred.iter().filter(|&&l| l == 149).count(), 5);
+
+        let mut err = vec![0.0f64; 16 * 41];
+        for (row, cells) in err.chunks_mut(41).enumerate() {
+            let self_trans = row % 5 == 0;
+            for (q, e) in cells.iter_mut().enumerate() {
+                let x = 10f64.powf(-(q as f64) / 10.0);
+                *e = if self_trans { 1.0 - x } else { x / 3.0 };
+            }
+        }
+        for greedy in [false, true] {
+            for measure in [false, true] {
+                let run = |batch: bool| {
+                    let mut b = B::new(pool(), 1e-40, 1e-4, true);
+                    b.clusters[0].center = Some(0);
+                    let ct =
+                        b_compare_parallel(&mut b, 0, &err, 41, &params(batch), greedy, measure);
+                    (b, ct)
+                };
+                let ((a, ca), (z, cz)) = (run(false), run(true));
+                let tag = format!("greedy={greedy} measure={measure}");
+                assert_eq!(ca.screened, cz.screened, "{tag}: screened");
+                // Per-pass split (#337): absent without the flag; with it, the
+                // pool's 24 same-length indel variants make one full batch and
+                // one of 8, and its 5 one-shorter variants go one by one.
+                assert!(ca.batch.is_none(), "{tag}: batch split without the flag");
+                let bt = cz.batch.expect("batch split under --batch-align");
+                assert_eq!((bt.deferred, bt.batches, bt.single), (29, 2, 5), "{tag}");
+                assert!(bt.screen_pass > std::time::Duration::ZERO, "{tag}");
+                assert!(bt.align_pass > std::time::Duration::ZERO, "{tag}");
+                assert!(
+                    bt.screen_pass + bt.prep + bt.align_pass <= cz.map,
+                    "{tag}: passes exceed the map"
+                );
+                assert_eq!(ca.aligned, cz.aligned, "{tag}: aligned");
+                // Attribution must mean the same thing in both modes (#337).
+                for (mode, ct) in [("per-pair", &ca), ("batched", &cz)] {
+                    let zero = std::time::Duration::ZERO;
+                    if measure {
+                        assert!(ct.screen > zero, "{tag} {mode}: screen unmeasured");
+                        assert!(ct.dp > zero, "{tag} {mode}: dp unmeasured");
+                        assert!(ct.post > zero, "{tag} {mode}: al2subs unmeasured");
+                        assert!(ct.traceback > zero, "{tag} {mode}: traceback unmeasured");
+                        assert!(ct.traceback <= ct.dp, "{tag} {mode}: traceback > dp");
+                        assert!(
+                            ct.screen + ct.dp + ct.post <= ct.busy,
+                            "{tag} {mode}: parts exceed busy"
+                        );
+                    } else {
+                        assert_eq!(ct.busy + ct.dp + ct.traceback, zero, "{tag} {mode}");
+                    }
+                }
+                assert_eq!(a.nalign, z.nalign, "{tag}: nalign");
+                assert_eq!(a.nshroud, z.nshroud, "{tag}: nshroud");
+                assert_eq!(a.clusters[0].self_.to_bits(), z.clusters[0].self_.to_bits());
+                assert_eq!(a.clusters[0].comp.len(), z.clusters[0].comp.len(), "{tag}");
+                for (x, y) in a.clusters[0].comp.iter().zip(&z.clusters[0].comp) {
+                    assert_eq!(x.index, y.index, "{tag}: index");
+                    assert_eq!(x.hamming, y.hamming, "{tag}: hamming");
+                    assert_eq!(x.lambda.to_bits(), y.lambda.to_bits(), "{tag}: lambda");
+                }
+                for (x, y) in a.raws.iter().zip(&z.raws) {
+                    assert_eq!(x.comp.lambda.to_bits(), y.comp.lambda.to_bits(), "{tag}");
+                    assert_eq!(x.comp.hamming, y.comp.hamming, "{tag}");
+                }
+                assert!(a.clusters[0].comp.len() > 30, "{tag}: too few comps stored");
             }
         }
     }

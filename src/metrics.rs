@@ -142,6 +142,10 @@ pub struct CompareMetrics {
     /// Summed per-item compute across all workers. Attribution level only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub busy: Option<f64>,
+    /// Per-pass wall split under `--batch-align`; absent otherwise. Collected
+    /// at every level (a few clock reads per cluster).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch: Option<BatchMetrics>,
     /// `busy / (map × threads)`. Near 1.0 with low CPU utilization implies
     /// memory-bandwidth stalls; well below 1.0 implies threads idling on tail
     /// load-imbalance.
@@ -168,6 +172,24 @@ pub struct CompareAttribution {
     pub ns_per_stored: Option<f64>,
 }
 
+/// Where `--batch-align`'s map time goes (#337): the per-raw screen pass, the
+/// grouping of deferred pairs and the batched alignment pass. Their sum is the
+/// map's wall time.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct BatchMetrics {
+    pub screen_pass: f64,
+    pub prep: f64,
+    pub align_pass: f64,
+    /// Pairs deferred to the batch pass.
+    pub deferred: u64,
+    /// Batches run through the batched kernel.
+    pub batches: u64,
+    /// Deferred pairs in groups too small to batch, aligned one by one.
+    pub single: u64,
+    /// Mean lanes used per batch, of 16.
+    pub mean_fill: Option<f64>,
+}
+
 /// The screen-vs-align question (#127): the screen runs on every comparison,
 /// the aligner only on those that pass it, so this ratio decides whether the
 /// lever is a cheaper screen or a cheaper aligner.
@@ -175,11 +197,15 @@ pub struct CompareAttribution {
 pub struct CompareSplit {
     pub screen: f64,
     pub dp_kernel: f64,
+    /// Portion of `dp_kernel` in the vectorized kernels' traceback (#337);
+    /// zero for gapless, scalar, affine and WFA alignments.
+    pub traceback: f64,
     pub al2subs: f64,
     /// `busy` minus the three named parts.
     pub other: f64,
     pub screen_ns_per_screened: Option<f64>,
     pub dp_ns_per_aligned: Option<f64>,
+    pub traceback_ns_per_aligned: Option<f64>,
     pub al2subs_ns_per_aligned: Option<f64>,
 }
 
@@ -586,6 +612,8 @@ pub struct RawCounters {
     pub t_cmp_screen: Duration,
     pub t_cmp_dp: Duration,
     pub t_cmp_post: Duration,
+    pub t_cmp_traceback: Duration,
+    pub cmp_batch: Option<crate::cluster::BatchTiming>,
     pub n_cmp_scanned: u64,
     pub n_cmp_stored: u64,
     pub n_cmp_screened: u64,
@@ -674,6 +702,16 @@ impl RawCounters {
                     ns_per_stored: per(self.t_cmp_serial, self.n_cmp_stored),
                 }),
                 index_add_cluster: secs(self.t_index_add),
+                batch: self.cmp_batch.map(|b| BatchMetrics {
+                    screen_pass: secs(b.screen_pass),
+                    prep: secs(b.prep),
+                    align_pass: secs(b.align_pass),
+                    deferred: b.deferred,
+                    batches: b.batches,
+                    single: b.single,
+                    mean_fill: (b.batches > 0)
+                        .then(|| (b.deferred - b.single) as f64 / b.batches as f64),
+                }),
                 screened: self.n_cmp_screened,
                 aligned: self.n_cmp_aligned,
                 // Everything below is produced by the per-comparison timers, so
@@ -686,10 +724,12 @@ impl RawCounters {
                 split: level.attribution().then(|| CompareSplit {
                     screen: secs(self.t_cmp_screen),
                     dp_kernel: secs(self.t_cmp_dp),
+                    traceback: secs(self.t_cmp_traceback),
                     al2subs: secs(self.t_cmp_post),
                     other: secs(other_busy),
                     screen_ns_per_screened: per(self.t_cmp_screen, self.n_cmp_screened),
                     dp_ns_per_aligned: per(self.t_cmp_dp, self.n_cmp_aligned),
+                    traceback_ns_per_aligned: per(self.t_cmp_traceback, self.n_cmp_aligned),
                     al2subs_ns_per_aligned: per(self.t_cmp_post, self.n_cmp_aligned),
                 }),
             },

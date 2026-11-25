@@ -71,6 +71,8 @@ Identical in meaning to `dada`: see [Denoising](dada.md#denoising),
 **`--sample-jobs`** — samples to denoise concurrently, each on its own
 `threads / sample-jobs` sub-pool. Defaults to `round(threads / 4)`.
 
+**`--batch-align`** (default true) — as in [`dada`](dada.md#performance).
+
 **`--cache-samples`** — keep every sample's uniques in memory across both
 rounds. **Off by default, and it should normally stay off.** By default
 `dada-pseudo` *streams*: each sample is dropped after round 1 and re-read

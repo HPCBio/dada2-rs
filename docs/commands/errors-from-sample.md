@@ -34,6 +34,8 @@ Identical in meaning to [`learn-errors`](learn-errors.md). In particular
 
 **`--threads`** (default 1) — threads for parallel sample processing.
 
+**`--batch-align`** (default true) — as in [`dada`](dada.md#performance).
+
 ## Output
 
 **`--output` / `-o`** — write JSON here instead of stdout.

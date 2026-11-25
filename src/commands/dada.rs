@@ -1377,6 +1377,7 @@ fn resolve_dada_params(
         wfa_max_edits,
         end_model,
         gap_open_p,
+        batch_align,
     } = experimental;
     let em: ErrorModelJson = read_tagged_json(error_model, &["learn-errors", "errors-from-sample"])
         .with_path(error_model)?;
@@ -1567,6 +1568,7 @@ fn resolve_dada_params(
         band,
         vectorized: true,
         gapless: true,
+        batch_align: batch_align.unwrap_or(true),
     };
 
     if verbose {

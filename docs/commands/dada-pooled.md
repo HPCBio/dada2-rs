@@ -70,6 +70,8 @@ map. Pooled runs scale to high thread counts, but the shuffle phase has a serial
 floor that grows as a share of runtime as threads rise; see
 [Thread scaling & memory placement](../findings/thread-scaling-and-placement.md).
 
+**`--batch-align`** (default true) — as in [`dada`](dada.md#performance).
+
 ## Output
 
 **`--output-dir` / `-o`** (required) — directory for per-sample
