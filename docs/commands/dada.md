@@ -157,14 +157,15 @@ very large or complex samples if memory is tight.
 **`--batch-align`** (default true) — align the pairs that pass the screen 16 at
 a time, one pair per SIMD lane, grouped by length; `--batch-align false` aligns
 them one by one. Output is byte-identical either way. It applies only with
-`--threads` > 1, and only to pairs bound for the vectorized NW kernel: the
+`--threads` > 1 (at any thread count under `--birth-rule unoise`), and only to
+pairs bound for the vectorized NW kernel: the
 gapless shortcut, WFA, affine gaps, `--homo-gap-p` and reads over 3,500 bp are
 aligned per pair as before, and `--screen-audit` turns it off. The gain follows
 alignment's share of comparison time: on pooled runs at 48 threads, −16% on
 MiSeq, −28% on PacBio at k = 7 (−42% on a build without native CPU flags) and
 −63% at k = 5, and no change on NovaSeq, where the k-mer screen dominates
 ([#337](https://github.com/HPCBio/dada2-rs/issues/337)). The UNOISE birth rule
-does not batch yet ([#345](https://github.com/HPCBio/dada2-rs/issues/345)).
+batches the same way ([#345](https://github.com/HPCBio/dada2-rs/issues/345)).
 
 ## Output
 

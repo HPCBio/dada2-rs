@@ -318,7 +318,7 @@ const BATCH_LANES: usize = 16;
 /// rather than a mostly-padded batch.
 const MIN_BATCH: usize = 8;
 /// `defer_len` entry for a raw the screen pass did not defer.
-const NOT_DEFERRED: u32 = u32::MAX;
+pub(crate) const NOT_DEFERRED: u32 = u32::MAX;
 // The deferred-pair scan and sort ("prep") run serially. In parallel each step
 // adds a join point, and a thread waiting at a join runs other queued work. On
 // the 48-thread MiSeq runs (#337), parallel prep cost ~7 ms per `learn-errors`
@@ -328,14 +328,24 @@ const NOT_DEFERRED: u32 = u32::MAX;
 // `dada-pooled` (2.3M raws) preferred parallel, by 7 s of a 2,000 s run, which
 // did not justify a size threshold.
 
-/// `comps` as a raw pointer, for the batch pass's in-place writes. Sound
-/// because each deferred index occurs exactly once in `pending`, so no two
-/// chunks touch the same element, and nothing else accesses `comps` while
-/// the pass runs.
-struct CompsPtr(*mut CompItem);
+/// The output slice as a raw pointer, for the batch pass's in-place writes.
+/// Sound because each deferred index occurs exactly once in `pending`, so no
+/// two chunks touch the same element, and nothing else accesses the slice
+/// while the pass runs.
+struct OutPtr<T>(*mut T);
 // SAFETY: see the type's doc; the pointee is only written at disjoint indices.
-unsafe impl Send for CompsPtr {}
-unsafe impl Sync for CompsPtr {}
+unsafe impl<T: Send> Send for OutPtr<T> {}
+unsafe impl<T: Send> Sync for OutPtr<T> {}
+
+/// `(raw length, raw index)` for every raw the screen pass deferred, from the
+/// per-raw `defer_len` it wrote ([`NOT_DEFERRED`] for the rest).
+pub(crate) fn deferred_pairs(defer_len: &[u32]) -> Vec<(u32, u32)> {
+    defer_len
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &len)| (len != NOT_DEFERRED).then_some((len, index as u32)))
+        .collect()
+}
 
 impl CompCost {
     pub(crate) fn add(mut self, o: CompCost) -> CompCost {
@@ -362,8 +372,10 @@ impl CompCost {
     }
 }
 
-/// Align the comparisons `b_compare_parallel` deferred, in batches of raws
-/// that share a length, and write their `(lambda, hamming)` into `comps`.
+/// Align the comparisons a screen pass deferred, in batches of raws that share
+/// a length, and hand each one's `Sub` to `finish` with its slot in `out`.
+/// `b_compare_parallel` writes `(lambda, hamming)` there and `unoise_compare`
+/// its UNOISE distances (#345).
 /// `pending` holds `(raw length, raw index)` for each deferred comparison, as
 /// collected by the screen pass (#337: rescanning `comps` for them and sorting
 /// through `raws` cost ~10 s of a 48-thread MiSeq map). Results are
@@ -371,19 +383,17 @@ impl CompCost {
 /// `measure`, returns the summed worker time split as the per-pair path splits
 /// it (`dp` = kernel incl. traceback, `post` = al2subs + quals).
 #[allow(clippy::too_many_arguments)]
-fn align_deferred(
-    comps: &mut [CompItem],
+pub(crate) fn align_deferred<T: Send>(
+    out: &mut [T],
     mut pending: Vec<(u32, u32)>,
     raws: &[crate::containers::Raw],
     center_idx: usize,
-    err_mat: &[f64],
-    ncol: usize,
-    use_quals: bool,
-    indel_model: Option<&crate::indel_model::IndelModel>,
     params: &AlignParams,
     measure: bool,
     bt: &mut BatchTiming,
+    finish: impl Fn(&crate::containers::Raw, &crate::containers::Sub, &mut T) + Sync,
 ) -> CompCost {
+    assert_eq!(out.len(), raws.len(), "align_deferred: one slot per raw");
     let t_prep = std::time::Instant::now();
     bt.deferred = pending.len() as u64;
     if pending.is_empty() {
@@ -413,7 +423,7 @@ fn align_deferred(
     let scores = vectorized_scores(params);
     let center = &raws[center_idx];
     let elapsed = |t: Option<std::time::Instant>| t.map_or(0, |t| t.elapsed().as_nanos() as u64);
-    let out = CompsPtr(comps.as_mut_ptr());
+    let out = OutPtr(out.as_mut_ptr());
     let out = &out;
     let total = chunks
         .par_iter()
@@ -430,18 +440,9 @@ fn align_deferred(
                     let t_post = measure.then(std::time::Instant::now);
                     let sub = sub_from_alignment(center, raw, al0, al1);
                     cost.post += elapsed(t_post);
-                    let mut lambda = compute_lambda(raw, Some(&sub), err_mat, ncol, use_quals);
-                    let mut hamming = sub.nsubs() as u32;
-                    if let Some(m) = indel_model {
-                        let qual = raw.qual.as_deref().filter(|_| use_quals);
-                        let (f, h) = m.score(&center.seq, &raw.seq, qual, &sub, err_mat, ncol);
-                        lambda *= f;
-                        hamming += h;
-                    }
-                    // SAFETY: `idx` is a distinct deferred index (see `CompsPtr`).
-                    let c = unsafe { &mut *out.0.add(idx as usize) };
-                    c.0 = lambda;
-                    c.1 = hamming;
+                    // SAFETY: `idx` is a distinct deferred index below
+                    // `out.len()` (see `OutPtr`).
+                    finish(raw, &sub, unsafe { &mut *out.0.add(idx as usize) });
                 };
                 if chunk.len() >= MIN_BATCH {
                     let lanes: [(&[u8], &[u8]); BATCH_LANES] = std::array::from_fn(|k| {
@@ -738,9 +739,7 @@ pub fn b_compare_parallel(
             .collect();
     }
     let screen_pass = t_map.elapsed();
-    let deferred =
-        |(index, &len): (usize, &u32)| (len != NOT_DEFERRED).then_some((len, index as u32));
-    let pending: Vec<(u32, u32)> = defer_len.iter().enumerate().filter_map(deferred).collect();
+    let pending = deferred_pairs(&defer_len);
     drop(defer_len);
     let mut batch_timing = batch.then(|| BatchTiming {
         screen_pass,
@@ -749,18 +748,28 @@ pub fn b_compare_parallel(
     // The deferred-pair scan counts as prep.
     let scan = t_map.elapsed() - screen_pass;
     let batch_cost = if let Some(bt) = batch_timing.as_mut() {
+        let center = &raws[center_idx];
+        let indel_model = indel_model.as_deref();
         let cost = align_deferred(
             &mut comps,
             pending,
             raws,
             center_idx,
-            err_mat,
-            ncol,
-            use_quals,
-            indel_model.as_deref(),
             params,
             measure,
             bt,
+            |raw, sub, c: &mut CompItem| {
+                let mut lambda = compute_lambda(raw, Some(sub), err_mat, ncol, use_quals);
+                let mut hamming = sub.nsubs() as u32;
+                if let Some(m) = indel_model {
+                    let qual = raw.qual.as_deref().filter(|_| use_quals);
+                    let (f, h) = m.score(&center.seq, &raw.seq, qual, sub, err_mat, ncol);
+                    lambda *= f;
+                    hamming += h;
+                }
+                c.0 = lambda;
+                c.1 = hamming;
+            },
         );
         bt.prep += scan;
         cost

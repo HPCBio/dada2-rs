@@ -1150,6 +1150,42 @@ fn batch_align_default_matches_per_pair() {
         "dada-pooled",
     );
 
+    // The UNOISE rule's comparison batches too (#345), and must defer pairs
+    // here for the comparison to test anything.
+    let unoise = |name: &str, extra: &[&str]| {
+        let base = [
+            "dada-pooled",
+            s1,
+            s2,
+            "--error-model",
+            err,
+            "--threads",
+            "4",
+            "--partition",
+            "single-pass",
+            "--birth-rule",
+            "unoise",
+            "--min-abund",
+            "2",
+            "--output-dir",
+        ];
+        run(&[&base[..], &[p(name).as_str()], extra].concat());
+    };
+    let unoise_metrics = p("unoise.metrics.json");
+    unoise("unoise_default", &["--metrics-json", &unoise_metrics]);
+    unoise("unoise_off", &["--batch-align", "false"]);
+    let m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&unoise_metrics).unwrap()).unwrap();
+    let deferred = m["runs"][0]["compare"]["batch"]["deferred"]
+        .as_u64()
+        .unwrap();
+    assert!(deferred > 0, "default unoise run deferred no pairs");
+    assert_same_outputs(
+        &dir.join("unoise_default"),
+        &dir.join("unoise_off"),
+        "dada-pooled unoise",
+    );
+
     for (name, flags) in [
         ("default", &[][..]),
         ("off", &["--batch-align", "false"][..]),

@@ -14,6 +14,7 @@ pair per SIMD lane, never changes output and never measurably costs time.
 - −28% on PacBio at k = 7, and −42% on a build without native CPU flags.
 - −63% on PacBio at k = 5.
 - −53% on MiSeq `dada-pseudo`.
+- −32% on PacBio at k = 7 with `--birth-rule unoise`.
 - No change on NovaSeq, where the k-mer screen dominates.
 
 **What sets the gain:** batching makes alignment about 2–3× faster end to end,
@@ -170,6 +171,7 @@ by `cmp` and the denoised outputs by `diff -r`.
 | PacBio 95 k = 7, `dada-pooled` | 394.9 s | 284.9 s | −28% | 14.4 s | 11.7 s | −19% |
 | PacBio 95 k = 7, `release` build | 550.7 s | 319.8 s | −42% | 18.8 s | 13.4 s | −29% |
 | PacBio 95 k = 7, single pass (`pvalue`) | 400.1 s | 281.5 s | −30% | – | – | – |
+| PacBio 95 k = 7, single pass (`unoise`) | 492.7 s | 332.9 s | −32% | – | – | – |
 | PacBio 95 k = 5, `dada-pooled` | 2,056 s | 770 s | −63% | 38.5 s | 17.7 s | −54% |
 | NovaSeq 16S, `dada-pooled` | 2,006 s | 2,033 s | +1% | 103.7 s | 104.3 s | tie |
 
@@ -182,9 +184,11 @@ by `cmp` and the denoised outputs by `diff -r`.
   1.18× in the batched arm.
 - **Single pass.** `--partition single-pass` with the p-value rule goes through
   the same compare, so it gains the same.
-- **Not yet covered.** The UNOISE rule (`--birth-rule unoise`) has its own,
-  per-pair compare and does not batch yet
-  ([#345](https://github.com/HPCBio/dada2-rs/issues/345)).
+- **UNOISE.** The UNOISE rule (`--birth-rule unoise`) has its own compare,
+  and was ported to the same align pass later
+  ([#345](https://github.com/HPCBio/dada2-rs/issues/345)). Its row uses the
+  default `--min-abund` of 8. Compare fell from 422 s to 262 s, with
+  98.7% of aligned pairs batched at 15.96 lanes per batch.
 - **Memory** was unchanged in every run.
 
 ## Why the gains differ
@@ -199,6 +203,7 @@ share is estimated below as the per-pair map time minus the batched screen pass.
 | NovaSeq 16S, k = 5 (2.3M uniques) | 1.7% | 11% | +1% |
 | MiSeq 362, k = 5 | 25% | 50% | −16% |
 | PacBio 95, k = 7 | 12.2% | 61% | −28% |
+| PacBio 95, k = 7, `unoise` | 11.3% | 67% | −32% |
 | PacBio 95, k = 5 | 98.9% | ~98% | −63% |
 
 Share of wall × (1 − 1/alignment speedup) reproduces the measured changes.
@@ -233,7 +238,8 @@ store (303 s) are the costs to attack, not alignment.
   - packing traceback pointers into 2 bits, for PacBio;
   - producing substitutions during traceback.
 
-  The UNOISE port is [#345](https://github.com/HPCBio/dada2-rs/issues/345).
+  The UNOISE port ([#345](https://github.com/HPCBio/dada2-rs/issues/345)) is
+  done; it shares the align pass, so these candidates apply to it too.
   AVX2 dispatch for the default build
   ([#336](https://github.com/HPCBio/dada2-rs/issues/336)) would be worth about
   12% more on batched PacBio.
