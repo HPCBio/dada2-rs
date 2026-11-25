@@ -975,6 +975,68 @@ fn partition_default_unchanged_and_guarded() {
     assert!(stderr.contains("--partition"), "{stderr}");
 }
 
+/// `--metrics-json` attributes the UNOISE compare phase as it does the other
+/// partitions (#328): the per-call timings are summed, so almost none of the
+/// phase is left unattributed, and the aligned count matches the run shape.
+#[test]
+fn unoise_compare_is_attributed() {
+    let dir = scratch("unoise_metrics");
+    let err = err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+    let s2 = fixture("sam2F.fastq.gz");
+    let metrics = dir.join("unoise.metrics.json");
+    run(&[
+        "dada-pooled",
+        s1.to_str().unwrap(),
+        s2.to_str().unwrap(),
+        "--error-model",
+        err.to_str().unwrap(),
+        "--threads",
+        "4",
+        "--output-dir",
+        dir.join("out").to_str().unwrap(),
+        "--partition",
+        "single-pass",
+        "--birth-rule",
+        "unoise",
+        "--metrics-json",
+        metrics.to_str().unwrap(),
+        "--metrics-attribution",
+    ]);
+    let m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&metrics).unwrap()).unwrap();
+    let r = &m["runs"][0];
+    let c = &r["compare"];
+    let (nalign, nshroud) = (
+        r["run"]["nalign"].as_u64().unwrap(),
+        r["run"]["nshroud"].as_u64().unwrap(),
+    );
+    assert!(nalign > nshroud, "no pairs aligned");
+    assert_eq!(c["screened"].as_u64().unwrap(), nalign);
+    assert_eq!(c["aligned"].as_u64().unwrap(), nalign - nshroud);
+    let total = c["total"].as_f64().unwrap();
+    let a = &c["attribution"];
+    let unattributed = a["unattributed"].as_f64().unwrap();
+    assert!(a["map"].as_f64().unwrap() > 0.0, "map unmeasured: {c}");
+    assert!(
+        unattributed <= 0.1 * total,
+        "{unattributed} s of {total} s unattributed"
+    );
+    assert!(
+        a["stored"].as_u64().unwrap() > 0,
+        "no best-centre updates: {c}"
+    );
+    let split = &c["split"];
+    assert!(
+        split["screen"].as_f64().unwrap() > 0.0,
+        "screen unmeasured: {c}"
+    );
+    assert!(
+        split["dp_kernel"].as_f64().unwrap() > 0.0,
+        "DP unmeasured: {c}"
+    );
+}
+
 /// Under `--birth-rule unoise` an omitted `--min-abund` is 8, vsearch
 /// `--cluster_unoise`'s `--minsize` default, even with `--inherit-err-params`
 /// (the error model carries R's 1). An explicit value still wins, and the

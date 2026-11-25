@@ -22,8 +22,11 @@
 //! are identical between the two partitions. Raws more abundant than a new
 //! centre are already decided, and greedy mode skips them.
 
+use std::time::Instant;
+
 use rayon::prelude::*;
 
+use crate::cluster::{CompCost, CompareTiming};
 use crate::containers::{B, Bi, BirthType, Comparison, Sub};
 use crate::nwalign::{AlignBuffers, AlignParams, GAP_GLYPH, sub_new_with_buf};
 use crate::pval::{compute_lambda, get_pA};
@@ -294,6 +297,10 @@ pub fn unoise_identity(sub: &Sub) -> f64 {
     matches as f64 / cols as f64
 }
 
+/// One pair's result in [`unoise_compare`]: `(d, identity, lambda, nsubs)`,
+/// `None` when the screen rejected it.
+type Aligned = Option<(u32, f64, f64, u32)>;
+
 /// Align new centre `k` against every raw and record two things for each.
 ///
 /// - Births: the qualifying centre with the smallest d (skew ≤ β(d)). Only a
@@ -305,7 +312,11 @@ pub fn unoise_identity(sub: &Sub) -> f64 {
 /// Ties keep the earlier, more abundant centre in both, as `-otutab` breaks
 /// ties by ZOTU file order. Also sets the centre's `self_`. Counts pairs into
 /// `b.nalign` and screened-out pairs into `b.nshroud`, as `b_compare` does.
-/// Returns the number of pairs considered.
+///
+/// Returns the same [`CompareTiming`] as [`b_compare_parallel`], so the
+/// compare phase is attributed under `--metrics-json` (#328). With `measure`,
+/// the worker time is split into screen, DP, traceback and post-alignment.
+/// `stored` counts the pairs that updated a raw's best centre.
 pub fn unoise_compare(
     b: &mut B,
     k: usize,
@@ -313,17 +324,28 @@ pub fn unoise_compare(
     err_mat: &[f64],
     ncol: usize,
     params: &AlignParams,
-) -> u64 {
+    measure: bool,
+) -> CompareTiming {
+    let t_setup = Instant::now();
     let center = b.clusters[k]
         .center
         .expect("unoise_compare: cluster has no centre");
     let center_reads = b.raws[center].reads;
     let use_quals = b.use_quals;
     let raws = &b.raws;
-    type Aligned = Option<(u32, f64, f64, u32)>;
-    let results: Vec<(usize, Aligned)> = (0..raws.len())
+    let make_buf = || {
+        if measure {
+            AlignBuffers::measuring()
+        } else {
+            AlignBuffers::new()
+        }
+    };
+    let setup = t_setup.elapsed();
+    let t_map = Instant::now();
+    let results: Vec<(Aligned, CompCost)> = (0..raws.len())
         .into_par_iter()
-        .map_init(AlignBuffers::new, |buf, j| {
+        .map_init(make_buf, |buf, j| {
+            let t0 = measure.then(Instant::now);
             let raw = &raws[j];
             let aligned = sub_new_with_buf(&raws[center], raw, params, buf).map(|sub| {
                 let lambda = compute_lambda(raw, Some(&sub), err_mat, ncol, use_quals);
@@ -334,16 +356,32 @@ pub fn unoise_compare(
                     sub.nsubs() as u32,
                 )
             });
-            (j, aligned)
+            let cost = match t0 {
+                // A screened-out pair leaves the alignment fields stale.
+                Some(t) => CompCost {
+                    total: t.elapsed().as_nanos() as u64,
+                    screen: buf.last_screen_nanos,
+                    dp: aligned.map_or(0, |_| buf.last_dp_nanos),
+                    post: aligned.map_or(0, |_| buf.last_post_nanos),
+                    traceback: aligned.map_or(0, |_| buf.last_traceback_nanos),
+                },
+                None => CompCost::default(),
+            };
+            (aligned, cost)
         })
         .collect();
-    let mut considered = 0u64;
-    for (j, aligned) in results {
+    let map = t_map.elapsed();
+    let t_serial = Instant::now();
+    let mut cost = CompCost::default();
+    let (mut considered, mut aligned_n, mut stored) = (0u64, 0u64, 0u64);
+    for (j, &(aligned, item)) in results.iter().enumerate() {
+        cost = cost.add(item);
         considered += 1;
         let Some((d, id, lambda, nsubs)) = aligned else {
             b.nshroud += 1;
             continue;
         };
+        aligned_n += 1;
         if j == center {
             b.clusters[k].self_ = lambda;
             continue;
@@ -358,6 +396,7 @@ pub fn unoise_compare(
             let slot = &mut best[j].nearest;
             if slot.as_ref().is_none_or(|&(cur, _, _)| id > cur) {
                 *slot = Some((id, k, comp.clone()));
+                stored += 1;
             }
         }
         let skew = b.raws[j].reads as f64 / center_reads as f64;
@@ -367,10 +406,24 @@ pub fn unoise_compare(
         let slot = &mut best[j].qualified;
         if slot.as_ref().is_none_or(|&(cur, _, _)| d < cur) {
             *slot = Some((d, k, comp));
+            stored += 1;
         }
     }
+    let serial = t_serial.elapsed();
+    let t_free = Instant::now();
+    drop(results);
+    let free = t_free.elapsed();
     b.nalign += considered;
-    considered
+    CompareTiming {
+        map,
+        serial,
+        free,
+        setup,
+        stored,
+        screened: considered,
+        aligned: aligned_n,
+        ..cost.timing()
+    }
 }
 
 #[cfg(test)]
