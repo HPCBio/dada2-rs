@@ -322,6 +322,9 @@ type Aligned = Option<(u32, f64, f64, u32)>;
 /// the worker time is split into screen, DP, traceback and post-alignment.
 /// `stored` counts the pairs that updated a raw's best centre.
 ///
+/// `err_mat` is `None` without an error model (#349), and λ is then not
+/// computed: it decides nothing under this rule.
+///
 /// Under `--batch-align` the pairs bound for the vectorized kernel are
 /// aligned in a second pass, in same-length batches (#345). Unlike
 /// `b_compare`, which batches only in its parallel path, this runs at any
@@ -330,7 +333,7 @@ pub fn unoise_compare(
     b: &mut B,
     k: usize,
     best: &mut [UnoiseBest],
-    err_mat: &[f64],
+    err_mat: Option<&[f64]>,
     ncol: usize,
     params: &AlignParams,
     measure: bool,
@@ -350,7 +353,11 @@ pub fn unoise_compare(
         }
     };
     let score = |raw: &Raw, sub: &Sub| {
-        let lambda = compute_lambda(raw, Some(sub), err_mat, ncol, use_quals);
+        // No error model, no λ (#349): it decides nothing here and is only
+        // reported, as `None`.
+        let lambda = err_mat.map_or(0.0, |err| {
+            compute_lambda(raw, Some(sub), err, ncol, use_quals)
+        });
         (
             unoise_d(sub),
             unoise_identity(sub),
