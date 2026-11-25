@@ -499,3 +499,71 @@ fn single_input_metrics_label_matches_output_sample() {
         assert_eq!(doc["runs"][0]["sample"], expected);
     }
 }
+
+/// `learn-errors --metrics-json` (issue #338): measuring leaves the error model
+/// unchanged, and the document has the init pass plus one pass per iteration,
+/// with one run per sample per pass.
+#[test]
+fn learn_errors_metrics_cover_every_pass_and_sample() {
+    let dir = scratch("learn");
+    let learn = |name: &str, extra: &[&str]| {
+        let out = dir.join(format!("{name}.json"));
+        let res = Command::new(BIN)
+            .args(["learn-errors", "--threads", "2", "-o"])
+            .arg(&out)
+            .args(extra)
+            .arg(fixture("sam1F.fastq.gz"))
+            .arg(fixture("sam2F.fastq.gz"))
+            .output()
+            .expect("learn-errors");
+        assert!(
+            res.status.success(),
+            "learn-errors failed: {}",
+            String::from_utf8_lossy(&res.stderr)
+        );
+        normalized(&out)
+    };
+    let metrics = dir.join("m.json");
+    let m = metrics.to_str().unwrap();
+    let plain = learn("plain", &[]);
+    assert_eq!(
+        plain,
+        learn("cheap", &["--metrics-json", m]),
+        "--metrics-json changed the error model"
+    );
+    let doc: Value = serde_json::from_slice(&std::fs::read(&metrics).unwrap()).unwrap();
+    assert_eq!(doc["measure_level"], "phases");
+
+    let learn_block = &doc["learn"];
+    let iterations = learn_block["iterations"].as_u64().unwrap();
+    let samples = learn_block["samples"].as_u64().unwrap();
+    assert_eq!(samples, 2);
+    let passes = learn_block["passes"].as_array().unwrap();
+    assert_eq!(
+        passes.len() as u64,
+        iterations + 1,
+        "init pass + iterations"
+    );
+    for (i, p) in passes.iter().enumerate() {
+        assert_eq!(p["iteration"].as_u64(), Some(i as u64));
+        assert!(p["dada_seconds"].as_f64().unwrap() > 0.0);
+    }
+
+    let runs = doc["runs"].as_array().unwrap();
+    assert_eq!(runs.len() as u64, samples * (iterations + 1));
+    assert_eq!(runs[0]["sample"], "sample_001");
+    assert_eq!(runs[0]["iteration"], 0);
+    assert!(runs[0].get("round").is_none());
+    assert!(runs[0]["compare"].get("split").is_none(), "cheap level");
+
+    assert_eq!(
+        plain,
+        learn("full", &["--metrics-json", m, "--metrics-attribution"]),
+        "--metrics-attribution changed the error model"
+    );
+    let doc: Value = serde_json::from_slice(&std::fs::read(&metrics).unwrap()).unwrap();
+    assert_eq!(doc["measure_level"], "attribution");
+    assert!(doc["runs"][0]["compare"]["split"].is_object());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

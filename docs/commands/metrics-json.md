@@ -1,7 +1,7 @@
 # Run metrics (`--metrics-json`)
 
-`dada`, `dada-pooled` and `dada-pseudo` can write a structured record of what a
-run did and how long each part took:
+`dada`, `dada-pooled`, `dada-pseudo`, `learn-errors` and `errors-from-sample`
+can write a structured record of what a run did and how long each part took:
 
 ```bash
 dada2-rs dada-pooled derep/*.json.gz --error-model err.json \
@@ -81,6 +81,24 @@ One entry in `runs` per `run_dada` invocation:
   single run, not separate runs.
 - **`dada-pseudo`** — one per sample for round 2, tagged `"round": 2`. Round 1
   is not collected.
+- **`learn-errors`, `errors-from-sample`** — one per sample per pass of the
+  learn loop, tagged `"iteration"` (0 is the init pass). Samples are named
+  `sample_001`, … in the order the loop used them, the same names as
+  `--cluster-trace-dir`. Indel learning is not collected.
+
+The learn commands also write a top-level **`learn`** block: `samples`,
+`iterations`, `converged`, `load_seconds` (FASTQ dereplication or JSON
+parsing), and `passes`, one per pass:
+
+- **`dada_seconds`** — wall time of the parallel stage, `dada` on every sample
+  plus its transition counts.
+- **`trans_thread_seconds`** — the transition-count alignments, summed over
+  samples.
+- **`fit_seconds`** — summing the counts and fitting the error function.
+
+Samples are denoised concurrently, so `runs[]` times overlap: summed over a
+pass they are thread time and can exceed that pass's `dada_seconds`.
+`trans_thread_seconds` is a sum in the same way.
 
 `pipeline` is present only for the fields the subcommand has. `dada-pooled`
 also carries:
@@ -128,6 +146,10 @@ jq -r '.pipeline.inputs | sort_by(-.load_seconds)[] | "\(.sample) \(.reads) \(.u
 
 # slowest sample in a per-sample run
 jq -r '.runs | sort_by(-.phases.compare)[0] | "\(.sample) \(.phases.compare)s"' run_metrics.json
+
+# learn-errors: wall time per pass, then compare time summed per pass
+jq -c '.learn.passes[]' run_metrics.json
+jq -c '.runs | group_by(.iteration)[] | {it: .[0].iteration, compare: (map(.phases.compare) | add)}' run_metrics.json
 ```
 
 ## Gotchas
@@ -145,6 +167,6 @@ jq -r '.runs | sort_by(-.phases.compare)[0] | "\(.sample) \(.phases.compare)s"' 
 
 ## See also
 
-- [`dada`](dada.md) · [`dada-pooled`](dada-pooled.md) · [`dada-pseudo`](dada-pseudo.md)
+- [`dada`](dada.md) · [`dada-pooled`](dada-pooled.md) · [`dada-pseudo`](dada-pseudo.md) · [`learn-errors`](learn-errors.md)
 - [Inside b_compare — screen vs align](../findings/compare-screen-vs-align.md)
 - [Thread scaling & memory placement](../findings/thread-scaling-and-placement.md)
