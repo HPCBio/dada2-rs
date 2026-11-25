@@ -5272,7 +5272,7 @@ mod affine_tests {
         for (s1, s2) in &pairs {
             for (match_score, mismatch, gap_p) in [(5i16, -4i16, -8i16), (40, -4, -8)] {
                 for (begin_gap_p, end_gap_p) in [(0, 0), (gap_p, gap_p), (0, gap_p)] {
-                    for band in [-1, 0, 3, 16, 32] {
+                    for band in [-1, 1, 3, 16, 32] {
                         let scores = VectorizedAlignScores {
                             match_score,
                             mismatch,
