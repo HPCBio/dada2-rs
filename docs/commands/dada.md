@@ -548,6 +548,15 @@ model. Only the values derived from λ are missing:
 `--inherit-err-params`, `--use-err-in` and `--indel-rates` read the model,
 so they require it. With a model, output is unchanged.
 
+Without a model there is no `params` block to inherit, so set the platform's
+alignment parameters explicitly. A PacBio run without `--kmer-size 7 --band
+32` falls back to the Illumina defaults (k=5, band 16): on the 95-sample
+PacBio pool that ran 2.9× slower than with a model and inherited parameters.
+
+Skipping λ saves little. On that pool at 48 threads, with matching parameters,
+the run took 324 s without a model against 333 s with one (−3%, median of 3),
+with identical ASVs and `map`.
+
 UNOISE3 maps reads from before quality filtering, which `dada` never sees, so
 its table can hold more reads; it also removes chimeras with UCHIME3.
 `dev/unoise/run_arms.sh` runs the vsearch pipeline as a separate control.
