@@ -201,13 +201,13 @@ pub fn b_compare(
 /// screen lets through. `total - screen - align` is `compute_lambda` plus
 /// per-item overhead.
 #[derive(Clone, Copy, Default)]
-struct CompCost {
-    total: u64,
-    screen: u64,
-    dp: u64,
-    post: u64,
+pub(crate) struct CompCost {
+    pub(crate) total: u64,
+    pub(crate) screen: u64,
+    pub(crate) dp: u64,
+    pub(crate) post: u64,
     /// Portion of `dp` in the vectorized kernels' traceback.
-    traceback: u64,
+    pub(crate) traceback: u64,
 }
 
 /// Wall time per pass of `b_compare_parallel` under `--batch-align`, and how
@@ -338,13 +338,27 @@ unsafe impl Send for CompsPtr {}
 unsafe impl Sync for CompsPtr {}
 
 impl CompCost {
-    fn add(mut self, o: CompCost) -> CompCost {
+    pub(crate) fn add(mut self, o: CompCost) -> CompCost {
         self.total += o.total;
         self.screen += o.screen;
         self.dp += o.dp;
         self.post += o.post;
         self.traceback += o.traceback;
         self
+    }
+
+    /// A [`CompareTiming`] carrying these summed worker times as `busy` and
+    /// its screen/DP split, every other field zero.
+    pub(crate) fn timing(self) -> CompareTiming {
+        let d = std::time::Duration::from_nanos;
+        CompareTiming {
+            busy: d(self.total),
+            screen: d(self.screen),
+            dp: d(self.dp),
+            post: d(self.post),
+            traceback: d(self.traceback),
+            ..CompareTiming::default()
+        }
     }
 }
 
@@ -826,7 +840,6 @@ pub fn b_compare_parallel(
     cost.dp += batch_cost.dp;
     cost.post += batch_cost.post;
     cost.traceback += batch_cost.traceback;
-    let busy_dur = std::time::Duration::from_nanos(cost.total);
     // Retained so the attribution block still reconstructs `compare` and so a
     // future change that reintroduces a separate reduction is visible rather
     // than silent. Zero by construction while the reduction stays folded.
@@ -876,14 +889,10 @@ pub fn b_compare_parallel(
         free: free_dur,
         setup: setup_dur,
         stored,
-        busy: busy_dur,
-        screen: std::time::Duration::from_nanos(cost.screen),
-        dp: std::time::Duration::from_nanos(cost.dp),
-        post: std::time::Duration::from_nanos(cost.post),
-        traceback: std::time::Duration::from_nanos(cost.traceback),
         batch: batch_timing,
         screened,
         aligned,
+        ..cost.timing()
     }
 }
 

@@ -173,6 +173,9 @@ jq -c '.runs | group_by(.iteration)[] | {it: .[0].iteration, compare: (map(.phas
 - **`compare.attribution.unattributed`** is `total` minus the named parts. A
   large value means a phase is missing from the split, not that the work was
   free.
+- **Under `--birth-rule unoise`, `compare.attribution.stored`** counts the
+  pairs that updated a read's best centre, since that rule keeps no comparison
+  lists. The other `compare` fields mean what they do in the other partitions.
 - **A non-empty `run.gates`** means `DADA2RS_*` tuning gates were active, so
   this run is not stock and its timings are not comparable with one that is.
 - **Rates are `null`, not `0.0`, when their denominator is zero** — so "not

@@ -1195,6 +1195,30 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     );
     let mut cmp_batch: Option<crate::cluster::BatchTiming> = None;
     let (mut n_cmp_screened, mut n_cmp_aligned) = (0u64, 0u64);
+    // Adds one compare call's `CompareTiming` to the run's totals; every
+    // compare path goes through it, so none is left unattributed (#328).
+    macro_rules! add_compare {
+        ($ct:expr) => {{
+            let ct: crate::cluster::CompareTiming = $ct;
+            t_cmp_map += ct.map;
+            t_cmp_serial += ct.serial;
+            t_cmp_busy += ct.busy;
+            t_cmp_screen += ct.screen;
+            t_cmp_dp += ct.dp;
+            t_cmp_post += ct.post;
+            t_cmp_traceback += ct.traceback;
+            if let Some(bt) = ct.batch {
+                cmp_batch.get_or_insert_with(Default::default).add(&bt);
+            }
+            n_cmp_screened += ct.screened;
+            n_cmp_aligned += ct.aligned;
+            t_cmp_agg += ct.agg;
+            t_cmp_free += ct.free;
+            t_cmp_setup += ct.setup;
+            n_cmp_scanned += bb.raws.len() as u64;
+            n_cmp_stored += ct.stored;
+        }};
+    }
     // Shuffle rescan-redundancy accounting (verbose-only diagnostics).
     let (mut shuf_calls, mut shuf_moves, mut shuf_zero_move_calls) = (0u64, 0u64, 0u64);
     let mut shuf_comps_scanned = 0u64;
@@ -1269,23 +1293,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             params.greedy,
             params.measure.attribution(),
         );
-        t_cmp_map += ct.map;
-        t_cmp_serial += ct.serial;
-        t_cmp_busy += ct.busy;
-        t_cmp_screen += ct.screen;
-        t_cmp_dp += ct.dp;
-        t_cmp_post += ct.post;
-        t_cmp_traceback += ct.traceback;
-        if let Some(bt) = ct.batch {
-            cmp_batch.get_or_insert_with(Default::default).add(&bt);
-        }
-        n_cmp_screened += ct.screened;
-        n_cmp_aligned += ct.aligned;
-        t_cmp_agg += ct.agg;
-        t_cmp_free += ct.free;
-        t_cmp_setup += ct.setup;
-        n_cmp_scanned += bb.raws.len() as u64;
-        n_cmp_stored += ct.stored;
+        add_compare!(ct);
     } else {
         // `b_compare`'s record drives the `C{i}LU:` progress print, which is a
         // verbose concern, not a measurement one.
@@ -1373,14 +1381,15 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         let mut comps: Vec<Option<crate::containers::Comparison>> = vec![None; n];
         let mut unassigned = vec![false; n];
         let tc = Instant::now();
-        n_cmp_screened += crate::single_pass::unoise_compare(
+        add_compare!(crate::single_pass::unoise_compare(
             &mut bb,
             0,
             &mut ub,
             &params.err_mat,
             params.err_ncol,
             &params.align,
-        );
+            params.measure.attribution(),
+        ));
         t_compare += tc.elapsed();
         let cmp_before = t_compare;
         let t = Instant::now();
@@ -1397,14 +1406,15 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             let newi = crate::single_pass::add_unoise_center(&mut bb, j);
             assign[j] = newi;
             let tc = Instant::now();
-            n_cmp_screened += crate::single_pass::unoise_compare(
+            add_compare!(crate::single_pass::unoise_compare(
                 &mut bb,
                 newi,
                 &mut ub,
                 &params.err_mat,
                 params.err_ncol,
                 &params.align,
-            );
+                params.measure.attribution(),
+            ));
             t_compare += tc.elapsed();
             bud_calls += 1;
             bud_success += 1;
@@ -1481,23 +1491,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                     params.greedy,
                     params.measure.attribution(),
                 );
-                t_cmp_map += ct.map;
-                t_cmp_serial += ct.serial;
-                t_cmp_busy += ct.busy;
-                t_cmp_screen += ct.screen;
-                t_cmp_dp += ct.dp;
-                t_cmp_post += ct.post;
-                t_cmp_traceback += ct.traceback;
-                if let Some(bt) = ct.batch {
-                    cmp_batch.get_or_insert_with(Default::default).add(&bt);
-                }
-                n_cmp_screened += ct.screened;
-                n_cmp_aligned += ct.aligned;
-                t_cmp_agg += ct.agg;
-                t_cmp_free += ct.free;
-                t_cmp_setup += ct.setup;
-                n_cmp_scanned += bb.raws.len() as u64;
-                n_cmp_stored += ct.stored;
+                add_compare!(ct);
             } else {
                 b_compare(
                     &mut bb,
@@ -1595,23 +1589,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 params.greedy,
                 params.measure.attribution(),
             );
-            t_cmp_map += ct.map;
-            t_cmp_serial += ct.serial;
-            t_cmp_busy += ct.busy;
-            t_cmp_screen += ct.screen;
-            t_cmp_dp += ct.dp;
-            t_cmp_post += ct.post;
-            t_cmp_traceback += ct.traceback;
-            if let Some(bt) = ct.batch {
-                cmp_batch.get_or_insert_with(Default::default).add(&bt);
-            }
-            n_cmp_screened += ct.screened;
-            n_cmp_aligned += ct.aligned;
-            t_cmp_agg += ct.agg;
-            t_cmp_free += ct.free;
-            t_cmp_setup += ct.setup;
-            n_cmp_scanned += bb.raws.len() as u64;
-            n_cmp_stored += ct.stored;
+            add_compare!(ct);
         } else {
             b_compare(
                 &mut bb,

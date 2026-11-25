@@ -81,6 +81,9 @@ minor versions may carry breaking changes).
   unchanged; the `.gz` bytes differ.
 
 ### Fixed
+- `--metrics-json` now breaks down the compare phase under
+  `--birth-rule unoise` (#328). It was reported only as a total, all of it
+  `unattributed`, with no screen/alignment split and no aligned count.
 - `remove-primers` `--rc-primer-rev`, `--trim-fwd`, `--trim-rev`, `--orient`
   and `--compress`, and `filter-and-trim --compress`, can now be turned off
   with `=false` (#296). They defaulted to true but took no value, so none could
