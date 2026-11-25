@@ -63,6 +63,11 @@ minor versions may carry breaking changes).
 
 ### Changed
 
+- `--birth-rule unoise` (Experimental; #323): an omitted `--min-abund` is now 8,
+  vsearch `--cluster_unoise`'s `--minsize` default, instead of 1 or the error
+  model's value. The UNOISE rule has no abundance test, so at 1 every unique no
+  centre absorbs became a centre. An explicit `--min-abund` still wins; other
+  modes keep R's default of 1.
 - Gzip output uses flate2's zlib-rs backend and level 5 instead of
   miniz_oxide at level 6 (#331): about 2× faster `derep` to `.json.gz` on a
   NovaSeq sample, files 1–6% larger, faster gzip reads. Decompressed content is
