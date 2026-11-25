@@ -69,7 +69,7 @@ otherwise use the R default".
 | `--omega-p` | `OMEGA_P` | 1e-4 |
 | `--min-fold` | `MIN_FOLD` | 1 |
 | `--min-hamming` | `MIN_HAMMING` | 1 |
-| `--min-abund` | `MIN_ABUNDANCE` | 1 |
+| `--min-abund` | `MIN_ABUNDANCE` | 1 (8 with `--birth-rule unoise`) |
 | `--detect-singletons` | `DETECT_SINGLETONS` | false |
 | `--max-clust` | `MAX_CLUST` | 0 (unlimited) |
 | `--greedy` | `GREEDY` | true |
@@ -512,8 +512,11 @@ and a 3-base deletion counts 3. When several centres qualify the unique joins
 the one with the smallest *d*, ties going to the more abundant. A unique no
 centre absorbs becomes a centre if it has at least `--min-abund` reads. Only
 `--min-abund` gates a birth: DADA2's p-value, `--omega-a`, `--min-fold`,
-`--min-hamming`, the singleton test and the greedy locks do not apply. Set
-`--min-abund 8` to match vsearch `--cluster_unoise`.
+`--min-hamming`, the singleton test and the greedy locks do not apply. With
+`--birth-rule unoise`, an omitted `--min-abund` is 8, vsearch
+`--cluster_unoise`'s `--minsize` default, even with `--inherit-err-params`.
+At 1, every unique no centre absorbs becomes a centre, and each new centre is
+aligned against every unique.
 
 Reads are then counted as UNOISE3's `-otutab` counts them, not by which centre
 absorbed a unique. Each unique that is not a centre counts toward the centre it

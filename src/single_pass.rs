@@ -261,6 +261,12 @@ pub fn unoise_d(sub: &Sub) -> u32 {
     sub.nsubs() as u32 + internal_gap_columns(sub)
 }
 
+/// `--min-abund` under `--birth-rule unoise` when the flag is omitted: vsearch
+/// `--cluster_unoise`'s `--minsize` default. The UNOISE rule has no abundance
+/// test, so this is its only birth gate; at 1, every unique no centre absorbs
+/// becomes a centre, and each new centre is aligned against every unique.
+pub const UNOISE_MIN_ABUND_DEFAULT: u32 = 8;
+
 /// Identity at which UNOISE3 counts a read to a ZOTU: USEARCH `-otutab`'s
 /// default, used with ZOTUs as with 97% OTUs.
 pub const UNOISE_COUNT_ID: f64 = 0.97;
