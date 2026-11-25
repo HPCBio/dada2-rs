@@ -309,6 +309,17 @@ reader benefit. Three homes, and only three:
   [#124's closure](shuffle-build-scan.md) turns out to have been conditional on
   thread count. Includes a section on which of these numbers travel to other
   hardware and which do not.
+- [Batched alignment](batched-alignment.md) — the DP kernel that "Inside
+  `b_compare`: screen vs align" left as the largest cost, attacked by aligning
+  16 pairs per SIMD vector instead of vectorizing within one pair.
+  **Output-identical everywhere, on by default.** Pooled runs at 48 threads:
+  −16% on MiSeq, −28% on PacBio at k = 7 (−42% on the default `release` build),
+  −63% at k = 5, −53% on MiSeq `dada-pseudo`, and no change on NovaSeq. The gain
+  follows alignment's share of compare time, not the share of pairs aligned.
+  Also the page on three regressions the laptop could not show:
+  per-job buffer churn, the screen pass going memory-bound once it no longer
+  overlaps alignment, and rayon join points stalling each sample's sequential
+  chain under nested parallelism, fixed by making small steps serial.
 - [Inside `b_compare`: the serial remainder](compare-serial-fold.md) — the 329 s
   (48% of `run_dada`) that was neither the parallel map nor the store. Attributed
   first, on the issue's own insistence that an optimisation not be designed
