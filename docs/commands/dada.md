@@ -36,7 +36,7 @@ uses `--omega-p` instead of `--omega-a`.
 
 ## Error model
 
-**`--error-model`** (required) — JSON error model produced by `learn-errors`, or converted from an R DADA2 `learnErrors()` `.rds` with [`learnerrors_to_dada2rs.R`](../scripts/pipeline-helpers.md#learnerrors_to_dada2rsr).
+**`--error-model`** (required unless `--birth-rule unoise`) — JSON error model produced by `learn-errors`, or converted from an R DADA2 `learnErrors()` `.rds` with [`learnerrors_to_dada2rs.R`](../scripts/pipeline-helpers.md#learnerrors_to_dada2rsr). With the UNOISE rule it is optional: see [Experimental](#experimental), *Without an error model*.
 
 **`--use-err-in`** — use the model's `err_in` matrix instead of `err_out`.
 `err_out` (the rates estimated from the final transition counts) is the default
@@ -528,6 +528,25 @@ every unique, so this needs no extra pass. `--omega-c` does not apply: every
 member's reads count toward its ASV. On the pooled MiSeq SOP forward reads,
 the counts agree with exhaustive vsearch `--usearch_global --id 0.97
 --maxaccepts 0 --maxrejects 0` on the same reads to within 23 of 139,476 reads.
+
+*Without an error model.* The UNOISE rule decides nothing from the error model, so `--error-model` is
+optional with `--birth-rule unoise`
+([#349](https://github.com/HPCBio/dada2-rs/issues/349)), and `learn-errors`
+need not run first. The ASVs, abundances and `map` are the same as with a
+model. Only the values derived from λ are missing:
+
+- `aux.cluster_stats[].pval` is `null`.
+- In `--cluster-trace`, members' `lambda`, `e_reads` and `pval` are `null`,
+  and `err_in` is omitted.
+- In `--indel-events`, the `p` and `lambda` columns are `NA`, and the header
+  records `error_model` and `error_matrix` as `none`.
+- `stats.nalign` is lower by one pass over the uniques: without a model the
+  initial comparison from the first centre, which computes only λ, is skipped.
+- `aux.transitions` has one column per quality score in the data, not one per
+  column of a model.
+
+`--inherit-err-params`, `--use-err-in` and `--indel-rates` read the model,
+so they require it. With a model, output is unchanged.
 
 UNOISE3 maps reads from before quality filtering, which `dada` never sees, so
 its table can hold more reads; it also removes chimeras with UCHIME3.

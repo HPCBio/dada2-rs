@@ -134,6 +134,12 @@ pub struct DadaParams {
     /// (issue #323): each non-centre raw moves once to the cluster with the
     /// most expected reads, priced against cluster reads as in `dada`.
     pub reassign: bool,
+    /// Whether `err_mat` holds an error model. `false` only under
+    /// `--birth-rule unoise` run without `--error-model` (#349): `err_mat` is
+    /// then empty, no λ is computed, and the λ-derived outputs (member λ and
+    /// p-values, cluster p-values) are `None`. `err_ncol` is then the data's
+    /// quality-column count, which sizes the transition counts.
+    pub err_model: bool,
 }
 
 /// How `run_dada` forms clusters (issue #323).
@@ -254,6 +260,7 @@ impl DadaParams {
             partition: Partition::Divisive,
             birth_rule: BirthRule::Pvalue,
             reassign: false,
+            err_model: true,
         }
     }
 }
@@ -312,10 +319,11 @@ pub struct ClusterSummary {
     /// Hamming distance to the cluster center for each entry in `members`
     /// (parallel slice; same length as `members`).
     pub member_hammings: Vec<u32>,
-    /// Per-member λ (transition-probability product against the center).
-    pub member_lambdas: Vec<f64>,
-    /// Per-member final abundance p-value.
-    pub member_pvals: Vec<f64>,
+    /// Per-member λ (transition-probability product against the center);
+    /// `None` without an error model.
+    pub member_lambdas: Vec<Option<f64>>,
+    /// Per-member final abundance p-value; `None` without an error model.
+    pub member_pvals: Vec<Option<f64>>,
     pub birth_type: BirthType,
     /// Index of the parent cluster that this one was split from.
     pub birth_from: u32,
@@ -367,9 +375,10 @@ pub struct DadaResult {
     /// to.  `None` means the Raw's final p-value fell below `omega_c` and it
     /// was not corrected to any center.
     pub map: Vec<Option<usize>>,
-    /// Final abundance p-value for each input Raw (in input order).
+    /// Final abundance p-value for each input Raw (in input order); `None`
+    /// without an error model.
     #[allow(dead_code)]
-    pub pvals: Vec<f64>,
+    pub pvals: Vec<Option<f64>>,
     /// Total pairwise alignments performed.
     pub nalign: u64,
     /// Comparisons screened out by k-mer distance.
@@ -501,7 +510,16 @@ pub fn dada_uniques_cached(
             ));
         }
     }
-    if params.err_mat.len() != 16 * params.err_ncol {
+    let unoise_rule =
+        params.partition == Partition::SinglePass && params.birth_rule == BirthRule::Unoise;
+    if !(params.err_model || unoise_rule) {
+        return Err(
+            "an error model is required unless the partition is single-pass with the UNOISE \
+             birth rule"
+                .to_string(),
+        );
+    }
+    if params.err_model && params.err_mat.len() != 16 * params.err_ncol {
         return Err(format!(
             "Error matrix length {} does not match 16 × {} = {}.",
             params.err_mat.len(),
@@ -526,18 +544,28 @@ pub fn dada_uniques_cached(
     }
 
     // ---- Extend the error model if the data has higher quality than it covers ----
-    let extended_err = if has_quals && params.err_ncol > 0 {
+    let extended_err = if has_quals && params.err_model && params.err_ncol > 0 {
         extend_err_for_quals(inputs, &params.err_mat, params.err_ncol)
     } else {
         None
     };
     // Owned params only when the matrix had to grow, so the common path keeps
-    // borrowing the caller's and copies nothing.
-    let owned_params: Option<DadaParams> = extended_err.map(|(err_mat, err_ncol)| DadaParams {
-        err_mat,
-        err_ncol,
-        ..params.clone()
-    });
+    // borrowing the caller's and copies nothing. Without a model there is no
+    // matrix: `err_ncol` only sizes the transition counts, so it covers the
+    // data's qualities.
+    let owned_params: Option<DadaParams> = if params.err_model {
+        extended_err.map(|(err_mat, err_ncol)| DadaParams {
+            err_mat,
+            err_ncol,
+            ..params.clone()
+        })
+    } else {
+        Some(DadaParams {
+            err_mat: Vec::new(),
+            err_ncol: if has_quals { max_qual(inputs) + 1 } else { 1 },
+            ..params.clone()
+        })
+    };
     let params: &DadaParams = owned_params.as_ref().unwrap_or(params);
 
     // ---- Build or reset Raw objects ----
@@ -666,7 +694,9 @@ pub fn dada_uniques_cached(
     // DADA2's check and does not apply. Only its unassigned raws go uncounted.
     let unoise =
         params.partition == Partition::SinglePass && params.birth_rule == BirthRule::Unoise;
-    let mut pvals = vec![0.0f64; nraw];
+    // Without an error model (#349) there is no λ: `p` stays at its 1.0
+    // placeholder, which nothing reads, and `pvals` reports none.
+    let mut pvals: Vec<Option<f64>> = vec![params.err_model.then_some(0.0); nraw];
     for ci in 0..b.clusters.len() {
         let members: Vec<usize> = b.clusters[ci].raws.clone();
         let center_idx = b.clusters[ci].center;
@@ -677,7 +707,11 @@ pub fn dada_uniques_cached(
                 (1.0, true)
             } else {
                 let lambda = b.raws[raw_idx].comp.lambda;
-                let p = calc_pA(b.raws[raw_idx].reads, lambda * ci_reads as f64, true);
+                let p = if params.err_model {
+                    calc_pA(b.raws[raw_idx].reads, lambda * ci_reads as f64, true)
+                } else {
+                    1.0
+                };
                 // The UNOISE rule's raws with no qualifying centre (#323).
                 let unassigned = b.unassigned.get(raw_idx).copied().unwrap_or(false);
                 let correct = !unassigned && (unoise || p >= params.omega_c);
@@ -685,7 +719,7 @@ pub fn dada_uniques_cached(
             };
             b.raws[raw_idx].p = p;
             b.raws[raw_idx].correct = correct;
-            pvals[b.raws[raw_idx].index as usize] = p;
+            pvals[b.raws[raw_idx].index as usize] = params.err_model.then_some(p);
         }
     }
 
@@ -712,8 +746,9 @@ pub fn dada_uniques_cached(
             let mut member_pvals = Vec::with_capacity(members.len());
             for &raw_idx in &members {
                 member_hammings.push(b.raws[raw_idx].comp.hamming);
-                member_lambdas.push(b.raws[raw_idx].comp.lambda);
-                member_pvals.push(b.raws[raw_idx].p);
+                let model = params.err_model;
+                member_lambdas.push(model.then_some(b.raws[raw_idx].comp.lambda));
+                member_pvals.push(model.then_some(b.raws[raw_idx].p));
             }
             let abundance = members
                 .iter()
@@ -746,9 +781,9 @@ pub fn dada_uniques_cached(
     let aux = params
         .aux_outputs
         .then(|| compute_aux(&b, params, final_subs.as_deref().unwrap(), has_quals));
-    let indels = params
-        .indel_events
-        .then(|| crate::indel_events::tabulate(&b, final_subs.as_deref().unwrap()));
+    let indels = params.indel_events.then(|| {
+        crate::indel_events::tabulate(&b, final_subs.as_deref().unwrap(), params.err_model)
+    });
 
     // The abundance p-value's Bonferroni divisor is the unique count `b.raws`
     // used by the bud scan; it must equal the input count (no raws are dropped,
@@ -770,6 +805,19 @@ pub fn dada_uniques_cached(
 
     // Reclaim Raws for the caller to pass back on the next iteration.
     Ok((result, std::mem::take(&mut b.raws)))
+}
+
+/// The highest per-position mean quality in `inputs`, the column index λ reads.
+fn max_qual(inputs: &[RawInput]) -> usize {
+    inputs
+        .iter()
+        .filter_map(|inp| {
+            let q = inp.quals.as_ref()?;
+            let c = inp.abundance.max(1) as f64;
+            q.iter().map(|&s| (s as f64 / c).round() as usize).max()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// The error matrix widened to cover the inputs' highest quality, or `None`
@@ -797,15 +845,7 @@ fn extend_err_for_quals(
     err_mat: &[f64],
     err_ncol: usize,
 ) -> Option<(Vec<f64>, usize)> {
-    let qmax = inputs
-        .iter()
-        .filter_map(|inp| {
-            let q = inp.quals.as_ref()?;
-            let c = inp.abundance.max(1) as f64;
-            q.iter().map(|&s| (s as f64 / c).round() as usize).max()
-        })
-        .max()
-        .unwrap_or(0);
+    let qmax = max_qual(inputs);
     if qmax < err_ncol {
         return None;
     }
@@ -924,7 +964,7 @@ fn compute_aux(b: &B, params: &DadaParams, final_subs: &[Option<Sub>], has_quals
 
     let birth_subs = compute_birth_subs(b, &birth_align);
 
-    let cluster_stats_v = cluster_stats(b, final_subs, &birth_subs, has_quals);
+    let cluster_stats_v = cluster_stats(b, final_subs, &birth_subs, has_quals, params.err_model);
     let maxlen = b.raws.iter().map(|r| r.seq.len()).max().unwrap_or(0);
     let cluster_quality_v = cluster_quality(b, final_subs, has_quals, maxlen);
     let birth_records = birth_sub_records(&birth_subs, has_quals);
@@ -1282,32 +1322,38 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         ..params.align
     };
 
-    let t = Instant::now();
-    if params.multithread {
-        let ct = b_compare_parallel(
-            &mut bb,
-            0,
-            &params.err_mat,
-            params.err_ncol,
-            &init_params,
-            params.greedy,
-            params.measure.attribution(),
-        );
-        add_compare!(ct);
-    } else {
-        // `b_compare`'s record drives the `C{i}LU:` progress print, which is a
-        // verbose concern, not a measurement one.
-        b_compare(
-            &mut bb,
-            0,
-            &params.err_mat,
-            params.err_ncol,
-            &init_params,
-            params.greedy,
-            &mut rec,
-        );
+    // Without an error model (#349) only the UNOISE rule runs, and its own
+    // compare from cluster 0 below covers every raw. This one computes λ for
+    // reported values only, so it runs only when there is a model to keep
+    // those outputs unchanged.
+    if params.err_model {
+        let t = Instant::now();
+        if params.multithread {
+            let ct = b_compare_parallel(
+                &mut bb,
+                0,
+                &params.err_mat,
+                params.err_ncol,
+                &init_params,
+                params.greedy,
+                params.measure.attribution(),
+            );
+            add_compare!(ct);
+        } else {
+            // `b_compare`'s record drives the `C{i}LU:` progress print, which is a
+            // verbose concern, not a measurement one.
+            b_compare(
+                &mut bb,
+                0,
+                &params.err_mat,
+                params.err_ncol,
+                &init_params,
+                params.greedy,
+                &mut rec,
+            );
+        }
+        t_compare += t.elapsed();
     }
-    t_compare += t.elapsed();
     // Persistent per-raw candidate index for the incremental shuffle driver.
     // Appended once per cluster, in ascending cluster order, right after each
     // compare populates that cluster's comps.
@@ -1385,7 +1431,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             &mut bb,
             0,
             &mut ub,
-            &params.err_mat,
+            params.err_model.then_some(params.err_mat.as_slice()),
             params.err_ncol,
             &params.align,
             params.measure.attribution(),
@@ -1410,7 +1456,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
                 &mut bb,
                 newi,
                 &mut ub,
-                &params.err_mat,
+                params.err_model.then_some(params.err_mat.as_slice()),
                 params.err_ncol,
                 &params.align,
                 params.measure.attribution(),
@@ -2408,8 +2454,15 @@ mod tests {
         for r in [&again, &third] {
             assert_eq!(r.map, fresh.map);
             assert_eq!(
-                r.pvals.iter().map(|p| p.to_bits()).collect::<Vec<_>>(),
-                fresh.pvals.iter().map(|p| p.to_bits()).collect::<Vec<_>>()
+                r.pvals
+                    .iter()
+                    .map(|p| p.map(f64::to_bits))
+                    .collect::<Vec<_>>(),
+                fresh
+                    .pvals
+                    .iter()
+                    .map(|p| p.map(f64::to_bits))
+                    .collect::<Vec<_>>()
             );
             assert_eq!(r.clusters.len(), fresh.clusters.len());
             for (x, y) in r.clusters.iter().zip(&fresh.clusters) {
@@ -2451,7 +2504,11 @@ mod tests {
         let r = dada_uniques(&inputs, &strict).unwrap();
         assert_eq!(r.clusters.len(), 1, "omega_c must not create clusters");
         assert_eq!(r.map, vec![Some(0), None, Some(0), Some(0)]);
-        assert!(r.pvals[1] < 0.3 && r.pvals[2] >= 0.3, "pvals {:?}", r.pvals);
+        assert!(
+            r.pvals[1].unwrap() < 0.3 && r.pvals[2].unwrap() >= 0.3,
+            "pvals {:?}",
+            r.pvals
+        );
         assert_eq!((r.clusters[0].reads, r.clusters[0].abundance), (2006, 2003));
     }
 
@@ -2665,7 +2722,7 @@ mod tests {
         p.omega_c = 0.3;
         let r = dada_uniques(&inputs, &p).unwrap();
         assert_eq!(r.clusters.len(), 1);
-        assert!(r.pvals[1] < 0.3, "pvals {:?}", r.pvals);
+        assert!(r.pvals[1].unwrap() < 0.3, "pvals {:?}", r.pvals);
         assert_eq!(r.map, vec![Some(0); 4]);
         assert_eq!(r.clusters[0].abundance, 2006);
 

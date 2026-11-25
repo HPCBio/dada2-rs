@@ -45,9 +45,10 @@ struct MemberJson {
     raw_seq_id: usize,
     abundance: u32,
     hamming: u32,
-    lambda: f64,
-    e_reads: f64,
-    pval: f64,
+    /// `null` without an error model (#349), as are `e_reads` and `pval`.
+    lambda: Option<f64>,
+    e_reads: Option<f64>,
+    pval: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -176,7 +177,7 @@ pub fn write_trace(
                     abundance: abund,
                     hamming: c.member_hammings[k],
                     lambda: c.member_lambdas[k],
-                    e_reads: c.member_lambdas[k] * c.reads as f64,
+                    e_reads: c.member_lambdas[k].map(|l| l * c.reads as f64),
                     pval: c.member_pvals[k],
                 });
             }

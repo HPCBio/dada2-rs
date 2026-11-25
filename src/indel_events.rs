@@ -209,10 +209,11 @@ pub struct UniqueEvents {
     pub unique: u32,
     pub reads: u32,
     pub correct: bool,
-    pub p: f64,
+    /// `None`, as is `lambda`, without an error model (#349); written `NA`.
+    pub p: Option<f64>,
     /// λ against the centre and the cluster's reads, the inputs of `p`
     /// (`calc_pA(reads, lambda * cluster_reads)`).
-    pub lambda: f64,
+    pub lambda: Option<f64>,
     pub cluster_reads: u32,
     pub nsubs: usize,
     pub events: Vec<Event>,
@@ -453,7 +454,7 @@ pub fn pair_events(
 
 /// Tabulate indel events over the final partition, from `subs` indexed by
 /// `raw.index` (the final-subs pass, as for `trans`).
-pub fn tabulate(b: &B, subs: &[Option<Sub>]) -> IndelReport {
+pub fn tabulate(b: &B, subs: &[Option<Sub>], err_model: bool) -> IndelReport {
     let mut uniques = Vec::new();
     let mut opp = Opportunities::default();
     for (ci, bi) in b.clusters.iter().enumerate() {
@@ -482,8 +483,8 @@ pub fn tabulate(b: &B, subs: &[Option<Sub>]) -> IndelReport {
                     unique: raw.index,
                     reads: raw.reads,
                     correct: raw.correct,
-                    p: raw.p,
-                    lambda: raw.comp.lambda,
+                    p: err_model.then_some(raw.p),
+                    lambda: err_model.then_some(raw.comp.lambda),
                     cluster_reads: bi.reads,
                     nsubs: sub.nsubs(),
                     events,
@@ -546,13 +547,13 @@ pub fn write_events_tsv(
                 for e in &u.events {
                     writeln!(
                         w,
-                        "{sample}\t{}\t{}\t{}\t{reads}\t{}\t{:e}\t{:e}\t{}\t{}\t{n_internal}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        "{sample}\t{}\t{}\t{}\t{reads}\t{}\t{}\t{}\t{}\t{}\t{n_internal}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                         u.cluster,
                         u.center_len,
                         u.unique,
                         u.correct as u8,
-                        u.p,
-                        u.lambda,
+                        opt(u.p.map(|v| format!("{v:e}"))),
+                        opt(u.lambda.map(|v| format!("{v:e}"))),
                         u.cluster_reads,
                         u.nsubs,
                         if e.kind == Kind::Insertion { "I" } else { "D" },

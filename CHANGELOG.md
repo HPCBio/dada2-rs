@@ -10,6 +10,12 @@ minor versions may carry breaking changes).
 
 ### Added
 
+- `--error-model` is optional on `dada` and `dada-pooled` with
+  `--birth-rule unoise` (Experimental; #349), which decides nothing from it.
+  Without a model no λ is computed: the ASVs, abundances and `map` are
+  unchanged, and the λ-derived values (cluster and member p-values, member λ)
+  are `null`. See
+  [`dada` → Experimental](docs/commands/dada.md#experimental).
 - `--batch-align` (Performance; #337), on by default, on `dada`,
   `dada-pooled`, `dada-pseudo`, `learn-errors` and `errors-from-sample`: aligns
   the pairs that pass the screen 16 at a time instead of one by one. Output is

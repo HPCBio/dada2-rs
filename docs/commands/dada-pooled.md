@@ -33,8 +33,9 @@ are exempt from the abundance p-value filter and split via `--omega-p`.
 
 ## Error model
 
-`--error-model` (required), `--use-err-in`, `--inherit-err-params` — identical
-in meaning to [`dada`'s error-model flags](dada.md#error-model).
+`--error-model` (required unless `--birth-rule unoise`), `--use-err-in`,
+`--inherit-err-params` — identical in meaning to
+[`dada`'s error-model flags](dada.md#error-model).
 
 ## Denoising, Alignment, Screening
 

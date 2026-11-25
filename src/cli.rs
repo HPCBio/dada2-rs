@@ -748,9 +748,9 @@ pub struct DadaArgs {
     #[arg(long, help_heading = H_INPUT)]
     pub prior: Option<PathBuf>,
 
-    /// JSON error model file produced by the `learn-errors` subcommand
+    /// JSON error model from `learn-errors`; optional with `--birth-rule unoise`
     #[arg(long, help_heading = H_ERRMODEL)]
-    pub error_model: PathBuf,
+    pub error_model: Option<PathBuf>,
 
     /// Use `err_in` from the error model instead of `err_out`
     #[arg(long, help_heading = H_ERRMODEL)]
@@ -859,9 +859,9 @@ pub struct DadaPooledArgs {
     #[arg(long, help_heading = H_INPUT)]
     pub prior: Option<PathBuf>,
 
-    /// JSON error model file produced by the `learn-errors` subcommand
+    /// JSON error model from `learn-errors`; optional with `--birth-rule unoise`
     #[arg(long, help_heading = H_ERRMODEL)]
-    pub error_model: PathBuf,
+    pub error_model: Option<PathBuf>,
 
     /// Use `err_in` from the error model instead of `err_out`
     #[arg(long, help_heading = H_ERRMODEL)]

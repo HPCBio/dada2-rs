@@ -118,7 +118,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
 
         // Resolve parameters once (shared across samples).
         let mut resolved = resolve_dada_params(
-            &error_model,
+            error_model.as_deref(),
             use_err_in,
             inherit_err_params,
             threads,
@@ -181,7 +181,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
             IndelRequest {
                 events: indel_events.as_deref(),
                 opportunities: indel_opportunities.as_deref(),
-                meta: &indel_meta("dada", &error_model, use_err_in),
+                meta: &indel_meta("dada", error_model.as_deref(), use_err_in),
             },
             metrics_json.as_deref(),
             t_start,
@@ -217,7 +217,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
 
     // ---- Load error model + resolve parameters (shared helper) ----
     let mut resolved = resolve_dada_params(
-        &error_model,
+        error_model.as_deref(),
         use_err_in,
         inherit_err_params,
         threads,
@@ -263,7 +263,7 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         let req = IndelRequest {
             events: indel_events.as_deref(),
             opportunities: indel_opportunities.as_deref(),
-            meta: &indel_meta("dada", &error_model, use_err_in),
+            meta: &indel_meta("dada", error_model.as_deref(), use_err_in),
         };
         write_indel_tables("dada", req, vec![(sample.clone(), report)], verbose)?;
     }
@@ -448,7 +448,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
 
     // ---- Load error model + resolve parameters (shared helper) ----
     let resolved = resolve_dada_params(
-        &error_model,
+        error_model.as_deref(),
         use_err_in,
         inherit_err_params,
         threads,
@@ -526,7 +526,7 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
     // --failed-uniques does; the rate tables are pool-level, the weights dada
     // used.
     if let Some(report) = result.indels.take() {
-        let meta = indel_meta("dada-pooled", &error_model, use_err_in);
+        let meta = indel_meta("dada-pooled", error_model.as_deref(), use_err_in);
         if let Some(ref path) = indel_events {
             let wanted: std::collections::HashSet<u32> =
                 report.uniques.iter().map(|u| u.unique).collect();
@@ -832,7 +832,7 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
 
     // Resolve parameters once (shared across both rounds and all samples).
     let mut resolved = resolve_dada_params(
-        &error_model,
+        Some(&error_model),
         use_err_in,
         inherit_err_params,
         threads,
@@ -1154,7 +1154,7 @@ pub(crate) fn run_dada_pseudo(args: cli::DadaPseudoArgs) -> io::Result<()> {
             events: indel_events.as_deref(),
             opportunities: indel_opportunities.as_deref(),
             meta: &[
-                indel_meta("dada-pseudo", &error_model, use_err_in),
+                indel_meta("dada-pseudo", Some(&error_model), use_err_in),
                 vec![
                     ("round", "2".to_string()),
                     (
@@ -1335,7 +1335,7 @@ pub(crate) fn resolve_measure_level(
 /// left at 0 here.
 #[allow(clippy::too_many_arguments)]
 fn resolve_dada_params(
-    error_model: &Path,
+    error_model: Option<&Path>,
     use_err_in: bool,
     inherit_err_params: bool,
     threads: usize,
@@ -1347,6 +1347,103 @@ fn resolve_dada_params(
     experimental: cli::ExperimentalArgs,
     indel_lambda: &cli::IndelLambdaArgs,
     partition: &cli::PartitionArgs,
+) -> io::Result<ResolvedDada> {
+    let unoise = partition.birth_rule == Some(dada::BirthRule::Unoise);
+    // The UNOISE rule decides nothing from the error model, so it may run
+    // without one (#349). Everything else needs it, as do the flags that only
+    // shape or read it.
+    let Some(error_model) = error_model else {
+        let invalid = |msg: &str| Err(io::Error::new(io::ErrorKind::InvalidInput, msg.to_string()));
+        if !unoise {
+            return invalid("--error-model is required unless --birth-rule unoise");
+        }
+        for (set, flag) in [
+            (inherit_err_params, "--inherit-err-params"),
+            (use_err_in, "--use-err-in"),
+            (indel_lambda.indel_rates.is_some(), "--indel-rates"),
+        ] {
+            if set {
+                return invalid(&format!("{flag} requires --error-model"));
+            }
+        }
+        return resolve_dada_params_with(
+            None,
+            threads,
+            aux_outputs,
+            pool,
+            verbose,
+            measure,
+            denoise,
+            experimental,
+            indel_lambda,
+            partition,
+            false,
+        );
+    };
+    let em: ErrorModelJson = read_tagged_json(error_model, &["learn-errors", "errors-from-sample"])
+        .with_path(error_model)?;
+    let nq = em.nq;
+    let rows = if use_err_in { &em.err_in } else { &em.err_out };
+    if rows.len() != 16 || rows.iter().any(|r| r.len() != nq) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Error model matrix must be 16 × {nq}, got {} rows",
+                rows.len()
+            ),
+        ));
+    }
+    let err_mat: Vec<f64> = rows.iter().flat_map(|r| r.iter().copied()).collect();
+
+    if inherit_err_params && em.params.is_none() {
+        eprintln!(
+            "[dada] warning: --inherit-err-params requested but error model {} has no `params` block (likely produced by a pre-provenance version); falling back to built-in defaults",
+            error_model.display(),
+        );
+    }
+    resolve_dada_params_with(
+        Some(LoadedModel {
+            path: error_model,
+            err_mat,
+            nq,
+            params: em.params,
+        }),
+        threads,
+        aux_outputs,
+        pool,
+        verbose,
+        measure,
+        denoise,
+        experimental,
+        indel_lambda,
+        partition,
+        inherit_err_params,
+    )
+}
+
+/// An error model read by [`resolve_dada_params`].
+struct LoadedModel<'a> {
+    path: &'a Path,
+    /// The matrix chosen by `--use-err-in`, flattened 16 × `nq`.
+    err_mat: Vec<f64>,
+    nq: usize,
+    params: Option<LearnedErrParams>,
+}
+
+/// The rest of [`resolve_dada_params`], once the error model (if any) is read.
+#[allow(clippy::too_many_arguments)]
+fn resolve_dada_params_with(
+    model: Option<LoadedModel>,
+    threads: usize,
+    aux_outputs: bool,
+    pool: bool,
+    verbose: bool,
+    measure: MeasureLevel,
+    denoise: cli::DadaDenoiseArgs,
+    experimental: cli::ExperimentalArgs,
+    indel_lambda: &cli::IndelLambdaArgs,
+    partition: &cli::PartitionArgs,
+    inherit_err_params: bool,
 ) -> io::Result<ResolvedDada> {
     let cli::DadaDenoiseArgs {
         omega_a,
@@ -1379,29 +1476,12 @@ fn resolve_dada_params(
         gap_open_p,
         batch_align,
     } = experimental;
-    let em: ErrorModelJson = read_tagged_json(error_model, &["learn-errors", "errors-from-sample"])
-        .with_path(error_model)?;
-    let nq = em.nq;
-    let rows = if use_err_in { &em.err_in } else { &em.err_out };
-    if rows.len() != 16 || rows.iter().any(|r| r.len() != nq) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "Error model matrix must be 16 × {nq}, got {} rows",
-                rows.len()
-            ),
-        ));
-    }
-    let err_mat: Vec<f64> = rows.iter().flat_map(|r| r.iter().copied()).collect();
-
-    if inherit_err_params && em.params.is_none() {
-        eprintln!(
-            "[dada] warning: --inherit-err-params requested but error model {} has no `params` block (likely produced by a pre-provenance version); falling back to built-in defaults",
-            error_model.display(),
-        );
-    }
-
-    let p = em.params.as_ref();
+    let unoise = partition.birth_rule == Some(dada::BirthRule::Unoise);
+    let (err_mat, nq, model_path, em_params) = match model {
+        Some(m) => (m.err_mat, m.nq, Some(m.path), m.params),
+        None => (Vec::new(), 0, None, None),
+    };
+    let p = em_params.as_ref();
     macro_rules! resolve {
         ($cli:expr, $em_field:ident, $default:expr) => {{
             match ($cli, inherit_err_params, p) {
@@ -1421,7 +1501,6 @@ fn resolve_dada_params(
     // Under the UNOISE rule an omitted `--min-abund` takes UNOISE's own default,
     // ahead of the error model's value: a model trained by divisive
     // `learn-errors` carries R's 1, which leaves the rule without a birth gate.
-    let unoise = partition.birth_rule == Some(dada::BirthRule::Unoise);
     let min_abund = match min_abund {
         None if unoise => dada2_rs::single_pass::UNOISE_MIN_ABUND_DEFAULT,
         cli_value => resolve!(cli_value, min_abund, 1),
@@ -1534,7 +1613,7 @@ fn resolve_dada_params(
             eprintln!(
                 "[dada] warning: {} dada parameter(s) differ from error model {}; pass --inherit-err-params to adopt the err model's values:",
                 mismatches.len(),
-                error_model.display(),
+                model_path.map_or_else(String::new, |p| p.display().to_string()),
             );
             for line in &mismatches {
                 eprintln!("{line}");
@@ -1701,11 +1780,13 @@ fn resolve_dada_params(
         run.birth_rule = Some(params.birth_rule);
     }
 
+    params.err_model = model_path.is_some();
+
     Ok(ResolvedDada {
         params,
         nq,
         run,
-        err_params: em.params,
+        err_params: em_params,
     })
 }
 
@@ -1952,7 +2033,7 @@ struct ClusterStatJson {
     n0: u32,
     n1: u32,
     nunq: u32,
-    pval: f64,
+    pval: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     birth_from: Option<usize>,
     birth_pval: f64,
@@ -2267,14 +2348,26 @@ struct IndelRequest<'a> {
 
 /// The `#` header of the indel TSVs. The error model is named by path until
 /// it carries an identity of its own (#297).
-fn indel_meta(tag: &str, error_model: &Path, use_err_in: bool) -> Vec<(&'static str, String)> {
+fn indel_meta(
+    tag: &str,
+    error_model: Option<&Path>,
+    use_err_in: bool,
+) -> Vec<(&'static str, String)> {
     vec![
         ("dada2_rs_command", tag.to_string()),
         ("dada2_rs_version", misc::DADA2_RS_VERSION.to_string()),
-        ("error_model", error_model.display().to_string()),
+        (
+            "error_model",
+            error_model.map_or("none".to_string(), |p| p.display().to_string()),
+        ),
         (
             "error_matrix",
-            if use_err_in { "err_in" } else { "err_out" }.to_string(),
+            match (error_model, use_err_in) {
+                (None, _) => "none",
+                (Some(_), true) => "err_in",
+                (Some(_), false) => "err_out",
+            }
+            .to_string(),
         ),
     ]
 }
@@ -2345,7 +2438,7 @@ fn write_cluster_trace(
         None, // no iteration: this is the final dada run
         raw_inputs,
         result,
-        Some(&params.err_mat),
+        params.err_model.then_some(params.err_mat.as_slice()),
         params.err_ncol,
         trace.params,
         compact,

@@ -1037,6 +1037,128 @@ fn unoise_compare_is_attributed() {
     );
 }
 
+/// `--birth-rule unoise` runs without `--error-model` (#349). The rule decides
+/// nothing from the model, so the ASVs, abundances and `map` match a run with
+/// one, and the values only a model can give are `null`. Every other rule, and
+/// the flags that read the model, still require it.
+#[test]
+fn unoise_runs_without_error_model() {
+    let dir = scratch("unoise_no_model");
+    let err = err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+    let (s1, err) = (s1.to_str().unwrap(), err.to_str().unwrap());
+    let p = |n: &str| dir.join(n).to_str().unwrap().to_string();
+    let unoise = [
+        "dada",
+        s1,
+        "--partition",
+        "single-pass",
+        "--birth-rule",
+        "unoise",
+    ];
+    let outputs = |tag: &str| -> Vec<String> {
+        [
+            "--aux-outputs",
+            "--indel-events",
+            "{t}.indels.tsv",
+            "--cluster-trace",
+            "{t}.trace.json",
+            "-o",
+            "{t}.json",
+        ]
+        .iter()
+        .map(|a| match a.strip_prefix("{t}") {
+            Some(rest) => p(&format!("{tag}{rest}")),
+            None => a.to_string(),
+        })
+        .collect()
+    };
+    let (mo, no) = (outputs("m"), outputs("n"));
+    let mo: Vec<&str> = mo.iter().map(String::as_str).collect();
+    let no: Vec<&str> = no.iter().map(String::as_str).collect();
+    run(&[&unoise[..], &["--error-model", err], &mo].concat());
+    run(&[&unoise[..], &no].concat());
+    let read = |n: &str| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(p(n)).unwrap()).unwrap()
+    };
+    let (m, n) = (read("m.json"), read("n.json"));
+    assert_eq!(m["asvs"], n["asvs"], "ASVs differ without a model");
+    assert_eq!(m["map"], n["map"], "map differs without a model");
+    let mut ms = m["aux"].clone();
+    let mut ns = n["aux"].clone();
+    for (with, without) in ms["cluster_stats"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .zip(ns["cluster_stats"].as_array_mut().unwrap())
+    {
+        assert!(with["pval"].is_f64(), "cluster pval missing with a model");
+        assert!(
+            without["pval"].is_null(),
+            "cluster pval without a model: {without}"
+        );
+        with.as_object_mut().unwrap().remove("pval");
+        without.as_object_mut().unwrap().remove("pval");
+    }
+    assert_eq!(ms, ns, "aux outputs differ beyond the cluster p-values");
+    let (mt, nt) = (read("m.trace.json"), read("n.trace.json"));
+    assert!(mt["err_in"].is_array() && nt.get("err_in").is_none());
+    let members = |t: &serde_json::Value| {
+        t["clusters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|c| c["members"].as_array().unwrap().clone())
+            .collect::<Vec<_>>()
+    };
+    let nm = members(&nt);
+    assert_eq!(members(&mt).len(), nm.len());
+    for f in ["lambda", "e_reads", "pval"] {
+        assert!(
+            members(&mt).iter().all(|x| x[f].is_f64()),
+            "{f} missing with a model"
+        );
+        assert!(nm.iter().all(|x| x[f].is_null()), "{f} without a model");
+    }
+    // The indel table's `p` and `lambda` columns (7 and 8) are `NA`.
+    let columns = |n: &str| -> Vec<(String, String)> {
+        std::fs::read_to_string(p(n))
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.starts_with("sample\t"))
+            .map(|l| {
+                let f: Vec<&str> = l.split('\t').collect();
+                (f[6].to_string(), f[7].to_string())
+            })
+            .collect()
+    };
+    let (mi, ni) = (columns("m.indels.tsv"), columns("n.indels.tsv"));
+    assert!(!ni.is_empty() && mi.len() == ni.len(), "indel rows differ");
+    assert!(mi.iter().all(|(p, l)| p != "NA" && l != "NA"));
+    assert!(
+        ni.iter().all(|(p, l)| p == "NA" && l == "NA"),
+        "{:?}",
+        &ni[..1]
+    );
+
+    let stderr = run_expect_err(&["dada", s1, "-o", &p("x.json")]);
+    assert!(
+        stderr.contains("--error-model is required unless --birth-rule unoise"),
+        "{stderr}"
+    );
+    for flag in [
+        &["--inherit-err-params"][..],
+        &["--use-err-in"],
+        &["--indel-rates", err],
+    ] {
+        let stderr = run_expect_err(&[&unoise[..], flag, &["-o", &p("x.json")]].concat());
+        assert!(
+            stderr.contains(&format!("{} requires --error-model", flag[0])),
+            "{stderr}"
+        );
+    }
+}
+
 /// Under `--birth-rule unoise` an omitted `--min-abund` is 8, vsearch
 /// `--cluster_unoise`'s `--minsize` default, even with `--inherit-err-params`
 /// (the error model carries R's 1). An explicit value still wins, and the

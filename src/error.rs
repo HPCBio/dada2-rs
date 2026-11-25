@@ -31,8 +31,9 @@ pub struct ClusterStats {
     pub n1: u32,
     /// Number of `correct=true` unique sequences in this cluster.
     pub nunq: u32,
-    /// Post-hoc abundance p-value for this cluster's center.
-    pub pval: f64,
+    /// Post-hoc abundance p-value for this cluster's center; `None` without an
+    /// error model (#349).
+    pub pval: Option<f64>,
     /// 0-indexed index of the parent cluster (`None` for cluster 0).
     pub birth_from: Option<usize>,
     pub birth_pval: f64,
@@ -57,8 +58,9 @@ pub fn cluster_stats(
     subs: &[Option<Sub>],
     birth_subs: &[Option<Sub>],
     has_quals: bool,
+    err_model: bool,
 ) -> Vec<ClusterStats> {
-    let pvals = post_hoc_pvals(b);
+    let pvals = err_model.then(|| post_hoc_pvals(b));
     let nclust = b.clusters.len();
 
     (0..nclust)
@@ -118,7 +120,7 @@ pub fn cluster_stats(
                 n0,
                 n1,
                 nunq,
-                pval: pvals[ci],
+                pval: pvals.as_ref().map(|p| p[ci]),
                 birth_from,
                 birth_pval,
                 birth_fold,
