@@ -180,9 +180,9 @@ pub struct AlignParams {
     pub band: i32,
     pub vectorized: bool,
     pub gapless: bool,
-    /// Experimental: `b_compare_parallel` defers pairs bound for the vectorized
-    /// kernel and aligns them in same-shape batches ([`crate::nwalign_batch`]).
-    /// Output is unchanged; only the work schedule differs.
+    /// `b_compare_parallel` defers pairs bound for the vectorized kernel and
+    /// aligns them in same-shape batches ([`crate::nwalign_batch`]). Output is
+    /// unchanged; only the work schedule differs. The CLI default is on (#337).
     pub batch_align: bool,
 }
 
@@ -1964,9 +1964,9 @@ pub fn backend_repr(p: &AlignParams) -> String {
         EndModel::Global => format!("{backend}; end model: global (experimental)"),
     };
     if p.batch_align {
-        format!("{backend}; batched alignment (experimental)")
+        format!("{backend}; batched alignment")
     } else {
-        backend
+        format!("{backend}; per-pair alignment")
     }
 }
 

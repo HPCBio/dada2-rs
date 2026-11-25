@@ -437,9 +437,9 @@ pub struct ExperimentalArgs {
     #[arg(long, allow_hyphen_values = true, help_heading = H_EXP)]
     pub gap_open_p: Option<i32>,
 
-    /// EXPERIMENTAL: align screen-passing pairs in same-length batches; same output
-    #[arg(long, default_value_t = false, help_heading = H_EXP)]
-    pub batch_align: bool,
+    /// Align screen-passing pairs in same-length batches; same output [omit for true]
+    #[arg(long, num_args = 0..=1, default_missing_value = "true", help_heading = H_PERF)]
+    pub batch_align: Option<bool>,
 }
 
 /// The experimental indel-aware λ (issue #291), on `dada`, `dada-pooled` and

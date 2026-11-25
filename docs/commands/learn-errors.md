@@ -213,6 +213,8 @@ see [KDIST cutoff decoupling](../findings/kdist-cutoff-decoupling.md).
 **`--threads`** (default 1) — threads for parallel sample processing. Does not
 affect results.
 
+**`--batch-align`** (default true) — as in [`dada`](dada.md#performance).
+
 ## Output
 
 **`--output` / `-o`** — write JSON here instead of stdout.
@@ -253,7 +255,7 @@ the run. `--verbose` still turns the per-comparison timers on, as before. See
 
 Identical in meaning to [`dada`'s experimental flags](dada.md#experimental):
 `--screen-backend`, `--minimizer-k`, `--minimizer-w`, `--screen-audit`,
-`--wfa-max-edits`, `--end-model`, `--gap-open-p`, `--batch-align`.
+`--wfa-max-edits`, `--end-model`, `--gap-open-p`.
 
 **`--indel-rates-out`**, **`--indel-history`**, **`--indel-max-iter`** (default
 10), **`--indel-fit-cmd`**, **`--hp-ceiling`**, **`--indel-pair-window`**,

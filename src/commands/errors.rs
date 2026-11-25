@@ -600,7 +600,7 @@ fn resolve_learn_params(
         band,
         vectorized: true,
         gapless: true,
-        batch_align,
+        batch_align: batch_align.unwrap_or(true),
     };
 
     let dada_params = dada::DadaParams::new(

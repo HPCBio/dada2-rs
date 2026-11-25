@@ -1568,7 +1568,7 @@ fn resolve_dada_params(
         band,
         vectorized: true,
         gapless: true,
-        batch_align,
+        batch_align: batch_align.unwrap_or(true),
     };
 
     if verbose {

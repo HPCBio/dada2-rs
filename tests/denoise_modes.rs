@@ -1032,3 +1032,103 @@ fn unoise_min_abund_defaults_to_eight() {
     let (_, n) = min_abund("pvalue", &[]);
     assert_eq!(n, 1);
 }
+
+/// `--batch-align` is on by default (#337) and changes no output: every mode
+/// matches `--batch-align false`, and bare `--batch-align` still parses. Runs
+/// at 4 threads, because batching applies only to the parallel compare.
+#[test]
+fn batch_align_default_matches_per_pair() {
+    let dir = scratch("batch_default");
+    let err = err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+    let s2 = fixture("sam2F.fastq.gz");
+    let (s1, s2, err) = (
+        s1.to_str().unwrap(),
+        s2.to_str().unwrap(),
+        err.to_str().unwrap(),
+    );
+    let p = |n: &str| dir.join(n).to_str().unwrap().to_string();
+
+    // The default run must actually batch, or the comparisons below prove nothing.
+    run(&[
+        "dada-pooled",
+        s1,
+        s2,
+        "--error-model",
+        err,
+        "--threads",
+        "4",
+        "--output-dir",
+        &p("pooled_default"),
+        "--metrics-json",
+        &p("pooled.metrics.json"),
+    ]);
+    let m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(p("pooled.metrics.json")).unwrap()).unwrap();
+    let deferred = m["runs"][0]["compare"]["batch"]["deferred"]
+        .as_u64()
+        .unwrap();
+    assert!(deferred > 0, "default run deferred no pairs");
+    run(&[
+        "dada-pooled",
+        s1,
+        s2,
+        "--error-model",
+        err,
+        "--threads",
+        "4",
+        "--output-dir",
+        &p("pooled_off"),
+        "--batch-align",
+        "false",
+    ]);
+    assert_same_outputs(
+        &dir.join("pooled_default"),
+        &dir.join("pooled_off"),
+        "dada-pooled",
+    );
+
+    for (name, flags) in [
+        ("default", &[][..]),
+        ("off", &["--batch-align", "false"][..]),
+        ("bare", &["--batch-align"][..]),
+    ] {
+        let base = ["dada", s1, "--error-model", err, "--threads", "4", "-o"];
+        run(&[
+            &base[..],
+            &[p(&format!("dada_{name}.json")).as_str()],
+            flags,
+        ]
+        .concat());
+        let base = [
+            "dada-pseudo",
+            s1,
+            s2,
+            "--error-model",
+            err,
+            "--threads",
+            "4",
+            "--output-dir",
+        ];
+        run(&[&base[..], &[p(&format!("pseudo_{name}")).as_str()], flags].concat());
+        let base = ["learn-errors", s1, s2, "--threads", "4", "-o"];
+        run(&[&base[..], &[p(&format!("le_{name}.json")).as_str()], flags].concat());
+    }
+    for other in ["off", "bare"] {
+        assert_eq!(
+            normalized(&dir.join("dada_default.json")),
+            normalized(&dir.join(format!("dada_{other}.json"))),
+            "dada, default vs {other}"
+        );
+        assert_same_outputs(
+            &dir.join("pseudo_default"),
+            &dir.join(format!("pseudo_{other}")),
+            &format!("dada-pseudo, default vs {other}"),
+        );
+        assert_eq!(
+            normalized(&dir.join("le_default.json")),
+            normalized(&dir.join(format!("le_{other}.json"))),
+            "learn-errors, default vs {other}"
+        );
+    }
+}

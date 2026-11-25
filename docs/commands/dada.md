@@ -141,7 +141,7 @@ use only when you suspect the screen is filtering valid comparisons.
 
 ## Performance
 
-Neither flag affects results.
+None of these flags affect results.
 
 **`--threads`** (default 1) — threads for both dereplication and the DADA2
 comparison map.
@@ -153,6 +153,18 @@ samples across smaller sub-pools keeps every core fed — roughly 4 threads per
 sample is the sweet spot — and bounds memory to this many samples in flight.
 Defaults to `round(threads / 4)`, i.e. serial at ≤4 threads. Dial it down for
 very large or complex samples if memory is tight.
+
+**`--batch-align`** (default true) — align the pairs that pass the screen 16 at
+a time, one pair per SIMD lane, grouped by length; `--batch-align false` aligns
+them one by one. Output is byte-identical either way. It applies only with
+`--threads` > 1, and only to pairs bound for the vectorized NW kernel: the
+gapless shortcut, WFA, affine gaps, `--homo-gap-p` and reads over 3,500 bp are
+aligned per pair as before, and `--screen-audit` turns it off. The gain follows
+alignment's share of comparison time: on pooled runs at 48 threads, −16% on
+MiSeq, −28% on PacBio at k = 7 (−42% on a build without native CPU flags) and
+−63% at k = 5, and no change on NovaSeq, where the k-mer screen dominates
+([#337](https://github.com/HPCBio/dada2-rs/issues/337)). The UNOISE birth rule
+does not batch yet ([#345](https://github.com/HPCBio/dada2-rs/issues/345)).
 
 ## Output
 
@@ -459,20 +471,6 @@ It works with every end model and both backends, and cannot be combined with a
 model and the output `params`, and `dada` warns when its own differs. Each
 affine alignment costs about 1.3× a linear one (learn-errors on the PacBio mocks
 took 1.1–1.2× as long).
-
-**`--batch-align`** — align the pairs that pass the screen 16 at a time instead
-of one by one: during each cluster comparison, raws bound for the vectorized NW
-kernel are grouped by length and aligned in lockstep, one pair per SIMD lane.
-Output is byte-identical to a run without it; only the schedule changes. Pairs
-routed elsewhere (gapless shortcut, WFA, affine gaps, `--homo-gap-p`, reads over
-3,500 bp) are aligned as before, and `--screen-audit` turns it off. The
-`--metrics-attribution` split (screen, DP, traceback, `al2subs`) means the same
-in both modes, so runs with and without the flag compare field for field. On the
-kernel benchmark the batched kernel is
-3–4.5× faster per DP cell than the per-pair one (EPYC 7713, 1–48 threads);
-end-to-end gains are bounded by the DP kernel's share of `run_dada`. Applies to
-`dada-pooled`, `dada-pseudo` and `learn-errors` too, and only with
-`--threads` > 1 (a single-threaded run takes the serial comparison path).
 
 **`--partition`**, **`--birth-rule`**, **`--reassign`** — how clusters are
 formed ([#323](https://github.com/HPCBio/dada2-rs/issues/323)), on `dada` and
