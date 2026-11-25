@@ -15,7 +15,7 @@ minor versions may carry breaking changes).
   the pairs that pass the screen 16 at a time instead of one by one. Output is
   unchanged; `--batch-align false` aligns per pair. Pooled runs at 48 threads
   were 16% faster on MiSeq, 28% on PacBio at k = 7 and 63% at k = 5, and
-  unchanged on NovaSeq. See
+  unchanged on NovaSeq. `--birth-rule unoise` batches too (#345). See
   [`dada` → Performance](docs/commands/dada.md#performance).
 - `--compress-level` (Output; #331) on every subcommand that can write gzip:
   1 (fastest) to 9 (smallest), default 5. Applies to `.gz` JSON, gzipped FASTQ

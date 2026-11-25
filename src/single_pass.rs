@@ -26,9 +26,13 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 
-use crate::cluster::{CompCost, CompareTiming};
-use crate::containers::{B, Bi, BirthType, Comparison, Sub};
-use crate::nwalign::{AlignBuffers, AlignParams, GAP_GLYPH, sub_new_with_buf};
+use crate::cluster::{
+    BatchTiming, CompCost, CompareTiming, NOT_DEFERRED, align_deferred, deferred_pairs,
+};
+use crate::containers::{B, Bi, BirthType, Comparison, Raw, Sub};
+use crate::nwalign::{
+    AlignBuffers, AlignParams, GAP_GLYPH, SubOrDefer, sub_new_or_defer, sub_new_with_buf,
+};
 use crate::pval::{compute_lambda, get_pA};
 
 /// The centre a raw would join: most expected reads seen so far.
@@ -317,6 +321,11 @@ type Aligned = Option<(u32, f64, f64, u32)>;
 /// compare phase is attributed under `--metrics-json` (#328). With `measure`,
 /// the worker time is split into screen, DP, traceback and post-alignment.
 /// `stored` counts the pairs that updated a raw's best centre.
+///
+/// Under `--batch-align` the pairs bound for the vectorized kernel are
+/// aligned in a second pass, in same-length batches (#345). Unlike
+/// `b_compare`, which batches only in its parallel path, this runs at any
+/// thread count, since there is no separate serial path.
 pub fn unoise_compare(
     b: &mut B,
     k: usize,
@@ -340,39 +349,86 @@ pub fn unoise_compare(
             AlignBuffers::new()
         }
     };
+    let score = |raw: &Raw, sub: &Sub| {
+        let lambda = compute_lambda(raw, Some(sub), err_mat, ncol, use_quals);
+        (
+            unoise_d(sub),
+            unoise_identity(sub),
+            lambda,
+            sub.nsubs() as u32,
+        )
+    };
+    // `--batch-align` (#345): the screen pass leaves pairs bound for the
+    // vectorized kernel unaligned, and `align_deferred` aligns them 16 at a
+    // time and fills in their results, as in `b_compare_parallel`.
+    let batch = params.batch_align && !params.screen_audit;
+    let compare_one = |buf: &mut AlignBuffers, j: usize| {
+        let t0 = measure.then(Instant::now);
+        let raw = &raws[j];
+        let (aligned, deferred) = if batch {
+            match sub_new_or_defer(&raws[center], raw, params, buf, None) {
+                SubOrDefer::Defer => (None, true),
+                SubOrDefer::Done(sub) => (sub.map(|sub| score(raw, &sub)), false),
+            }
+        } else {
+            let sub = sub_new_with_buf(&raws[center], raw, params, buf);
+            (sub.map(|sub| score(raw, &sub)), false)
+        };
+        // The screen resets the per-pair timers, so a pair it rejected, or
+        // deferred, reports only its screen time.
+        let cost = match t0 {
+            Some(t) => CompCost {
+                total: t.elapsed().as_nanos() as u64,
+                screen: buf.last_screen_nanos,
+                dp: buf.last_dp_nanos,
+                post: buf.last_post_nanos,
+                traceback: buf.last_traceback_nanos,
+            },
+            None => CompCost::default(),
+        };
+        let len = if deferred {
+            raw.seq.len() as u32
+        } else {
+            NOT_DEFERRED
+        };
+        ((aligned, cost), len)
+    };
     let setup = t_setup.elapsed();
     let t_map = Instant::now();
-    let results: Vec<(Aligned, CompCost)> = (0..raws.len())
+    let mut results: Vec<(Aligned, CompCost)> = Vec::new();
+    let mut defer_len: Vec<u32> = Vec::new();
+    (0..raws.len())
         .into_par_iter()
-        .map_init(make_buf, |buf, j| {
-            let t0 = measure.then(Instant::now);
-            let raw = &raws[j];
-            let aligned = sub_new_with_buf(&raws[center], raw, params, buf).map(|sub| {
-                let lambda = compute_lambda(raw, Some(&sub), err_mat, ncol, use_quals);
-                (
-                    unoise_d(&sub),
-                    unoise_identity(&sub),
-                    lambda,
-                    sub.nsubs() as u32,
-                )
-            });
-            let cost = match t0 {
-                // A screened-out pair leaves the alignment fields stale.
-                Some(t) => CompCost {
-                    total: t.elapsed().as_nanos() as u64,
-                    screen: buf.last_screen_nanos,
-                    dp: aligned.map_or(0, |_| buf.last_dp_nanos),
-                    post: aligned.map_or(0, |_| buf.last_post_nanos),
-                    traceback: aligned.map_or(0, |_| buf.last_traceback_nanos),
-                },
-                None => CompCost::default(),
-            };
-            (aligned, cost)
-        })
-        .collect();
+        .map_init(make_buf, compare_one)
+        .unzip_into_vecs(&mut results, &mut defer_len);
+    let screen_pass = t_map.elapsed();
+    let mut batch_timing = batch.then(|| BatchTiming {
+        screen_pass,
+        ..BatchTiming::default()
+    });
+    let batch_cost = match batch_timing.as_mut() {
+        Some(bt) => {
+            let pending = deferred_pairs(&defer_len);
+            let scan = t_map.elapsed() - screen_pass;
+            let cost = align_deferred(
+                &mut results,
+                pending,
+                raws,
+                center,
+                params,
+                measure,
+                bt,
+                |raw, sub, slot: &mut (Aligned, CompCost)| slot.0 = Some(score(raw, sub)),
+            );
+            bt.prep += scan;
+            cost
+        }
+        None => CompCost::default(),
+    };
+    drop(defer_len);
     let map = t_map.elapsed();
     let t_serial = Instant::now();
-    let mut cost = CompCost::default();
+    let mut cost = batch_cost;
     let (mut considered, mut aligned_n, mut stored) = (0u64, 0u64, 0u64);
     for (j, &(aligned, item)) in results.iter().enumerate() {
         cost = cost.add(item);
@@ -420,6 +476,7 @@ pub fn unoise_compare(
         free,
         setup,
         stored,
+        batch: batch_timing,
         screened: considered,
         aligned: aligned_n,
         ..cost.timing()
