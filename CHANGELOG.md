@@ -85,6 +85,11 @@ minor versions may carry breaking changes).
   miniz_oxide at level 6 (#331): about 2× faster `derep` to `.json.gz` on a
   NovaSeq sample, files 1–6% larger, faster gzip reads. Decompressed content is
   unchanged; the `.gz` bytes differ.
+- On x86-64, the NW kernels (single-pair, batched and affine) are built twice,
+  baseline and AVX2, and the AVX2 build is picked at runtime when the CPU has
+  it (#336). Portable builds (`cargo install`, Bioconda) no longer run them at
+  SSE2 width. Output is unchanged. `DADA2RS_SIMD=baseline` forces the baseline
+  build; the choice is reported as the `simd` tuning gate.
 
 ### Fixed
 - `--metrics-json` now breaks down the compare phase under

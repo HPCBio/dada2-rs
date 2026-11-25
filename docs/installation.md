@@ -7,9 +7,11 @@ conda install -c conda-forge -c bioconda dada2-rs
 ```
 
 Packages exist for Linux (x86-64, aarch64) and macOS (Intel, Apple Silicon).
-The package is a portable build: it runs on any CPU of its platform but is
-slower than a [native build](#native-release-recommended-for-production-runs)
-or the release binaries, which target x86-64-v3 (AVX2). It holds the binary
+The package is a portable build: it runs on any CPU of its platform. On x86-64
+it picks AVX2 builds of the alignment kernels at runtime when the CPU has AVX2
+([#336](https://github.com/HPCBio/dada2-rs/issues/336)). The rest of the code
+stays baseline, so a [native build](#native-release-recommended-for-production-runs)
+or the release binaries, which target x86-64-v3 (AVX2), can still be faster. It holds the binary
 only: no experimental WFA backend, and none of the helper R/Python scripts,
 which `make install` from a source checkout provides.
 
@@ -27,7 +29,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ### Standard release
 
 Portable and reproducible across machines — use this when others should be able
-to rebuild and match your binary.
+to rebuild and match your binary. On x86-64 the alignment kernels still use AVX2
+when the CPU has it: they are built both ways and one is picked at runtime.
 
 ```bash
 cargo build --release

@@ -902,8 +902,42 @@ struct AffLanesIn<'a> {
 /// arrive as `&mut` parameters, which LLVM knows cannot alias the inputs; inline,
 /// it guards each vectorized run with overlap checks that cost more than the
 /// lanes on a band-32 anti-diagonal. `k = [match, mismatch, open+extend, extend]`.
+///
+/// Runs the AVX2 build when [`crate::simd::avx2`] allows it (issue #336).
 #[inline(never)]
 fn aff_lanes16(
+    i: AffLanesIn,
+    ho: &mut [i16],
+    eo: &mut [i16],
+    fo: &mut [i16],
+    po: &mut [u8],
+    k: [i16; 4],
+) {
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::avx2() {
+        // SAFETY: `simd::avx2` is true only when the CPU has AVX2.
+        unsafe { aff_lanes16_avx2(i, ho, eo, fo, po, k) };
+        return;
+    }
+    aff_lanes16_body(i, ho, eo, fo, po, k);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline(never)]
+fn aff_lanes16_avx2(
+    i: AffLanesIn,
+    ho: &mut [i16],
+    eo: &mut [i16],
+    fo: &mut [i16],
+    po: &mut [u8],
+    k: [i16; 4],
+) {
+    aff_lanes16_body(i, ho, eo, fo, po, k);
+}
+
+#[inline(always)]
+fn aff_lanes16_body(
     i: AffLanesIn,
     ho: &mut [i16],
     eo: &mut [i16],
@@ -1446,8 +1480,9 @@ pub fn align_gapless_with_buf(s1: &[u8], s2: &[u8], buf: &mut AlignBuffers) {
 // ---------------------------------------------------------------------------
 
 /// DP inner loop with `up ≥ left ≥ diag` tie-breaking precedence.
-/// Equivalent to C++ `dploop_vec`.
-#[inline]
+/// Equivalent to C++ `dploop_vec`. Always inlined, so it is compiled with the
+/// features of the entry that calls it (see [`crate::simd`]).
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn dploop(
     d: &mut [i16],
@@ -1546,7 +1581,52 @@ pub fn align_vectorized(
 /// Buffer-reusing variant of [`align_vectorized`]. Fills `buf.al0`/`buf.al1`
 /// in the order of the original `s1_in`/`s2_in` inputs (internal swap is
 /// undone before returning).
+///
+/// Runs the AVX2 build of the kernel when [`crate::simd::avx2`] allows it
+/// (issue #336); the output is identical either way.
 pub fn align_vectorized_with_buf(
+    s1_in: &[u8],
+    s2_in: &[u8],
+    scores: &VectorizedAlignScores,
+    buf: &mut AlignBuffers,
+) {
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::avx2() {
+        // SAFETY: `simd::avx2` is true only when the CPU has AVX2.
+        unsafe { align_vectorized_avx2(s1_in, s2_in, scores, buf) };
+        return;
+    }
+    align_vectorized_body(s1_in, s2_in, scores, buf);
+}
+
+/// [`align_vectorized_with_buf`] compiled for the baseline target, whatever
+/// the host supports. For the variant tests and benches.
+pub fn align_vectorized_baseline(
+    s1_in: &[u8],
+    s2_in: &[u8],
+    scores: &VectorizedAlignScores,
+    buf: &mut AlignBuffers,
+) {
+    align_vectorized_body(s1_in, s2_in, scores, buf);
+}
+
+/// [`align_vectorized_with_buf`] compiled with AVX2.
+///
+/// # Safety
+/// The CPU must support AVX2.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+pub unsafe fn align_vectorized_avx2(
+    s1_in: &[u8],
+    s2_in: &[u8],
+    scores: &VectorizedAlignScores,
+    buf: &mut AlignBuffers,
+) {
+    align_vectorized_body(s1_in, s2_in, scores, buf);
+}
+
+#[inline(always)]
+fn align_vectorized_body(
     s1_in: &[u8],
     s2_in: &[u8],
     scores: &VectorizedAlignScores,
@@ -5164,6 +5244,114 @@ mod affine_tests {
             }
         }
         assert!(n > 40_000);
+    }
+
+    /// The baseline and AVX2 builds of the vectorized NW kernel give the same
+    /// alignment (#336), including where `i16` scores saturate.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn vectorized_variants_match() {
+        if !crate::simd::host_has_avx2("vectorized_variants_match") {
+            return;
+        }
+        let mut rng = lcg(0x336);
+        let mut pairs = varied_pairs(600, 0x336);
+        // Long, near-identical pairs: with `match_score` 40 the score passes
+        // `i16::MAX` partway through, so the saturating adds are exercised.
+        for _ in 0..20 {
+            let s1: Vec<u8> = (0..1500 + rng(500)).map(|_| 1 + rng(4) as u8).collect();
+            let mut s2 = s1.clone();
+            for _ in 0..rng(10) {
+                let p = rng(s2.len());
+                s2[p] = 1 + rng(4) as u8;
+            }
+            pairs.push((s1, s2));
+        }
+        let (mut base, mut avx) = (AlignBuffers::new(), AlignBuffers::new());
+        let mut n = 0;
+        for (s1, s2) in &pairs {
+            for (match_score, mismatch, gap_p) in [(5i16, -4i16, -8i16), (40, -4, -8)] {
+                for (begin_gap_p, end_gap_p) in [(0, 0), (gap_p, gap_p), (0, gap_p)] {
+                    for band in [-1, 0, 3, 16, 32] {
+                        let scores = VectorizedAlignScores {
+                            match_score,
+                            mismatch,
+                            gap_p,
+                            begin_gap_p,
+                            end_gap_p,
+                            band,
+                        };
+                        align_vectorized_baseline(s1, s2, &scores, &mut base);
+                        // SAFETY: `host_has_avx2` checked the CPU above.
+                        unsafe { align_vectorized_avx2(s1, s2, &scores, &mut avx) };
+                        assert!(
+                            base.al0 == avx.al0 && base.al1 == avx.al1,
+                            "{} vs {} bp, {scores:?}",
+                            s1.len(),
+                            s2.len()
+                        );
+                        n += 1;
+                    }
+                }
+            }
+        }
+        assert!(n > 18_000);
+    }
+
+    /// The baseline and AVX2 builds of the affine lane kernel agree (#336).
+    /// Inputs are drawn across the whole `i16` range, so every saturating add
+    /// and tie is hit, not only those real alignments reach.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn affine_lanes_variants_match() {
+        if !crate::simd::host_has_avx2("affine_lanes_variants_match") {
+            return;
+        }
+        let mut st = 0x336u64;
+        let mut next = || {
+            st = st
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (st >> 33) as u32
+        };
+        for case in 0..5000 {
+            let n = 1 + (next() % 80) as usize;
+            // Half the cases draw from a narrow range so ties are common.
+            let narrow = case % 2 == 0;
+            let mut v = |_| {
+                if narrow {
+                    (next() % 7) as i16 - 3
+                } else {
+                    next() as i16
+                }
+            };
+            let ins: Vec<Vec<i16>> = (0..5).map(|_| (0..n).map(&mut v).collect()).collect();
+            let a: Vec<u8> = (0..n).map(|_| 1 + (next() % 4) as u8).collect();
+            let b: Vec<u8> = (0..n).map(|_| 1 + (next() % 4) as u8).collect();
+            let k = [5, -4, -12, (next() % 9) as i16 - 8];
+            let lanes = || AffLanesIn {
+                hl: &ins[0],
+                el: &ins[1],
+                hu: &ins[2],
+                fu: &ins[3],
+                hd: &ins[4],
+                a: &a,
+                b: &b,
+            };
+            let mut base = (vec![0i16; n], vec![0i16; n], vec![0i16; n], vec![0u8; n]);
+            let mut avx = base.clone();
+            aff_lanes16_body(
+                lanes(),
+                &mut base.0,
+                &mut base.1,
+                &mut base.2,
+                &mut base.3,
+                k,
+            );
+            // SAFETY: `host_has_avx2` checked the CPU above.
+            unsafe { aff_lanes16_avx2(lanes(), &mut avx.0, &mut avx.1, &mut avx.2, &mut avx.3, k) };
+            assert_eq!(base, avx, "case {case}, n {n}, k {k:?}");
+        }
     }
 
     /// Per-pair kernel timing on PacBio-length pairs (#309). Run explicitly:
