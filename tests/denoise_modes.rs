@@ -974,3 +974,61 @@ fn partition_default_unchanged_and_guarded() {
     ]);
     assert!(stderr.contains("--partition"), "{stderr}");
 }
+
+/// Under `--birth-rule unoise` an omitted `--min-abund` is 8, vsearch
+/// `--cluster_unoise`'s `--minsize` default, even with `--inherit-err-params`
+/// (the error model carries R's 1). An explicit value still wins, and the
+/// p-value rule keeps R's default of 1.
+#[test]
+fn unoise_min_abund_defaults_to_eight() {
+    let dir = scratch("unoise_min_abund");
+    let err = err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+    let s2 = fixture("sam2F.fastq.gz");
+    let (s1, s2, err) = (
+        s1.to_str().unwrap(),
+        s2.to_str().unwrap(),
+        err.to_str().unwrap(),
+    );
+    let min_abund = |name: &str, extra: &[&str]| {
+        let out = dir.join(name);
+        let mut args = vec![
+            "dada-pooled",
+            s1,
+            s2,
+            "--error-model",
+            err,
+            "--threads",
+            "1",
+            "--output-dir",
+            out.to_str().unwrap(),
+            "--partition",
+            "single-pass",
+        ];
+        args.extend_from_slice(extra);
+        run(&args);
+        let any = out.join(&common::json_outputs(&out)[0]);
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&any).unwrap()).unwrap();
+        (out, v["params"]["min_abund"].as_u64().unwrap())
+    };
+
+    let (omitted, n) = min_abund("omitted", &["--birth-rule", "unoise"]);
+    assert_eq!(n, 8);
+    let (explicit, n) = min_abund("explicit8", &["--birth-rule", "unoise", "--min-abund", "8"]);
+    assert_eq!(n, 8);
+    assert_same_outputs(
+        &omitted,
+        &explicit,
+        "unoise, omitted vs explicit --min-abund 8",
+    );
+    let (_, n) = min_abund(
+        "inherit",
+        &["--birth-rule", "unoise", "--inherit-err-params"],
+    );
+    assert_eq!(n, 8);
+    let (_, n) = min_abund("explicit1", &["--birth-rule", "unoise", "--min-abund", "1"]);
+    assert_eq!(n, 1);
+    let (_, n) = min_abund("pvalue", &[]);
+    assert_eq!(n, 1);
+}

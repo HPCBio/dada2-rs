@@ -1417,7 +1417,14 @@ fn resolve_dada_params(
     let omega_p = resolve!(omega_p, omega_p, 1e-4);
     let min_fold = resolve!(min_fold, min_fold, 1.0);
     let min_hamming = resolve!(min_hamming, min_hamming, 1);
-    let min_abund = resolve!(min_abund, min_abund, 1);
+    // Under the UNOISE rule an omitted `--min-abund` takes UNOISE's own default,
+    // ahead of the error model's value: a model trained by divisive
+    // `learn-errors` carries R's 1, which leaves the rule without a birth gate.
+    let unoise = partition.birth_rule == Some(dada::BirthRule::Unoise);
+    let min_abund = match min_abund {
+        None if unoise => dada2_rs::single_pass::UNOISE_MIN_ABUND_DEFAULT,
+        cli_value => resolve!(cli_value, min_abund, 1),
+    };
     let detect_singletons = resolve!(detect_singletons, detect_singletons, false);
     let band = resolve!(band, band, 16);
     let gap_p = resolve!(gap_p, gap_p, -8);
@@ -1479,7 +1486,11 @@ fn resolve_dada_params(
         check!("omega_p", omega_p, em_params.omega_p);
         check!("min_fold", min_fold, em_params.min_fold);
         check!("min_hamming", min_hamming, em_params.min_hamming);
-        check!("min_abund", min_abund, em_params.min_abund);
+        // Under the UNOISE rule `--min-abund` is the birth gate, not a model
+        // parameter, so it is expected to differ from the error model's.
+        if !unoise {
+            check!("min_abund", min_abund, em_params.min_abund);
+        }
         check!(
             "detect_singletons",
             detect_singletons,
