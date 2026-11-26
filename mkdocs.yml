@@ -124,6 +124,7 @@ nav:
     - Inside b_compare — the serial remainder: findings/compare-serial-fold.md
     - Inside b_compare — the store scan: findings/compare-store-scan.md
     - Batched alignment: findings/batched-alignment.md
+    - An exact bound in front of the k-mer screen: findings/screen-bitmap-bound.md
     - Measuring on a NUMA node: findings/measuring-on-numa.md
     - Thread scaling & memory placement: findings/thread-scaling-and-placement.md
     - Pseudo-pooling priors vs error model: findings/pseudo-pooling-priors-vs-error-model.md
