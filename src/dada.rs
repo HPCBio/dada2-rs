@@ -140,6 +140,12 @@ pub struct DadaParams {
     /// p-values, cluster p-values) are `None`. `err_ncol` is then the data's
     /// quality-column count, which sizes the transition counts.
     pub err_model: bool,
+    /// Let `b_compare_parallel` store from a compacted list of raws (#355).
+    /// Its extra parallel pass per call pays on one large pool but costs more
+    /// than it saves when samples run concurrently (`learn-errors`,
+    /// `dada-pseudo`, multi-sample `dada`), as #337 found for parallel prep.
+    /// Off by default; the commands that run one denoising at a time set it.
+    pub compact_store: bool,
 }
 
 /// How `run_dada` forms clusters (issue #323).
@@ -261,6 +267,7 @@ impl DadaParams {
             birth_rule: BirthRule::Pvalue,
             reassign: false,
             err_model: true,
+            compact_store: false,
         }
     }
 }
@@ -1198,6 +1205,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     use std::time::{Duration, Instant};
     let mut bb = B::new(raws, params.omega_a, params.omega_p, params.use_quals);
     bb.indel_model = params.indel_model.clone();
+    bb.compact_store = params.compact_store;
 
     // Cumulative phase timers. Only `b_compare_parallel` is multithreaded;
     // shuffle/bud/p_update are serial, so their share quantifies the Amdahl

@@ -755,14 +755,7 @@ pub fn b_compare_parallel(
             .collect();
     }
     let screen_pass = t_map.elapsed();
-    // In parallel (#355): a serial scan here walked every raw on every call,
-    // 63 s of a NovaSeq pool. The collect keeps index order.
-    let pending: Vec<(u32, u32)> = defer_len
-        .par_iter()
-        .enumerate()
-        .filter(|&(_, &len)| len != NOT_DEFERRED)
-        .map(|(index, &len)| (len, index as u32))
-        .collect();
+    let pending = deferred_pairs(&defer_len);
     drop(defer_len);
     let mut batch_timing = batch.then(|| BatchTiming {
         screen_pass,
@@ -846,7 +839,7 @@ pub fn b_compare_parallel(
             }
         }
     };
-    let (cost, screened, aligned) = if b.e_minmax_seeded && !dense_store_gate() {
+    let (cost, screened, aligned) = if b.compact_store && b.e_minmax_seeded && !dense_store_gate() {
         // #355: once every `e_minmax` is non-negative, a comparison with
         // λ = 0 (shrouded, greedy-skipped or underflowed) can never be stored,
         // and on a NovaSeq pool that is ~98% of raws. A parallel pass counts

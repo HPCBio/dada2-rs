@@ -378,6 +378,8 @@ pub struct B {
     /// stays true; from then on a comparison can be stored only if its λ > 0,
     /// and `b_compare_parallel`'s store visits just those raws.
     pub e_minmax_seeded: bool,
+    /// Whether the compacted store is allowed at all (`DadaParams::compact_store`).
+    pub compact_store: bool,
     /// Raws the experimental UNOISE rule left without a qualifying centre
     /// (#323); never corrected. Empty under every other partition.
     pub unassigned: Vec<bool>,
@@ -460,6 +462,7 @@ impl B {
             screen_shared: Vec::new(),
             e_minmax,
             e_minmax_seeded: false,
+            compact_store: false,
             unassigned: Vec::new(),
         };
         b.init();
