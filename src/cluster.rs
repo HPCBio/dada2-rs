@@ -72,9 +72,10 @@ pub fn reconcile_full_gate() -> bool {
     *VALUE.get_or_init(|| std::env::var_os("DADA2RS_RECONCILE_FULL").is_some())
 }
 
-/// Force `b_compare_parallel`'s full serial store on every call, disabling the
-/// #355 compacted store. Both arms of an A/B from one binary; output is
-/// identical either way.
+/// Run `b_compare_parallel`'s full path (an nraw-long result vector, stored
+/// serially) instead of the #355 chunked map that returns only what the store
+/// can use. The reference for the equivalence test, and both arms of an A/B
+/// from one binary; output is identical either way.
 pub fn dense_store_gate() -> bool {
     static VALUE: OnceLock<bool> = OnceLock::new();
     *VALUE.get_or_init(|| std::env::var_os("DADA2RS_DENSE_STORE").is_some())
@@ -386,9 +387,12 @@ impl CompCost {
 /// its UNOISE distances (#345). The `Sub` carries no qualities (`q0`/`q1` are
 /// empty): no compare-time consumer reads them, since λ takes them from the
 /// raw (#342).
-/// `pending` holds `(raw length, raw index)` for each deferred comparison, as
+/// `pending` holds `(raw length, slot)` for each deferred comparison, as
 /// collected by the screen pass (#337: rescanning `comps` for them and sorting
-/// through `raws` cost ~10 s of a 48-thread MiSeq map). Results are
+/// through `raws` cost ~10 s of a 48-thread MiSeq map). A slot indexes `out`;
+/// it is the raw's index when `slot_raw` is `None` (`out` is nraw long), and
+/// `slot_raw[slot]` is the raw otherwise (#355: `out` holds only the deferred
+/// comparisons). Results are
 /// byte-identical to the per-pair path (`nwalign_batch` tests). Under
 /// `measure`, returns the summed worker time split as the per-pair path splits
 /// it (`dp` = kernel incl. traceback; `post` = `al2subs` for pairs aligned one
@@ -398,13 +402,20 @@ pub(crate) fn align_deferred<T: Send>(
     out: &mut [T],
     mut pending: Vec<(u32, u32)>,
     raws: &[crate::containers::Raw],
+    slot_raw: Option<&[u32]>,
     center_idx: usize,
     params: &AlignParams,
     measure: bool,
     bt: &mut BatchTiming,
     finish: impl Fn(&crate::containers::Raw, &crate::containers::Sub, &mut T) + Sync,
 ) -> CompCost {
-    assert_eq!(out.len(), raws.len(), "align_deferred: one slot per raw");
+    assert_eq!(
+        out.len(),
+        slot_raw.map_or(raws.len(), <[u32]>::len),
+        "align_deferred: one slot per raw, or per entry of `slot_raw`"
+    );
+    // The raw a slot of `out` belongs to.
+    let raw_of = |slot: u32| slot_raw.map_or(slot as usize, |m| m[slot as usize] as usize);
     let t_prep = std::time::Instant::now();
     bt.deferred = pending.len() as u64;
     if pending.is_empty() {
@@ -447,7 +458,7 @@ pub(crate) fn align_deferred<T: Send>(
                 let t0 = measure.then(std::time::Instant::now);
                 let mut cost = CompCost::default();
                 let finish_al = |idx: u32, al0: &[u8], al1: &[u8], cost: &mut CompCost| {
-                    let raw = &raws[idx as usize];
+                    let raw = &raws[raw_of(idx)];
                     let t_post = measure.then(std::time::Instant::now);
                     let sub = al2subs(al0, al1);
                     cost.post += elapsed(t_post);
@@ -458,7 +469,7 @@ pub(crate) fn align_deferred<T: Send>(
                 if chunk.len() >= MIN_BATCH {
                     let lanes: [(&[u8], &[u8]); BATCH_LANES] = std::array::from_fn(|k| {
                         let idx = chunk[if k < chunk.len() { k } else { 0 }];
-                        (center.seq.as_slice(), raws[idx as usize].seq.as_slice())
+                        (center.seq.as_slice(), raws[raw_of(idx)].seq.as_slice())
                     });
                     // The traceback builds each lane's `Sub` directly (#342):
                     // no aligned strings, and no second pass to read them.
@@ -468,19 +479,14 @@ pub(crate) fn align_deferred<T: Send>(
                     cost.traceback += if measure { bb.last_traceback_nanos } else { 0 };
                     for (&idx, sub) in chunk.iter().zip(&bb.subs) {
                         // SAFETY: as in `finish_al` above.
-                        finish(&raws[idx as usize], sub, unsafe {
+                        finish(&raws[raw_of(idx)], sub, unsafe {
                             &mut *out.0.add(idx as usize)
                         });
                     }
                 } else {
                     for &idx in chunk.iter() {
                         let t_dp = measure.then(std::time::Instant::now);
-                        align_vectorized_with_buf(
-                            &center.seq,
-                            &raws[idx as usize].seq,
-                            &scores,
-                            sb,
-                        );
+                        align_vectorized_with_buf(&center.seq, &raws[raw_of(idx)].seq, &scores, sb);
                         cost.dp += elapsed(t_dp);
                         cost.traceback += if measure { sb.last_traceback_nanos } else { 0 };
                         finish_al(idx, &sb.al0, &sb.al1, &mut cost);
@@ -723,96 +729,21 @@ pub fn b_compare_parallel(
             AlignBuffers::new()
         }
     };
-    // Both paths run the same `map_init` screen pass, which keeps buffer
-    // reuse per worker and writes results through an indexed collect.
-    // Gathering deferred pairs inside the pass with a `fold` and a per-job
-    // `Vec` made it 2.7x slower at 48 threads (22 -> 60 s on the MiSeq pool,
-    // #337). A scan of `comps` afterwards cost ~3 ms per cluster there (8 s),
-    // slower with each thread added: it re-reads 15 MB just written across
-    // the whole machine. So the batch path also writes one `u32` per raw,
-    // the length of each deferred raw, and the scan reads only that.
-    let mut comps: Vec<CompItem> = Vec::new();
-    let mut defer_len: Vec<u32> = Vec::new();
-    if batch {
-        (0..nraw)
-            .into_par_iter()
-            .with_max_len(par_max_len())
-            .map_init(make_buf, |buf, index| {
-                let item = compare_one(buf, index);
-                let len = if item.1 == DEFERRED {
-                    raws[index].seq.len() as u32
-                } else {
-                    NOT_DEFERRED
-                };
-                (item, len)
-            })
-            .unzip_into_vecs(&mut comps, &mut defer_len);
-    } else {
-        comps = (0..nraw)
-            .into_par_iter()
-            .with_max_len(par_max_len())
-            .map_init(make_buf, |buf, index| compare_one(buf, index))
-            .collect();
-    }
-    let screen_pass = t_map.elapsed();
-    let pending = deferred_pairs(&defer_len);
-    drop(defer_len);
-    let mut batch_timing = batch.then(|| BatchTiming {
-        screen_pass,
-        ..BatchTiming::default()
-    });
-    // The deferred-pair scan counts as prep.
-    let scan = t_map.elapsed() - screen_pass;
-    let batch_cost = if let Some(bt) = batch_timing.as_mut() {
-        let center = &raws[center_idx];
-        let indel_model = indel_model.as_deref();
-        let cost = align_deferred(
-            &mut comps,
-            pending,
-            raws,
-            center_idx,
-            params,
-            measure,
-            bt,
-            |raw, sub, c: &mut CompItem| {
-                let mut lambda = compute_lambda(raw, Some(sub), err_mat, ncol, use_quals);
-                let mut hamming = sub.nsubs() as u32;
-                if let Some(m) = indel_model {
-                    let qual = raw.qual.as_deref().filter(|_| use_quals);
-                    let (f, h) = m.score(&center.seq, &raw.seq, qual, sub, err_mat, ncol);
-                    lambda *= f;
-                    hamming += h;
-                }
-                c.0 = lambda;
-                c.1 = hamming;
-            },
-        );
-        bt.prep += scan;
-        cost
-    } else {
-        CompCost::default()
+    // λ and hamming of a batched (deferred) comparison, written into its slot.
+    let center = &raws[center_idx];
+    let indel_ref = indel_model.as_deref();
+    let finish = |raw: &crate::containers::Raw, sub: &crate::containers::Sub, c: &mut CompItem| {
+        let mut lambda = compute_lambda(raw, Some(sub), err_mat, ncol, use_quals);
+        let mut hamming = sub.nsubs() as u32;
+        if let Some(m) = indel_ref {
+            let qual = raw.qual.as_deref().filter(|_| use_quals);
+            let (f, h) = m.score(&center.seq, &raw.seq, qual, sub, err_mat, ncol);
+            lambda *= f;
+            hamming += h;
+        }
+        c.0 = lambda;
+        c.1 = hamming;
     };
-    let map_dur = t_map.elapsed();
-
-    // Serial post-processing: reduce the map's per-item costs and selectively
-    // store comparisons — in ONE pass over the result vector (#143).
-    //
-    // This reduction used to be six separate passes (four `sum`s and two
-    // `filter().count()`s) run before the store loop touched the same vector a
-    // seventh time. At 48 bytes per element that is 288 B/raw-visit of extra
-    // traffic, and it does not stay in cache: MiSeq's result vector is 13 MB
-    // and fits the 7713's 32 MB per-CCD L3, but the soil 16S pool's is 59 MB
-    // and misses on every pass. Measured, the six passes cost 15.4 ns/raw on
-    // MiSeq and 28.3 ns/raw on soil 16S — 337 s, or 31% of `run_dada`, on a
-    // pool whose parallel map is already bandwidth-saturated and cannot absorb
-    // it.
-    //
-    // Folded here the accumulators are ALU on values the store loop has
-    // already loaded, so the traffic is paid once instead of seven times.
-    // Every figure they produce is verbose-only, but the passes were
-    // unconditional, so this is a production win and not just a cheaper
-    // measurement.
-    let t_serial = std::time::Instant::now();
     let total_reads = b.reads as f64;
     // Store a comparison, as R does, when it can raise the raw's `e_minmax`.
     let mut stored = 0u64;
@@ -839,72 +770,221 @@ pub fn b_compare_parallel(
             }
         }
     };
-    let (cost, screened, aligned) = if b.compact_store && b.e_minmax_seeded && !dense_store_gate() {
-        // #355: once every `e_minmax` is non-negative, a comparison with
-        // λ = 0 (shrouded, greedy-skipped or underflowed) can never be stored,
-        // and on a NovaSeq pool that is ~98% of raws. A parallel pass counts
-        // and picks out the rest (and the centre, whose λ is `self_`); the
-        // serial store then visits only those, in index order, so the
-        // comparison vectors come out as the full scan built them.
-        #[derive(Default)]
-        struct Acc {
-            cost: CompCost,
-            screened: u64,
-            aligned: u64,
-            keep: Vec<u32>,
+    let mut batch_timing: Option<BatchTiming> = None;
+    let mut batch_cost = CompCost::default();
+    let map_dur;
+    let serial_dur;
+    // Denominators for the ns/comp figures: the screen runs on every
+    // non-greedy-skipped comparison, the aligner only on those it passes.
+    let (cost, screened, aligned);
+
+    let free_dur = if dense_store_gate() {
+        // The full path, as before #355, kept as the reference for the
+        // equivalence test and for A/Bs: an nraw-long result vector written by
+        // the map and walked serially by the store.
+        //
+        // Gathering deferred pairs inside the pass with a `fold` and a per-job
+        // `Vec` made it 2.7x slower at 48 threads (22 -> 60 s on the MiSeq
+        // pool, #337), so the batch path also writes one `u32` per raw, the
+        // length of each deferred raw, and the scan reads only that.
+        let mut comps: Vec<CompItem> = Vec::new();
+        let mut defer_len: Vec<u32> = Vec::new();
+        if batch {
+            (0..nraw)
+                .into_par_iter()
+                .with_max_len(par_max_len())
+                .map_init(make_buf, |buf, index| {
+                    let item = compare_one(buf, index);
+                    let len = if item.1 == DEFERRED {
+                        raws[index].seq.len() as u32
+                    } else {
+                        NOT_DEFERRED
+                    };
+                    (item, len)
+                })
+                .unzip_into_vecs(&mut comps, &mut defer_len);
+        } else {
+            comps = (0..nraw)
+                .into_par_iter()
+                .with_max_len(par_max_len())
+                .map_init(make_buf, |buf, index| compare_one(buf, index))
+                .collect();
         }
-        let acc = comps
-            .par_iter()
-            .enumerate()
-            .fold(
-                Acc::default,
-                |mut a, (index, &(lambda, hamming, skipped, item))| {
-                    a.cost = a.cost.add(item);
-                    if !skipped {
-                        a.screened += 1;
-                        a.aligned += (hamming != u32::MAX) as u64;
-                    }
-                    if lambda > 0.0 || index == center_idx {
-                        a.keep.push(index as u32);
-                    }
-                    a
-                },
-            )
-            .reduce(Acc::default, |mut l, r| {
-                l.cost = l.cost.add(r.cost);
-                l.screened += r.screened;
-                l.aligned += r.aligned;
-                l.keep.extend_from_slice(&r.keep);
-                l
-            });
-        for &index in &acc.keep {
-            let (lambda, hamming, _, _) = comps[index as usize];
-            store(b, index as usize, lambda, hamming);
+        let screen_pass = t_map.elapsed();
+        let pending = deferred_pairs(&defer_len);
+        drop(defer_len);
+        if batch {
+            let mut bt = BatchTiming {
+                screen_pass,
+                ..BatchTiming::default()
+            };
+            // The deferred-pair scan counts as prep.
+            let scan = t_map.elapsed() - screen_pass;
+            batch_cost = align_deferred(
+                &mut comps, pending, raws, None, center_idx, params, measure, &mut bt, finish,
+            );
+            bt.prep += scan;
+            batch_timing = Some(bt);
         }
-        (acc.cost, acc.screened, acc.aligned)
-    } else {
-        // Full serial scan, as before #355: on the first compare `e_minmax`
-        // still holds its -999 seed, so every raw is stored.
-        let mut cost = CompCost::default();
-        // Denominators for the ns/comp figures: the screen runs on every
-        // non-greedy-skipped comparison, the aligner only on those it passes.
-        let (mut screened, mut aligned) = (0u64, 0u64);
+        map_dur = t_map.elapsed();
+
+        // Serial post-processing: reduce the map's per-item costs and store
+        // comparisons in ONE pass over the result vector (#143). This used to
+        // be seven passes; at 48 B per element on a 59 MB vector each one
+        // missed cache, 337 s or 31% of `run_dada` on soil 16S.
+        let t_serial = std::time::Instant::now();
+        let mut c = CompCost::default();
+        let (mut sc, mut al) = (0u64, 0u64);
         for (index, &(lambda, hamming, skipped, item)) in comps.iter().enumerate() {
-            cost = cost.add(item);
+            c = c.add(item);
             if !skipped {
-                screened += 1;
-                aligned += (hamming != u32::MAX) as u64;
+                sc += 1;
+                al += (hamming != u32::MAX) as u64;
             }
             store(b, index, lambda, hamming);
         }
-        b.e_minmax_seeded = b.e_minmax.iter().all(|&e| e >= 0.0);
-        (cost, screened, aligned)
+        serial_dur = t_serial.elapsed();
+        (cost, screened, aligned) = (c, sc, al);
+        // Freeing the nraw-long result vector is charged separately so the
+        // store loop's ns/raw is not inflated by deallocation (#143).
+        let t_free = std::time::Instant::now();
+        drop(comps);
+        t_free.elapsed()
+    } else {
+        // #355: the map returns only what the store can use. `e_minmax` starts
+        // at -999 and only rises, and the first compare stores every raw, so
+        // from then on a comparison with λ = 0 (shrouded, greedy-skipped or
+        // underflowed) is never stored: on a NovaSeq pool that is ~98% of
+        // raws. Raws are walked in fixed chunks; each returns its counts, its
+        // cost, the comparisons worth storing (λ > 0, and the centre, whose λ
+        // is `self_`) and its deferred raws, so nothing nraw-long is written,
+        // scanned or freed per call. The indexed collect keeps chunk order,
+        // so concatenating gives index order without a merge tree, and the
+        // map stays one join, as cheap nested (`learn-errors`) as not.
+        // Until `e_minmax` is seeded every comparison is kept.
+        const CHUNK: usize = 256;
+        #[derive(Default)]
+        struct Chunk {
+            kept: Vec<(u32, f64, u32)>,
+            deferred: Vec<u32>,
+            screened: u64,
+            aligned: u64,
+            cost: CompCost,
+        }
+        let keep_all = !b.e_minmax_seeded;
+        let chunks: Vec<Chunk> = (0..nraw.div_ceil(CHUNK))
+            .into_par_iter()
+            .with_max_len(1)
+            .map_init(make_buf, |buf, c| {
+                let mut ch = Chunk::default();
+                for index in c * CHUNK..((c + 1) * CHUNK).min(nraw) {
+                    let (lambda, hamming, skipped, item) = compare_one(buf, index);
+                    ch.cost = ch.cost.add(item);
+                    if !skipped {
+                        ch.screened += 1;
+                        ch.aligned += (hamming != u32::MAX) as u64;
+                    }
+                    if hamming == DEFERRED {
+                        ch.deferred.push(index as u32);
+                    } else if keep_all || lambda > 0.0 || index == center_idx {
+                        ch.kept.push((index as u32, lambda, hamming));
+                    }
+                }
+                ch
+            })
+            .collect();
+        let screen_pass = t_map.elapsed();
+        let deferred: Vec<u32> = chunks
+            .iter()
+            .flat_map(|c| c.deferred.iter().copied())
+            .collect();
+        let mut deferred_items: Vec<CompItem> =
+            vec![(0.0, DEFERRED, false, CompCost::default()); deferred.len()];
+        if batch {
+            let mut bt = BatchTiming {
+                screen_pass,
+                ..BatchTiming::default()
+            };
+            let pending: Vec<(u32, u32)> = deferred
+                .iter()
+                .enumerate()
+                .map(|(slot, &r)| (raws[r as usize].seq.len() as u32, slot as u32))
+                .collect();
+            let gather = t_map.elapsed() - screen_pass;
+            batch_cost = align_deferred(
+                &mut deferred_items,
+                pending,
+                raws,
+                Some(&deferred),
+                center_idx,
+                params,
+                measure,
+                &mut bt,
+                finish,
+            );
+            bt.prep += gather;
+            batch_timing = Some(bt);
+        }
+        map_dur = t_map.elapsed();
+
+        // Store in index order: each chunk's kept and deferred comparisons are
+        // both ascending, so merging them chunk by chunk reproduces the full
+        // scan's order of `clusters[i].comp`.
+        let t_serial = std::time::Instant::now();
+        let (mut c, mut sc, mut al) = (CompCost::default(), 0u64, 0u64);
+        let mut d = 0usize;
+        // The full scan visits raws in ascending order; so must this, or the
+        // comparison vectors' order (which tie-breaks can see) would change.
+        let mut prev: Option<usize> = None;
+        let mut ascending = |index: usize| {
+            debug_assert!(
+                prev.is_none_or(|p| p < index),
+                "chunked store out of order: {prev:?} then {index}"
+            );
+            prev = Some(index);
+        };
+        macro_rules! store_deferred {
+            ($d:expr) => {{
+                let index = deferred[$d] as usize;
+                ascending(index);
+                let (lambda, hamming, _, _) = deferred_items[$d];
+                if keep_all || lambda > 0.0 || index == center_idx {
+                    store(b, index, lambda, hamming);
+                }
+            }};
+        }
+        for ch in &chunks {
+            c = c.add(ch.cost);
+            sc += ch.screened;
+            al += ch.aligned;
+            let end = d + ch.deferred.len();
+            for &(index, lambda, hamming) in &ch.kept {
+                while d < end && deferred[d] < index {
+                    store_deferred!(d);
+                    d += 1;
+                }
+                ascending(index as usize);
+                store(b, index as usize, lambda, hamming);
+            }
+            while d < end {
+                store_deferred!(d);
+                d += 1;
+            }
+        }
+        if keep_all {
+            b.e_minmax_seeded = b.e_minmax.iter().all(|&e| e >= 0.0);
+        }
+        serial_dur = t_serial.elapsed();
+        (cost, screened, aligned) = (c, sc, al);
+        let t_free = std::time::Instant::now();
+        drop(chunks);
+        drop(deferred_items);
+        t_free.elapsed()
     };
     // Match serial b_compare counting: only non-skipped raws count.
     b.nalign += screened;
     b.nshroud += screened - aligned;
     let mut cost = cost;
-    let serial_dur = t_serial.elapsed();
     cost.total += batch_cost.total;
     cost.dp += batch_cost.dp;
     cost.post += batch_cost.post;
@@ -913,11 +993,6 @@ pub fn b_compare_parallel(
     // future change that reintroduces a separate reduction is visible rather
     // than silent. Zero by construction while the reduction stays folded.
     let agg_dur = std::time::Duration::ZERO;
-    // Freeing the nraw-long result vector is charged separately so the store
-    // loop's ns/raw is not inflated by deallocation (#143).
-    let t_free = std::time::Instant::now();
-    drop(comps);
-    let free_dur = t_free.elapsed();
     // Hand the buffer back so the next cluster reuses it rather than mmap-ing a
     // fresh multi-megabyte allocation.
     b.screen_shared = counts;

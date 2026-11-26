@@ -135,8 +135,6 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
         resolved.params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
         resolved.params.lineage = true;
         let jobs = concurrent_samples(sample_jobs, threads, input.len());
-        // One sample at a time: each compare is the only one in flight (#355).
-        resolved.params.compact_store = jobs == 1;
         if verbose {
             eprintln!(
                 "[dada] denoising {} sample(s), {jobs} concurrent",
@@ -234,7 +232,6 @@ pub(crate) fn run_dada(args: cli::DadaArgs) -> io::Result<()> {
     )?;
     resolved.params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
     resolved.params.lineage = true;
-    resolved.params.compact_store = true; // one sample, one denoising (#355)
     let sample = sample_label(sample_name, identity.sample, input);
     let trace = cluster_trace.as_deref().map(|path| TraceRequest {
         path,
@@ -467,7 +464,6 @@ pub(crate) fn run_dada_pooled(args: cli::DadaPooledArgs) -> io::Result<()> {
     let mut dada_params = resolved.params;
     dada_params.indel_events = indel_events.is_some() || indel_opportunities.is_some();
     dada_params.lineage = true;
-    dada_params.compact_store = true; // one pool, one denoising (#355)
     let mut run_params = resolved.run;
     run_params.n_prior = raw_inputs.iter().filter(|r| r.prior).count();
     run_params.pool_tiebreak = Some(pool_tiebreak);

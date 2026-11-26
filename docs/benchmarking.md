@@ -463,7 +463,7 @@ environment variable, rather than from two builds:
 | variable | effect |
 |---|---|
 | `DADA2RS_SHUFFLE_NO_PRUNE=1` | forces `b_shuffle`'s move pass to scan every cluster, disabling the dirty-cluster pruning ([#132](findings/shuffle-build-scan.md)) |
-| `DADA2RS_DENSE_STORE=1` | restores the full serial store scan in pooled compare, disabling the #355 compacted store; output is identical either way |
+| `DADA2RS_DENSE_STORE=1` | restores compare's full path (an nraw-long result vector stored serially), disabling the #355 chunked map; output is identical either way |
 | `DADA2RS_KMER_BOUND=0` | turns off the bitmap bound in front of the k-mer screen ([#295](https://github.com/HPCBio/dada2-rs/issues/295)); output is identical either way |
 | `DADA2RS_SIMD=baseline` | forces the baseline (SSE2) builds of the NW kernels on an x86-64 host with AVX2 ([#336](https://github.com/HPCBio/dada2-rs/issues/336)) |
 
