@@ -16,7 +16,7 @@
 //! ```
 //! Flags: --k, --band, --cutoff (0.42), --centers (50), --max-uniques (20000),
 //! --threads (1), --global (default ends-free), --reps (3), --arms (all;
-//! comma list of single,L8,L16,L32,hybrid16,L16fill,L16alloc; `single` first for the
+//! comma list of single,L8,L16,L32,hybrid16,L16fill,L16noptr,L16alloc; `single` first for the
 //! speedup column).
 
 use std::collections::HashMap;
@@ -26,7 +26,8 @@ use std::time::Instant;
 use dada2_rs::kmers::{assign_kmer_order, assign_kmer8_sparse, kmer_dist8_sparse, kord_dist};
 use dada2_rs::nwalign::{AlignBuffers, VectorizedAlignScores, align_vectorized_with_buf};
 use dada2_rs::nwalign_batch::{
-    BatchBuffers, align_batch_all, align_vectorized_batch, align_vectorized_batch_fill_only,
+    BatchBuffers, align_batch_all, align_vectorized_batch, align_vectorized_batch_fill_noptr,
+    align_vectorized_batch_fill_only,
 };
 use rayon::prelude::*;
 
@@ -289,6 +290,14 @@ fn main() {
                                     align_vectorized_batch_fill_only::<16>(&lanes, &scores, bb);
                                 }
                             }
+                            "L16noptr" => {
+                                // #342 ceiling: L16fill without the pointer stores.
+                                for chunk in pairs.chunks(16) {
+                                    let mut lanes = [chunk[0]; 16];
+                                    lanes[..chunk.len()].copy_from_slice(chunk);
+                                    align_vectorized_batch_fill_noptr::<16>(&lanes, &scores, bb);
+                                }
+                            }
                             "hybrid16" => {
                                 // Full 16-lane batches batched, the remainder single.
                                 let full = pairs.len() / 16 * 16;
@@ -341,7 +350,7 @@ fn main() {
         "arm", "wall_s", "ns/pair*", "ns/cell*", "speedup"
     );
     let all = [
-        "single", "L8", "L16", "L32", "hybrid16", "L16fill", "L16alloc",
+        "single", "L8", "L16", "L32", "hybrid16", "L16fill", "L16noptr", "L16alloc",
     ];
     let arms: Vec<&str> = match &a.arms {
         Some(v) => all

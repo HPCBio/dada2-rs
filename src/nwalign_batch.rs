@@ -45,10 +45,11 @@ fn reset_buf<T: Copy>(v: &mut Vec<T>, n: usize, val: T) {
     }
 }
 
-/// `nwalign::dploop` over `n * L` interleaved cells.
+/// `nwalign::dploop` over `n * L` interleaved cells. `PTR = false` skips the
+/// pointer stores, for the #342 ceiling arm only; production passes `true`.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn dploop(
+fn dploop<const PTR: bool>(
     d: &mut [i16],
     p: &mut [u8],
     d_prev: &[i16],
@@ -81,7 +82,9 @@ fn dploop(
                 pentry = 1u8;
             }
             *o = entry;
-            *pp = pentry;
+            if PTR {
+                *pp = pentry;
+            }
         }
     } else {
         for ((((o, pp), &l), &u), &dg) in d_out
@@ -99,7 +102,9 @@ fn dploop(
                 pentry = 1u8;
             }
             *o = entry;
-            *pp = pentry;
+            if PTR {
+                *pp = pentry;
+            }
         }
     }
 }
@@ -135,7 +140,7 @@ pub fn align_vectorized_batch<const L: usize>(
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
 ) {
-    batch_impl::<L>(pairs, scores, buf, true);
+    batch_impl::<L, true>(pairs, scores, buf, true);
 }
 
 /// The DP fill of [`align_vectorized_batch`] without the traceback, for timing
@@ -145,12 +150,23 @@ pub fn align_vectorized_batch_fill_only<const L: usize>(
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
 ) {
-    batch_impl::<L>(pairs, scores, buf, false);
+    batch_impl::<L, true>(pairs, scores, buf, false);
+}
+
+/// The DP fill of [`align_vectorized_batch_fill_only`] without storing the
+/// traceback pointers (#342): its gap to `fill_only` bounds what a smaller
+/// pointer matrix could save. Bench only; leaves the pointer matrix unwritten.
+pub fn align_vectorized_batch_fill_noptr<const L: usize>(
+    pairs: &[(&[u8], &[u8]); L],
+    scores: &VectorizedAlignScores,
+    buf: &mut BatchBuffers,
+) {
+    batch_impl::<L, false>(pairs, scores, buf, false);
 }
 
 /// Runs the AVX2 build when [`crate::simd::avx2`] allows it (issue #336); the
 /// output is identical either way.
-fn batch_impl<const L: usize>(
+fn batch_impl<const L: usize, const PTR: bool>(
     pairs: &[(&[u8], &[u8]); L],
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
@@ -159,10 +175,10 @@ fn batch_impl<const L: usize>(
     #[cfg(target_arch = "x86_64")]
     if crate::simd::avx2() {
         // SAFETY: `simd::avx2` is true only when the CPU has AVX2.
-        unsafe { batch_avx2::<L>(pairs, scores, buf, traceback) };
+        unsafe { batch_avx2::<L, PTR>(pairs, scores, buf, traceback) };
         return;
     }
-    batch_body::<L>(pairs, scores, buf, traceback);
+    batch_body::<L, PTR>(pairs, scores, buf, traceback);
 }
 
 /// [`align_vectorized_batch`] compiled for the baseline target, whatever the
@@ -172,7 +188,7 @@ pub fn align_vectorized_batch_baseline<const L: usize>(
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
 ) {
-    batch_body::<L>(pairs, scores, buf, true);
+    batch_body::<L, true>(pairs, scores, buf, true);
 }
 
 /// [`align_vectorized_batch`] compiled with AVX2.
@@ -186,22 +202,22 @@ pub unsafe fn align_vectorized_batch_avx2<const L: usize>(
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
 ) {
-    batch_body::<L>(pairs, scores, buf, true);
+    batch_body::<L, true>(pairs, scores, buf, true);
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-fn batch_avx2<const L: usize>(
+fn batch_avx2<const L: usize, const PTR: bool>(
     pairs: &[(&[u8], &[u8]); L],
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
     traceback: bool,
 ) {
-    batch_body::<L>(pairs, scores, buf, traceback);
+    batch_body::<L, PTR>(pairs, scores, buf, traceback);
 }
 
 #[inline(always)]
-fn batch_body<const L: usize>(
+fn batch_body<const L: usize, const PTR: bool>(
     pairs: &[(&[u8], &[u8]); L],
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
@@ -357,7 +373,7 @@ fn batch_body<const L: usize>(
         {
             let [_, d_prev, d_cur] = &mut slots;
             let base = row * w + col_min * L;
-            dploop(
+            dploop::<PTR>(
                 &mut d_cur[col_min * L..],
                 &mut p[base..base + n * L],
                 d_prev,
