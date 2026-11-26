@@ -306,3 +306,46 @@ The generalisation, and the reason this section exists: **an arm that cannot
 produce the effect, and an estimator that selects against it, both return a
 clean-looking null.** A null is only evidence once the instrument has been shown
 capable of returning something else.
+
+## Visiting fewer raws (#355)
+
+Once the batched aligner and the screen bound sped up everything around it
+([#337](batched-alignment.md), [#295](screen-bitmap-bound.md)), the store came
+back as the largest serial block on NovaSeq: 356 s of a 1,702 s `dada-pooled`
+run, at 5.6 ns/raw-visit, the floor this page reached. Its cost was the visit
+count, 2.31M raws × 27,464 calls, while ~1.7% of visits could store anything.
+
+`e_minmax` starts at −999 and only rises. The first parallel compare stores every
+raw, leaving every entry ≥ 0, so from then on a comparison with λ = 0 (shrouded,
+greedy-skipped or underflowed) can never be stored. After that call a parallel
+pass counts the comparisons and picks out the raws with λ > 0 (plus the centre,
+for `self_`) in index order, and the serial store visits only those. Outputs,
+`nalign` and `nshroud` are unchanged.
+
+The extra pass has a fixed cost per call, and its join stalls when the call
+runs nested inside per-sample parallelism: in a first version it made every
+`learn-errors` run slower (MiSeq 9.1 → 18.8 s). A parallel deferred-pair scan
+shipped with it cost time everywhere, repeating #337's prep regression, and was
+reverted. The compacted store is now used only where one denoising runs alone
+(`dada-pooled`, and `dada` one sample at a time); `DADA2RS_DENSE_STORE=1`
+forces the full store.
+
+`main` against the branch, 48 threads, 2 reps, outputs identical apart from the
+version string (jobs 33604, 33754):
+
+| `dada-pooled` | `main` | compacted | change | store, `main` → compacted |
+|---|---|---|---|---|
+| MiSeq (272k uniques) | 58.2 s | 60.0 s | +3% | 4.6 → 6.1 s |
+| PacBio (547k) | 211.7 s | 200.9 s | −5% | 10.5 → 3.8 s |
+| NovaSeq (2.31M) | 1,714 s | 1,479 s | −14% | 358 → 114 s |
+
+`learn-errors` is unchanged. The gain grows with pool size, and on small pools
+the pass costs slightly more than the walk it replaces. MiSeq's +1.8 s is
+accepted rather than met with a size threshold.
+
+**What this leaves.** On NovaSeq the parallel pass (~114 s), batch prep
+(~70 s) and freeing the result vector (~24 s) still scale with nraw per call.
+Collecting the λ > 0 raws inside the map itself, with no nraw-long result
+vector, would remove all three and cost small pools nothing; that is the
+follow-up in #355.
+
