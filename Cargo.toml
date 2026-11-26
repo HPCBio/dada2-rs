@@ -85,6 +85,16 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("wfa", "rm
 [dev-dependencies]
 serde_json = "1"
 
+# Release: one codegen unit plus thin LTO (#336). On the cluster's Zen 3 node
+# the single-pair NW kernel ran 1.2-1.65x slower under the default profile
+# (16 codegen units, no LTO) than under this one, at any CPU target: the gap
+# `release` vs `release-native` had been blamed on AVX2. This is the profile
+# `cargo install` and Bioconda build with, so they get it too. The AVX2 builds
+# of the kernels are picked at runtime (src/simd.rs) and need no target-cpu.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 # Profile for running the test suite (`just test`, CI). The integration tests
 # spawn the real binary on real fixtures, so unoptimised code makes the suite
 # ~15x slower (~170 s vs ~10 s). Debug assertions and overflow checks stay on:
@@ -98,9 +108,14 @@ inherits = "release"
 debug-assertions = true
 overflow-checks = true
 incremental = true
+# Release's LTO and single codegen unit buy run speed at build time; tests want
+# the opposite.
+lto = false
+codegen-units = 256
 
 # Opt-in profile for cluster/in-house builds where you control the CPU.
-# Adds LTO + codegen-units=1 on top of release, and is intended to be paired
+# The same as release (which now has the LTO and single codegen unit it used to
+# add), but intended to be paired
 # with `RUSTFLAGS="-C target-cpu=native"` so LLVM uses every ISA extension
 # the build host supports (e.g. AVX2/AVX-512 on x86-64, additional features
 # beyond aarch64 baseline on Apple Silicon).
@@ -113,8 +128,6 @@ incremental = true
 # on CPUs at-or-above the build host's microarchitecture.
 [profile.release-native]
 inherits = "release"
-lto = "thin"
-codegen-units = 1
 
 # Local WFA fork iteration (developer builds only; see CONTRIBUTING.md and issue
 # #63). Uncomment and point `path` at a `wfa2lib-rs` checkout to build the `wfa`

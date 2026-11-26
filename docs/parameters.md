@@ -59,8 +59,9 @@ matching R's `removeBimeraDenovo` (which respects the global `GAP_PENALTY`).
 - **`VECTORIZED_ALIGNMENT` / `GAPLESS` / `SSE`** — deliberately **not** exposed.
   These are implementation/performance toggles, not algorithm parameters:
   dada2-rs always uses its vectorized banded aligner, and `SSE = 2` (R's SSE2
-  selection) is moot since the Rust kernel autovectorizes (with AVX2/AVX-512
-  available via a `release-native` build). They are result-equivalent.
+  selection) is moot since the Rust kernel autovectorizes (AVX2 is picked at
+  runtime on x86-64; AVX-512 needs a `release-native` build). They are
+  result-equivalent.
 
 ## Beyond `setDadaOpt()`: `--kmer-size`
 

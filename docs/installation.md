@@ -7,9 +7,12 @@ conda install -c conda-forge -c bioconda dada2-rs
 ```
 
 Packages exist for Linux (x86-64, aarch64) and macOS (Intel, Apple Silicon).
-The package is a portable build: it runs on any CPU of its platform but is
-slower than a [native build](#native-release-recommended-for-production-runs)
-or the release binaries, which target x86-64-v3 (AVX2). It holds the binary
+The package is a portable build: it runs on any CPU of its platform. On x86-64
+it picks AVX2 builds of the alignment kernels at runtime when the CPU has AVX2
+([#336](https://github.com/HPCBio/dada2-rs/issues/336)). The rest of the code
+stays baseline, so a [native build](#native-release-recommended-for-production-runs)
+or the release binaries, which target x86-64-v3 (AVX2), can still be somewhat
+faster. It holds the binary
 only: no experimental WFA backend, and none of the helper R/Python scripts,
 which `make install` from a source checkout provides.
 
@@ -27,7 +30,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ### Standard release
 
 Portable and reproducible across machines — use this when others should be able
-to rebuild and match your binary.
+to rebuild and match your binary. On x86-64 the alignment kernels still use AVX2
+when the CPU has it: they are built both ways and one is picked at runtime. The
+profile uses thin LTO and a single codegen unit, so a clean build takes about
+twice as long as Cargo's default; the single-pair alignment kernel runs 1.2–1.65×
+faster for it.
 
 ```bash
 cargo build --release
@@ -38,8 +45,10 @@ cargo build --release
 
 Built with `-C target-cpu=native` via the `release-native` profile, so LLVM uses
 every instruction-set extension the build host supports (AVX2/AVX-512 on x86-64,
-the full NEON feature set on Apple Silicon). This noticeably speeds up the
-alignment kernel.
+the full NEON feature set on Apple Silicon). On the cluster's Zen 3 node the
+alignment kernels ran no faster this way than in a standard release build
+([#336](https://github.com/HPCBio/dada2-rs/issues/336)); the rest of the code,
+such as the k-mer screen, can still gain.
 
 ```bash
 RUSTFLAGS="-C target-cpu=native" cargo build --profile release-native

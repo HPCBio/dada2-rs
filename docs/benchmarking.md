@@ -442,6 +442,13 @@ build target changes the numbers:
   on x86, full NEON on Apple Silicon), but **not portable** across
   microarchitectures.
 
+On x86-64, `release` picks AVX2 builds of the NW kernels at runtime when the CPU
+has AVX2 ([#336](https://github.com/HPCBio/dada2-rs/issues/336)); everything
+else in it stays baseline. `--verbose` and `--metrics-json` record the choice as
+the `simd` tuning gate. Both profiles use thin LTO and one codegen unit, so
+numbers from a `release` build made before #336 (16 codegen units, no LTO) are
+not comparable: its single-pair kernel was 1.2–1.65× slower.
+
 For a head-to-head where R's C was compiled with the cluster's native gcc, prefer
 `release-native` so the alignment kernel isn't handicapped to SSE2.
 
@@ -456,6 +463,7 @@ environment variable, rather than from two builds:
 | variable | effect |
 |---|---|
 | `DADA2RS_SHUFFLE_NO_PRUNE=1` | forces `b_shuffle`'s move pass to scan every cluster, disabling the dirty-cluster pruning ([#132](findings/shuffle-build-scan.md)) |
+| `DADA2RS_SIMD=baseline` | forces the baseline (SSE2) builds of the NW kernels on an x86-64 host with AVX2 ([#336](https://github.com/HPCBio/dada2-rs/issues/336)) |
 
 ```sh
 dada2-rs dada-pooled ... --verbose                            # optimised

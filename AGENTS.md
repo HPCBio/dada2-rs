@@ -16,6 +16,7 @@ just test                      # all unit + integration tests (~10 s; test-opt p
 just test --test cli_contract  # one test area; any cargo test args pass through
 cargo clippy --all-targets -- -D warnings   # must be clean before committing
 cargo fmt --all -- --check     # must be clean before committing
+just clippy-x86                # on arm64: lint x86-only code (AVX2 kernel entries); needs rustup + x86 target
 ```
 
 The pre-commit hook at `.githooks/pre-commit` runs both checks automatically. Activate it once after cloning:

@@ -39,6 +39,7 @@ pub mod reference_eval;
 pub mod remove_bimera;
 pub mod remove_primers;
 pub mod sequence_table;
+pub mod simd;
 pub mod single_pass;
 pub mod summary;
 pub mod taxonomy;

@@ -148,7 +148,60 @@ pub fn align_vectorized_batch_fill_only<const L: usize>(
     batch_impl::<L>(pairs, scores, buf, false);
 }
 
+/// Runs the AVX2 build when [`crate::simd::avx2`] allows it (issue #336); the
+/// output is identical either way.
 fn batch_impl<const L: usize>(
+    pairs: &[(&[u8], &[u8]); L],
+    scores: &VectorizedAlignScores,
+    buf: &mut BatchBuffers,
+    traceback: bool,
+) {
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::avx2() {
+        // SAFETY: `simd::avx2` is true only when the CPU has AVX2.
+        unsafe { batch_avx2::<L>(pairs, scores, buf, traceback) };
+        return;
+    }
+    batch_body::<L>(pairs, scores, buf, traceback);
+}
+
+/// [`align_vectorized_batch`] compiled for the baseline target, whatever the
+/// host supports. For the variant tests and benches.
+pub fn align_vectorized_batch_baseline<const L: usize>(
+    pairs: &[(&[u8], &[u8]); L],
+    scores: &VectorizedAlignScores,
+    buf: &mut BatchBuffers,
+) {
+    batch_body::<L>(pairs, scores, buf, true);
+}
+
+/// [`align_vectorized_batch`] compiled with AVX2.
+///
+/// # Safety
+/// The CPU must support AVX2.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+pub unsafe fn align_vectorized_batch_avx2<const L: usize>(
+    pairs: &[(&[u8], &[u8]); L],
+    scores: &VectorizedAlignScores,
+    buf: &mut BatchBuffers,
+) {
+    batch_body::<L>(pairs, scores, buf, true);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn batch_avx2<const L: usize>(
+    pairs: &[(&[u8], &[u8]); L],
+    scores: &VectorizedAlignScores,
+    buf: &mut BatchBuffers,
+    traceback: bool,
+) {
+    batch_body::<L>(pairs, scores, buf, traceback);
+}
+
+#[inline(always)]
+fn batch_body<const L: usize>(
     pairs: &[(&[u8], &[u8]); L],
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
@@ -545,6 +598,51 @@ mod tests {
                     "case {case} lane {lane}: la={la} lb={lb} band={band} ends=({begin},{end})"
                 );
             }
+        }
+    }
+
+    /// The baseline and AVX2 builds of the batched kernel agree (#336),
+    /// including where `i16` scores saturate (`match_score` 40 on long pairs).
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn batch_variants_match() {
+        if !crate::simd::host_has_avx2("batch_variants_match") {
+            return;
+        }
+        const L: usize = 16;
+        let mut st = 0x336u64;
+        let (mut base, mut avx) = (BatchBuffers::new(), BatchBuffers::new());
+        for case in 0..400 {
+            let long = case % 10 == 0;
+            let la = if long { 1500 } else { 20 } + (rng(&mut st) % 300) as usize;
+            let lb = la.saturating_sub(12) + (rng(&mut st) % 25) as usize;
+            let band = [-1, 1, 2, 3, 7, 8, 16, 17, 32][(rng(&mut st) % 9) as usize];
+            let (begin, end) =
+                [(0i16, 0i16), (-8, -8), (0, -8), (-8, 0)][(rng(&mut st) % 4) as usize];
+            let scores = VectorizedAlignScores {
+                match_score: if long { 40 } else { 5 },
+                mismatch: -4,
+                gap_p: -8,
+                begin_gap_p: begin,
+                end_gap_p: end,
+                band,
+            };
+            let center: Vec<u8> = (0..la).map(|_| 1 + (rng(&mut st) % 4) as u8).collect();
+            let raws: Vec<Vec<u8>> = (0..L).map(|_| variant(&center, lb, &mut st)).collect();
+            let pairs: [(&[u8], &[u8]); L] = std::array::from_fn(|k| {
+                if case % 2 == 0 {
+                    (center.as_slice(), raws[k].as_slice())
+                } else {
+                    (raws[k].as_slice(), center.as_slice())
+                }
+            });
+            align_vectorized_batch_baseline::<L>(&pairs, &scores, &mut base);
+            // SAFETY: `host_has_avx2` checked the CPU above.
+            unsafe { align_vectorized_batch_avx2::<L>(&pairs, &scores, &mut avx) };
+            assert!(
+                base.al[..L] == avx.al[..L],
+                "case {case}: la={la} lb={lb} band={band} ends=({begin},{end})"
+            );
         }
     }
 
