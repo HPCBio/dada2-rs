@@ -10,7 +10,7 @@ mod common;
 use std::path::Path;
 
 use common::{
-    BIN, assert_same_outputs, asv_set, err_model, fasta_seqs, fixture, normalized, run,
+    BIN, assert_same_outputs, asv_set, err_model, fasta_seqs, fixture, normalized, run, run_env,
     run_expect_err, scratch,
 };
 
@@ -1350,5 +1350,43 @@ fn batch_align_default_matches_per_pair() {
             normalized(&dir.join(format!("le_{other}.json"))),
             "learn-errors, default vs {other}"
         );
+    }
+}
+
+/// The #295 bitmap bound only skips reading count vectors for pairs it proves
+/// fail the screen, so a run with it on (the default) must match one with
+/// `DADA2RS_KMER_BOUND=0`, at k=5 and at k=7.
+#[test]
+fn kmer_bound_matches_off() {
+    let dir = scratch("kmer_bound");
+    let err = err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+    let s2 = fixture("sam2F.fastq.gz");
+    let (s1, s2, err) = (
+        s1.to_str().unwrap(),
+        s2.to_str().unwrap(),
+        err.to_str().unwrap(),
+    );
+    for k in ["5", "7"] {
+        let out = |tag: &str| dir.join(format!("k{k}_{tag}"));
+        for (tag, env) in [("on", &[][..]), ("off", &[("DADA2RS_KMER_BOUND", "0")][..])] {
+            run_env(
+                env,
+                &[
+                    "dada-pooled",
+                    s1,
+                    s2,
+                    "--error-model",
+                    err,
+                    "--kmer-size",
+                    k,
+                    "--threads",
+                    "4",
+                    "--output-dir",
+                    out(tag).to_str().unwrap(),
+                ],
+            );
+        }
+        assert_same_outputs(&out("on"), &out("off"), &format!("dada-pooled k={k}"));
     }
 }

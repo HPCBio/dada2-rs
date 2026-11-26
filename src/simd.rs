@@ -67,6 +67,37 @@ pub fn avx2() -> bool {
     level() == Level::Avx2
 }
 
+/// `popcount(a & b)` over two equal-length bitmaps: the shared-k-mer count of
+/// the #295 screen bound. A baseline x86-64 build has no POPCNT instruction,
+/// so an AVX2+POPCNT entry is used when the CPU has both (every AVX2 CPU in
+/// practice) and [`level`] allows AVX2.
+#[inline]
+pub fn and_popcount(a: &[u64], b: &[u64]) -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    if popcnt() {
+        // SAFETY: `popcnt` is true only when the CPU has AVX2 and POPCNT.
+        return unsafe { and_popcount_avx2(a, b) };
+    }
+    and_popcount_body(a, b)
+}
+
+#[inline(always)]
+fn and_popcount_body(a: &[u64], b: &[u64]) -> u32 {
+    a.iter().zip(b).map(|(x, y)| (x & y).count_ones()).sum()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,popcnt")]
+fn and_popcount_avx2(a: &[u64], b: &[u64]) -> u32 {
+    and_popcount_body(a, b)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn popcnt() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| avx2() && std::is_x86_feature_detected!("popcnt"))
+}
+
 /// For the `*_variants_match` tests: true when the host can run the AVX2
 /// entries. Says so when it cannot, since the test then checks nothing.
 #[cfg(all(test, target_arch = "x86_64"))]

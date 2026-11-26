@@ -44,6 +44,21 @@ pub fn run(args: &[&str]) {
     );
 }
 
+/// [`run`] with extra environment variables (gates such as `DADA2RS_*`).
+pub fn run_env(env: &[(&str, &str)], args: &[&str]) {
+    let out = Command::new(BIN)
+        .envs(env.iter().copied())
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn {BIN}: {e}"));
+    assert!(
+        out.status.success(),
+        "command failed: {env:?} dada2-rs {}\n--- stderr ---\n{}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
 /// Run the binary expecting failure; return stderr.
 pub fn run_expect_err(args: &[&str]) -> String {
     let out = Command::new(BIN).args(args).output().unwrap();

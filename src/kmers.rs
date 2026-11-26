@@ -204,6 +204,69 @@ impl KmerScreen {
     }
 }
 
+/// Per-raw data for the exact screen bound in front of [`kmer_dist8`] (#295).
+///
+/// For two raws with `D` shared distinct k-mers,
+/// `Σ min(a_i, b_i) ≤ D + min(excess_a, excess_b)`: over the shared buckets
+/// `min(a, b) ≤ 1 + (a - 1)`, and `Σ (a - 1)` over them is at most
+/// `excess = nkmers - distinct`. So `1 - (D + min excess) / scale` is a lower
+/// bound on the k-mer distance, and a pair whose bound already exceeds the
+/// cutoff fails the screen without reading the `4^k`-byte count vectors. The
+/// bitmap is 8x smaller than those. `excess` comes from the sequence, not from
+/// `kmer8`, whose counts saturate at 255.
+#[derive(Clone)]
+pub struct KmerBound {
+    bits: Box<[u64]>,
+    excess: u32,
+}
+
+impl KmerBound {
+    fn new(seq: &[u8], kmer8: &[u8], k: usize) -> Self {
+        let mut bits = vec![0u64; kmer8.len().div_ceil(64)].into_boxed_slice();
+        let mut distinct = 0u32;
+        for (i, &c) in kmer8.iter().enumerate() {
+            if c > 0 {
+                bits[i / 64] |= 1 << (i % 64);
+                distinct += 1;
+            }
+        }
+        let nkmers = seq.windows(k).filter(|w| encode_kmer(w).is_some()).count() as u32;
+        KmerBound {
+            bits,
+            excess: nkmers - distinct,
+        }
+    }
+
+    /// True when the pair's k-mer distance certainly exceeds `cutoff`, so the
+    /// screen can reject it unread. Never true for a pair the full screen
+    /// passes. `len1`/`len2` and `k` as for [`kmer_dist8`].
+    #[inline]
+    pub fn rejects(
+        &self,
+        other: &KmerBound,
+        len1: usize,
+        len2: usize,
+        k: usize,
+        cutoff: f64,
+    ) -> bool {
+        let shared = crate::simd::and_popcount(&self.bits, &other.bits);
+        let scale = (len1.min(len2) - k + 1) as f64;
+        1.0 - (shared + self.excess.min(other.excess)) as f64 / scale > cutoff
+    }
+}
+
+/// Whether the #295 bound is built and used: on unless `DADA2RS_KMER_BOUND=0`
+/// (or `off`), and only for the dense screen (k < [`SPARSE_KMER_MIN`]).
+pub fn kmer_bound_gate() -> bool {
+    static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        !matches!(
+            std::env::var("DADA2RS_KMER_BOUND").as_deref(),
+            Ok("0") | Ok("off") | Ok("false")
+        )
+    })
+}
+
 /// Populate the resident k-mer screen fields (`kmer8`, `kord`) on a `Raw`.
 ///
 /// The exact 16-bit frequency vector is intentionally NOT stored (issue #32):
@@ -214,7 +277,9 @@ pub fn raw_assign_kmers(raw: &mut Raw, k: usize) {
     let screen = if k >= SPARSE_KMER_MIN {
         KmerScreen::Sparse(assign_kmer8_sparse(&raw.seq, k))
     } else {
-        KmerScreen::Dense(assign_kmer8(&raw.seq, k))
+        let v = assign_kmer8(&raw.seq, k);
+        raw.kmer_bound = kmer_bound_gate().then(|| KmerBound::new(&raw.seq, &v, k));
+        KmerScreen::Dense(v)
     };
     raw.kmer8 = Some(screen);
     raw.kord = Some(assign_kmer_order(&raw.seq, k));
@@ -325,6 +390,90 @@ pub fn kord_dist(kord1: &[u16], len1: usize, kord2: &[u16], len2: usize, k: usiz
         .map(|(a, b)| (a == b) as u32)
         .sum();
     1.0 - dotsum as f64 / klen as f64
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::*;
+
+    fn lcg(s: &mut u64) -> u64 {
+        *s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *s >> 33
+    }
+
+    /// Unrelated, related (mutated copies), N-bearing and low-complexity
+    /// sequences, the last long enough that a k-mer occurs >255 times (the
+    /// 8-bit overflow case the bound must not be fooled by).
+    fn corpus(st: &mut u64) -> Vec<Vec<u8>> {
+        let mut v: Vec<Vec<u8>> = Vec::new();
+        for _ in 0..40 {
+            let n = 60 + (lcg(st) % 500) as usize;
+            let base: Vec<u8> = (0..n).map(|_| 1 + (lcg(st) % 4) as u8).collect();
+            for _ in 0..4 {
+                let mut m = base.clone();
+                for _ in 0..(lcg(st) % 40) {
+                    let i = (lcg(st) as usize) % m.len();
+                    m[i] = 1 + (lcg(st) % 5) as u8; // includes N (5)
+                }
+                v.push(m);
+            }
+            v.push(base);
+        }
+        // Two mutated copies of each repeat, so near pairs exist on the
+        // overflow path too.
+        for unit in [1usize, 2, 3] {
+            let rep: Vec<u8> = (0..unit).map(|_| 1 + (lcg(st) % 4) as u8).collect();
+            for _ in 0..2 {
+                let mut s: Vec<u8> = rep.iter().copied().cycle().take(1200).collect();
+                for _ in 0..30 {
+                    let i = (lcg(st) as usize) % s.len();
+                    s[i] = 1 + (lcg(st) % 4) as u8;
+                }
+                v.push(s);
+            }
+        }
+        v
+    }
+
+    /// The bound never rejects a pair whose exact (16-bit) k-mer distance is
+    /// within the cutoff, and does reject most far pairs (#295).
+    #[test]
+    fn bound_is_exact_and_bites() {
+        let mut st = 0x295u64;
+        let seqs = corpus(&mut st);
+        for k in [5usize, 6, 7] {
+            let prep: Vec<(Vec<u16>, KmerBound)> = seqs
+                .iter()
+                .map(|s| (assign_kmer(s, k), KmerBound::new(s, &assign_kmer8(s, k), k)))
+                .collect();
+            let (mut far, mut caught) = (0u64, 0u64);
+            for cutoff in [0.1, 0.3, 0.42, 0.6] {
+                for (i, a) in seqs.iter().enumerate() {
+                    for (j, b) in seqs.iter().enumerate() {
+                        if i == j || a.len() <= k || b.len() <= k {
+                            continue;
+                        }
+                        let exact = kmer_dist(&prep[i].0, a.len(), &prep[j].0, b.len(), k);
+                        let rej = prep[i].1.rejects(&prep[j].1, a.len(), b.len(), k, cutoff);
+                        assert!(
+                            !rej || exact > cutoff,
+                            "k={k} cutoff={cutoff}: bound rejected a pair at distance {exact}"
+                        );
+                        if exact > cutoff {
+                            far += 1;
+                            caught += rej as u64;
+                        }
+                    }
+                }
+            }
+            assert!(
+                caught * 2 > far,
+                "k={k}: bound caught only {caught} of {far} far pairs"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

@@ -320,6 +320,13 @@ reader benefit. Three homes, and only three:
   per-job buffer churn, the screen pass going memory-bound once it no longer
   overlaps alignment, and rayon join points stalling each sample's sequential
   chain under nested parallelism, fixed by making small steps serial.
+- [An exact bound in front of the k-mer screen](screen-bitmap-bound.md) — a
+  per-raw presence bitmap rejects most far pairs without reading their count
+  vectors and never rejects a pair the full screen passes. **Output-identical,
+  on by default for k ≤ 7.** `dada-pooled` at 48 threads: −9% MiSeq, −11%
+  PacBio, −30% NovaSeq; NovaSeq `learn-errors` −46%. Also a caution: the
+  offline gate predicted k = 5 would barely gain, and the end-to-end run
+  showed five times its estimate.
 - [Inside `b_compare`: the serial remainder](compare-serial-fold.md) — the 329 s
   (48% of `run_dada`) that was neither the parallel map nor the store. Attributed
   first, on the issue's own insistence that an optimisation not be designed
