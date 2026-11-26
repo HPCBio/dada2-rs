@@ -1,4 +1,4 @@
-use crate::kmers::KmerScreen;
+use crate::kmers::{KmerBound, KmerScreen};
 
 /// Default initial cluster buffer size (mirrors C++ RAWBUF / CLUSTBUF).
 /// Vec growth is automatic in Rust so this only affects the initial allocation.
@@ -91,6 +91,9 @@ pub struct Raw {
     /// ≥255× in both sequences, essentially never for amplicons); on that path
     /// it is recomputed from `seq` in `raw_align_with_buf`.
     pub kmer8: Option<KmerScreen>,
+    /// Bitmap and excess for the exact screen bound in front of `kmer8`
+    /// (#295); built with dense `kmer8` unless `DADA2RS_KMER_BOUND=0`.
+    pub kmer_bound: Option<KmerBound>,
     /// K-mers in the order they appear along the sequence; populated by kmers module.
     pub kord: Option<Vec<u16>>,
     /// Winnowed minimizer sketch, populated only under
@@ -149,6 +152,7 @@ impl Raw {
             seq,
             prior,
             kmer8: None,
+            kmer_bound: None,
             kord: None,
             minimizers: None,
             reads,

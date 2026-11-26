@@ -76,6 +76,12 @@ minor versions may carry breaking changes).
 
 ### Changed
 
+- The k-mer screen first tests a per-raw presence bitmap (#295): a pair whose
+  shared-k-mer bound already exceeds `--kdist-cutoff` is rejected without
+  reading the `4^k`-byte count vectors. The bound never rejects a pair the
+  full screen passes, so output is unchanged. Dense screens only (k ≤ 7);
+  costs `4^k / 8` bytes per unique (2 KB at k=7). `DADA2RS_KMER_BOUND=0` turns
+  it off.
 - Batched alignment's traceback writes each pair's substitutions directly
   instead of building two aligned strings for `al2subs` to walk (#342). The
   compare step also no longer fills substitution qualities, which nothing read

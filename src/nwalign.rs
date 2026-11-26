@@ -2175,6 +2175,20 @@ fn screen_pass(
                 ScreenBackend::Kmer => {
                     // Prefer 8-bit kmer distance; fall back to 16-bit on overflow.
                     match (&raw1.kmer8, &raw2.kmer8) {
+                        // #295: the bitmap bound rejects most far pairs without
+                        // reading the count vectors. It never rejects a pair
+                        // the full screen passes. Skipped under the audit,
+                        // which records both backends' verdicts.
+                        (Some(_), Some(_))
+                            if !p.screen_audit
+                                && matches!(
+                                    (&raw1.kmer_bound, &raw2.kmer_bound),
+                                    (Some(b1), Some(b2))
+                                        if b1.rejects(b2, raw1.len(), raw2.len(), k, p.kdist_cutoff)
+                                ) =>
+                        {
+                            f64::INFINITY
+                        }
                         (Some(k1), Some(k2)) => {
                             let d8 = k1.dist8(k2, raw1.len(), raw2.len(), k);
                             if d8 < 0.0 {
