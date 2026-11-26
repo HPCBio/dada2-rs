@@ -36,7 +36,10 @@ or counters that the store loop already folds in.
 comparison*, and comparisons reach 1.4e10 on a diverse pool. It buys `busy`, the
 map's parallel efficiency, and the screen / DP / `al2subs` split. `dp_kernel`
 includes the traceback; `traceback` is the vectorized kernels' share of it
-(zero for gapless, scalar, affine and WFA alignments). Never enable it on a run
+(zero for gapless, scalar, affine and WFA alignments). Under `--batch-align`,
+a batched pair's traceback builds its substitutions itself (#342), so
+`al2subs` counts only pairs aligned one at a time and is near zero on a
+batched run. Never enable it on a run
 whose wall time you intend to report.
 
 `compare.batch` (absent with `--batch-align false`) is collected at every level: the

@@ -26,7 +26,7 @@ pub struct Comparison {
 /// Compressed substitutions between two aligned sequences.
 /// All positions are 0-indexed in the alignment.
 /// Equivalent to the C++ `Sub` struct.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Sub {
     /// Length of the reference sequence.
     pub len0: u32,

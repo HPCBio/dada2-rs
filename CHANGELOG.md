@@ -76,6 +76,12 @@ minor versions may carry breaking changes).
 
 ### Changed
 
+- Batched alignment's traceback writes each pair's substitutions directly
+  instead of building two aligned strings for `al2subs` to walk (#342). The
+  compare step also no longer fills substitution qualities, which nothing read
+  there. PacBio 95 `dada-pooled` at 48 threads: align pass 68.5 → 57.4 s,
+  wall −3.4%. Output is unchanged. In `--metrics-json`, `split.al2subs` now
+  counts only pairs aligned one at a time.
 - `--birth-rule unoise` (Experimental; #323): an omitted `--min-abund` is now 8,
   vsearch `--cluster_unoise`'s `--minsize` default, instead of 1 or the error
   model's value. The UNOISE rule has no abundance test, so at 1 every unique no
