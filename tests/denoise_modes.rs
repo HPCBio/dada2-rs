@@ -1390,3 +1390,84 @@ fn kmer_bound_matches_off() {
         assert_same_outputs(&out("on"), &out("off"), &format!("dada-pooled k={k}"));
     }
 }
+
+/// The #355 compacted store visits only raws with λ > 0 once every `e_minmax`
+/// is non-negative; `DADA2RS_DENSE_STORE=1` restores the full serial scan.
+/// Outputs, `stats.nalign` included, must match, in `dada-pooled` and in
+/// `learn-errors`' model.
+#[test]
+fn compacted_store_matches_dense() {
+    let dir = scratch("dense_store");
+    let err = err_model();
+    let s1 = fixture("sam1F.fastq.gz");
+    let s2 = fixture("sam2F.fastq.gz");
+    let (s1, s2, err) = (
+        s1.to_str().unwrap(),
+        s2.to_str().unwrap(),
+        err.to_str().unwrap(),
+    );
+    let out = |tag: &str| dir.join(tag);
+    for (tag, env) in [
+        ("compact", &[][..]),
+        ("dense", &[("DADA2RS_DENSE_STORE", "1")][..]),
+    ] {
+        run_env(
+            env,
+            &[
+                "dada-pooled",
+                s1,
+                s2,
+                "--error-model",
+                err,
+                "--threads",
+                "4",
+                "--output-dir",
+                out(tag).to_str().unwrap(),
+                "--metrics-json",
+                out(&format!("{tag}.metrics.json")).to_str().unwrap(),
+            ],
+        );
+        run_env(
+            env,
+            &[
+                "learn-errors",
+                s1,
+                s2,
+                "--threads",
+                "4",
+                "-o",
+                out(&format!("{tag}.err.json")).to_str().unwrap(),
+            ],
+        );
+    }
+    assert_same_outputs(&out("compact"), &out("dense"), "dada-pooled");
+    // The counters the store keeps, which only the metrics report.
+    let counts = |tag: &str| {
+        let v: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(out(&format!("{tag}.metrics.json"))).unwrap(),
+        )
+        .unwrap();
+        let run = &v["runs"][0]["run"];
+        (
+            run["nalign"].as_u64().unwrap(),
+            run["nshroud"].as_u64().unwrap(),
+        )
+    };
+    assert_eq!(
+        counts("compact"),
+        counts("dense"),
+        "nalign / nshroud differ"
+    );
+    let model = |tag: &str| {
+        let v: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(out(&format!("{tag}.err.json"))).unwrap(),
+        )
+        .unwrap();
+        v
+    };
+    assert_eq!(
+        model("compact"),
+        model("dense"),
+        "learn-errors model differs"
+    );
+}

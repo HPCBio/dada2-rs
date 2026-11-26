@@ -373,6 +373,11 @@ pub struct B {
     /// [`B::new`]; deliberately *not* reset by [`B::init`], which never reset
     /// the field either.
     pub e_minmax: Vec<f64>,
+    /// True once every `e_minmax` is non-negative, which the first parallel
+    /// compare's full store guarantees (#355). Entries only ever rise, so it
+    /// stays true; from then on a comparison can be stored only if its λ > 0,
+    /// and `b_compare_parallel`'s store visits just those raws.
+    pub e_minmax_seeded: bool,
     /// Raws the experimental UNOISE rule left without a qualifying centre
     /// (#323); never corrected. Empty under every other partition.
     pub unassigned: Vec<bool>,
@@ -454,6 +459,7 @@ impl B {
             minimizer_probe: Default::default(),
             screen_shared: Vec::new(),
             e_minmax,
+            e_minmax_seeded: false,
             unassigned: Vec::new(),
         };
         b.init();

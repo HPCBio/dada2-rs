@@ -72,6 +72,14 @@ pub fn reconcile_full_gate() -> bool {
     *VALUE.get_or_init(|| std::env::var_os("DADA2RS_RECONCILE_FULL").is_some())
 }
 
+/// Force `b_compare_parallel`'s full serial store on every call, disabling the
+/// #355 compacted store. Both arms of an A/B from one binary; output is
+/// identical either way.
+pub fn dense_store_gate() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var_os("DADA2RS_DENSE_STORE").is_some())
+}
+
 /// Carry `compmax`/`emax`/`reads_used` across bud rounds instead of rebuilding
 /// the whole map from scratch on every `b_shuffle_converge` call (#87 / #139).
 ///
@@ -747,7 +755,14 @@ pub fn b_compare_parallel(
             .collect();
     }
     let screen_pass = t_map.elapsed();
-    let pending = deferred_pairs(&defer_len);
+    // In parallel (#355): a serial scan here walked every raw on every call,
+    // 63 s of a NovaSeq pool. The collect keeps index order.
+    let pending: Vec<(u32, u32)> = defer_len
+        .par_iter()
+        .enumerate()
+        .filter(|&(_, &len)| len != NOT_DEFERRED)
+        .map(|(index, &len)| (len, index as u32))
+        .collect();
     drop(defer_len);
     let mut batch_timing = batch.then(|| BatchTiming {
         screen_pass,
@@ -806,33 +821,12 @@ pub fn b_compare_parallel(
     // measurement.
     let t_serial = std::time::Instant::now();
     let total_reads = b.reads as f64;
-    let mut cost = CompCost::default();
-    // Denominators for the ns/comp figures: the screen runs on every
-    // non-greedy-skipped comparison, the aligner only on those it passes.
-    let (mut screened, mut aligned) = (0u64, 0u64);
+    // Store a comparison, as R does, when it can raise the raw's `e_minmax`.
     let mut stored = 0u64;
-    for (index, &(lambda, hamming, skipped, item)) in comps.iter().enumerate() {
-        cost.total += item.total;
-        cost.screen += item.screen;
-        cost.dp += item.dp;
-        cost.post += item.post;
-        cost.traceback += item.traceback;
-
-        // Match serial b_compare counting: only count non-skipped raws.
-        if !skipped {
-            screened += 1;
-            b.nalign += 1;
-            if hamming == u32::MAX {
-                b.nshroud += 1;
-            } else {
-                aligned += 1;
-            }
-        }
-
+    let mut store = |b: &mut B, index: usize, lambda: f64, hamming: u32| {
         if index == center_idx {
             b.clusters[i].self_ = lambda;
         }
-
         if lambda * total_reads > b.e_minmax[index] {
             let new_e = lambda * center_reads as f64;
             if new_e > b.e_minmax[index] {
@@ -851,7 +845,72 @@ pub fn b_compare_parallel(
                 b.raws[index].comp = comp;
             }
         }
-    }
+    };
+    let (cost, screened, aligned) = if b.e_minmax_seeded && !dense_store_gate() {
+        // #355: once every `e_minmax` is non-negative, a comparison with
+        // λ = 0 (shrouded, greedy-skipped or underflowed) can never be stored,
+        // and on a NovaSeq pool that is ~98% of raws. A parallel pass counts
+        // and picks out the rest (and the centre, whose λ is `self_`); the
+        // serial store then visits only those, in index order, so the
+        // comparison vectors come out as the full scan built them.
+        #[derive(Default)]
+        struct Acc {
+            cost: CompCost,
+            screened: u64,
+            aligned: u64,
+            keep: Vec<u32>,
+        }
+        let acc = comps
+            .par_iter()
+            .enumerate()
+            .fold(
+                Acc::default,
+                |mut a, (index, &(lambda, hamming, skipped, item))| {
+                    a.cost = a.cost.add(item);
+                    if !skipped {
+                        a.screened += 1;
+                        a.aligned += (hamming != u32::MAX) as u64;
+                    }
+                    if lambda > 0.0 || index == center_idx {
+                        a.keep.push(index as u32);
+                    }
+                    a
+                },
+            )
+            .reduce(Acc::default, |mut l, r| {
+                l.cost = l.cost.add(r.cost);
+                l.screened += r.screened;
+                l.aligned += r.aligned;
+                l.keep.extend_from_slice(&r.keep);
+                l
+            });
+        for &index in &acc.keep {
+            let (lambda, hamming, _, _) = comps[index as usize];
+            store(b, index as usize, lambda, hamming);
+        }
+        (acc.cost, acc.screened, acc.aligned)
+    } else {
+        // Full serial scan, as before #355: on the first compare `e_minmax`
+        // still holds its -999 seed, so every raw is stored.
+        let mut cost = CompCost::default();
+        // Denominators for the ns/comp figures: the screen runs on every
+        // non-greedy-skipped comparison, the aligner only on those it passes.
+        let (mut screened, mut aligned) = (0u64, 0u64);
+        for (index, &(lambda, hamming, skipped, item)) in comps.iter().enumerate() {
+            cost = cost.add(item);
+            if !skipped {
+                screened += 1;
+                aligned += (hamming != u32::MAX) as u64;
+            }
+            store(b, index, lambda, hamming);
+        }
+        b.e_minmax_seeded = b.e_minmax.iter().all(|&e| e >= 0.0);
+        (cost, screened, aligned)
+    };
+    // Match serial b_compare counting: only non-skipped raws count.
+    b.nalign += screened;
+    b.nshroud += screened - aligned;
+    let mut cost = cost;
     let serial_dur = t_serial.elapsed();
     cost.total += batch_cost.total;
     cost.dp += batch_cost.dp;
