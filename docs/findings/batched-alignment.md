@@ -232,14 +232,21 @@ store (303 s) are the costs to attack, not alignment.
   - Aligning deferred pairs inside each screen-pass job.
   - Collecting deferred pairs with a `fold`.
   - Parallel prep in general.
+- **Substitutions during traceback: done** (#342 item 5). The batched
+  traceback writes each pair's `Sub` directly, so the aligned strings and
+  `al2subs`' two passes over them are gone, along with a quality fill nothing
+  read. On the PacBio 95 pool at 48 threads, `al2subs` fell from ~567 to ~25
+  thread-seconds, the align pass from 68.5 to 57.4 s and `dada-pooled` wall
+  by ~3.4% (2 reps), with identical output. The traceback itself costs the
+  same as before (~475 thread-seconds).
+- **Pointer packing: measured, not built** (#342 item 4). Skipping the pointer
+  stores outright saves 19–30% of the fill on every platform, MiSeq included,
+  whose pointer matrix fits in L2: the cost is the extra store per cell, not
+  L2 overflow. That bounds packing at ~5% of PacBio wall, with perhaps half of
+  it reachable.
 - **Next, if anything:** [#342](https://github.com/HPCBio/dada2-rs/issues/342)
-  lists the remaining candidates:
-  - overlapping the screen and align passes;
-  - packing traceback pointers into 2 bits, for PacBio;
-  - producing substitutions during traceback.
-
-  The UNOISE port ([#345](https://github.com/HPCBio/dada2-rs/issues/345)) is
-  done; it shares the align pass, so these candidates apply to it too.
-  AVX2 dispatch for the default build
-  ([#336](https://github.com/HPCBio/dada2-rs/issues/336)) would be worth about
-  12% more on batched PacBio.
+  still lists overlapping the screen and align passes, and the pointer
+  packing above. The UNOISE port
+  ([#345](https://github.com/HPCBio/dada2-rs/issues/345)) shares the align
+  pass, so these apply to it too. AVX2 dispatch for the default build
+  ([#336](https://github.com/HPCBio/dada2-rs/issues/336)) is done.
