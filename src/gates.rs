@@ -59,6 +59,7 @@ const KNOWN: &[&str] = &[
     "DADA2RS_TRACE_RAW",
     "DADA2RS_SIMD",
     "DADA2RS_KMER_BOUND",
+    "DADA2RS_DENSE_STORE",
 ];
 
 /// What happened to a variable that is no longer the current spelling.
@@ -319,6 +320,11 @@ pub fn report() -> Vec<String> {
             label: "par grain",
             value: grain.to_string(),
             default: grain == crate::cluster::PAR_GRAIN_DEFAULT,
+        },
+        Resolved {
+            label: "dense store",
+            value: on_off(crate::cluster::dense_store_gate()),
+            default: !crate::cluster::dense_store_gate(),
         },
         Resolved {
             label: "kmer bound",

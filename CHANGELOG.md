@@ -76,6 +76,11 @@ minor versions may carry breaking changes).
 
 ### Changed
 
+- `dada-pooled` (and `dada` run one sample at a time) stores comparisons from
+  a compacted list of raws instead of walking every raw serially on every
+  compare call (#355). NovaSeq `dada-pooled` at 48 threads: −14%; PacBio −5%;
+  MiSeq +3%. Output is unchanged. `DADA2RS_DENSE_STORE=1` restores the full
+  store.
 - The k-mer screen first tests a per-raw presence bitmap (#295): a pair whose
   shared-k-mer bound already exceeds `--kdist-cutoff` is rejected without
   reading the `4^k`-byte count vectors. The bound never rejects a pair the
