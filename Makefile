@@ -25,7 +25,7 @@ BIN     = dada2-rs
 SCRIPTS = $(wildcard scripts/*.R) $(wildcard scripts/*.py)
 
 .PHONY: all build build-native build-arm64 install uninstall \
-        check fmt fmt-check clippy test clean docs-serve docs-build \
+        check fmt fmt-check clippy clippy-x86 test clean docs-serve docs-build \
         publish-crate check-build-sync help
 
 PUBLISH_ARGS ?=
@@ -77,6 +77,10 @@ fmt-check:
 
 clippy:
 	cargo clippy --all-targets $(FEAT) -- -D warnings
+
+## clippy-x86: clippy as x86-64 from an arm64 host: lints the AVX2 kernel entries (needs rustup + target)
+clippy-x86:
+	./dev/maintenance/clippy-x86.sh
 
 ## test: tests on the test-opt profile; extra args via ARGS (make test ARGS="--test cli_contract")
 test:

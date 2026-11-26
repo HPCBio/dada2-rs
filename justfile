@@ -78,6 +78,10 @@ fmt-check:
 clippy:
     cargo clippy --all-targets {{feat}} -- -D warnings
 
+# clippy as x86-64 from an arm64 host: lints the AVX2 kernel entries (needs rustup + target)
+clippy-x86:
+    ./dev/maintenance/clippy-x86.sh
+
 # tests on the test-opt profile; extra args pass through (just test --test cli_contract)
 test *args:
     cargo test --profile test-opt {{feat}} {{args}}

@@ -5,11 +5,13 @@ build-config guards. Nothing here is part of a user's analysis.
 
 | Script | What it does |
 |---|---|
+| `clippy-x86.sh` | runs clippy for an x86-64 target from an arm64 host, so the `cfg(target_arch = "x86_64")` AVX2 kernel entries get linted locally (#336); `just clippy-x86` |
 | `check-build-sync.sh` | fails if `justfile` recipes and `Makefile` targets have drifted apart; runs in CI and from `.githooks/pre-commit` |
 | `publish-crate.sh` | publishes an NW-only crate to crates.io, temporarily stripping the `wfa` git dependency that crates.io rejects (issue #63) |
 
-Both `cd` to the repository root, so they can be invoked from anywhere; prefer
-`just check-build-sync` / `just publish-crate` (or the `make` equivalents).
+Each `cd`s to the repository root, so they can be invoked from anywhere; prefer
+`just check-build-sync` / `just clippy-x86` / `just publish-crate` (or the `make`
+equivalents).
 
 ## Release checklist
 
