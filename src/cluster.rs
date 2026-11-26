@@ -9,10 +9,10 @@ use rayon::prelude::*;
 
 use crate::containers::{B, Bi, BirthType, Comparison};
 use crate::nwalign::{
-    AlignBuffers, AlignParams, ScreenBackend, SubOrDefer, align_vectorized_with_buf,
-    sub_from_alignment, sub_new_or_defer, sub_new_with_buf, sub_new_with_screen, vectorized_scores,
+    AlignBuffers, AlignParams, ScreenBackend, SubOrDefer, al2subs, align_vectorized_with_buf,
+    sub_new_or_defer, sub_new_with_buf, sub_new_with_screen, vectorized_scores,
 };
-use crate::nwalign_batch::{BatchBuffers, align_vectorized_batch};
+use crate::nwalign_batch::{BatchBuffers, align_vectorized_batch_subs};
 use crate::progress::ProgressRecord;
 use crate::pval::compute_lambda;
 use crate::rec_print;
@@ -375,13 +375,16 @@ impl CompCost {
 /// Align the comparisons a screen pass deferred, in batches of raws that share
 /// a length, and hand each one's `Sub` to `finish` with its slot in `out`.
 /// `b_compare_parallel` writes `(lambda, hamming)` there and `unoise_compare`
-/// its UNOISE distances (#345).
+/// its UNOISE distances (#345). The `Sub` carries no qualities (`q0`/`q1` are
+/// empty): no compare-time consumer reads them, since λ takes them from the
+/// raw (#342).
 /// `pending` holds `(raw length, raw index)` for each deferred comparison, as
 /// collected by the screen pass (#337: rescanning `comps` for them and sorting
 /// through `raws` cost ~10 s of a 48-thread MiSeq map). Results are
 /// byte-identical to the per-pair path (`nwalign_batch` tests). Under
 /// `measure`, returns the summed worker time split as the per-pair path splits
-/// it (`dp` = kernel incl. traceback, `post` = al2subs + quals).
+/// it (`dp` = kernel incl. traceback; `post` = `al2subs` for pairs aligned one
+/// at a time, and nothing for batched pairs, whose traceback builds the `Sub`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn align_deferred<T: Send>(
     out: &mut [T],
@@ -435,10 +438,10 @@ pub(crate) fn align_deferred<T: Send>(
                 sb.measure = measure;
                 let t0 = measure.then(std::time::Instant::now);
                 let mut cost = CompCost::default();
-                let finish = |idx: u32, al0: &[u8], al1: &[u8], cost: &mut CompCost| {
+                let finish_al = |idx: u32, al0: &[u8], al1: &[u8], cost: &mut CompCost| {
                     let raw = &raws[idx as usize];
                     let t_post = measure.then(std::time::Instant::now);
-                    let sub = sub_from_alignment(center, raw, al0, al1);
+                    let sub = al2subs(al0, al1);
                     cost.post += elapsed(t_post);
                     // SAFETY: `idx` is a distinct deferred index below
                     // `out.len()` (see `OutPtr`).
@@ -449,12 +452,17 @@ pub(crate) fn align_deferred<T: Send>(
                         let idx = chunk[if k < chunk.len() { k } else { 0 }];
                         (center.seq.as_slice(), raws[idx as usize].seq.as_slice())
                     });
+                    // The traceback builds each lane's `Sub` directly (#342):
+                    // no aligned strings, and no second pass to read them.
                     let t_dp = measure.then(std::time::Instant::now);
-                    align_vectorized_batch::<BATCH_LANES>(&lanes, &scores, bb);
+                    align_vectorized_batch_subs::<BATCH_LANES>(&lanes, &scores, bb);
                     cost.dp += elapsed(t_dp);
                     cost.traceback += if measure { bb.last_traceback_nanos } else { 0 };
-                    for (&idx, (al0, al1)) in chunk.iter().zip(&bb.al) {
-                        finish(idx, al0, al1, &mut cost);
+                    for (&idx, sub) in chunk.iter().zip(&bb.subs) {
+                        // SAFETY: as in `finish_al` above.
+                        finish(&raws[idx as usize], sub, unsafe {
+                            &mut *out.0.add(idx as usize)
+                        });
                     }
                 } else {
                     for &idx in chunk.iter() {
@@ -467,7 +475,7 @@ pub(crate) fn align_deferred<T: Send>(
                         );
                         cost.dp += elapsed(t_dp);
                         cost.traceback += if measure { sb.last_traceback_nanos } else { 0 };
-                        finish(idx, &sb.al0, &sb.al1, &mut cost);
+                        finish_al(idx, &sb.al0, &sb.al1, &mut cost);
                     }
                 }
                 cost.total = elapsed(t0);

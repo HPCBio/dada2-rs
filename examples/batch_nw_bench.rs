@@ -16,7 +16,7 @@
 //! ```
 //! Flags: --k, --band, --cutoff (0.42), --centers (50), --max-uniques (20000),
 //! --threads (1), --global (default ends-free), --reps (3), --arms (all;
-//! comma list of single,L8,L16,L32,hybrid16,L16fill,L16alloc; `single` first for the
+//! comma list of single,L8,L16,L32,hybrid16,L16fill,L16al2s,L16sub,L16alloc; `single` first for the
 //! speedup column).
 
 use std::collections::HashMap;
@@ -24,9 +24,10 @@ use std::io::{BufRead, BufReader};
 use std::time::Instant;
 
 use dada2_rs::kmers::{assign_kmer_order, assign_kmer8_sparse, kmer_dist8_sparse, kord_dist};
-use dada2_rs::nwalign::{AlignBuffers, VectorizedAlignScores, align_vectorized_with_buf};
+use dada2_rs::nwalign::{AlignBuffers, VectorizedAlignScores, al2subs, align_vectorized_with_buf};
 use dada2_rs::nwalign_batch::{
     BatchBuffers, align_batch_all, align_vectorized_batch, align_vectorized_batch_fill_only,
+    align_vectorized_batch_subs,
 };
 use rayon::prelude::*;
 
@@ -255,6 +256,7 @@ fn main() {
                             .map(|&r| (center.as_slice(), raws[r].seq.as_slice()))
                             .collect();
                         let mut nb = 0usize;
+                        let mut nsubs = 0usize;
                         let mut sink = |x: &[u8], _: &[u8]| nb += x.len();
                         match arm {
                             "single" => {
@@ -289,6 +291,25 @@ fn main() {
                                     align_vectorized_batch_fill_only::<16>(&lanes, &scores, bb);
                                 }
                             }
+                            "L16al2s" => {
+                                // #342 item 5 baseline: today's path, aligned
+                                // strings then `al2subs` per pair.
+                                align_batch_all::<16>(&pairs, &scores, bb, |a0, a1| {
+                                    nsubs += al2subs(a0, a1).nsubs();
+                                });
+                            }
+                            "L16sub" => {
+                                // #342 item 5: the traceback writes the Sub.
+                                for chunk in pairs.chunks(16) {
+                                    let mut lanes = [chunk[0]; 16];
+                                    lanes[..chunk.len()].copy_from_slice(chunk);
+                                    align_vectorized_batch_subs::<16>(&lanes, &scores, bb);
+                                    nsubs += bb.subs[..chunk.len()]
+                                        .iter()
+                                        .map(|s| s.nsubs())
+                                        .sum::<usize>();
+                                }
+                            }
                             "hybrid16" => {
                                 // Full 16-lane batches batched, the remainder single.
                                 let full = pairs.len() / 16 * 16;
@@ -300,7 +321,7 @@ fn main() {
                             }
                             _ => unreachable!(),
                         }
-                        n += nb;
+                        n += nb + nsubs;
                     }
                     n
                 },
@@ -341,7 +362,7 @@ fn main() {
         "arm", "wall_s", "ns/pair*", "ns/cell*", "speedup"
     );
     let all = [
-        "single", "L8", "L16", "L32", "hybrid16", "L16fill", "L16alloc",
+        "single", "L8", "L16", "L32", "hybrid16", "L16fill", "L16al2s", "L16sub", "L16alloc",
     ];
     let arms: Vec<&str> = match &a.arms {
         Some(v) => all

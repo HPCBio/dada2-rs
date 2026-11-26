@@ -11,7 +11,19 @@
 //! Used by `cluster::b_compare_parallel` under `--batch-align`;
 //! `examples/batch_nw_bench.rs` measures it against the single-pair kernel.
 
-use crate::nwalign::{VectorizedAlignScores, align_vectorized_with_buf, reset_pointers};
+use crate::containers::Sub;
+use crate::nwalign::{GAP_GLYPH, VectorizedAlignScores, align_vectorized_with_buf, reset_pointers};
+
+/// What the batched kernel produces after the fill.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Out {
+    /// Nothing: the fill alone, for timing.
+    Fill,
+    /// The two aligned strings per lane, in `BatchBuffers::al`.
+    Align,
+    /// The substitution record per lane, in `BatchBuffers::subs` (#342).
+    Sub,
+}
 
 /// Reusable scratch for [`align_vectorized_batch`].
 #[derive(Default)]
@@ -23,6 +35,10 @@ pub struct BatchBuffers {
     s2: Vec<u8>,
     /// Alignment of each lane, in the order of its input pair.
     pub al: Vec<(Vec<u8>, Vec<u8>)>,
+    /// [`align_vectorized_batch_subs`]: each lane's substitutions of its
+    /// second sequence against its first, as `al2subs` on `al` gives them,
+    /// without the quality fields.
+    pub subs: Vec<Sub>,
     /// Time the traceback into `last_traceback_nanos` (metrics attribution).
     pub measure: bool,
     /// Nanos in the last batch's traceback, all lanes, when `measure`.
@@ -135,7 +151,20 @@ pub fn align_vectorized_batch<const L: usize>(
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
 ) {
-    batch_impl::<L>(pairs, scores, buf, true);
+    batch_impl::<L>(pairs, scores, buf, Out::Align);
+}
+
+/// [`align_vectorized_batch`], but the traceback writes each lane's [`Sub`]
+/// (reference = the pair's first sequence) into `buf.subs` instead of the
+/// aligned strings, so they need neither building nor a second pass in
+/// `al2subs` (#342). `buf.al` is left untouched. The `q0`/`q1` fields are
+/// empty; the caller adds qualities.
+pub fn align_vectorized_batch_subs<const L: usize>(
+    pairs: &[(&[u8], &[u8]); L],
+    scores: &VectorizedAlignScores,
+    buf: &mut BatchBuffers,
+) {
+    batch_impl::<L>(pairs, scores, buf, Out::Sub);
 }
 
 /// The DP fill of [`align_vectorized_batch`] without the traceback, for timing
@@ -145,7 +174,7 @@ pub fn align_vectorized_batch_fill_only<const L: usize>(
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
 ) {
-    batch_impl::<L>(pairs, scores, buf, false);
+    batch_impl::<L>(pairs, scores, buf, Out::Fill);
 }
 
 /// Runs the AVX2 build when [`crate::simd::avx2`] allows it (issue #336); the
@@ -154,15 +183,15 @@ fn batch_impl<const L: usize>(
     pairs: &[(&[u8], &[u8]); L],
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
-    traceback: bool,
+    out: Out,
 ) {
     #[cfg(target_arch = "x86_64")]
     if crate::simd::avx2() {
         // SAFETY: `simd::avx2` is true only when the CPU has AVX2.
-        unsafe { batch_avx2::<L>(pairs, scores, buf, traceback) };
+        unsafe { batch_avx2::<L>(pairs, scores, buf, out) };
         return;
     }
-    batch_body::<L>(pairs, scores, buf, traceback);
+    batch_body::<L>(pairs, scores, buf, out);
 }
 
 /// [`align_vectorized_batch`] compiled for the baseline target, whatever the
@@ -172,7 +201,7 @@ pub fn align_vectorized_batch_baseline<const L: usize>(
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
 ) {
-    batch_body::<L>(pairs, scores, buf, true);
+    batch_body::<L>(pairs, scores, buf, Out::Align);
 }
 
 /// [`align_vectorized_batch`] compiled with AVX2.
@@ -186,7 +215,7 @@ pub unsafe fn align_vectorized_batch_avx2<const L: usize>(
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
 ) {
-    batch_body::<L>(pairs, scores, buf, true);
+    batch_body::<L>(pairs, scores, buf, Out::Align);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -195,9 +224,9 @@ fn batch_avx2<const L: usize>(
     pairs: &[(&[u8], &[u8]); L],
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
-    traceback: bool,
+    out: Out,
 ) {
-    batch_body::<L>(pairs, scores, buf, traceback);
+    batch_body::<L>(pairs, scores, buf, out);
 }
 
 #[inline(always)]
@@ -205,7 +234,7 @@ fn batch_body<const L: usize>(
     pairs: &[(&[u8], &[u8]); L],
     scores: &VectorizedAlignScores,
     buf: &mut BatchBuffers,
-    traceback: bool,
+    out: Out,
 ) {
     let VectorizedAlignScores {
         match_score,
@@ -472,12 +501,26 @@ fn batch_body<const L: usize>(
         even = !even;
     }
 
-    if !traceback {
+    if out == Out::Fill {
         return;
     }
     // Per-lane traceback.
     let t_tb = buf.measure.then(std::time::Instant::now);
     let p_ro = &buf.p[..w * nrow];
+    if out == Out::Sub {
+        buf.subs.resize_with(L, Sub::default);
+        for (lane, (&(a, b), sub)) in pairs.iter().zip(buf.subs.iter_mut()).enumerate() {
+            let ptr = |i: usize, j: usize| {
+                let col = ((2 * start_col as i64 + j as i64 - i as i64) / 2) as usize;
+                p_ro[((i + j) * ncol + col) * L + lane]
+            };
+            traceback_sub(ptr, a, b, swap, sub);
+        }
+        if let Some(t) = t_tb {
+            buf.last_traceback_nanos = t.elapsed().as_nanos() as u64;
+        }
+        return;
+    }
     buf.al.resize_with(L, Default::default);
     for (lane, &(a, b)) in pairs.iter().enumerate() {
         let (s1, s2) = if swap { (b, a) } else { (a, b) };
@@ -517,6 +560,57 @@ fn batch_body<const L: usize>(
     if let Some(t) = t_tb {
         buf.last_traceback_nanos = t.elapsed().as_nanos() as u64;
     }
+}
+
+/// One lane's traceback, written as the [`Sub`] of `b` against `a` that
+/// `al2subs` would build from the aligned strings (#342).
+///
+/// `ptr(i, j)` is the pointer at DP cell `(i, j)` of the kernel's `(s1, s2)`,
+/// which is `(b, a)` when `swap`. The walk runs from the end, so each diagonal
+/// step knows both positions and bases: it sets `map` and records a
+/// substitution where the bases differ and neither is N (5). A gap step leaves
+/// the reference position at `GAP_GLYPH`. Substitutions arrive last first and
+/// are reversed once at the end. Assumes sequences hold only 1..=5, as raws do,
+/// so that `len0` is the reference length.
+#[inline(always)]
+fn traceback_sub(ptr: impl Fn(usize, usize) -> u8, a: &[u8], b: &[u8], swap: bool, sub: &mut Sub) {
+    let (len1, len2) = if swap {
+        (b.len(), a.len())
+    } else {
+        (a.len(), b.len())
+    };
+    sub.len0 = a.len() as u32;
+    sub.map.clear();
+    sub.map.resize(a.len(), GAP_GLYPH);
+    sub.pos.clear();
+    sub.nt0.clear();
+    sub.nt1.clear();
+    sub.q0.clear();
+    sub.q1.clear();
+    let (mut i, mut j) = (len1, len2);
+    while i > 0 || j > 0 {
+        match ptr(i, j) {
+            1 => {
+                i -= 1;
+                j -= 1;
+                // Reference (a) and query (b) positions of this column.
+                let (ia, ib) = if swap { (j, i) } else { (i, j) };
+                let (ca, cb) = (a[ia], b[ib]);
+                sub.map[ia] = ib as u16;
+                if ca != cb && ca != 5 && cb != 5 {
+                    sub.pos.push(ia as u16);
+                    sub.nt0.push(ca);
+                    sub.nt1.push(cb);
+                }
+            }
+            2 => j -= 1,
+            3 => i -= 1,
+            v => panic!("batched traceback: invalid pointer {v} at i={i} j={j}"),
+        }
+    }
+    sub.pos.reverse();
+    sub.nt0.reverse();
+    sub.nt1.reverse();
 }
 
 /// Single-pair reference, for the A/B and the identity tests.
@@ -644,6 +738,72 @@ mod tests {
                 "case {case}: la={la} lb={lb} band={band} ends=({begin},{end})"
             );
         }
+    }
+
+    /// The fused traceback's `Sub` equals `al2subs` on the same lane's aligned
+    /// strings (#342): both orientations, every end model, bands from 1 to
+    /// unbanded, and Ns (5) in both sequences, which never count as
+    /// substitutions.
+    #[test]
+    fn batch_subs_match_al2subs() {
+        const L: usize = 16;
+        let mut st = 0x342u64;
+        let (mut al, mut fused) = (BatchBuffers::new(), BatchBuffers::new());
+        let mut nsubs = 0;
+        let mut nn = 0;
+        for case in 0..600 {
+            let la = 20 + (rng(&mut st) % 300) as usize;
+            let lb = la.saturating_sub(12) + (rng(&mut st) % 25) as usize;
+            let band = [-1, 1, 2, 3, 7, 8, 16, 17, 32][(rng(&mut st) % 9) as usize];
+            let (begin, end) =
+                [(0i16, 0i16), (-8, -8), (0, -8), (-8, 0)][(rng(&mut st) % 4) as usize];
+            let scores = VectorizedAlignScores {
+                match_score: 5,
+                mismatch: -4,
+                gap_p: -8,
+                begin_gap_p: begin,
+                end_gap_p: end,
+                band,
+            };
+            let mut center: Vec<u8> = (0..la).map(|_| 1 + (rng(&mut st) % 4) as u8).collect();
+            let mut raws: Vec<Vec<u8>> = (0..L).map(|_| variant(&center, lb, &mut st)).collect();
+            // Sprinkle Ns into both sides.
+            for seq in std::iter::once(&mut center).chain(raws.iter_mut()) {
+                for c in seq.iter_mut() {
+                    if rng(&mut st).is_multiple_of(50) {
+                        *c = 5;
+                    }
+                }
+            }
+            let pairs: [(&[u8], &[u8]); L] = std::array::from_fn(|k| {
+                if case % 2 == 0 {
+                    (center.as_slice(), raws[k].as_slice())
+                } else {
+                    (raws[k].as_slice(), center.as_slice())
+                }
+            });
+            align_vectorized_batch::<L>(&pairs, &scores, &mut al);
+            align_vectorized_batch_subs::<L>(&pairs, &scores, &mut fused);
+            for lane in 0..L {
+                let (al0, al1) = &al.al[lane];
+                let want = crate::nwalign::al2subs(al0, al1);
+                assert_eq!(
+                    fused.subs[lane], want,
+                    "case {case} lane {lane}: la={la} lb={lb} band={band} ends=({begin},{end})"
+                );
+                nsubs += want.nsubs();
+                nn += al0
+                    .iter()
+                    .zip(al1.iter())
+                    .filter(|&(&x, &y)| x == 5 || y == 5)
+                    .count();
+            }
+        }
+        // The cases must exercise substitutions and N columns, not only identity.
+        assert!(
+            nsubs > 10_000 && nn > 1_000,
+            "nsubs {nsubs}, N columns {nn}"
+        );
     }
 
     #[test]
