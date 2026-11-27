@@ -421,6 +421,7 @@ pub fn unoise_compare(
                 &mut results,
                 pending,
                 raws,
+                None,
                 center,
                 params,
                 measure,

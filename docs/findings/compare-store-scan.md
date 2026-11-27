@@ -326,26 +326,52 @@ The extra pass has a fixed cost per call, and its join stalls when the call
 runs nested inside per-sample parallelism: in a first version it made every
 `learn-errors` run slower (MiSeq 9.1 → 18.8 s). A parallel deferred-pair scan
 shipped with it cost time everywhere, repeating #337's prep regression, and was
-reverted. The compacted store is now used only where one denoising runs alone
-(`dada-pooled`, and `dada` one sample at a time); `DADA2RS_DENSE_STORE=1`
-forces the full store.
+reverted. Merged as #356, the compacted store ran only where one denoising runs
+alone (`dada-pooled`, and `dada` one sample at a time).
 
-`main` against the branch, 48 threads, 2 reps, outputs identical apart from the
+`main` against #356, 48 threads, 2 reps, outputs identical apart from the
 version string (jobs 33604, 33754):
 
-| `dada-pooled` | `main` | compacted | change | store, `main` → compacted |
+| `dada-pooled` | `main` | #356 | change | store, `main` → #356 |
 |---|---|---|---|---|
 | MiSeq (272k uniques) | 58.2 s | 60.0 s | +3% | 4.6 → 6.1 s |
 | PacBio (547k) | 211.7 s | 200.9 s | −5% | 10.5 → 3.8 s |
 | NovaSeq (2.31M) | 1,714 s | 1,479 s | −14% | 358 → 114 s |
 
-`learn-errors` is unchanged. The gain grows with pool size, and on small pools
-the pass costs slightly more than the walk it replaces. MiSeq's +1.8 s is
-accepted rather than met with a size threshold.
+## The map returns only what the store uses (#355, second step)
 
-**What this leaves.** On NovaSeq the parallel pass (~114 s), batch prep
-(~70 s) and freeing the result vector (~24 s) still scale with nraw per call.
-Collecting the λ > 0 raws inside the map itself, with no nraw-long result
-vector, would remove all three and cost small pools nothing; that is the
-follow-up in #355.
+The compaction pass, batch prep and freeing the result vector still scaled
+with nraw per call (~208 s on NovaSeq). The fix moves the selection into the
+map: raws are walked in chunks, and each chunk returns its counts, its cost
+sums, its storable comparisons (λ > 0, the centre, or every one until
+`e_minmax` is seeded) and its deferred raws. An indexed collect keeps chunk
+order, so the store merges each chunk's kept and deferred comparisons in index
+order, and nothing nraw-long is written, scanned or freed per call. The map is
+still one join, so nested runs use it too, and the batched aligner writes into
+a list of the deferred comparisons only. `DADA2RS_DENSE_STORE=1` keeps the full
+path as the equivalence reference.
 
+A fixed 256-raw chunk made PacBio `learn-errors` 8% slower: its per-sample pools
+split into fewer chunks than threads. Chunks are now `nraw / (threads × 4)`,
+capped at 256 and floored at the map's 32-raw grain.
+
+#356 against this step, 48 threads, 2 reps, outputs identical apart from the
+version string (jobs 33755, 33762):
+
+| | #356 | chunked | change |
+|---|---|---|---|
+| MiSeq `dada-pooled` | 59.7 s | 55.0 s | −8% |
+| MiSeq `learn-errors` | 9.0 s | 6.8 s | −25% |
+| PacBio `dada-pooled` | 204.7 s | 201.8 s | −1% |
+| PacBio `learn-errors` | 10.9 s | 10.9 s | level |
+| NovaSeq `dada-pooled` | 1,440 s | 1,352 s | −6% |
+| NovaSeq `learn-errors` | 59.1 s | 51.6 s | −13% (256-raw chunks) |
+
+On NovaSeq `dada-pooled` the store fell from 114 to 16 s, prep from 74 to
+59 s and free from 24 to 10 s, while the screen pass came out 14–43 s higher,
+within `main`'s own 28 s spread between reps. MiSeq `learn-errors`' map time
+halved (100 → 38 thread-seconds): 287 concurrent sample runs pay per-job setup
+once per chunk instead of once per 32 raws.
+
+**What this leaves.** The store scan is solved for pooled runs: what remains
+of `b_compare` is the parallel map, which is the screen and the aligner.
