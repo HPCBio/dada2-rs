@@ -302,6 +302,25 @@ pub struct CarryMetrics {
     pub first_reconcile_calls: u64,
 }
 
+/// #358 follow-up accounting; see `cluster::A1Account`. `member_*` stay 0
+/// unless `DADA2RS_A1_MEMBER_SHADOW` is set.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct A1AccountMetrics {
+    pub reconciles: u64,
+    pub a1_scan: f64,
+    pub a1_walk: f64,
+    pub a2: f64,
+    pub fallen_visits: u64,
+    pub a1_pairs: u64,
+    pub a1_hits: u64,
+    pub a1_hit_nonmember: u64,
+    pub a1_hit_nonmember_centre: u64,
+    pub a1_hit_nonmember_first: u64,
+    pub member: f64,
+    pub member_visits: u64,
+    pub member_hits: u64,
+}
+
 /// Resident bytes per Raw (#32). In pooled mode this is the whole resident set;
 /// in pseudo or per-sample mode it is one sample's share, so multiply by
 /// `--sample-jobs` for the peak.
@@ -472,6 +491,7 @@ pub struct RunMetrics {
     pub reconcile: ReconcileMetrics,
     pub move_pruning: MovePruneMetrics,
     pub carry_87: CarryMetrics,
+    pub a1_account: A1AccountMetrics,
     pub bud: BudMetrics,
     pub p_update: PUpdateMetrics,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -639,6 +659,7 @@ pub struct RawCounters {
     pub shuf_rec_affected: u64,
     pub shuf_rec_changed: u64,
     pub shuf_rec_settled: u64,
+    pub shuf_a1: crate::cluster::A1Account,
     pub shuf_rec_rescan: u64,
     pub shuf_rec_rescan_comps: u64,
     pub shuf_rec_ties: u64,
@@ -768,6 +789,24 @@ impl RawCounters {
                 dirty: self.shuf_move_dirty,
                 prunable: self.shuf_move_prunable,
                 passes: self.shuf_move_passes,
+            },
+            a1_account: {
+                let a = &self.shuf_a1;
+                A1AccountMetrics {
+                    reconciles: a.reconciles as u64,
+                    a1_scan: secs(a.a1_scan_time),
+                    a1_walk: secs(a.a1_walk_time),
+                    a2: secs(a.a2_time),
+                    fallen_visits: a.fallen_visits as u64,
+                    a1_pairs: a.a1_pairs as u64,
+                    a1_hits: a.a1_hits as u64,
+                    a1_hit_nonmember: a.a1_hit_nonmember as u64,
+                    a1_hit_nonmember_centre: a.a1_hit_nonmember_centre as u64,
+                    a1_hit_nonmember_first: a.a1_hit_nonmember_first as u64,
+                    member: secs(a.member_time),
+                    member_visits: a.member_visits as u64,
+                    member_hits: a.member_hits as u64,
+                }
             },
             carry_87: CarryMetrics {
                 first_reconcile_pairs: self.shuf_first_rec_pairs,

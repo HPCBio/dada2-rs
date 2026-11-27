@@ -1287,6 +1287,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     let mut t_shuf_move = std::time::Duration::ZERO;
     let (mut shuf_move_raws, mut shuf_rec_affected, mut shuf_rec_changed) = (0u64, 0u64, 0u64);
     let mut shuf_rec_settled: u64 = 0;
+    let mut shuf_a1 = crate::cluster::A1Account::default();
     // Reconcile rescan-necessity projection (#136).
     let (mut shuf_rec_rescan, mut shuf_rec_rescan_comps) = (0u64, 0u64);
     let mut shuf_rec_ties: u64 = 0;
@@ -1694,6 +1695,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         t_rec_rescan += st.reconcile_rescan_time;
         shuf_rec_changed += st.reconcile_changed as u64;
         shuf_rec_settled += st.reconcile_settled as u64;
+        shuf_a1.add(&st.a1_account);
         shuf_zero_move_calls += st.zero_move_calls as u64;
         rec_print!(rec, "{}", "S".repeat(st.calls));
         t_shuffle += t.elapsed();
@@ -1995,6 +1997,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             shuf_rec_affected,
             shuf_rec_changed,
             shuf_rec_settled,
+            shuf_a1,
             shuf_rec_rescan,
             shuf_rec_rescan_comps,
             shuf_rec_ties,

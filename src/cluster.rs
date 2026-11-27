@@ -1069,6 +1069,53 @@ pub fn b_compare_parallel(
 // b_shuffle2
 // ---------------------------------------------------------------------------
 
+/// A1 accounting for the #358 follow-up (measurement only).
+///
+/// Splits the reconcile's collect into A1's fallen-cluster scan, A1's comp-vec
+/// walk and A2, and prices walking a fallen cluster's *members* instead of its
+/// comp vec. The member walk runs as a shadow only under
+/// `DADA2RS_A1_MEMBER_SHADOW=1`; `a1_hit_nonmember` counts the hits it would
+/// miss, split into centres and the rest.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct A1Account {
+    pub reconciles: usize,
+    pub a1_scan_time: std::time::Duration,
+    pub a1_walk_time: std::time::Duration,
+    pub a2_time: std::time::Duration,
+    pub fallen_visits: usize,
+    pub a1_pairs: usize,
+    pub a1_hits: usize,
+    pub a1_hit_nonmember: usize,
+    pub a1_hit_nonmember_centre: usize,
+    pub a1_hit_nonmember_first: usize,
+    pub member_time: std::time::Duration,
+    pub member_visits: usize,
+    pub member_hits: usize,
+}
+
+impl A1Account {
+    pub fn add(&mut self, o: &A1Account) {
+        self.reconciles += o.reconciles;
+        self.a1_scan_time += o.a1_scan_time;
+        self.a1_walk_time += o.a1_walk_time;
+        self.a2_time += o.a2_time;
+        self.fallen_visits += o.fallen_visits;
+        self.a1_pairs += o.a1_pairs;
+        self.a1_hits += o.a1_hits;
+        self.a1_hit_nonmember += o.a1_hit_nonmember;
+        self.a1_hit_nonmember_centre += o.a1_hit_nonmember_centre;
+        self.a1_hit_nonmember_first += o.a1_hit_nonmember_first;
+        self.member_time += o.member_time;
+        self.member_visits += o.member_visits;
+        self.member_hits += o.member_hits;
+    }
+}
+
+pub fn a1_member_shadow_gate() -> bool {
+    static G: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *G.get_or_init(|| std::env::var_os("DADA2RS_A1_MEMBER_SHADOW").is_some())
+}
+
 /// Diagnostics from one [`b_shuffle2`] call, used to quantify the rescan
 /// redundancy that gates any future incremental best-cluster tracking (see the
 /// "reduce work, don't parallelize" conclusion in docs/results.md). Purely
@@ -1195,6 +1242,8 @@ pub struct ShuffleStats {
     /// Fallen incumbents A1 settled by the runner-up bound instead of queueing
     /// for a rescan (#358).
     pub reconcile_settled: usize,
+    /// #358 follow-up accounting; see `A1Account`.
+    pub a1_account: A1Account,
     /// Work done by the **first** reconcile of this call — the one immediately
     /// following the post-bud move pass ([#139](https://github.com/HPCBio/dada2-rs/issues/139),
     /// reviving #87's projection).
@@ -1342,6 +1391,7 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
         reconcile_rescan_time: std::time::Duration::ZERO,
         reconcile_changed: 0,
         reconcile_settled: 0,
+        a1_account: A1Account::default(),
         zero_move_calls: usize::from(moves == 0),
         calls: 1,
     }
@@ -1732,6 +1782,8 @@ pub fn b_shuffle_converge(
     let mut reconcile_rescan_time = std::time::Duration::ZERO;
     let mut reconcile_changed = 0usize;
     let mut reconcile_settled = 0usize;
+    let mut acct = A1Account::default();
+    let member_shadow = a1_member_shadow_gate();
     loop {
         // Move pass — identical to b_shuffle2's, using the current compmax.
         // Timed separately (#124): build + reconcile left 15-19% of shuffle
@@ -1804,6 +1856,8 @@ pub fn b_shuffle_converge(
         let mut pairs_this_reconcile = 0usize;
         reads_fell.resize(b.clusters.len(), false);
         let incremental = !reconcile_full_gate();
+        acct.reconciles += 1;
+        let t_a1_scan = std::time::Instant::now();
 
         // --- Pass A1: necessity marking (#136) ---
         // A raw needs a full candidate rescan only if its current best cluster's
@@ -1820,6 +1874,28 @@ pub fn b_shuffle_converge(
                 reads_fell_list.push(ci as u32);
             }
         }
+        acct.a1_scan_time += t_a1_scan.elapsed();
+        acct.fallen_visits += reads_fell_list.len();
+        // Shadow (accounting only): the hits a walk over fallen clusters'
+        // members finds. `in_affected` is all false here.
+        if member_shadow {
+            let t_m = std::time::Instant::now();
+            let mut visits = 0usize;
+            let mut hits = 0usize;
+            for &ci in reads_fell_list.iter() {
+                let raws = &b.clusters[ci as usize].raws;
+                visits += raws.len();
+                for &raw in raws.iter() {
+                    if compmax[raw].i == ci {
+                        hits += 1;
+                    }
+                }
+            }
+            acct.member_time += t_m.elapsed();
+            acct.member_visits += visits;
+            acct.member_hits += hits;
+        }
+        let t_a1_walk = std::time::Instant::now();
         //
         // #358: a fallen incumbent that still strictly beats its runner-up bound
         // is still the best, so it is settled here by repricing instead of
@@ -1829,9 +1905,21 @@ pub fn b_shuffle_converge(
         let settle = incremental && !reconcile_no_bound_gate();
         for &ci in reads_fell_list.iter() {
             let reads_f = b.clusters[ci as usize].reads as f64;
+            acct.a1_pairs += b.clusters[ci as usize].comp.len();
             for comp in &b.clusters[ci as usize].comp {
                 let raw = comp.index as usize;
                 if compmax[raw].i == ci && !in_affected[raw] {
+                    acct.a1_hits += 1;
+                    let holder = b.raw_cluster[raw];
+                    if holder != ci {
+                        acct.a1_hit_nonmember += 1;
+                        if b.clusters[holder as usize].center == Some(raw) {
+                            acct.a1_hit_nonmember_centre += 1;
+                        }
+                        if first_reconcile {
+                            acct.a1_hit_nonmember_first += 1;
+                        }
+                    }
                     let e = comp.lambda * reads_f;
                     if settle && e > emax[raw].runner_up {
                         emax[raw].e = e;
@@ -1843,6 +1931,7 @@ pub fn b_shuffle_converge(
                 }
             }
         }
+        acct.a1_walk_time += t_a1_walk.elapsed();
         let n_rescan = affected.len();
         reconcile_rescan_raws += n_rescan;
         for &raw in affected.iter() {
@@ -1861,6 +1950,7 @@ pub fn b_shuffle_converge(
         // Indexed rather than zipped: the loop body needs `&mut` access to
         // `compmax`/`emax`/`dirty_*` alongside `&b`, so holding iterators over
         // `b.clusters` and `reads_used` across it would over-borrow.
+        let t_a2 = std::time::Instant::now();
         #[allow(clippy::needless_range_loop)]
         for ci in 0..b.clusters.len() {
             let new_reads = b.clusters[ci].reads;
@@ -1924,6 +2014,7 @@ pub fn b_shuffle_converge(
             }
             reads_used[ci] = new_reads;
         }
+        acct.a2_time += t_a2.elapsed();
         reconcile_collect_time += t_collect.elapsed();
         reconcile_affected += affected.len();
 
@@ -2024,6 +2115,7 @@ pub fn b_shuffle_converge(
         reconcile_rescan_time,
         reconcile_changed,
         reconcile_settled,
+        a1_account: acct,
         zero_move_calls,
         calls: nshuffle,
     }
