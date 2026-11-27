@@ -86,6 +86,14 @@ pub fn reconcile_no_bound_gate() -> bool {
 ///
 /// The walk is a provable no-op (see pass A2), so output is identical either
 /// way; the gate exists for both arms of an A/B from one binary.
+/// Walk fallen clusters' comp vecs in the reconcile's pass A1 again, instead
+/// of their members and the stranded centres (#358). Output is identical
+/// either way; this exists for A/B arms.
+pub fn a1_walk_comps_gate() -> bool {
+    static G: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *G.get_or_init(|| std::env::var_os("DADA2RS_A1_WALK_COMPS").is_some())
+}
+
 pub fn a2_walk_fallen_gate() -> bool {
     static VALUE: OnceLock<bool> = OnceLock::new();
     *VALUE.get_or_init(|| std::env::var_os("DADA2RS_A2_WALK_FALLEN").is_some())
@@ -1195,6 +1203,8 @@ pub struct ShuffleStats {
     /// Fallen incumbents A1 settled by the runner-up bound instead of queueing
     /// for a rescan (#358).
     pub reconcile_settled: usize,
+    /// Stranded-centre entries A1 visited, summed over reconciles (#358).
+    pub reconcile_stranded: usize,
     /// Work done by the **first** reconcile of this call — the one immediately
     /// following the post-bud move pass ([#139](https://github.com/HPCBio/dada2-rs/issues/139),
     /// reviving #87's projection).
@@ -1342,6 +1352,7 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
         reconcile_rescan_time: std::time::Duration::ZERO,
         reconcile_changed: 0,
         reconcile_settled: 0,
+        reconcile_stranded: 0,
         zero_move_calls: usize::from(moves == 0),
         calls: 1,
     }
@@ -1444,6 +1455,8 @@ fn record_change(
     dirty_cluster: &mut [bool],
     dirty_list: &mut Vec<u32>,
     reconcile_changed: &mut usize,
+    stranded: &mut Vec<u32>,
+    in_stranded: &mut [bool],
 ) {
     if new_ci == compmax[raw].i {
         return;
@@ -1453,6 +1466,15 @@ fn record_change(
     if cur != u32::MAX && !dirty_cluster[cur as usize] {
         dirty_cluster[cur as usize] = true;
         dirty_list.push(cur);
+    }
+    // A centre never moves, so a new best elsewhere strands it (#358).
+    if cur != u32::MAX
+        && new_ci != cur
+        && !in_stranded[raw]
+        && b.clusters[cur as usize].center == Some(raw)
+    {
+        in_stranded[raw] = true;
+        stranded.push(raw as u32);
     }
 }
 
@@ -1529,6 +1551,12 @@ pub struct ShuffleCarry {
     dirty_list: Vec<u32>,
     reads_fell: Vec<bool>,
     reads_fell_list: Vec<u32>,
+    /// Centres whose `compmax` may name another cluster (#358). After a move
+    /// pass every other raw sits in its `compmax` cluster, so A1 finds a
+    /// fallen incumbent's raws among that cluster's members plus this list.
+    /// May hold consistent entries; A1 drops them. `in_stranded` dedups.
+    stranded: Vec<u32>,
+    in_stranded: Vec<bool>,
     /// False until a full build has populated `compmax`/`emax`.
     built: bool,
 }
@@ -1656,8 +1684,29 @@ pub fn b_shuffle_converge(
         for (ci, c) in b.clusters.iter().enumerate() {
             carry.reads_used[ci] = c.reads;
         }
+        carry.stranded.clear();
+        carry.in_stranded.clear();
+        carry.in_stranded.resize(nraw, false);
+        for (ci, c) in b.clusters.iter().enumerate() {
+            if let Some(r) = c.center
+                && carry.compmax[r].i != ci as u32
+            {
+                carry.in_stranded[r] = true;
+                carry.stranded.push(r as u32);
+            }
+        }
         carry.built = true;
     } else {
+        // A bud moves only its new centre, whose carried `compmax` still names
+        // the cluster it left: strand it (#358).
+        for c in &b.clusters[carry.reads_used.len()..] {
+            if let Some(r) = c.center
+                && !carry.in_stranded[r]
+            {
+                carry.in_stranded[r] = true;
+                carry.stranded.push(r as u32);
+            }
+        }
         // New clusters enter with `reads_used = 0`, i.e. flagged as changed.
         carry.grow_to(b.clusters.len());
     }
@@ -1686,6 +1735,8 @@ pub fn b_shuffle_converge(
         dirty_list,
         reads_fell,
         reads_fell_list,
+        stranded,
+        in_stranded,
         ..
     } = carry;
 
@@ -1732,6 +1783,8 @@ pub fn b_shuffle_converge(
     let mut reconcile_rescan_time = std::time::Duration::ZERO;
     let mut reconcile_changed = 0usize;
     let mut reconcile_settled = 0usize;
+    let mut reconcile_stranded = 0usize;
+    let walk_comps = a1_walk_comps_gate();
     loop {
         // Move pass — identical to b_shuffle2's, using the current compmax.
         // Timed separately (#124): build + reconcile left 15-19% of shuffle
@@ -1826,22 +1879,96 @@ pub fn b_shuffle_converge(
         // rescanned. Every other candidate is at most the bound, or rose and is
         // tested in A2 against the repriced score. A tie goes to the rescan,
         // which owns the lowest-`ci` rule.
-        let settle = incremental && !reconcile_no_bound_gate();
-        for &ci in reads_fell_list.iter() {
-            let reads_f = b.clusters[ci as usize].reads as f64;
-            for comp in &b.clusters[ci as usize].comp {
-                let raw = comp.index as usize;
-                if compmax[raw].i == ci && !in_affected[raw] {
-                    let e = comp.lambda * reads_f;
-                    if settle && e > emax[raw].runner_up {
-                        emax[raw].e = e;
-                        reconcile_settled += 1;
-                    } else {
-                        in_affected[raw] = true;
-                        affected.push(raw);
+        // #358: the member walk below is complete only if every raw outside
+        // its `compmax` cluster is stranded. Checked directly, and by counting
+        // the hits a comp-vec walk would find: a missed hit is usually
+        // repaired later by A2, so `compmax`/`emax` alone would not show it.
+        let verify_a1 = reconcile_verify_gate() && !walk_comps;
+        let mut a1_want = 0usize;
+        if verify_a1 {
+            for &ci in reads_fell_list.iter() {
+                for comp in &b.clusters[ci as usize].comp {
+                    let raw = comp.index as usize;
+                    if compmax[raw].i == ci && emax[raw].e != f64::NEG_INFINITY {
+                        a1_want += 1;
                     }
                 }
             }
+            for raw in 0..nraw {
+                if compmax[raw].i != b.raw_cluster[raw] && emax[raw].e != f64::NEG_INFINITY {
+                    assert!(
+                        in_stranded[raw],
+                        "reconcile: raw {raw} is in cluster {} but compmax says {} and it is not stranded",
+                        b.raw_cluster[raw], compmax[raw].i
+                    );
+                }
+            }
+        }
+        let settle = incremental && !reconcile_no_bound_gate();
+        // A raw with no candidate (`emax` -inf) has no comp to find, so the
+        // member walk must skip it as the comp walk does.
+        let mut a1_got = 0usize;
+        let mut a1_hit = |raw: usize, e: f64| {
+            if in_affected[raw] || emax[raw].e == f64::NEG_INFINITY {
+                return;
+            }
+            a1_got += 1;
+            if settle && e > emax[raw].runner_up {
+                emax[raw].e = e;
+                reconcile_settled += 1;
+            } else {
+                in_affected[raw] = true;
+                affected.push(raw);
+            }
+        };
+        //
+        // #358: a fallen incumbent's raws are found among the cluster's
+        // members, not by walking its comp vec (~12x the pairs on NovaSeq).
+        // After a move pass every raw except a centre sits in its `compmax`
+        // cluster, and `stranded` holds the centres that may not.
+        for &ci in reads_fell_list.iter() {
+            let reads_f = b.clusters[ci as usize].reads as f64;
+            if walk_comps {
+                for comp in &b.clusters[ci as usize].comp {
+                    let raw = comp.index as usize;
+                    if compmax[raw].i == ci {
+                        a1_hit(raw, comp.lambda * reads_f);
+                    }
+                }
+            } else {
+                for &raw in &b.clusters[ci as usize].raws {
+                    if compmax[raw].i == ci {
+                        a1_hit(raw, compmax[raw].lambda * reads_f);
+                    }
+                }
+            }
+        }
+        if !walk_comps {
+            reconcile_stranded += stranded.len();
+            let mut k = 0;
+            while k < stranded.len() {
+                let raw = stranded[k] as usize;
+                let ci = compmax[raw].i;
+                if ci == b.raw_cluster[raw] {
+                    // Consistent again; a later change re-strands it.
+                    in_stranded[raw] = false;
+                    stranded.swap_remove(k);
+                    continue;
+                }
+                if reads_fell[ci as usize] {
+                    a1_hit(
+                        raw,
+                        compmax[raw].lambda * b.clusters[ci as usize].reads as f64,
+                    );
+                }
+                k += 1;
+            }
+        }
+        if verify_a1 {
+            assert_eq!(
+                a1_got, a1_want,
+                "reconcile: A1 member walk found {a1_got} hits, the comp walk {a1_want}"
+            );
         }
         let n_rescan = affected.len();
         reconcile_rescan_raws += n_rescan;
@@ -1905,6 +2032,8 @@ pub fn b_shuffle_converge(
                             dirty_cluster,
                             dirty_list,
                             &mut reconcile_changed,
+                            stranded,
+                            in_stranded,
                         );
                         compmax[raw] = comp.clone();
                     } else {
@@ -1940,6 +2069,8 @@ pub fn b_shuffle_converge(
                     dirty_cluster,
                     dirty_list,
                     &mut reconcile_changed,
+                    stranded,
+                    in_stranded,
                 );
             }
             compmax[raw] = new_best;
@@ -2024,6 +2155,7 @@ pub fn b_shuffle_converge(
         reconcile_rescan_time,
         reconcile_changed,
         reconcile_settled,
+        reconcile_stranded,
         zero_move_calls,
         calls: nshuffle,
     }
