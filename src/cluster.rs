@@ -63,6 +63,14 @@ pub fn reconcile_verify_gate() -> bool {
     })
 }
 
+/// Only the A1 hit-count check of [`reconcile_verify_gate`] (#358): one comp
+/// walk per reconcile rather than a full rescan, so it can run on NovaSeq.
+/// `DADA2RS_RECONCILE_VERIFY_A1=1`.
+pub fn reconcile_verify_a1_gate() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var_os("DADA2RS_RECONCILE_VERIFY_A1").is_some())
+}
+
 /// Force the shuffle's reconcile to fully rescan every affected raw's candidate
 /// list, disabling the #136 incremental update.
 ///
@@ -1873,17 +1881,13 @@ pub fn b_shuffle_converge(
                 reads_fell_list.push(ci as u32);
             }
         }
-        //
-        // #358: a fallen incumbent that still strictly beats its runner-up bound
-        // is still the best, so it is settled here by repricing instead of
-        // rescanned. Every other candidate is at most the bound, or rose and is
-        // tested in A2 against the repriced score. A tie goes to the rescan,
-        // which owns the lowest-`ci` rule.
         // #358: the member walk below is complete only if every raw outside
         // its `compmax` cluster is stranded. Checked directly, and by counting
         // the hits a comp-vec walk would find: a missed hit is usually
         // repaired later by A2, so `compmax`/`emax` alone would not show it.
-        let verify_a1 = reconcile_verify_gate() && !walk_comps;
+        // The count alone costs one comp walk, so it also runs under the
+        // lighter `reconcile_verify_a1_gate`, which is feasible on NovaSeq.
+        let verify_a1 = (reconcile_verify_gate() || reconcile_verify_a1_gate()) && !walk_comps;
         let mut a1_want = 0usize;
         if verify_a1 {
             for &ci in reads_fell_list.iter() {
@@ -1894,16 +1898,23 @@ pub fn b_shuffle_converge(
                     }
                 }
             }
-            for raw in 0..nraw {
-                if compmax[raw].i != b.raw_cluster[raw] && emax[raw].e != f64::NEG_INFINITY {
-                    assert!(
-                        in_stranded[raw],
-                        "reconcile: raw {raw} is in cluster {} but compmax says {} and it is not stranded",
-                        b.raw_cluster[raw], compmax[raw].i
-                    );
+            if reconcile_verify_gate() {
+                for raw in 0..nraw {
+                    if compmax[raw].i != b.raw_cluster[raw] && emax[raw].e != f64::NEG_INFINITY {
+                        assert!(
+                            in_stranded[raw],
+                            "reconcile: raw {raw} is in cluster {} but compmax says {} and it is not stranded",
+                            b.raw_cluster[raw], compmax[raw].i
+                        );
+                    }
                 }
             }
         }
+        // #358: a fallen incumbent that still strictly beats its runner-up bound
+        // is still the best, so it is settled here by repricing instead of
+        // rescanned. Every other candidate is at most the bound, or rose and is
+        // tested in A2 against the repriced score. A tie goes to the rescan,
+        // which owns the lowest-`ci` rule.
         let settle = incremental && !reconcile_no_bound_gate();
         // A raw with no candidate (`emax` -inf) has no comp to find, so the
         // member walk must skip it as the comp walk does.
