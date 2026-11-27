@@ -274,8 +274,10 @@ pub struct ReconcileMetrics {
     pub affected: u64,
     /// Of those, the ones whose best cluster actually changed.
     pub changed: u64,
-    /// Raws that genuinely required a rescan.
+    /// Raws whose incumbent fell, queued for a rescan.
     pub rescan_required: u64,
+    /// Fallen incumbents settled by the runner-up bound instead (#358).
+    pub settled: u64,
     pub rescan_comps: u64,
     /// Ties, where the incremental path cannot shortcut.
     pub ties: u64,
@@ -636,6 +638,7 @@ pub struct RawCounters {
     pub t_rec_rescan: Duration,
     pub shuf_rec_affected: u64,
     pub shuf_rec_changed: u64,
+    pub shuf_rec_settled: u64,
     pub shuf_rec_rescan: u64,
     pub shuf_rec_rescan_comps: u64,
     pub shuf_rec_ties: u64,
@@ -754,6 +757,7 @@ impl RawCounters {
                 rescan: secs(self.t_rec_rescan),
                 affected: self.shuf_rec_affected,
                 changed: self.shuf_rec_changed,
+                settled: self.shuf_rec_settled,
                 rescan_required: self.shuf_rec_rescan,
                 rescan_comps: self.shuf_rec_rescan_comps,
                 ties: self.shuf_rec_ties,
