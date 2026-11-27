@@ -72,6 +72,15 @@ pub fn reconcile_full_gate() -> bool {
     *VALUE.get_or_init(|| std::env::var_os("DADA2RS_RECONCILE_FULL").is_some())
 }
 
+/// Walk fallen clusters in the reconcile's pass A2 again, as before #358.
+///
+/// The walk is a provable no-op (see pass A2), so output is identical either
+/// way; the gate exists for both arms of an A/B from one binary.
+pub fn a2_walk_fallen_gate() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var_os("DADA2RS_A2_WALK_FALLEN").is_some())
+}
+
 /// Run `b_compare_parallel`'s full path (an nraw-long result vector, stored
 /// serially) instead of the #355 chunked map that returns only what the store
 /// can use. The reference for the equivalence test, and both arms of an A/B
@@ -1787,7 +1796,8 @@ pub fn b_shuffle_converge(
         }
 
         // --- Pass A2: incremental test (#136) ---
-        // Every changed cluster, ascending `ci`, skipping rescan-marked raws.
+        // Every risen (or new) cluster, ascending `ci`, skipping rescan-marked
+        // raws. Fallen clusters are skipped (#358).
         //
         // The replacement rule reproduces `best_from_cands` exactly, which is
         // argmax by (score, -ci): strict `>` alone is NOT sufficient, because an
@@ -1801,6 +1811,15 @@ pub fn b_shuffle_converge(
         for ci in 0..b.clusters.len() {
             let new_reads = b.clusters[ci].reads;
             if new_reads == reads_used[ci] {
+                continue;
+            }
+            // #358: a fallen cluster changes nothing here. A1 queued every raw
+            // it was the incumbent of, and for any other raw its (score, -ci)
+            // only drops below an incumbent that already beat it, so `beats`
+            // cannot fire. Measured: 0 effects over 29.3 G pairs on NovaSeq,
+            // where these were 97.8% of A2's pairs.
+            if incremental && reads_fell[ci] && !a2_walk_fallen_gate() {
+                reads_used[ci] = new_reads;
                 continue;
             }
             let reads_f = new_reads as f64;
