@@ -78,8 +78,9 @@ minor versions may carry breaking changes).
 
 - Each compare call's parallel map returns only the comparisons the store
   can use, instead of an nraw-long result vector that the store walked
-  serially (#355). Every mode uses it. NovaSeq `dada-pooled` at 48 threads:
-  −14% in a first version (TBD for this one). Output is unchanged.
+  serially (#355). Every mode uses it. At 48 threads, against the serial store:
+  NovaSeq `dada-pooled` −19% (two steps, −14% then −6%), MiSeq `dada-pooled`
+  −8% and `learn-errors` −25%; PacBio level. Output is unchanged.
   `DADA2RS_DENSE_STORE=1` restores the full path.
 - The k-mer screen first tests a per-raw presence bitmap (#295): a pair whose
   shared-k-mer bound already exceeds `--kdist-cutoff` is rejected without
