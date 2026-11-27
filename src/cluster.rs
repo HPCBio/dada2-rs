@@ -862,7 +862,13 @@ pub fn b_compare_parallel(
         // so concatenating gives index order without a merge tree, and the
         // map stays one join, as cheap nested (`learn-errors`) as not.
         // Until `e_minmax` is seeded every comparison is kept.
-        const CHUNK: usize = 256;
+        //
+        // Chunks are up to 256 raws, but at least four per thread, down to
+        // the map's grain (`par_max_len`): a fixed 256 left a small per-sample
+        // pool with fewer chunks than threads (PacBio `learn-errors` +8%,
+        // job 33755).
+        let threads = rayon::current_num_threads().max(1);
+        let chunk_len = (nraw / (threads * 4)).min(256).max(par_max_len());
         #[derive(Default)]
         struct Chunk {
             kept: Vec<(u32, f64, u32)>,
@@ -872,12 +878,12 @@ pub fn b_compare_parallel(
             cost: CompCost,
         }
         let keep_all = !b.e_minmax_seeded;
-        let chunks: Vec<Chunk> = (0..nraw.div_ceil(CHUNK))
+        let chunks: Vec<Chunk> = (0..nraw.div_ceil(chunk_len))
             .into_par_iter()
             .with_max_len(1)
             .map_init(make_buf, |buf, c| {
                 let mut ch = Chunk::default();
-                for index in c * CHUNK..((c + 1) * CHUNK).min(nraw) {
+                for index in c * chunk_len..((c + 1) * chunk_len).min(nraw) {
                     let (lambda, hamming, skipped, item) = compare_one(buf, index);
                     ch.cost = ch.cost.add(item);
                     if !skipped {
