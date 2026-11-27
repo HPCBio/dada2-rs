@@ -9,6 +9,9 @@ the reason to keep looking: **`b_shuffle` is 5.6–27% of `run_dada`, not the
 either no exploitable headroom or a prize under 3%. #124 closes as fully
 assessed; the real target is `b_compare`, which is 70–92% of `run_dada`.
 
+Reopened in [#358][358] once `b_compare` had halved: see
+[Inside `b_shuffle`: the reconcile](shuffle-reconcile.md) (NovaSeq −19% wall).
+
 Three results, in the order they were established:
 
 1. **Layout rework is a dead end** — the build is already within 1.8× of the same
@@ -474,3 +477,4 @@ The bounded-pruning implementation is preserved in git history at
 [53d7add]: https://github.com/HPCBio/dada2-rs/commit/53d7add
 [ff40014]: https://github.com/HPCBio/dada2-rs/commit/ff40014
 [302c60f]: https://github.com/HPCBio/dada2-rs/commit/302c60f
+[358]: https://github.com/HPCBio/dada2-rs/issues/358

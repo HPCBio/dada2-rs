@@ -290,6 +290,14 @@ reader benefit. Three homes, and only three:
   changes, not only when the idea improves. Also the page on why exactness is worth enforcing on a change
   you throw away — it caught a latent tie-break bug and is what makes the verdict
   final rather than ambiguous.
+- [Inside `b_shuffle`: the reconcile's wasted passes](shuffle-reconcile.md) —
+  once compare had halved, shuffle was 29% of NovaSeq `run_dada`, and an
+  accounting run found most of its reconcile re-proving known answers: A2's
+  walk over fallen clusters (97.8% of its pairs) changed nothing, and 99.72%
+  of rescans returned the same incumbent. Two exact cuts, skipping those
+  clusters and settling rescans with a carried runner-up bound, take NovaSeq
+  `dada-pooled` **−19% wall**, MiSeq −10% and PacBio −4%, output-identical.
+  Each landed within a few percent of its accounted price.
 - [Inside `b_compare`: screen vs align](compare-screen-vs-align.md) — the phase
   that is 63–88% of `run_dada`, split by time for the first time. **Both
   platforms are align-dominated**, PacBio most of all, refuting the prediction
