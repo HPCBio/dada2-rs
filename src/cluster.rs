@@ -72,6 +72,72 @@ pub fn reconcile_full_gate() -> bool {
     *VALUE.get_or_init(|| std::env::var_os("DADA2RS_RECONCILE_FULL").is_some())
 }
 
+/// Maintain a shadow upper bound on each raw's runner-up score through the
+/// shuffle, and count the rescans it would have settled (#358).
+///
+/// Measurement only: the bound never drives a decision. It costs an extra
+/// `f64` per raw and a test per A2 pair, so it is for accounting runs, never
+/// timing runs.
+pub fn shuffle_bound_shadow_gate() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var_os("DADA2RS_SHUFFLE_BOUND_SHADOW").is_some())
+}
+
+/// Reconcile accounting for #358. Observational: collecting it changes no
+/// partition behaviour. Pass names follow `b_shuffle_converge`.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct ReconcileAccount {
+    /// A1's scan of `reads_used` for fallen clusters: O(nclusters) per reconcile.
+    pub a1_scan_time: std::time::Duration,
+    /// A1's walk of the fallen clusters' comp vecs, marking rescans.
+    pub a1_mark_time: std::time::Duration,
+    /// Pairs A1 walked. Not in `pairs_reconcile`, which is A2 only.
+    pub a1_pairs: usize,
+    /// A2 time spent on fallen clusters, which #358 argues is a no-op.
+    pub a2_fell_time: std::time::Duration,
+    /// A2 pairs from fallen and from risen (or new) clusters.
+    pub a2_fell_pairs: usize,
+    pub a2_rose_pairs: usize,
+    /// Fallen-cluster pairs in A2 that won or repriced an incumbent. The no-op
+    /// argument says 0; a nonzero count falsifies it.
+    pub a2_fell_effects: usize,
+    /// Cluster visits by A1's scan and A2's loop together (2 × nclusters per
+    /// reconcile), the volume behind their fixed per-reconcile cost.
+    pub cluster_visits: usize,
+    /// Pass-B rescans whose candidate list has one entry: provably unchanged.
+    pub rescan_len1: usize,
+    /// Rescans that returned the entry incumbent.
+    pub rescan_unchanged: usize,
+    /// Rescans the exact runner-up bound would have settled: the entry
+    /// incumbent's new score strictly beats every other candidate. The ceiling
+    /// for any carried bound.
+    pub rescan_oracle_skip: usize,
+    /// Rescans the carried shadow bound would have settled (shadow gate only).
+    pub rescan_bound_skip: usize,
+    /// Shadow-settled rescans whose winner was neither the incumbent nor a
+    /// cluster that rose this reconcile, i.e. the bound was not an upper
+    /// bound. Must be 0.
+    pub rescan_bound_unsound: usize,
+}
+
+impl ReconcileAccount {
+    pub fn add(&mut self, o: &Self) {
+        self.a1_scan_time += o.a1_scan_time;
+        self.a1_mark_time += o.a1_mark_time;
+        self.a1_pairs += o.a1_pairs;
+        self.a2_fell_time += o.a2_fell_time;
+        self.a2_fell_pairs += o.a2_fell_pairs;
+        self.a2_rose_pairs += o.a2_rose_pairs;
+        self.a2_fell_effects += o.a2_fell_effects;
+        self.cluster_visits += o.cluster_visits;
+        self.rescan_len1 += o.rescan_len1;
+        self.rescan_unchanged += o.rescan_unchanged;
+        self.rescan_oracle_skip += o.rescan_oracle_skip;
+        self.rescan_bound_skip += o.rescan_bound_skip;
+        self.rescan_bound_unsound += o.rescan_bound_unsound;
+    }
+}
+
 /// Run `b_compare_parallel`'s full path (an nraw-long result vector, stored
 /// serially) instead of the #355 chunked map that returns only what the store
 /// can use. The reference for the equivalence test, and both arms of an A/B
@@ -1223,6 +1289,8 @@ pub struct ShuffleStats {
     pub zero_move_calls: usize,
     /// Move-pass iterations run.
     pub calls: usize,
+    /// #358 reconcile accounting.
+    pub account: ReconcileAccount,
 }
 
 impl ShuffleStats {
@@ -1321,6 +1389,7 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
         reconcile_changed: 0,
         zero_move_calls: usize::from(moves == 0),
         calls: 1,
+        account: ReconcileAccount::default(),
     }
 }
 
@@ -1458,6 +1527,76 @@ fn best_from_cands_scored(cands: &[Cand], raw: usize, clusters: &[Bi]) -> (Compa
     (best, best_e)
 }
 
+/// What [`rescan_account`] learned about one rescan (#358).
+struct RescanAccount {
+    oracle_skip: bool,
+    bound_skip: bool,
+    bound_unsound: bool,
+    /// Exact runner-up score: max over every candidate but the winner.
+    runner_up: f64,
+}
+
+/// [`best_from_cands_scored`] plus the #358 rescan accounting, in one walk so
+/// the accounting adds no second scattered read. The selection is the same
+/// ascending-`ci`, strict-`>` scan, so the result is identical.
+///
+/// `inc` is the entry incumbent, whose cluster fell. `shadow` carries the
+/// clusters that rose this reconcile and the raw's carried bound.
+#[inline]
+fn rescan_account(
+    cands: &[Cand],
+    raw: usize,
+    clusters: &[Bi],
+    inc: u32,
+    shadow: Option<(&[bool], f64)>,
+) -> (Comparison, f64, RescanAccount) {
+    let mut best_e = f64::NEG_INFINITY;
+    let mut second_e = f64::NEG_INFINITY;
+    let mut best = Comparison::default();
+    let mut e_inc = f64::NEG_INFINITY;
+    let mut max_other = f64::NEG_INFINITY;
+    let mut max_other_unrisen = f64::NEG_INFINITY;
+    for c in cands {
+        let e = c.lambda * clusters[c.ci as usize].reads as f64;
+        if e > best_e {
+            second_e = best_e;
+            best_e = e;
+            best = Comparison {
+                i: c.ci,
+                index: raw as u32,
+                lambda: c.lambda,
+                hamming: c.hamming,
+            };
+        } else if e > second_e {
+            second_e = e;
+        }
+        if c.ci == inc {
+            e_inc = e;
+        } else {
+            max_other = max_other.max(e);
+            if let Some((rose, _)) = shadow
+                && !rose[c.ci as usize]
+            {
+                max_other_unrisen = max_other_unrisen.max(e);
+            }
+        }
+    }
+    // Strict: a tie must fall back to the rescan for the lowest-`ci` rule.
+    let bound_skip = shadow.is_some_and(|(_, u)| e_inc > u);
+    (
+        best,
+        best_e,
+        RescanAccount {
+            oracle_skip: e_inc > max_other,
+            bound_skip,
+            // A2 would test risen clusters against the repriced incumbent, so
+            // only an unrisen candidate at or above it makes the skip wrong.
+            bound_unsound: bound_skip && max_other_unrisen >= e_inc,
+            runner_up: second_e,
+        },
+    )
+}
+
 /// Shuffle state that can outlive a single [`b_shuffle_converge`] call (#139).
 ///
 /// Owned by the caller and threaded through every bud round. When
@@ -1485,6 +1624,12 @@ pub struct ShuffleCarry {
     dirty_list: Vec<u32>,
     reads_fell: Vec<bool>,
     reads_fell_list: Vec<u32>,
+    /// #358 shadow, under [`shuffle_bound_shadow_gate`] only: an upper bound on
+    /// every non-incumbent candidate's score, and the clusters that rose in the
+    /// current reconcile. Empty otherwise.
+    bound: Vec<f64>,
+    rose: Vec<bool>,
+    rose_list: Vec<u32>,
     /// False until a full build has populated `compmax`/`emax`.
     built: bool,
 }
@@ -1516,6 +1661,9 @@ impl ShuffleCarry {
         self.reads_used.resize(nclusters, 0);
         self.dirty_cluster.resize(nclusters, false);
         self.reads_fell.resize(nclusters, false);
+        if shuffle_bound_shadow_gate() {
+            self.rose.resize(nclusters, false);
+        }
     }
 }
 
@@ -1590,15 +1738,25 @@ pub fn b_shuffle_converge(
         carry.dirty_cluster.clear();
         carry.reads_fell.clear();
         carry.grow_to(b.clusters.len());
-        let (compmax, emax) = (&mut carry.compmax, &mut carry.emax);
+        let shadow = shuffle_bound_shadow_gate();
+        carry.bound.clear();
+        if shadow {
+            carry.bound.resize(nraw, f64::NEG_INFINITY);
+        }
+        let (compmax, emax, bound) = (&mut carry.compmax, &mut carry.emax, &mut carry.bound);
         for bi in &b.clusters {
             let ci_reads = bi.reads as f64;
             for comp in &bi.comp {
                 let idx = comp.index as usize;
                 let e = comp.lambda * ci_reads;
                 if e > emax[idx] {
+                    if shadow {
+                        bound[idx] = bound[idx].max(emax[idx]);
+                    }
                     emax[idx] = e;
                     compmax[idx] = comp.clone();
+                } else if shadow {
+                    bound[idx] = bound[idx].max(e);
                 }
             }
             comps_scanned += bi.comp.len();
@@ -1638,8 +1796,13 @@ pub fn b_shuffle_converge(
         dirty_list,
         reads_fell,
         reads_fell_list,
+        bound,
+        rose,
+        rose_list,
         ..
     } = carry;
+    let shadow = shuffle_bound_shadow_gate();
+    let mut acct = ReconcileAccount::default();
 
     // --- #132: dirty-cluster move pass ---
     // After a reconcile, only raws whose `compmax` changed can move, so the
@@ -1765,13 +1928,18 @@ pub fn b_shuffle_converge(
         //
         // This must run before A2 and separately from it: it reads the
         // *entry-time* incumbent, and A2 mutates `compmax` as it goes.
+        let t_a1 = std::time::Instant::now();
+        acct.cluster_visits += 2 * reads_used.len();
         for (ci, ru) in reads_used.iter().enumerate() {
             if b.clusters[ci].reads < *ru && !reads_fell[ci] {
                 reads_fell[ci] = true;
                 reads_fell_list.push(ci as u32);
             }
         }
+        let t_a1_mark = std::time::Instant::now();
+        acct.a1_scan_time += t_a1_mark - t_a1;
         for &ci in reads_fell_list.iter() {
+            acct.a1_pairs += b.clusters[ci as usize].comp.len();
             for comp in &b.clusters[ci as usize].comp {
                 let raw = comp.index as usize;
                 if compmax[raw].i == ci && !in_affected[raw] {
@@ -1780,6 +1948,7 @@ pub fn b_shuffle_converge(
                 }
             }
         }
+        acct.a1_mark_time += t_a1_mark.elapsed();
         let n_rescan = affected.len();
         reconcile_rescan_raws += n_rescan;
         for &raw in affected.iter() {
@@ -1804,8 +1973,20 @@ pub fn b_shuffle_converge(
                 continue;
             }
             let reads_f = new_reads as f64;
+            let fell = new_reads < reads_used[ci];
+            // #358: time fallen clusters on their own, the claimed no-op.
+            let t_fell = fell.then(std::time::Instant::now);
             if incremental {
                 pairs_this_reconcile += b.clusters[ci].comp.len();
+                if fell {
+                    acct.a2_fell_pairs += b.clusters[ci].comp.len();
+                } else {
+                    acct.a2_rose_pairs += b.clusters[ci].comp.len();
+                    if shadow {
+                        rose[ci] = true;
+                        rose_list.push(ci as u32);
+                    }
+                }
                 for comp in &b.clusters[ci].comp {
                     let raw = comp.index as usize;
                     if in_affected[raw] {
@@ -1816,9 +1997,15 @@ pub fn b_shuffle_converge(
                         // Same cluster, re-priced at the new reads. Its own
                         // score is stale, so this is an assignment, not a test.
                         emax[raw] = e;
+                        acct.a2_fell_effects += usize::from(fell);
                     } else if beats(e, emax[raw], ci as u32, compmax[raw].i) {
+                        acct.a2_fell_effects += usize::from(fell);
                         if e == emax[raw] {
                             reconcile_tie_breaks += 1;
+                        }
+                        if shadow {
+                            // The displaced incumbent becomes a runner-up.
+                            bound[raw] = bound[raw].max(emax[raw]);
                         }
                         emax[raw] = e;
                         record_change(
@@ -1831,6 +2018,8 @@ pub fn b_shuffle_converge(
                             &mut reconcile_changed,
                         );
                         compmax[raw] = comp.clone();
+                    } else if shadow && !fell {
+                        bound[raw] = bound[raw].max(e);
                     }
                 }
             } else {
@@ -1845,6 +2034,9 @@ pub fn b_shuffle_converge(
                 }
             }
             reads_used[ci] = new_reads;
+            if let Some(t) = t_fell {
+                acct.a2_fell_time += t.elapsed();
+            }
         }
         reconcile_collect_time += t_collect.elapsed();
         reconcile_affected += affected.len();
@@ -1852,7 +2044,27 @@ pub fn b_shuffle_converge(
         // --- Pass B: full rescan, for the marked raws only ---
         let t_rescan = std::time::Instant::now();
         for &raw in affected.iter() {
-            let (new_best, new_e) = best_from_cands_scored(&index[raw], raw, &b.clusters);
+            let inc = compmax[raw].i;
+            let (new_best, new_e) = if incremental {
+                let (best, best_e, a) = rescan_account(
+                    &index[raw],
+                    raw,
+                    &b.clusters,
+                    inc,
+                    shadow.then(|| (&rose[..], bound[raw])),
+                );
+                acct.rescan_len1 += usize::from(index[raw].len() == 1);
+                acct.rescan_unchanged += usize::from(best.i == inc);
+                acct.rescan_oracle_skip += usize::from(a.oracle_skip);
+                acct.rescan_bound_skip += usize::from(a.bound_skip);
+                acct.rescan_bound_unsound += usize::from(a.bound_unsound);
+                if shadow {
+                    bound[raw] = a.runner_up;
+                }
+                (best, best_e)
+            } else {
+                best_from_cands_scored(&index[raw], raw, &b.clusters)
+            };
             if new_best.i != compmax[raw].i {
                 record_change(
                     raw,
@@ -1900,6 +2112,10 @@ pub fn b_shuffle_converge(
         }
 
         affected.clear();
+        for &ci in rose_list.iter() {
+            rose[ci as usize] = false;
+        }
+        rose_list.clear();
         for &ci in reads_fell_list.iter() {
             reads_fell[ci as usize] = false;
         }
@@ -1940,6 +2156,7 @@ pub fn b_shuffle_converge(
         reconcile_changed,
         zero_move_calls,
         calls: nshuffle,
+        account: acct,
     }
 }
 

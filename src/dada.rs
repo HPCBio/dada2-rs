@@ -1296,6 +1296,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
     let mut shuf_first_rec_calls: u64 = 0;
     let mut t_rec_collect = std::time::Duration::ZERO;
     let mut t_rec_rescan = std::time::Duration::ZERO;
+    let mut shuf_account = crate::cluster::ReconcileAccount::default();
     // #132 dirty-cluster move-pass diagnostics.
     let (mut shuf_move_unpruned, mut shuf_move_dirty) = (0u64, 0u64);
     let (mut shuf_move_prunable, mut shuf_move_passes) = (0u64, 0u64);
@@ -1691,6 +1692,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
         shuf_rec_rescan_comps += st.reconcile_comps_rescan as u64;
         t_rec_collect += st.reconcile_collect_time;
         t_rec_rescan += st.reconcile_rescan_time;
+        shuf_account.add(&st.account);
         shuf_rec_changed += st.reconcile_changed as u64;
         shuf_zero_move_calls += st.zero_move_calls as u64;
         rec_print!(rec, "{}", "S".repeat(st.calls));
@@ -1990,6 +1992,7 @@ pub fn run_dada(raws: Vec<Raw>, params: &DadaParams) -> B {
             shuf_move_raws,
             t_rec_collect,
             t_rec_rescan,
+            shuf_account,
             shuf_rec_affected,
             shuf_rec_changed,
             shuf_rec_rescan,

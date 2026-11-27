@@ -300,6 +300,25 @@ pub struct CarryMetrics {
     pub first_reconcile_calls: u64,
 }
 
+/// Reconcile accounting for #358; see `cluster::ReconcileAccount` for each
+/// field. `rescan_bound_*` stay 0 unless `DADA2RS_SHUFFLE_BOUND_SHADOW` is set.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ReconcileAccountMetrics {
+    pub a1_scan: f64,
+    pub a1_mark: f64,
+    pub a1_pairs: u64,
+    pub a2_fell: f64,
+    pub a2_fell_pairs: u64,
+    pub a2_rose_pairs: u64,
+    pub a2_fell_effects: u64,
+    pub cluster_visits: u64,
+    pub rescan_len1: u64,
+    pub rescan_unchanged: u64,
+    pub rescan_oracle_skip: u64,
+    pub rescan_bound_skip: u64,
+    pub rescan_bound_unsound: u64,
+}
+
 /// Resident bytes per Raw (#32). In pooled mode this is the whole resident set;
 /// in pseudo or per-sample mode it is one sample's share, so multiply by
 /// `--sample-jobs` for the peak.
@@ -470,6 +489,7 @@ pub struct RunMetrics {
     pub reconcile: ReconcileMetrics,
     pub move_pruning: MovePruneMetrics,
     pub carry_87: CarryMetrics,
+    pub reconcile_account: ReconcileAccountMetrics,
     pub bud: BudMetrics,
     pub p_update: PUpdateMetrics,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -634,6 +654,7 @@ pub struct RawCounters {
 
     pub t_rec_collect: Duration,
     pub t_rec_rescan: Duration,
+    pub shuf_account: crate::cluster::ReconcileAccount,
     pub shuf_rec_affected: u64,
     pub shuf_rec_changed: u64,
     pub shuf_rec_rescan: u64,
@@ -769,6 +790,24 @@ impl RawCounters {
                 first_reconcile_pairs: self.shuf_first_rec_pairs,
                 first_reconcile_comps: self.shuf_first_rec_comps,
                 first_reconcile_calls: self.shuf_first_rec_calls,
+            },
+            reconcile_account: {
+                let a = &self.shuf_account;
+                ReconcileAccountMetrics {
+                    a1_scan: secs(a.a1_scan_time),
+                    a1_mark: secs(a.a1_mark_time),
+                    a1_pairs: a.a1_pairs as u64,
+                    a2_fell: secs(a.a2_fell_time),
+                    a2_fell_pairs: a.a2_fell_pairs as u64,
+                    a2_rose_pairs: a.a2_rose_pairs as u64,
+                    a2_fell_effects: a.a2_fell_effects as u64,
+                    cluster_visits: a.cluster_visits as u64,
+                    rescan_len1: a.rescan_len1 as u64,
+                    rescan_unchanged: a.rescan_unchanged as u64,
+                    rescan_oracle_skip: a.rescan_oracle_skip as u64,
+                    rescan_bound_skip: a.rescan_bound_skip as u64,
+                    rescan_bound_unsound: a.rescan_bound_unsound as u64,
+                }
             },
             bud: BudMetrics {
                 calls: self.bud_calls,
