@@ -120,6 +120,7 @@ nav:
     - Dereplicate per sample, keep JSON: findings/per-sample-derep.md
     - Carrying compmax across buds: findings/shuffle-compmax-carry.md
     - Redesigning b_shuffle (closed): findings/shuffle-build-scan.md
+    - "Inside b_shuffle: the reconcile": findings/shuffle-reconcile.md
     - Inside b_compare — screen vs align: findings/compare-screen-vs-align.md
     - Inside b_compare — the serial remainder: findings/compare-serial-fold.md
     - Inside b_compare — the store scan: findings/compare-store-scan.md

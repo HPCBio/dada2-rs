@@ -76,6 +76,13 @@ minor versions may carry breaking changes).
 
 ### Changed
 
+- The shuffle's reconcile skips work that cannot change a raw's best
+  cluster (#358): pass A2 no longer walks clusters whose reads fell, and a
+  raw whose fallen incumbent still beats a carried bound on its runner-up
+  keeps it without a rescan. NovaSeq `dada-pooled` at 48 threads −19% wall
+  (shuffle 379 → 144 s), MiSeq −10%, PacBio −4%. Output is unchanged.
+  `DADA2RS_A2_WALK_FALLEN=1` and `DADA2RS_RECONCILE_NO_BOUND=1` turn each off.
+  See [Inside `b_shuffle`: the reconcile](docs/findings/shuffle-reconcile.md).
 - Each compare call's parallel map returns only the comparisons the store
   can use, instead of an nraw-long result vector that the store walked
   serially (#355). Every mode uses it. At 48 threads, against the serial store:

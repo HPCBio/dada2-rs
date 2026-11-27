@@ -72,6 +72,25 @@ pub fn reconcile_full_gate() -> bool {
     *VALUE.get_or_init(|| std::env::var_os("DADA2RS_RECONCILE_FULL").is_some())
 }
 
+/// Queue every raw whose incumbent fell for a rescan, as before #358, instead
+/// of settling the ones the carried runner-up bound proves unchanged.
+///
+/// Output is identical either way; the gate exists for both arms of an A/B
+/// from one binary.
+pub fn reconcile_no_bound_gate() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var_os("DADA2RS_RECONCILE_NO_BOUND").is_some())
+}
+
+/// Walk fallen clusters in the reconcile's pass A2 again, as before #358.
+///
+/// The walk is a provable no-op (see pass A2), so output is identical either
+/// way; the gate exists for both arms of an A/B from one binary.
+pub fn a2_walk_fallen_gate() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var_os("DADA2RS_A2_WALK_FALLEN").is_some())
+}
+
 /// Run `b_compare_parallel`'s full path (an nraw-long result vector, stored
 /// serially) instead of the #355 chunked map that returns only what the store
 /// can use. The reference for the equivalence test, and both arms of an A/B
@@ -1173,6 +1192,9 @@ pub struct ShuffleStats {
     /// which does not move during a reconcile, so repeated marking is
     /// idempotent.
     pub reconcile_changed: usize,
+    /// Fallen incumbents A1 settled by the runner-up bound instead of queueing
+    /// for a rescan (#358).
+    pub reconcile_settled: usize,
     /// Work done by the **first** reconcile of this call — the one immediately
     /// following the post-bud move pass ([#139](https://github.com/HPCBio/dada2-rs/issues/139),
     /// reviving #87's projection).
@@ -1319,6 +1341,7 @@ pub fn b_shuffle2(b: &mut B) -> ShuffleStats {
         reconcile_collect_time: std::time::Duration::ZERO,
         reconcile_rescan_time: std::time::Duration::ZERO,
         reconcile_changed: 0,
+        reconcile_settled: 0,
         zero_move_calls: usize::from(moves == 0),
         calls: 1,
     }
@@ -1433,29 +1456,48 @@ fn record_change(
     }
 }
 
+/// A raw's incumbent score and an upper bound on every other candidate's
+/// (#358). Packed so the reconcile reads both from one cache line.
+#[derive(Clone, Copy)]
+struct Score {
+    e: f64,
+    runner_up: f64,
+}
+
+impl Score {
+    const NONE: Self = Self {
+        e: f64::NEG_INFINITY,
+        runner_up: f64::NEG_INFINITY,
+    };
+}
+
 /// Raw's best cluster over its candidate list at the clusters' current reads,
-/// with the winning score.
+/// with the winning score and the exact runner-up: the max over every other
+/// candidate (#358).
 ///
 /// Ascending-`ci` order + strict `>` reproduces the serial lowest-`ci`
-/// tie-break. The score is returned because the incremental reconcile (#136)
-/// keeps `emax` in step with `compmax`, and recomputing it from the returned
-/// `Comparison` would re-read the cluster's reads for nothing.
-fn best_from_cands_scored(cands: &[Cand], raw: usize, clusters: &[Bi]) -> (Comparison, f64) {
-    let mut best_e = f64::NEG_INFINITY;
+/// tie-break. The scores are returned because the incremental reconcile (#136)
+/// keeps `emax` in step with `compmax`, and recomputing them would re-read the
+/// clusters' reads for nothing.
+fn best_from_cands_scored(cands: &[Cand], raw: usize, clusters: &[Bi]) -> (Comparison, Score) {
+    let mut s = Score::NONE;
     let mut best = Comparison::default();
     for c in cands {
         let e = c.lambda * clusters[c.ci as usize].reads as f64;
-        if e > best_e {
-            best_e = e;
+        if e > s.e {
+            s.runner_up = s.e;
+            s.e = e;
             best = Comparison {
                 i: c.ci,
                 index: raw as u32,
                 lambda: c.lambda,
                 hamming: c.hamming,
             };
+        } else if e > s.runner_up {
+            s.runner_up = e;
         }
     }
-    (best, best_e)
+    (best, s)
 }
 
 /// Shuffle state that can outlive a single [`b_shuffle_converge`] call (#139).
@@ -1473,8 +1515,10 @@ pub struct ShuffleCarry {
     /// Best comparison per raw at `reads_used`. Empty until the first build.
     compmax: Vec<Comparison>,
     /// Score of `compmax`, carried so the incremental reconcile can test
-    /// against the incumbent without recomputing it.
-    emax: Vec<f64>,
+    /// against the incumbent without recomputing it, and an upper bound on the
+    /// runner-up's, which lets A1 settle a fallen incumbent without a rescan
+    /// (#358).
+    emax: Vec<Score>,
     /// Per-cluster reads the map is currently consistent with. A cluster whose
     /// current reads differ is what the reconcile treats as changed, so this is
     /// the sole record of how stale the map is.
@@ -1585,7 +1629,7 @@ pub fn b_shuffle_converge(
         carry.compmax.clear();
         carry.compmax.resize(nraw, Comparison::default());
         carry.emax.clear();
-        carry.emax.resize(nraw, f64::NEG_INFINITY);
+        carry.emax.resize(nraw, Score::NONE);
         carry.reads_used.clear();
         carry.dirty_cluster.clear();
         carry.reads_fell.clear();
@@ -1596,9 +1640,13 @@ pub fn b_shuffle_converge(
             for comp in &bi.comp {
                 let idx = comp.index as usize;
                 let e = comp.lambda * ci_reads;
-                if e > emax[idx] {
-                    emax[idx] = e;
+                let s = &mut emax[idx];
+                if e > s.e {
+                    s.runner_up = s.e;
+                    s.e = e;
                     compmax[idx] = comp.clone();
+                } else if e > s.runner_up {
+                    s.runner_up = e;
                 }
             }
             comps_scanned += bi.comp.len();
@@ -1683,6 +1731,7 @@ pub fn b_shuffle_converge(
     let mut reconcile_collect_time = std::time::Duration::ZERO;
     let mut reconcile_rescan_time = std::time::Duration::ZERO;
     let mut reconcile_changed = 0usize;
+    let mut reconcile_settled = 0usize;
     loop {
         // Move pass — identical to b_shuffle2's, using the current compmax.
         // Timed separately (#124): build + reconcile left 15-19% of shuffle
@@ -1771,12 +1820,26 @@ pub fn b_shuffle_converge(
                 reads_fell_list.push(ci as u32);
             }
         }
+        //
+        // #358: a fallen incumbent that still strictly beats its runner-up bound
+        // is still the best, so it is settled here by repricing instead of
+        // rescanned. Every other candidate is at most the bound, or rose and is
+        // tested in A2 against the repriced score. A tie goes to the rescan,
+        // which owns the lowest-`ci` rule.
+        let settle = incremental && !reconcile_no_bound_gate();
         for &ci in reads_fell_list.iter() {
+            let reads_f = b.clusters[ci as usize].reads as f64;
             for comp in &b.clusters[ci as usize].comp {
                 let raw = comp.index as usize;
                 if compmax[raw].i == ci && !in_affected[raw] {
-                    in_affected[raw] = true;
-                    affected.push(raw);
+                    let e = comp.lambda * reads_f;
+                    if settle && e > emax[raw].runner_up {
+                        emax[raw].e = e;
+                        reconcile_settled += 1;
+                    } else {
+                        in_affected[raw] = true;
+                        affected.push(raw);
+                    }
                 }
             }
         }
@@ -1787,7 +1850,8 @@ pub fn b_shuffle_converge(
         }
 
         // --- Pass A2: incremental test (#136) ---
-        // Every changed cluster, ascending `ci`, skipping rescan-marked raws.
+        // Every risen (or new) cluster, ascending `ci`, skipping rescan-marked
+        // raws. Fallen clusters are skipped (#358).
         //
         // The replacement rule reproduces `best_from_cands` exactly, which is
         // argmax by (score, -ci): strict `>` alone is NOT sufficient, because an
@@ -1803,6 +1867,15 @@ pub fn b_shuffle_converge(
             if new_reads == reads_used[ci] {
                 continue;
             }
+            // #358: a fallen cluster changes nothing here. A1 queued every raw
+            // it was the incumbent of, and for any other raw its (score, -ci)
+            // only drops below an incumbent that already beat it, so `beats`
+            // cannot fire. Measured: 0 effects over 29.3 G pairs on NovaSeq,
+            // where these were 97.8% of A2's pairs.
+            if incremental && reads_fell[ci] && !a2_walk_fallen_gate() {
+                reads_used[ci] = new_reads;
+                continue;
+            }
             let reads_f = new_reads as f64;
             if incremental {
                 pairs_this_reconcile += b.clusters[ci].comp.len();
@@ -1812,15 +1885,18 @@ pub fn b_shuffle_converge(
                         continue; // queued for full rescan
                     }
                     let e = comp.lambda * reads_f;
+                    let s = &mut emax[raw];
                     if compmax[raw].i == ci as u32 {
                         // Same cluster, re-priced at the new reads. Its own
                         // score is stale, so this is an assignment, not a test.
-                        emax[raw] = e;
-                    } else if beats(e, emax[raw], ci as u32, compmax[raw].i) {
-                        if e == emax[raw] {
+                        s.e = e;
+                    } else if beats(e, s.e, ci as u32, compmax[raw].i) {
+                        if e == s.e {
                             reconcile_tie_breaks += 1;
                         }
-                        emax[raw] = e;
+                        // The displaced incumbent is now a runner-up.
+                        s.runner_up = s.runner_up.max(s.e);
+                        s.e = e;
                         record_change(
                             raw,
                             ci as u32,
@@ -1831,6 +1907,8 @@ pub fn b_shuffle_converge(
                             &mut reconcile_changed,
                         );
                         compmax[raw] = comp.clone();
+                    } else {
+                        s.runner_up = s.runner_up.max(e);
                     }
                 }
             } else {
@@ -1852,7 +1930,7 @@ pub fn b_shuffle_converge(
         // --- Pass B: full rescan, for the marked raws only ---
         let t_rescan = std::time::Instant::now();
         for &raw in affected.iter() {
-            let (new_best, new_e) = best_from_cands_scored(&index[raw], raw, &b.clusters);
+            let (new_best, new_s) = best_from_cands_scored(&index[raw], raw, &b.clusters);
             if new_best.i != compmax[raw].i {
                 record_change(
                     raw,
@@ -1865,7 +1943,7 @@ pub fn b_shuffle_converge(
                 );
             }
             compmax[raw] = new_best;
-            emax[raw] = new_e;
+            emax[raw] = new_s;
             comps_scanned += index[raw].len();
             in_affected[raw] = false;
         }
@@ -1885,16 +1963,23 @@ pub fn b_shuffle_converge(
         // that matter.
         if reconcile_verify_gate() {
             for raw in 0..nraw {
-                let (want, want_e) = best_from_cands_scored(&index[raw], raw, &b.clusters);
+                let (want, want_s) = best_from_cands_scored(&index[raw], raw, &b.clusters);
                 assert_eq!(
                     compmax[raw].i, want.i,
                     "reconcile: compmax[{raw}] = cluster {} but a full rescan says {}",
                     compmax[raw].i, want.i
                 );
                 assert_eq!(
-                    emax[raw], want_e,
-                    "reconcile: emax[{raw}] = {} but a full rescan says {want_e}",
-                    emax[raw]
+                    emax[raw].e, want_s.e,
+                    "reconcile: emax[{raw}] = {} but a full rescan says {}",
+                    emax[raw].e, want_s.e
+                );
+                // #358: only an upper bound, so >=. Equality is not required.
+                assert!(
+                    emax[raw].runner_up >= want_s.runner_up,
+                    "reconcile: runner_up[{raw}] = {} is below the true {}",
+                    emax[raw].runner_up,
+                    want_s.runner_up
                 );
             }
         }
@@ -1938,6 +2023,7 @@ pub fn b_shuffle_converge(
         reconcile_collect_time,
         reconcile_rescan_time,
         reconcile_changed,
+        reconcile_settled,
         zero_move_calls,
         calls: nshuffle,
     }
