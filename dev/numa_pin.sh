@@ -89,9 +89,12 @@
 #                             measured under default placement
 #   NUMA_NODE=0             which domain, for bind (and a preference for auto)
 #   NUMA_MEM=strict|preferred  memory side of a bind: --membind (strict, the
-#                             default for bind) or --preferred (the default for
-#                             auto), which spills to another node when the
-#                             bound one is full instead of failing
+#                             default) or --preferred, which spills to another
+#                             node when the bound one is full instead of
+#                             failing. Strict was never slower than preferred
+#                             (NovaSeq, jobs 33967/33973). Its occasional
+#                             ~100 s faster screen pass is #360's two-speed
+#                             screen, which strict does not cause.
 #   NUMA_PIN=0              legacy alias for NUMA_POLICY=none
 #
 # After numa_pin_init, NUMA_RESOLVED names what was chosen: interleave,
@@ -195,7 +198,7 @@ numa_pin_init() {
         [ "$threads" -gt 0 ] 2>/dev/null && picked="$(_numa_pick_node "$threads")"
         if [ -n "$picked" ]; then
             echo "[numa] auto: $threads threads fit in node $picked with headroom — binding" >&2
-            policy="bind" node="$picked" mem="${mem:-preferred}"
+            policy="bind" node="$picked"
         else
             if [ "$threads" -gt 0 ] 2>/dev/null; then
                 echo "[numa] auto: $threads threads do not fit in 3/4 of any one node — interleaving" >&2
