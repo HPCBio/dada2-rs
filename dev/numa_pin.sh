@@ -47,9 +47,19 @@
 # count fills or exceeds a domain; it reverses when the count fits inside one.
 # Benchmark numbers gathered under this helper are therefore CONSERVATIVE in
 # absolute terms at sub-domain thread counts -- A/B deltas are unaffected, since
-# both arms always share the policy. Whether binding is as *reproducible* as
-# interleaving is not yet measured, which is the only reason the default here
-# has not changed. See docs/tuning-for-your-data.md.
+# both arms always share the policy. See docs/tuning-for-your-data.md.
+#
+# DEFAULT IS NOW auto (#362): bind when the thread count fits in one node's
+# allowed physical cores with a quarter of the node to spare, interleave
+# otherwise (48 of 64 cores binds; 64 of 64, the losing case above, does not). #360 measured the size and the
+# reproducibility that kept the default at interleave. NovaSeq dada-pooled, 48
+# threads, compute-5-6, job 33963, main loop (2 reps each):
+#
+#   --interleave=all                  983 / 968 s   (reps 1.5% apart)
+#   --cpunodebind=0 --membind=0       654 / 673 s   (reps 2.9% apart)  -32%
+#
+# Absolute timings taken before the switch are interleave timings; compare
+# against them with NUMA_POLICY=interleave.
 #
 # NOTE this is a *measurement* tool. Interleaving is not a speed recommendation:
 # at 64 threads it matches default placement on mean run_dada (372s vs 372s).
@@ -66,34 +76,98 @@
 # fails; numa_pin_init warns when IFS would do that. Prefer the array.
 #
 # Env overrides:
-#   NUMA_POLICY=interleave  (default) numactl --interleave=all
+#   NUMA_POLICY=auto        (default) bind if the threads fit one node's allowed
+#                             physical cores and use at most 3/4 of the node,
+#                             else interleave. The node is the
+#                             one with the most allowed cores, then the most
+#                             free memory; NUMA_NODE overrides if it fits.
+#   NUMA_POLICY=interleave  numactl --interleave=all — the default until #362,
+#                             for comparing against timings taken under it
 #   NUMA_POLICY=bind        numactl --cpunodebind=$NUMA_NODE --membind=$NUMA_NODE
-#                           — lowest-latency for serial scattered phases, but
-#                             slows the parallel map; refuses to oversubscribe
+#                           — refuses to oversubscribe the node's cores
 #   NUMA_POLICY=none        no numactl — use when comparing against history
 #                             measured under default placement
-#   NUMA_NODE=0             which domain, for NUMA_POLICY=bind
+#   NUMA_NODE=0             which domain, for bind (and a preference for auto)
+#   NUMA_MEM=strict|preferred  memory side of a bind: --membind (strict, the
+#                             default for bind) or --preferred (the default for
+#                             auto), which spills to another node when the
+#                             bound one is full instead of failing
 #   NUMA_PIN=0              legacy alias for NUMA_POLICY=none
+#
+# After numa_pin_init, NUMA_RESOLVED names what was chosen: interleave,
+# bind:<node>, or none.
 # ---------------------------------------------------------------------------
 
-# Physical cores in NUMA node $1 — distinct core ids, so SMT siblings are not
-# double counted. Empty if the topology cannot be read.
+# CPUs this process may run on (Cpus_allowed_list), one per line. Empty
+# without /proc, in which case every CPU counts.
+_numa_allowed_cpus() {
+    [ -r /proc/self/status ] || return 0
+    awk '/^Cpus_allowed_list:/ {print $2}' /proc/self/status \
+        | tr , '\n' \
+        | awk -F- 'NF {hi = ($2 == "") ? $1 : $2; for (i = $1; i <= hi; i++) print i}'
+}
+
+# Physical cores in NUMA node $1 that this process may use — distinct core
+# ids, so SMT siblings are not double counted, and only CPUs in the cpuset, so
+# a Slurm job that owns part of a socket is not credited with all of it. With
+# $2 = all, every core in the node, cpuset or not. Empty if the topology
+# cannot be read.
 _numa_cores_in_node() {
     command -v lscpu >/dev/null 2>&1 || return 0
+    local allowed=""
+    [ "${2:-}" = all ] || allowed="$(_numa_allowed_cpus | paste -sd, -)"
     lscpu -p=CPU,CORE,NODE 2>/dev/null \
         | grep -v '^#' \
-        | awk -F, -v n="$1" '$3==n {print $2}' \
+        | awk -F, -v n="$1" -v allowed="$allowed" '
+            BEGIN { k = split(allowed, a, ","); for (i = 1; i <= k; i++) ok[a[i]] = 1 }
+            $3 == n && (k == 0 || ($1 in ok)) {print $2}' \
         | sort -u | wc -l | tr -d ' '
+}
+
+# Whether auto may bind $1 threads to node $2: they must fit in the node's
+# allowed cores AND leave a quarter of the whole node's cores free. Binding wins
+# with headroom and loses at a full domain, where one node's memory controllers
+# feed every thread: 48 of 64 cores bound was 25-32% faster than interleave
+# (#152, #360), 64 of 64 was 5% slower (#127). Between the two is unmeasured.
+_numa_auto_fits() {
+    local threads="$1" node="$2" allowed total
+    allowed="$(_numa_cores_in_node "$node")"
+    total="$(_numa_cores_in_node "$node" all)"
+    [ -n "$allowed" ] && [ -n "$total" ] || return 1
+    [ "$threads" -le "$allowed" ] && [ $((threads * 4)) -le $((total * 3)) ]
+}
+
+# The node auto binds to for $1 threads, or nothing if none qualifies:
+# NUMA_NODE if set and it qualifies, else the node with the most allowed cores,
+# then the most free memory.
+_numa_pick_node() {
+    local threads="$1" hw n cores free best="" best_cores=0 best_free=-1
+    hw="$(numactl --hardware 2>/dev/null)"
+    if [ -n "${NUMA_NODE:-}" ] && _numa_auto_fits "$threads" "$NUMA_NODE"; then
+        echo "$NUMA_NODE"
+        return 0
+    fi
+    for n in $(echo "$hw" | awk '$1 == "node" && $3 == "size:" {print $2}'); do
+        _numa_auto_fits "$threads" "$n" || continue
+        cores="$(_numa_cores_in_node "$n")"
+        free="$(echo "$hw" | awk -v n="$n" '$1 == "node" && $2 == n && $3 == "free:" {print $4}')"
+        if [ "$cores" -gt "$best_cores" ] || { [ "$cores" -eq "$best_cores" ] && [ "${free:-0}" -gt "$best_free" ]; }; then
+            best="$n" best_cores="$cores" best_free="${free:-0}"
+        fi
+    done
+    echo "$best"
 }
 
 # Sets NUMA_PREFIX (possibly empty) and explains the decision on stderr.
 # $1 = thread count the benchmark will use.
 numa_pin_init() {
     local threads="${1:-0}"
-    local policy="${NUMA_POLICY:-interleave}"
+    local policy="${NUMA_POLICY:-auto}"
     local node="${NUMA_NODE:-0}"
+    local mem="${NUMA_MEM:-}"
     NUMA_PREFIX=""
     NUMA_PREFIX_ARGS=()
+    NUMA_RESOLVED="none"
 
     # Legacy alias, kept so existing invocations keep working.
     [ "${NUMA_PIN:-}" = "0" ] && policy="none"
@@ -116,6 +190,22 @@ numa_pin_init() {
         return 0
     fi
 
+    if [ "$policy" = "auto" ]; then
+        local picked=""
+        [ "$threads" -gt 0 ] 2>/dev/null && picked="$(_numa_pick_node "$threads")"
+        if [ -n "$picked" ]; then
+            echo "[numa] auto: $threads threads fit in node $picked with headroom — binding" >&2
+            policy="bind" node="$picked" mem="${mem:-preferred}"
+        else
+            if [ "$threads" -gt 0 ] 2>/dev/null; then
+                echo "[numa] auto: $threads threads do not fit in 3/4 of any one node — interleaving" >&2
+            else
+                echo "[numa] auto: thread count not given — interleaving" >&2
+            fi
+            policy="interleave"
+        fi
+    fi
+
     local -a candidate
     case "$policy" in
         interleave)
@@ -133,10 +223,17 @@ numa_pin_init() {
                 echo "[numa]   Use NUMA_POLICY=interleave (no core restriction), or --threads <= $cores." >&2
                 return 0
             fi
-            candidate=(numactl "--cpunodebind=$node" "--membind=$node")
+            case "${mem:-strict}" in
+                strict) candidate=(numactl "--cpunodebind=$node" "--membind=$node") ;;
+                preferred) candidate=(numactl "--cpunodebind=$node" "--preferred=$node") ;;
+                *)
+                    echo "[numa] unknown NUMA_MEM=$mem (expected strict|preferred) — default placement" >&2
+                    return 0
+                    ;;
+            esac
             ;;
         *)
-            echo "[numa] unknown NUMA_POLICY=$policy (expected interleave|bind|none) — default placement" >&2
+            echo "[numa] unknown NUMA_POLICY=$policy (expected auto|interleave|bind|none) — default placement" >&2
             return 0
             ;;
     esac
@@ -155,6 +252,7 @@ numa_pin_init() {
 
     NUMA_PREFIX_ARGS=("${candidate[@]}")
     NUMA_PREFIX="$joined"
+    if [ "$policy" = "bind" ]; then NUMA_RESOLVED="bind:$node"; else NUMA_RESOLVED="$policy"; fi
     echo "[numa] fixed placement: $NUMA_PREFIX" >&2
     if [ "$IFS" != $' \t\n' ]; then
         echo "[numa]   WARNING: IFS is not the default, so unquoted \$NUMA_PREFIX will not split;" >&2

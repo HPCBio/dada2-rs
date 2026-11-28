@@ -70,6 +70,7 @@ level.
   "schema_version": 1,
   "measure_level": "phases",
   "wall_seconds": 812.4,
+  "placement": { "cpus_allowed": "0-63", "mems_allowed": "0-1", "mempolicy": "bind:0" },
   "pipeline": { "derep": 41.2, "merge": 18.9, "dada": 701.1, "output": 51.2 },
   "runs": [
     {
@@ -129,6 +130,14 @@ also carries:
   input order. Pooled has a single `runs[]` entry for many samples, so this is
   where the per-sample derep counts live. `--verbose` no longer prints the
   unnamed `[derep] N raw -> N unique` lines on this path.
+
+**`placement`** records where the process was allowed to run:
+`cpus_allowed` and `mems_allowed` as `/proc/self/status` lists them, and
+`mempolicy`, the policy most mappings carry in `/proc/self/numa_maps`
+(`default`, `interleave:0-1`, `bind:0`, `prefer:0`). It is absent where `/proc`
+is not available, such as macOS. Placement moved NovaSeq timings by a third in
+[#360](https://github.com/HPCBio/dada2-rs/issues/360), so compare timings only
+between documents with the same placement.
 
 `runs[].screen_occupancy` has a `kmer` or `minimizer` half for whichever screen
 the run built (both under `--screen-audit`): per-raw fill against the
