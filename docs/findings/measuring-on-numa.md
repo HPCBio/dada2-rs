@@ -192,7 +192,8 @@ NUMA_POLICY=bind         # --cpunodebind=N --membind=N; refuses to oversubscribe
 NUMA_POLICY=none         # default first-touch — for comparing against results
                          #   measured before this existed
 NUMA_NODE=0              # which domain, for bind (a preference for auto)
-NUMA_MEM=preferred       # --preferred=N instead of --membind=N (auto's default)
+NUMA_MEM=preferred       # --preferred=N instead of --membind=N; spills over
+                         #   instead of failing when the node is full
 ```
 
 The default changed once binding's reproducibility was measured: in #360's

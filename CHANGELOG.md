@@ -83,7 +83,9 @@ minor versions may carry breaking changes).
   node when the thread count fits the job's cores there and uses at most 3/4
   of the node, interleave otherwise. NovaSeq `dada-pooled` at 48 threads ran
   32% faster bound (#360). Cores are now counted within the job's cpuset.
-  `NUMA_POLICY=interleave` restores the old default.
+  `NUMA_POLICY=interleave` restores the old default. A bind uses strict
+  `--membind`; `NUMA_MEM=preferred` gives `--preferred`, which spills to
+  another node instead of failing when the bound one is full.
 - The shuffle's reconcile skips work that cannot change a raw's best
   cluster (#358): pass A2 no longer walks clusters whose reads fell, and a
   raw whose fallen incumbent still beats a carried bound on its runner-up
