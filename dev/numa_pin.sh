@@ -91,9 +91,10 @@
 #   NUMA_MEM=strict|preferred  memory side of a bind: --membind (strict, the
 #                             default) or --preferred, which spills to another
 #                             node when the bound one is full instead of
-#                             failing. Strict was never slower in job 33967
-#                             (NovaSeq, 3 reps each) and twice in three ran the
-#                             screen pass ~100 s faster (#360).
+#                             failing. Strict was never slower than preferred
+#                             (NovaSeq, jobs 33967/33973). Its occasional
+#                             ~100 s faster screen pass is #360's two-speed
+#                             screen, which strict does not cause.
 #   NUMA_PIN=0              legacy alias for NUMA_POLICY=none
 #
 # After numa_pin_init, NUMA_RESOLVED names what was chosen: interleave,
