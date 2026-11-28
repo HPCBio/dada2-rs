@@ -47,6 +47,10 @@ const KNOWN: &[&str] = &[
     "DADA2RS_SHUFFLE_NO_PRUNE",
     "DADA2RS_RECONCILE_VERIFY",
     "DADA2RS_RECONCILE_FULL",
+    "DADA2RS_RECONCILE_VERIFY_A1",
+    "DADA2RS_RECONCILE_NO_BOUND",
+    "DADA2RS_A1_WALK_COMPS",
+    "DADA2RS_A2_WALK_FALLEN",
     "DADA2RS_PAR_GRAIN",
     "DADA2RS_PROGRESS_SECS",
     "DADA2RS_PUPDATE_PREFETCH",
@@ -178,13 +182,21 @@ pub fn warn_unrecognised() -> usize {
 /// sits mid-row between two harmless settings and looks like any other
 /// override. Something that silently invalidates every timing in the log needs
 /// more contrast than that.
-const TIMING_INVALIDATING: &[(&str, &str)] = &[(
-    "DADA2RS_RECONCILE_VERIFY",
-    "This is an O(nraw × candidates)\n\
-     [dada]          validation rescan that can make b_shuffle 8x slower on some\n\
-     [dada]          data, e.g. soil ITS2 (41.9s -> 347.4s). Timings from this\n\
-     [dada]          run are not comparable.",
-)];
+const TIMING_INVALIDATING: &[(&str, &str)] = &[
+    (
+        "DADA2RS_RECONCILE_VERIFY",
+        "This is an O(nraw × candidates)\n\
+         [dada]          validation rescan that can make b_shuffle 8x slower on some\n\
+         [dada]          data, e.g. soil ITS2 (41.9s -> 347.4s). Timings from this\n\
+         [dada]          run are not comparable.",
+    ),
+    (
+        "DADA2RS_RECONCILE_VERIFY_A1",
+        "This re-walks every fallen cluster's comp vec\n\
+         [dada]          to count A1's hits (+100 s on NovaSeq 16S). Timings from\n\
+         [dada]          this run are not comparable.",
+    ),
+];
 
 /// Warn when a gate that invalidates timing is active.
 ///
@@ -203,6 +215,7 @@ pub fn warn_timing_invalidating() -> usize {
     for (name, why) in TIMING_INVALIDATING {
         let active = match *name {
             "DADA2RS_RECONCILE_VERIFY" => crate::cluster::reconcile_verify_gate(),
+            "DADA2RS_RECONCILE_VERIFY_A1" => crate::cluster::reconcile_verify_a1_gate(),
             _ => false,
         };
         if active {
@@ -380,6 +393,45 @@ mod tests {
                 !KNOWN.contains(&a.old),
                 "retired spelling {} is still listed as known",
                 a.old
+            );
+        }
+    }
+
+    #[test]
+    fn every_gate_read_in_src_is_known() {
+        // #358 added four gates without listing them, so each printed "NO
+        // EFFECT" while working. Every quoted gate name in src is a read.
+        fn walk(dir: &std::path::Path, found: &mut BTreeSet<String>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    walk(&p, found);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    let text = std::fs::read_to_string(&p).unwrap();
+                    for part in text.split("\"DADA2RS_").skip(1) {
+                        let name: String = part
+                            .chars()
+                            .take_while(|c| {
+                                c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_'
+                            })
+                            .collect();
+                        if !name.is_empty() && part[name.len()..].starts_with('"') {
+                            found.insert(format!("DADA2RS_{name}"));
+                        }
+                    }
+                }
+            }
+        }
+        let mut found = BTreeSet::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut found,
+        );
+        let aliases: BTreeSet<_> = ALIASES.iter().map(|a| a.old).collect();
+        for name in &found {
+            assert!(
+                KNOWN.contains(&name.as_str()) || aliases.contains(name.as_str()),
+                "{name} is read in src but missing from KNOWN"
             );
         }
     }

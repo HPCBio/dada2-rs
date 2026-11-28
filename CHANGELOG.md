@@ -83,6 +83,12 @@ minor versions may carry breaking changes).
   (shuffle 379 → 144 s), MiSeq −10%, PacBio −4%. Output is unchanged.
   `DADA2RS_A2_WALK_FALLEN=1` and `DADA2RS_RECONCILE_NO_BOUND=1` turn each off.
   See [Inside `b_shuffle`: the reconcile](docs/findings/shuffle-reconcile.md).
+- The reconcile's pass A1 finds raws whose cluster fell by walking that
+  cluster's members and a short list of stranded centres, not its comp vec
+  (#358): 2.5 G visits instead of 29.3 G on NovaSeq. NovaSeq `dada-pooled`
+  at 48 threads −4.8% wall (shuffle 143 → 93 s); MiSeq and PacBio level.
+  Output is unchanged. `DADA2RS_A1_WALK_COMPS=1` turns it off, and
+  `DADA2RS_RECONCILE_VERIFY_A1=1` checks A1's hit count alone.
 - Each compare call's parallel map returns only the comparisons the store
   can use, instead of an nraw-long result vector that the store walked
   serially (#355). Every mode uses it. At 48 threads, against the serial store:

@@ -1,10 +1,10 @@
 # Inside `b_shuffle`: the reconcile's wasted passes
 
-**Verdict:** two exact cuts to the shuffle's reconcile take NovaSeq
-`dada-pooled` from 1,335 s to 1,082 s (**−19% wall**), with output identical to
-`main` on all three test pools. Shuffle falls from 379 s to 144 s, from 30% of
-the main loop to 14%. MiSeq gains 10% and PacBio 4%. Both cuts are on by
-default.
+**Verdict:** three exact cuts to the shuffle's reconcile take NovaSeq
+`dada-pooled` from 1,335 s to ~1,050 s (**−21% wall**), with output identical
+to `main` on all three test pools. Shuffle falls from 379 s to 93 s, from 30%
+of the main loop to under 10%. MiSeq gains 10% and PacBio 4%. All three cuts
+are on by default.
 
 - **Skip fallen clusters in pass A2** ([#358][358], `7c80b49`): −83 s on
   NovaSeq. A2's walk over a cluster whose reads fell cannot change any raw's
@@ -12,6 +12,9 @@ default.
 - **Settle fallen incumbents by a carried runner-up bound** (`7e77acf`):
   another −152 s. Rescans fall from 2.51 billion to 815,000, and rescan time
   from 160 s to 0.2 s.
+- **Find A1's fallen incumbents among members** (`70b05cb`): another −52 s
+  (−4.8%). A1 walks a fallen cluster's members plus a short list of centres
+  instead of its comp vec, 2.5 G visits instead of 29.3 G.
 
 Changes since [the build-scan closure](shuffle-build-scan.md) halved
 `b_compare` on NovaSeq, which made shuffle 29% of `run_dada` there. The
@@ -112,13 +115,69 @@ Controls (mean of 2 reps):
 
 Peak RSS is unchanged on every pool.
 
+## Cut 3: A1 walks members
+
+With cuts 1 and 2 in, collect was 113 s on NovaSeq. An accounting run
+(branch `perf/shuffle-a1-account-358`, job 33952) split it into A1's scan for
+fallen clusters (4 s), A1's walk (~100 s) and A2 (8 s). A1 walked 29.3 G
+comp-vec pairs to find 2.51 G raws whose incumbent had fallen.
+
+After a move pass every non-centre raw sits in its best cluster, so a fallen
+cluster's hits are among its members. A centre never moves, so a centre whose
+best cluster is another one is missed by that walk. Such centres are kept on a
+side list, added at three points:
+
+- a full build adds every centre whose best cluster is another;
+- a bud adds its new centre when it enters the carry;
+- the reconcile adds a centre when a risen cluster becomes its best.
+
+Over the NovaSeq run the list held 3.3 M centre visits against 2.5 G hits. A
+raw with no candidates is skipped, as the comp walk never reached it.
+
+**Pricing.** A read-only shadow of the member walk in the accounting run took
+13 s for 2.5 G visits, which predicted ~87 s saved. The cut saved 48 s. The
+shadow did not do the per-hit work (read the raw's score, then settle or mark
+it), which costs ~16 ns per hit, ~40 s over 2.5 G hits. A shadow must do the
+same per-hit work as the cut it prices.
+
+**Checks.** A missed hit in A1 can be repaired later: A2 walks a new cluster's
+comp vec, which reaches its centre. So `DADA2RS_RECONCILE_VERIFY`'s comparison
+of `compmax` and `emax` against a rebuild passed with the side list removed.
+It now also counts A1's hits against a comp-vec walk and checks that every
+stranded centre is on the list. Three mutants:
+
+- dropping the side-list walk: caught by the hit count (5,759 hits against
+  5,760 on the MiSeq SOP test set);
+- not adding a bud's new centre: caught on MiSeq and PacBio;
+- not adding a centre that a risen cluster claims: **not caught on any
+  pool**. The list's total was 3,338,422 on NovaSeq with and without it, so
+  the case never arises in these three pools. The step stays, and the
+  side-list check covers it on any data where it does arise.
+
+`DADA2RS_RECONCILE_VERIFY_A1` runs the hit count alone, at +92 s on NovaSeq
+against hours for the full check. It passed on NovaSeq.
+
+**A/B.** Jobs 33957 and 33962, `main` (b37219b) against L3 (`86cc0fe`), 48
+threads, NUMA interleave, 6 NovaSeq reps per arm in alternating order. Every
+L3 output matched `main` apart from the version string. One L3 rep is left
+out of the means: its compare screen pass ran ~250 s faster with identical
+work counts, which neither arm explains ([#360][360]).
+
+| pool | arm | wall | shuffle | collect |
+|---|---|---|---|---|
+| NovaSeq | main (5 reps) | 1104 | 143 | 114 |
+| NovaSeq | L3 (4 reps) | 1052 | 93 | 66 |
+| MiSeq | main → L3 | 50.6 → 51.6 | 1.9 → 1.2 | 1.6 → 0.9 |
+| PacBio | main → L3 | 199.9 → 199.7 | 3.3 → 1.9 | 2.6 → 1.4 |
+
+The MiSeq and PacBio wall times move by less than their noise. Peak RSS is
+unchanged.
+
 ## What this dictates
 
-- **Shuffle is no longer the NovaSeq target.** Shuffle is 144 s against 765 s
-  of compare and 87 s of `p_update`. Most of what remains is collect, 115 s.
-  A1 still walks every fallen cluster's comp vec. A possible follow-up walks
-  the fallen cluster's members instead, since after a move pass a non-centre
-  raw's incumbent is the cluster that holds it. That is unpriced.
+- **Shuffle is no longer the NovaSeq target.** Shuffle is 93 s against ~790 s
+  of compare. Of collect's 66 s, A1's member walk is most; what is left is
+  per-hit work.
 - **Account before cutting, and in the units of the work.** The issue's single
   ns/comp figure mixed two costs that differ by ~10× per unit. Split by pass,
   each cut was priced before it was built and landed within a few percent of
@@ -135,11 +194,14 @@ Peak RSS is unchanged on every pool.
 dada2-rs dada-pooled ... --metrics-json m.json   # runs[0].reconcile: collect, rescan, affected, settled
 DADA2RS_A2_WALK_FALLEN=1    dada2-rs dada-pooled ...  # cut 1 off
 DADA2RS_RECONCILE_NO_BOUND=1 dada2-rs dada-pooled ... # cut 2 off
+DADA2RS_A1_WALK_COMPS=1     dada2-rs dada-pooled ...  # cut 3 off
 DADA2RS_RECONCILE_VERIFY=1  dada2-rs dada-pooled ...  # exactness check (slow)
+DADA2RS_RECONCILE_VERIFY_A1=1 dada2-rs dada-pooled ... # A1 hit count only
 ```
 
-Turning either cut off leaves the output unchanged.
+Turning any cut off leaves the output unchanged.
 
 [124]: https://github.com/HPCBio/dada2-rs/issues/124
 [139]: https://github.com/HPCBio/dada2-rs/issues/139
 [358]: https://github.com/HPCBio/dada2-rs/issues/358
+[360]: https://github.com/HPCBio/dada2-rs/issues/360
