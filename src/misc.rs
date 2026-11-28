@@ -532,6 +532,61 @@ pub fn cpu_allocation() -> (Option<usize>, Option<usize>) {
     )
 }
 
+/// Where the process was allowed to run and allocate (#362), for
+/// `--metrics-json`, so an archived result records its own placement.
+///
+/// #360 spent three cluster jobs on a timing difference partly because no
+/// result said which CPUs and memory policy it ran under.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Placement {
+    /// `Cpus_allowed_list` from `/proc/self/status`, e.g. `0-63`.
+    pub cpus_allowed: String,
+    /// `Mems_allowed_list`, the NUMA nodes the process may allocate from.
+    pub mems_allowed: String,
+    /// The memory policy most mappings carry in `/proc/self/numa_maps`, as the
+    /// kernel spells it: `default`, `interleave:0-1`, `bind:0`, `prefer:0`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mempolicy: Option<String>,
+}
+
+/// The current process's [`Placement`]; `None` without `/proc` (non-Linux).
+pub fn placement() -> Option<Placement> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let field = |key: &str| {
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix(key))
+            .map(|v| v.trim().to_string())
+    };
+    Some(Placement {
+        cpus_allowed: field("Cpus_allowed_list:")?,
+        mems_allowed: field("Mems_allowed_list:")?,
+        mempolicy: std::fs::read_to_string("/proc/self/numa_maps")
+            .ok()
+            .and_then(|m| dominant_mempolicy(&m)),
+    })
+}
+
+/// The most common policy across `numa_maps` lines. The policy is the text
+/// between the address and the first `key=value` field; `prefer (many):0-1`
+/// contains a space, so it is not simply the second token.
+fn dominant_mempolicy(numa_maps: &str) -> Option<String> {
+    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    for line in numa_maps.lines() {
+        let Some((_, rest)) = line.split_once(' ') else {
+            continue;
+        };
+        let policy: Vec<&str> = rest
+            .split_whitespace()
+            .take_while(|t| !t.contains('='))
+            .collect();
+        if !policy.is_empty() {
+            *counts.entry(policy.join(" ")).or_default() += 1;
+        }
+    }
+    counts.into_iter().max_by_key(|(_, n)| *n).map(|(p, _)| p)
+}
+
 /// One-line `--verbose` description of the CPU allocation the run actually got,
 /// so archived logs are self-describing about it (issue #127).
 ///
@@ -819,6 +874,33 @@ mod tests {
         let w = warn.unwrap();
         assert!(w.contains("LSF"), "{w}");
         assert!(!w.contains("--cpus-per-task"), "{w}");
+    }
+
+    #[test]
+    fn dominant_mempolicy_reads_the_policy_field() {
+        let maps = "55d0 interleave:0-1 file=/bin/x mapped=3 N0=2 N1=1\n\
+                    7f00 interleave:0-1 anon=12 dirty=12 N0=6 N1=6\n\
+                    7f10 default stack anon=3 dirty=3 N0=3\n\
+                    7f20 prefer (many):0-1 anon=1 N0=1\n\
+                    7f30 interleave:0-1 heap anon=9 N0=5 N1=4\n";
+        assert_eq!(dominant_mempolicy(maps).as_deref(), Some("interleave:0-1"));
+        assert_eq!(
+            dominant_mempolicy("7f20 prefer (many):0-1 anon=1 N0=1\n").as_deref(),
+            Some("prefer (many):0-1")
+        );
+        assert_eq!(dominant_mempolicy(""), None);
+    }
+
+    #[test]
+    fn placement_present_exactly_where_proc_exists() {
+        let p = placement();
+        assert_eq!(
+            p.is_some(),
+            std::path::Path::new("/proc/self/status").exists()
+        );
+        if let Some(p) = p {
+            assert!(!p.cpus_allowed.is_empty() && !p.mems_allowed.is_empty());
+        }
     }
 
     #[test]
