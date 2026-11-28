@@ -124,6 +124,9 @@ clean test is one pool bound at 48 **and** 64 — worth doing before the default
 - **`dev/numa_pin.sh` is annotated, not changed.** It exists for
   *reproducibility*, and whether binding replicates as tightly as interleaving is
   unmeasured. But "interleave beats bind" is no longer safe as a general claim.
+  *Changed later in [#362](https://github.com/HPCBio/dada2-rs/issues/362):* bound
+  NovaSeq reps differed by 2.9%, and the helper now binds by default when the
+  threads use at most 3/4 of a node.
 - **Published absolute numbers are conservative.** Everything in
   [Results](../results.md) was gathered interleaved at sub-domain thread counts.
   A/B *deltas* are unaffected — both arms always shared the policy.

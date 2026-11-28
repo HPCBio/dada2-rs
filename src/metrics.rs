@@ -498,6 +498,10 @@ pub struct MetricsDocument {
     /// Wall time of the whole subcommand, including everything outside
     /// `run_dada`.
     pub wall_seconds: f64,
+    /// CPUs, memory nodes and memory policy the process ran under (#362).
+    /// Absent where `/proc` is not available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placement: Option<crate::misc::Placement>,
     #[serde(skip_serializing_if = "PipelineTimes::is_empty")]
     pub pipeline: PipelineTimes,
     pub runs: Vec<LabelledRun>,
@@ -567,6 +571,7 @@ impl MetricsDocument {
             schema_version: METRICS_SCHEMA_VERSION,
             measure_level,
             wall_seconds: secs(wall),
+            placement: crate::misc::placement(),
             pipeline: PipelineTimes::default(),
             runs: Vec::new(),
             learn: None,

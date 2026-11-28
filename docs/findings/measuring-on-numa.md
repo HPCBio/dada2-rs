@@ -64,8 +64,8 @@ measurement whose variance exceeds its signal; only reducing the variance can.
 ## Fixing placement is a measurement tool, not a tuning recommendation
 
 Three policies at 64 threads, `main` only, two replicates each. The middle
-column is what `dev/numa_pin.sh` now does by default; the right column is what
-production does today.
+column is what `dev/numa_pin.sh` did by default until [#362][362]; the right
+column is what production does today.
 
 | | `--cpunodebind=0 --membind=0` | `--interleave=all` | default (first touch) |
 |---|---|---|---|
@@ -96,8 +96,8 @@ What separates the three is **reproducibility**, and that is the whole point:
 | default (first touch) | 5.8% | 12.9% | 22.9% |
 
 `--interleave=all` is the most reproducible of the three — more so than binding
-— which is why it is the default in `dev/numa_pin.sh`. Two further reasons to
-prefer it for benchmarking:
+— which is why it was the default in `dev/numa_pin.sh` until [#362][362]. Two
+further reasons to prefer it for benchmarking:
 
 - **It does not distort what is being measured.** Binding makes the parallel map
   21% slower, inflating its share of `run_dada` and shifting exactly the phase
@@ -184,22 +184,29 @@ prefix applied to **both arms** of an A/B. It degrades to a no-op without
 cannot actually be applied (containers, restricted cpusets).
 
 ```bash
-NUMA_POLICY=interleave   # default: numactl --interleave=all
-NUMA_POLICY=bind         # --cpunodebind=N --membind=N; lowest latency for the
-                         #   serial scattered phases, but slows the parallel
-                         #   map 21%, and refuses to oversubscribe
+NUMA_POLICY=auto         # default since #362: bind when the threads fit the
+                         #   job's cores in one node and use at most 3/4 of
+                         #   it, else interleave
+NUMA_POLICY=interleave   # numactl --interleave=all; the default before #362
+NUMA_POLICY=bind         # --cpunodebind=N --membind=N; refuses to oversubscribe
 NUMA_POLICY=none         # default first-touch — for comparing against results
                          #   measured before this existed
-NUMA_NODE=0              # which domain, for NUMA_POLICY=bind
+NUMA_NODE=0              # which domain, for bind (a preference for auto)
+NUMA_MEM=preferred       # --preferred=N instead of --membind=N (auto's default)
 ```
+
+The default changed once binding's reproducibility was measured: in #360's
+job 33963 two bound NovaSeq reps differed by 2.9%, against 1.5% interleaved,
+and binding was 32% faster at 48 threads. Timings taken before #362 are
+interleave timings; compare with them under `NUMA_POLICY=interleave`.
 
 Under `bind` it **refuses when the thread count exceeds the physical cores in
 the target domain**: binding restricts CPUs as well as memory, so a thread count
 sized for the whole node silently becomes SMT contention that reads as a
 regression in whatever is under test. That is not hypothetical — a 128-thread
 run into a 64-core domain did exactly this, and only the `cpu allocation` line
-in `--verbose` caught it. `interleave` has no such failure mode, which is part
-of why it is the default.
+in `--verbose` caught it. `auto` binds only within the job's allowed cores and
+never past 3/4 of a node, where #127's 64-thread loss sits.
 
 ## What this dictates
 
@@ -217,3 +224,5 @@ of why it is the default.
 4. **Replicate the same arm, not just the two arms.** `main` against `main` is
    what makes the floor visible; without it there is no scale against which a
    difference means anything.
+
+[362]: https://github.com/HPCBio/dada2-rs/issues/362

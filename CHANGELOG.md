@@ -10,6 +10,9 @@ minor versions may carry breaking changes).
 
 ### Added
 
+- `--metrics-json` records the process's placement (#362): allowed CPUs,
+  allowed memory nodes and the dominant memory policy, under `placement`.
+  Absent where `/proc` is not available.
 - `--error-model` is optional on `dada` and `dada-pooled` with
   `--birth-rule unoise` (Experimental; #349), which decides nothing from it.
   Without a model no λ is computed: the ASVs, abundances and `map` are
@@ -76,6 +79,11 @@ minor versions may carry breaking changes).
 
 ### Changed
 
+- `dev/numa_pin.sh` defaults to `NUMA_POLICY=auto` (#362): bind to one NUMA
+  node when the thread count fits the job's cores there and uses at most 3/4
+  of the node, interleave otherwise. NovaSeq `dada-pooled` at 48 threads ran
+  32% faster bound (#360). Cores are now counted within the job's cpuset.
+  `NUMA_POLICY=interleave` restores the old default.
 - The shuffle's reconcile skips work that cannot change a raw's best
   cluster (#358): pass A2 no longer walks clusters whose reads fell, and a
   raw whose fallen incumbent still beats a carried bound on its runner-up

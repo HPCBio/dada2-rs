@@ -517,6 +517,12 @@ that domain's controllers and loses to interleaving, which is how
 a 64-core domain. The harness checks the domain's CPU count and **falls back to
 `interleave` with a warning** rather than honouring a request that cannot help.
 
+`dev/numa_pin.sh`, which the shell A/B scripts source, defaults to `auto` since
+[#362](https://github.com/HPCBio/dada2-rs/issues/362): bind when the threads
+fit the job's cores in one node and use at most 3/4 of it, interleave
+otherwise. Its absolute timings from before then are interleave timings. Every
+`--metrics-json` document records the placement it ran under in `placement`.
+
 **Where `numactl` is unavailable** — or the machine has a single domain — the run
 proceeds unpinned with a warning. It never fails, and it never silently records
 the policy you asked for:
